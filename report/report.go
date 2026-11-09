@@ -850,9 +850,16 @@ type CorpusManifestProvenance struct {
 
 // The WorkSetSource vocabulary. It is open — these are the values in use today.
 const (
-	// WorkSetBuiltinLanguageSet is the compiled-in, language-scoped list of advisory ids
-	// (cmd/ferralon-assay/acquire.go). Fixed per language, identical on every repository.
-	WorkSetBuiltinLanguageSet = "builtin_language_set"
+	// WorkSetNone is a pass that chose no advisory ids: one that published a Report without
+	// assessing anything (an analyzer that is not installed).
+	WorkSetNone = "none"
+	// WorkSetHouseCanaries is the first-party house canaries alone, opted in with
+	// -include-house-canaries (cmd/ferralon-assay/acquire.go). Fixed per language, identical on every
+	// repository, and never public advisory intelligence.
+	WorkSetHouseCanaries = "house_canaries"
+	// WorkSetPolicy is the ids of the declared advisory policy whose affected package is one of
+	// the repository's dependencies.
+	WorkSetPolicy = "policy"
 	// WorkSetOSVQuery is an SBOM-driven work set resolved by querying OSV.dev for the
 	// advisories that affect the repository's real dependencies.
 	WorkSetOSVQuery = "osv_query"
@@ -860,12 +867,16 @@ const (
 
 // The FactSource vocabulary. It is open — these are the values in use today.
 const (
-	// FactSourceBuiltinTable is the compiled-in AdvisoryTable alone: no corpus configured.
-	FactSourceBuiltinTable = "builtin_table"
-	// FactSourceCorpusThenBuiltinTable is the chained source — a filesystem advisory
-	// corpus consulted first, the built-in table behind it. The corpus SUPPLEMENTS the
-	// table; facts are never merged across the two.
-	FactSourceCorpusThenBuiltinTable = "corpus_then_builtin_table"
+	// FactSourceNone is a pass with no advisory fact source: no corpus configured and no house
+	// canaries opted in.
+	FactSourceNone = "none"
+	// FactSourceCorpus is a filesystem advisory corpus alone.
+	FactSourceCorpus = "corpus"
+	// FactSourceHouseCanaries is the opted-in house canaries alone: no corpus configured.
+	FactSourceHouseCanaries = "house_canaries"
+	// FactSourceCorpusThenHouseCanaries is the chained source — the corpus consulted first, the
+	// opted-in house canaries behind it. Facts are never merged across the two.
+	FactSourceCorpusThenHouseCanaries = "corpus_then_house_canaries"
 )
 
 // PartialityNote discloses one limit on what this scan pass could establish about

@@ -56,7 +56,7 @@ type Ledger struct {
 // BuildLedger joins the two corpora and produces the full metric ledger. It classifies every
 // record for each measured lane (running the resolver via run only for the buildable subset),
 // computes D1–D4, slices outcomes by corpus.Category, and records each unmeasurable lane with the
-// reason naming its missing input. records is the advisory corpus (pipeline.AdvisoryTable); store
+// reason naming its missing input. records is the advisory corpus, keyed by vuln_id; store
 // is the attribution sidecar (empty == all unreviewed, today's state); fixtures is the
 // code-fixture corpus (corpus.Load()); run drives the deterministic resolver (RunCaseRunner in
 // production, a fake in the hermetic suite).

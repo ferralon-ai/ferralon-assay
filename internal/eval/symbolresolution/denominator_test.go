@@ -13,9 +13,9 @@ func goDenominators(t *testing.T, run CaseRunner, store pipeline.AttributionStor
 	t.Helper()
 	fixtures := loadCorpus(t)
 	bound := bindFixtures(fixtures)
-	outcomes := ClassifyLane(context.Background(), "go", pipeline.AdvisoryTable, bound, run)
-	ctxs := buildRecordCtxs(pipeline.AdvisoryTable, store, bound, outcomes)
-	return buildDenominators("go", len(pipeline.AdvisoryTable), ctxs)
+	outcomes := ClassifyLane(context.Background(), "go", advisoryFixtures, bound, run)
+	ctxs := buildRecordCtxs(advisoryFixtures, store, bound, outcomes)
+	return buildDenominators("go", len(advisoryFixtures), ctxs)
 }
 
 // TestDenominatorsSideBySide is C3: every candidate denominator is computed side by side, each

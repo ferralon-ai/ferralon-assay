@@ -1,14 +1,14 @@
 // advisory_id_format_test.go — every advisory identifier we ship is well-formed for its issuing
 // authority.
 //
-// HERMETIC and always on: pure string checking over the built-in AdvisoryTable and the on-disk
-// advisory corpus. No build, no exec, no network. It belongs in the default `go test ./...` because
+// HERMETIC and always on: pure string checking over the house canaries the scanner ships and the
+// on-disk fixture advisory corpus. No build, no exec, no network. It belongs in the default `go test ./...` because
 // it costs nothing and because a malformed identifier is a fact about a string, knowable the moment
 // the string is written.
 //
 // # What this is for
 //
-// The publication red-team found a FABRICATED advisory alias shipping in the built-in table:
+// The publication red-team found a FABRICATED advisory alias shipping in the scanner's advisory data:
 // GHSA-vm622-x2cf-3blh. It cannot exist — a GHSA ID is three groups of exactly four characters and
 // its first group here is five — and it 404s on OSV. Nothing in the tree noticed, because nothing
 // in the tree had an opinion about what an advisory identifier looks like.
@@ -173,41 +173,41 @@ func idsFrom(f AdvisoryFacts) []string {
 	return out
 }
 
-// TestAdvisoryIDs_BuiltInTableIsWellFormed checks the compiled-in advisory table: every key, every
-// alias, and every lineage pointer.
-func TestAdvisoryIDs_BuiltInTableIsWellFormed(t *testing.T) {
-	if len(AdvisoryTable) == 0 {
-		t.Fatal("AdvisoryTable is empty — this test is checking nothing")
+// TestAdvisoryIDs_HouseCanariesAreWellFormed checks the house canaries the scanner ships: every
+// key, every alias, and every lineage pointer.
+func TestAdvisoryIDs_HouseCanariesAreWellFormed(t *testing.T) {
+	if len(houseCanaryFacts) == 0 {
+		t.Fatal("houseCanaryFacts is empty — this test is checking nothing")
 	}
-	keys := make([]string, 0, len(AdvisoryTable))
-	for k := range AdvisoryTable {
+	keys := make([]string, 0, len(houseCanaryFacts))
+	for k := range houseCanaryFacts {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
 	var checked int
 	for _, id := range keys {
-		facts := AdvisoryTable[id]
+		facts := houseCanaryFacts[id]
 		if why := checkAdvisoryID(id); why != "" {
-			t.Errorf("AdvisoryTable key %q %s", id, why)
+			t.Errorf("house canary key %q %s", id, why)
 		}
 		checked++
 		for _, alias := range idsFrom(facts) {
 			checked++
 			if why := checkAdvisoryID(alias); why != "" {
-				t.Errorf("AdvisoryTable[%q] carries the identifier %q, which %s\n"+
+				t.Errorf("houseCanaryFacts[%q] carries the identifier %q, which %s\n"+
 					"  we publish this identifier to the customer as a citation; one that cannot exist\n"+
 					"  turns a checkable claim into an unverifiable assertion",
 					id, alias, why)
 			}
 		}
 	}
-	t.Logf("checked %d identifiers across %d built-in advisories", checked, len(keys))
+	t.Logf("checked %d identifiers across %d house canaries", checked, len(keys))
 }
 
-// advisoryCorpusFixtureDir is the on-disk advisory corpus shipped in the tree — the same root
-// pipeline/advisory_corpus_test.go points ArtifactSource at, and the shape a real corpus install
-// takes. Its facts reach the customer exactly as the built-in table's do, so it gets the same check.
+// advisoryCorpusFixtureDir is the on-disk fixture advisory corpus in the tree (see
+// pipeline/advisory_corpus_test.go). Tests cite its identifiers in fixtures and goldens, so it gets
+// the same check.
 const advisoryCorpusFixtureDir = "../corpus/testdata/advisories"
 
 // TestAdvisoryIDs_ShippedCorpusIsWellFormed checks the on-disk corpus: the manifest's advisory keys,

@@ -288,7 +288,7 @@ func TestAdvisoryIntake_RefreshesCorpusAtAssessmentStart(t *testing.T) {
 	root := mutableCorpus(t)
 	var reads atomic.Int64
 	corpus := countingSource(root, &reads)
-	chain := NewChainSource(corpus, NewTableSource())
+	chain := NewChainSource(corpus, fixtureSource())
 	run := func() {
 		t.Helper()
 		c := &assessment.Assessment{ID: "a1", Request: assessment.Request{

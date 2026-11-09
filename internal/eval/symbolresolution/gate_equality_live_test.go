@@ -61,7 +61,7 @@ func requireLiveGoToolchain(t *testing.T) plugin.LanguagePlugin {
 func TestGateActionableReasonProduction(t *testing.T) {
 	p := requireLiveGoToolchain(t)
 	fixtures := loadCorpus(t)
-	led := BuildLedger(context.Background(), pipeline.AdvisoryTable, pipeline.AttributionStore{}, fixtures, RunCaseRunner(p))
+	led := BuildLedger(context.Background(), advisoryFixtures, pipeline.AttributionStore{}, fixtures, RunCaseRunner(p))
 
 	entry, ok := led.ByLane["go"]
 	if !ok || entry.State != LaneMeasured {
@@ -97,8 +97,8 @@ func TestGateActionableReasonProduction(t *testing.T) {
 			dist[o.Reason]++
 		}
 	}
-	if outcomes != len(pipeline.AdvisoryTable) {
-		t.Errorf("go outcome count = %d, want %d (one per record — C1)", outcomes, len(pipeline.AdvisoryTable))
+	if outcomes != len(advisoryFixtures) {
+		t.Errorf("go outcome count = %d, want %d (one per record — C1)", outcomes, len(advisoryFixtures))
 	}
 
 	reasons := make([]string, 0, len(dist))
@@ -222,7 +222,7 @@ func TestGateFiveProducerSCIPEquality(t *testing.T) {
 	bound := bindFixtures(fixtures)
 
 	var ids []string
-	for id, r := range pipeline.AdvisoryTable {
+	for id, r := range advisoryFixtures {
 		if pipeline.EcosystemToken(r) != "golang" || !pipeline.SymbolBearing(r) {
 			continue
 		}
@@ -235,7 +235,7 @@ func TestGateFiveProducerSCIPEquality(t *testing.T) {
 	fullAgreement := 0
 	for _, id := range ids {
 		fix := bound[id]
-		pi, ran := driveProducers(t, p, reachcandidate.CaseFrom(fix, pipeline.AdvisoryTable[id], nil))
+		pi, ran := driveProducers(t, p, reachcandidate.CaseFrom(fix, advisoryFixtures[id], nil))
 		if !ran {
 			continue
 		}

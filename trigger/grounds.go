@@ -91,12 +91,11 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 
 // vettedSymbols reports whether the advisory's symbol set is complete enough for an absence of the
 // listed symbols to ground not_exploitable: no path reaching them (arm A), or no module declaring
-// them (outsideBuildGrounds). An osv-declared or curated set is; so is an untagged set the built-in
-// table answered, whose marker S1 sets from where the record came from, never from the record. A
-// diff-lexed set is a candidate list lexed from the fix, which can miss the vulnerable function; a
-// cna-declared set's completeness has not been measured; and an untagged corpus set, or a tag this
-// version does not know, says nothing about how the set was obtained. A record's own trust_tier
-// does not vouch for its symbol set.
+// them (outsideBuildGrounds). An osv-declared or curated set is. A diff-lexed set is a candidate
+// list lexed from the fix, which can miss the vulnerable function; a cna-declared set's
+// completeness has not been measured; and an untagged set, or a tag this version does not know,
+// says nothing about how the set was obtained. A record's own trust_tier does not vouch for its
+// symbol set.
 func vettedSymbols(store artifact.Store, assessmentID string) bool {
 	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
 	if err != nil || len(arts) == 0 {
@@ -104,7 +103,6 @@ func vettedSymbols(store artifact.Store, assessmentID string) bool {
 	}
 	var adv struct {
 		SymbolProvenance string `json:"symbol_provenance"`
-		BuiltIn          bool   `json:"built_in"`
 	}
 	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
 		return false
@@ -112,8 +110,6 @@ func vettedSymbols(store artifact.Store, assessmentID string) bool {
 	switch adv.SymbolProvenance {
 	case "osv-declared", "curated":
 		return true
-	case "":
-		return adv.BuiltIn
 	default:
 		return false
 	}

@@ -8,7 +8,7 @@
 //
 // The load-bearing question (architect-build-design.md §1, the A-vs-B fork): can the
 // Go plugin, over the real gogs module, (1) resolve the first-party sink
-// gogs.io/gogs/internal/db.UpdateRepoFile (in AdvisoryTable under both halves of the
+// gogs.io/gogs/internal/db.UpdateRepoFile (in the fixture advisories under both halves of the
 // gogs chain — CVE-2024-55947 and CVE-2025-8110 share this sink) to a SCIP; (2) recognize the macaron repo file-edit route handler as
 // an ingress; and (3) walk firstPartyReachPaths from an ingress to that sink? All three
 // yes ⇒ Option A (real gogs) is viable. Any no that is not a bounded plugin fix ⇒

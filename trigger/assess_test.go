@@ -30,7 +30,6 @@ type groundsFixture struct {
 	scoped          []artifact.ScopedPartialityFlag
 	provenance      string // symbol_provenance; "" = osv-declared
 	untagged        bool   // the record carries no symbol_provenance
-	builtIn         bool   // S1's marker for a record the built-in table answered
 }
 
 func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
@@ -50,9 +49,6 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 	}
 	if fx.untagged {
 		delete(adv, "symbol_provenance")
-	}
-	if fx.builtIn {
-		adv["built_in"] = true
 	}
 	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, adv)
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, fx.resolution)

@@ -24,10 +24,11 @@ import (
 // advisory FACT source: a fact source answers "what do you know about this id" (AdvisorySource.Lookup),
 // a work set decides which ids get asked about at all.
 //
-// A scan pass's work set is always the compiled-in, language-scoped FLOOR (advisoryCorpus in
-// acquire.go) plus, optionally, additions chosen against the repository's REAL dependencies. There
-// are two ways to choose the additions, and which one runs is decided by whether the run DECLARES
-// an advisory policy (-advisory-corpus-policy):
+// A scan pass's work set is the opted-in house canaries (houseCanaries in acquire.go; empty unless
+// -include-house-canaries) plus the advisories chosen against the repository's REAL dependencies.
+// The binary carries no advisory membership of its own, so without a choice the set is empty and
+// the run halts (errEmptyWorkSet). There are two ways to choose, and which one runs is decided by
+// whether the run DECLARES an advisory policy (-advisory-corpus-policy):
 //
 //   - POLICY (a policy is declared and the corpus reader can enumerate its ids). The corpus was
 //     selected by that policy, and the policy is the statement of what to scan. Every id it carries whose
@@ -46,10 +47,10 @@ import (
 // Three properties are load-bearing in both modes, in descending order of how badly their loss would
 // hurt:
 //
-//  1. THE COMPILED-IN SET IS A FLOOR, NEVER A CEILING. The widened work set is a UNION with it, so
-//     no id in the floor can stop being evaluated — whatever the policy carries, whatever OSV says,
-//     whatever the network does. Java/JS/Python carry first-party FERRALON-* fixtures no public feed
-//     has heard of; replace-by instead of union-with would silently delete them.
+//  1. THE OPTED-IN CANARIES ARE A FLOOR, NEVER A CEILING. The chosen work set is a UNION with them,
+//     so no canary can stop being evaluated — whatever the policy carries, whatever OSV says,
+//     whatever the network does. They are first-party FERRALON-* fixtures no public feed has heard
+//     of; replace-by instead of union-with would silently delete them.
 //
 //  2. A WORK SET THAT COULD NOT BE DETERMINED IS ANALYSIS THAT DID NOT HAPPEN. When the repository's
 //     dependencies cannot be read, OSV is unreachable, or a declared policy's corpus cannot enumerate, the
@@ -70,7 +71,7 @@ import (
 // OPEN (see report.PartialityNote), so these extend it without touching the report schema.
 const (
 	// reasonWorkSetNotWidened: the OSV work-set query did not complete, so the pass evaluated only
-	// the compiled-in floor. The scan is narrower than the configuration asked for.
+	// the opted-in house canaries. The scan is narrower than the configuration asked for.
 	reasonWorkSetNotWidened = "work_set_not_widened"
 	// reasonWorkSetNoInventory: the repository's dependency coordinates could not be read, so there
 	// was nothing to ask OSV about. Distinct from "OSV said nothing affects you".
@@ -82,7 +83,7 @@ const (
 	reasonAdvisoryFactsUnavailable = "advisory_facts_unavailable"
 	// reasonWorkSetPolicyNotEnumerable: a policy is declared, but the corpus reader cannot list the
 	// ids it carries, so the policy could not define the work set. The pass
-	// fell back to the floor (widened by OSV only if that was switched on) and used the corpus for
+	// fell back to the opted-in house canaries (widened by OSV only if that was switched on) and used the corpus for
 	// facts alone.
 	reasonWorkSetPolicyNotEnumerable = "work_set_policy_not_enumerable"
 	// reasonPolicyAdvisoryNoCoordinates: advisories in the selected policy name no affected package,
@@ -113,22 +114,35 @@ const (
 	reasonWorkSetDependencyNotFound = "work_set_dependency_not_found"
 )
 
-// workSetSourceBuiltinUnionOSV names a work set that is the compiled-in language floor UNIONED with
+// workSetSourceCanariesUnionOSV names a work set that is the opted-in house canaries UNIONED with
 // the ids an OSV.dev query over the repository's real dependencies returned. It extends the open
-// report.WorkSet* vocabulary; report.WorkSetBuiltinLanguageSet still names a floor-only pass and
-// report.WorkSetOSVQuery is reserved for a pass driven by OSV ALONE, which this is deliberately not
-// (see property 1 above).
-const workSetSourceBuiltinUnionOSV = "builtin_language_set_union_osv_query"
+// report.WorkSet* vocabulary; report.WorkSetOSVQuery names the same pass with no canaries.
+const workSetSourceCanariesUnionOSV = "house_canaries_union_osv_query"
 
-// workSetSourceBuiltinUnionPolicy names a work set that is the compiled-in language floor UNIONED
+// workSetSourceCanariesUnionPolicy names a work set that is the opted-in house canaries UNIONED
 // with the ids of the configured advisory policy whose affected package matches one of the
-// repository's own dependencies.
-const workSetSourceBuiltinUnionPolicy = "builtin_language_set_union_policy"
+// repository's own dependencies; report.WorkSetPolicy names the same pass with no canaries.
+const workSetSourceCanariesUnionPolicy = "house_canaries_union_policy"
+
+// chosenSource names a pass whose work set was chosen against the repository's dependencies by
+// mode (report.WorkSetPolicy or report.WorkSetOSVQuery), unioned with the floor when it is not
+// empty.
+func chosenSource(floor []assessment.VulnRef, mode string) string {
+	if len(floor) == 0 {
+		return mode
+	}
+	switch mode {
+	case report.WorkSetPolicy:
+		return workSetSourceCanariesUnionPolicy
+	default:
+		return workSetSourceCanariesUnionOSV
+	}
+}
 
 // workSet is the resolved set of advisory ids one scan pass will evaluate, together with the
 // disclosure of how it was chosen and what it could not cover.
 type workSet struct {
-	// advisories is the evaluated set: the compiled-in floor first, in its original order, then the
+	// advisories is the evaluated set: the opted-in house canaries first, in its original order, then the
 	// OSV-derived additions sorted for determinism.
 	advisories []assessment.VulnRef
 	// source is the report.IntelProvenance.WorkSetSource value describing how the set was chosen.
@@ -192,10 +206,11 @@ func cutWorkSet(ws workSet, cause error) workSet {
 // selectWorkSet resolves the work set for a scan-path run from what the run configured.
 //
 // corpus is the configured advisory corpus's own reader (nil when none is configured) — NOT the
-// chain the pass resolves facts through, which puts the built-in table behind the corpus and does
-// not enumerate. facts is that chain, which the OSV mode admits against. policy is the declared
+// chain the pass resolves facts through, which puts the opted-in house canaries behind the corpus
+// and does not enumerate. facts is that chain (nil when there is no fact source at all), which the
+// OSV mode admits against. policy is the declared
 // advisory policy id, "" when none: only a declared policy lets the corpus define the work set, so a
-// corpus configured without one leaves the work set exactly as it is with no corpus. osvEnabled is
+// corpus configured without one leaves the work set exactly as it is with no corpus: the canaries. osvEnabled is
 // whether the OSV widening was switched on; it is consulted only when the policy does not define
 // the work set.
 //
@@ -220,7 +235,7 @@ func selectWorkSet(ctx context.Context, acq *acquired, corpus, facts pipeline.Ad
 	return ws
 }
 
-// resolvePolicyWorkSet widens the compiled-in floor with every id the declared policy carries
+// resolvePolicyWorkSet widens the opted-in house canaries with every id the declared policy carries
 // whose affected package this repository depends on. It makes no network call.
 //
 // corpus resolves each candidate's facts; en lists the candidates. They are the same reader.
@@ -255,7 +270,7 @@ func resolvePolicyWorkSet(ctx context.Context, acq *acquired, corpus pipeline.Ad
 		})
 	}
 
-	ws.source = workSetSourceBuiltinUnionPolicy
+	ws.source = chosenSource(acq.advisories, report.WorkSetPolicy)
 	if len(admitted) > 0 {
 		ws.advisories = append(append([]assessment.VulnRef{}, acq.advisories...), admitted...)
 		ws.widened = len(admitted)
@@ -389,27 +404,30 @@ func purlTypeForEcosystem(ecosystem string) string {
 	}
 }
 
-// floorWorkSet returns the compiled-in language-scoped work set with no widening attempted. It is
-// what cve-watch uses (that mode does its own OSV query against the stored SBOM and must not be
-// changed) and what the scan path uses BY DEFAULT, the widening being opt-in (osvWorkSetDefault),
-// as well as what a widening that was asked for and failed degrades to.
+// floorWorkSet returns the opted-in house canaries with no widening attempted (report.WorkSetNone
+// when there are none). It is what cve-watch uses (that mode does its own OSV query against the
+// stored SBOM and must not be changed) and what the scan path uses when no policy defines the work
+// set and the OSV widening is off, as well as what a widening that was asked for and failed
+// degrades to.
 func floorWorkSet(advisories []assessment.VulnRef) workSet {
-	return workSet{advisories: advisories, source: report.WorkSetBuiltinLanguageSet}
+	if len(advisories) == 0 {
+		return workSet{source: report.WorkSetNone}
+	}
+	return workSet{advisories: advisories, source: report.WorkSetHouseCanaries}
 }
 
-// resolveWorkSet widens the compiled-in floor with the advisories OSV.dev reports against the
+// resolveWorkSet widens the opted-in house canaries with the advisories OSV.dev reports against the
 // repository's real dependencies.
 //
 // It NEVER returns an error. Every failure — no dependency manifest, an unreachable OSV, a plugin
 // that cannot enumerate — degrades to the floor plus a PartialityNote. A scan that fails to widen is
 // a narrower scan, not a failed one; the caller must still produce a Report, and that Report must
 // say so. (Contrast the corpus require-gate in run.go, which DOES hard-fail: there the operator
-// declared an expectation, and silently substituting stale built-in intel would misrepresent which
-// facts were used. Here nothing is misrepresented as long as the note is emitted.)
-// src is the SAME AdvisorySource the pass will resolve facts through — the corpus-then-table chain
-// when a corpus is configured, the table alone otherwise. Passing it in rather than rebuilding a
-// table-only source here is what lets a richer corpus widen the scan: admission asks the real fact
-// source whether it can answer for an id.
+// declared an expectation, and silently scanning without one would misrepresent which facts were
+// used. Here nothing is misrepresented as long as the note is emitted.)
+// src is the SAME AdvisorySource the pass will resolve facts through, nil when it has none; with
+// none, OSV's answer is disclosed whole as unresolved and nothing is admitted. Admission asks the
+// real fact source whether it can answer for an id.
 func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, src pipeline.AdvisorySource) workSet {
 	ws := floorWorkSet(acq.advisories)
 	ws.ecosystem = ecosystemForLanguage(acq.language)
@@ -503,14 +521,14 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 	}
 	if len(admitted) == 0 {
 		// The widening RAN and added nothing. That is a real, complete answer — this repository's
-		// dependencies carry no advisory we hold facts for beyond the floor — so it is reported as
-		// a widened pass with zero additions, not as a floor-only pass.
-		ws.source = workSetSourceBuiltinUnionOSV
+		// dependencies carry no advisory we hold facts for beyond the canaries — so it is reported
+		// as a widened pass with zero additions, not as a canaries-only pass.
+		ws.source = chosenSource(acq.advisories, report.WorkSetOSVQuery)
 		return ws
 	}
 
 	ws.advisories = append(append([]assessment.VulnRef{}, acq.advisories...), admitted...)
-	ws.source = workSetSourceBuiltinUnionOSV
+	ws.source = chosenSource(acq.advisories, report.WorkSetOSVQuery)
 	ws.widened = len(admitted)
 	return ws
 }
@@ -525,44 +543,34 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 // needs only the count takes len(). Discarding it is the silent-unassessed-advisory defect, so it
 // is threaded onto workSet rather than consumed here.
 //
-// ALIAS RESOLUTION IS THE POINT. OSV answers in whatever id namespace the upstream feed uses —
-// "GO-2023-2102" and "GHSA-4374-p667-p6c8" are the same vulnerability the advisory source keys under
-// "CVE-2023-39325". A bare Lookup on the OSV id misses all three of the Go standard-library
-// advisories we hold facts for. Aliases are already an established join key here: trigger's
-// priorityFor() matches KEV/EPSS on `append([]string{adv.ID}, adv.Aliases...)` for exactly this
-// reason. An alias hit is admitted under the PRIMARY id, because that is the key the facts — and
-// therefore the finding — are stored under.
+// Admission is a bare Lookup on the id OSV answered with. A fact source that keys an advisory under
+// a different id than the one OSV reports (a CVE where OSV answers with the GO- or GHSA- alias)
+// does not admit it, and the id is disclosed as unresolved.
 func admitByFacts(osvIDs []string, floor []assessment.VulnRef, src pipeline.AdvisorySource) (additions []assessment.VulnRef, unresolvable []string) {
 	inFloor := make(map[string]struct{}, len(floor))
 	for _, a := range floor {
 		inFloor[a.ID] = struct{}{}
 	}
 
-	if src == nil {
-		src = pipeline.NewTableSource()
-	}
-	aliases := aliasIndex()
-
 	seen := make(map[string]struct{})
 	var ids []string
 	for _, id := range osvIDs {
-		primary := id
+		if src == nil {
+			unresolvable = append(unresolvable, id)
+			continue
+		}
 		if _, ok := src.Lookup(id); !ok {
-			p, ok := aliases[id]
-			if !ok {
-				unresolvable = append(unresolvable, id)
-				continue
-			}
-			primary = p
-		}
-		if _, ok := inFloor[primary]; ok {
+			unresolvable = append(unresolvable, id)
 			continue
 		}
-		if _, ok := seen[primary]; ok {
+		if _, ok := inFloor[id]; ok {
 			continue
 		}
-		seen[primary] = struct{}{}
-		ids = append(ids, primary)
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
 	}
 
 	sort.Strings(ids)
@@ -571,36 +579,6 @@ func admitByFacts(osvIDs []string, floor []assessment.VulnRef, src pipeline.Advi
 	}
 	sort.Strings(unresolvable)
 	return additions, unresolvable
-}
-
-// aliasIndex maps every alias of every compiled-in advisory to that advisory's primary id.
-//
-// It reads pipeline.AdvisoryTable directly rather than going through the AdvisorySource seam
-// because the seam deliberately exposes only Lookup(id) — it can answer "what do you know about
-// this id" but not "what ids do you know". Selecting a work set needs the latter. The seam is still
-// the ONLY path facts flow through (see admitByFacts); this index decides membership, never content.
-//
-// The consequence is that alias-only matches resolve against the compiled-in table but not against
-// a filesystem corpus, so a corpus record reachable only by one of its aliases is not admitted. That
-// is a coverage limit, not a soundness one, and closing it means giving AdvisorySource an
-// enumeration method — a wider change than this one, and the natural home for corpus-driven work-set
-// selection generally.
-func aliasIndex() map[string]string {
-	idx := make(map[string]string)
-	for id, facts := range pipeline.AdvisoryTable {
-		for _, a := range facts.Aliases {
-			if a == "" || a == id {
-				continue
-			}
-			// First writer wins, so the map is deterministic despite Go's randomized map
-			// iteration order: a collision is two primaries claiming one alias, which would
-			// otherwise make the admitted set differ run to run.
-			if prior, ok := idx[a]; !ok || id < prior {
-				idx[a] = id
-			}
-		}
-	}
-	return idx
 }
 
 // dependencyInventory reads the repository's REAL dependency coordinates — every package it
@@ -771,10 +749,9 @@ func versionlessPURL(purlType, name string) string {
 // module graph offers without a network fetch.
 //
 // The standard library is a dependency too, and OSV tracks it as the "stdlib" package of the Go
-// ecosystem. It matters disproportionately here: the compiled-in table's go-toolchain advisories
-// (the net/http, path/filepath and net/netip backport pairs) are the clearest advisories we hold
-// real facts for that no repository's go.mod will ever name, so without this the widening cannot
-// reach them. It is resolved at the subject's toolchain when that is exact (stdlibVersion), and is
+// ecosystem. It matters disproportionately here: go-toolchain advisories are real advisories no
+// repository's go.mod will ever name, so without this the widening cannot reach them. It is
+// resolved at the subject's toolchain when that is exact (stdlibVersion), and is
 // otherwise unresolved: named, with no version.
 //
 // The module is the one at the module root (manifestDir), the module the pipeline analyzes, under
@@ -1024,25 +1001,31 @@ func (w workSet) describeUnassessed() string {
 func (w workSet) describeSet() string {
 	switch {
 	case hasNote(w.partiality, reasonWorkSetNotWidened):
-		return fmt.Sprintf("%d advisories (built-in language set only — OSV.dev unreachable, so the work set was NOT widened; this scan is narrower than configured)", len(w.advisories))
+		return fmt.Sprintf("%d advisories (house canaries only — OSV.dev unreachable, so the work set was NOT widened; this scan is narrower than configured)", len(w.advisories))
 	case hasNote(w.partiality, reasonWorkSetNoInventory), hasNote(w.partiality, plugin.PartialReasonNoManifest):
-		return fmt.Sprintf("%d advisories (built-in language set only — no dependency manifest resolved, so there was nothing to widen from)", len(w.advisories))
-	case w.source == report.WorkSetBuiltinLanguageSet && len(w.unversioned)+len(w.unreadable)+len(w.notFound) > 0:
-		return fmt.Sprintf("%d advisories (built-in language set only — no dependency has a version OSV.dev can be asked about, so OSV.dev was asked nothing; this scan is narrower than configured)", len(w.advisories))
+		return fmt.Sprintf("%d advisories (house canaries only — no dependency manifest resolved, so there was nothing to widen from)", len(w.advisories))
+	case (w.source == report.WorkSetHouseCanaries || w.source == report.WorkSetNone) && len(w.unversioned)+len(w.unreadable)+len(w.notFound) > 0:
+		return fmt.Sprintf("%d advisories (house canaries only — no dependency has a version OSV.dev can be asked about, so OSV.dev was asked nothing; this scan is narrower than configured)", len(w.advisories))
 	case hasNote(w.partiality, reasonWorkSetPolicyNotEnumerable):
 		return fmt.Sprintf("%d advisories (the advisory corpus cannot list its advisories, so the declared policy did NOT define the work set; this scan is narrower than configured)", len(w.advisories))
-	case w.source == report.WorkSetBuiltinLanguageSet:
-		return fmt.Sprintf("%d advisories (built-in language set)", len(w.advisories))
-	case w.source == workSetSourceBuiltinUnionPolicy && w.widened == 0:
-		return fmt.Sprintf("%d advisories (built-in language set; the advisory policy matched nothing further in this repository's %s dependencies)", len(w.advisories), w.ecosystem)
-	case w.source == workSetSourceBuiltinUnionPolicy:
-		return fmt.Sprintf("%d advisories (%d built-in + %d from the advisory policy matched against %s dependencies)",
-			len(w.advisories), len(w.advisories)-w.widened, w.widened, w.ecosystem)
+	case w.source == report.WorkSetHouseCanaries, w.source == report.WorkSetNone:
+		return fmt.Sprintf("%d advisories (house canaries)", len(w.advisories))
+	case w.source == report.WorkSetPolicy, w.source == workSetSourceCanariesUnionPolicy:
+		if w.widened == 0 {
+			return fmt.Sprintf("%d advisories (the advisory policy matched nothing in this repository's %s dependencies)", len(w.advisories), w.ecosystem)
+		}
+		if canaries := len(w.advisories) - w.widened; canaries > 0 {
+			return fmt.Sprintf("%d advisories (%d house canaries + %d from the advisory policy matched against %s dependencies)",
+				len(w.advisories), canaries, w.widened, w.ecosystem)
+		}
+		return fmt.Sprintf("%d advisories (from the advisory policy matched against %s dependencies)", len(w.advisories), w.ecosystem)
 	case w.widened == 0:
-		return fmt.Sprintf("%d advisories (built-in language set; OSV reported nothing further we hold facts for)", len(w.advisories))
-	default:
-		return fmt.Sprintf("%d advisories (%d built-in + %d from OSV over %s dependencies)",
+		return fmt.Sprintf("%d advisories (OSV reported nothing we hold facts for)", len(w.advisories))
+	case len(w.advisories) > w.widened:
+		return fmt.Sprintf("%d advisories (%d house canaries + %d from OSV over %s dependencies)",
 			len(w.advisories), len(w.advisories)-w.widened, w.widened, w.ecosystem)
+	default:
+		return fmt.Sprintf("%d advisories (from OSV over %s dependencies)", len(w.advisories), w.ecosystem)
 	}
 }
 

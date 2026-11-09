@@ -21,11 +21,11 @@ var cutShortCorpus = []assessment.VulnRef{
 	{ID: "GO-T-3", Source: "corpus"},
 }
 
-// clonedSource answers every id with GO-2021-0113's built-in facts.
+// clonedSource answers every id with GO-2021-0113's fixture facts.
 type clonedSource struct{}
 
 func (clonedSource) Lookup(string) (pipeline.AdvisoryFacts, bool) {
-	return pipeline.NewTableSource().Lookup(wiringAdvisory.ID)
+	return fixtureSource().Lookup(wiringAdvisory.ID)
 }
 
 // stopMode is what stoppingPlugin does once it has stopped the scan.

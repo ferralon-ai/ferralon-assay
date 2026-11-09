@@ -13,7 +13,7 @@ import (
 
 // TestGoModuleAxisHonoursReplace runs advisory_intake → codebase_inventory →
 // disqualification_discovery over a real go.mod with nothing seeded between them, against the
-// built-in GO-2021-0113 (golang.org/x/text, fixed v0.3.7). Every go.mod requires v0.3.8, which is
+// fixture GO-2021-0113 (golang.org/x/text, fixed v0.3.7). Every go.mod requires v0.3.8, which is
 // outside the range; a replace decides what the build actually compiles. E6 swaps in a synthetic
 // two-package advisory.
 func TestGoModuleAxisHonoursReplace(t *testing.T) {

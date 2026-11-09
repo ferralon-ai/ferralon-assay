@@ -81,9 +81,8 @@ func (f *runFlags) publishAnalyzerMissing(ctx context.Context, mode string, e *a
 	detail := analyzerMissingDetail(e.acq.language, e.missing.Binary)
 	fmt.Fprintf(os.Stderr, "::warning title=%s::%s\n", brand.Name, escapeWorkflowData(detail))
 	fmt.Fprintf(os.Stdout, "%s %s — %s\n", brand.Name, mode, detail)
-	// No work set was chosen and no advisory fact was looked up: the built-in floor and table are
-	// what the run starts from, and it stopped there.
-	intel := report.IntelProvenance{WorkSetSource: report.WorkSetBuiltinLanguageSet, FactSource: report.FactSourceBuiltinTable}
+	// No work set was chosen and no advisory fact was looked up: the run stopped before either.
+	intel := report.IntelProvenance{WorkSetSource: report.WorkSetNone, FactSource: report.FactSourceNone}
 	// Nothing was cut short: the Report is complete in what it says.
 	writeScanTruncated(false, os.Stderr)
 	if err := publishResult(ctx, *f.outDir, rep, intel, e.acq.analyzeRef, nil, nil, nil); err != nil {

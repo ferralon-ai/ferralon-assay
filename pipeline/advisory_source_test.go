@@ -18,21 +18,23 @@ import (
 
 const advisoryFixtureRoot = "testdata/advisory_source"
 
-// tableSource is the default AdvisorySource: its Lookup must be the exact AdvisoryTable map read
-// the two S1 sites did inline, so wiring the seam preserves behavior byte-for-byte.
-func TestTableSource_MatchesAdvisoryTable(t *testing.T) {
-	src := tableSource{}
-	for id, want := range AdvisoryTable {
+// The house canary source serves exactly houseCanaryFacts and misses everything else: it is the
+// only advisory data the scanner carries, and it answers only for the canaries.
+func TestHouseCanarySource_ServesOnlyCanaries(t *testing.T) {
+	src := NewHouseCanarySource()
+	for id, want := range houseCanaryFacts {
 		got, ok := src.Lookup(id)
 		if !ok {
-			t.Errorf("tableSource.Lookup(%q) ok=false, want true", id)
+			t.Errorf("Lookup(%q) ok=false, want true", id)
 		}
-		if got.PURL != want.PURL || got.Module != want.Module || got.UpperExclusive != want.UpperExclusive {
-			t.Errorf("tableSource.Lookup(%q) = %+v, want %+v", id, got, want)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Lookup(%q) = %+v, want %+v", id, got, want)
 		}
 	}
-	if _, ok := src.Lookup("NOPE-DOES-NOT-EXIST"); ok {
-		t.Error("tableSource.Lookup(unknown) ok=true, want false (fail open)")
+	for _, id := range []string{"GO-2021-0113", "CVE-2024-45337", "NOPE-DOES-NOT-EXIST"} {
+		if _, ok := src.Lookup(id); ok {
+			t.Errorf("Lookup(%q) ok=true, want false: the canary source carries no advisory intelligence", id)
+		}
 	}
 }
 

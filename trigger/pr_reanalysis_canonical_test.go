@@ -20,7 +20,7 @@ type canonicalSource struct{ coordinate, purlType string }
 
 func (s canonicalSource) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
 	if id != canonicalAdvisory.ID {
-		return pipeline.NewTableSource().Lookup(id)
+		return fixtureSource().Lookup(id)
 	}
 	return pipeline.AdvisoryFacts{
 		Coordinate:     s.coordinate,

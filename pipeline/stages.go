@@ -8,7 +8,7 @@
 // package, which composes its Prove stages onto AssessStages.
 //
 // Cross-boundary seam: a handful of free helpers and frozen artifact shapes are exported
-// (PutArtifact, InventoryBuildDir, HarnessArtifact, DisqualResult + reason constants, AdvisoryTable,
+// (PutArtifact, InventoryBuildDir, HarnessArtifact, DisqualResult + reason constants,
 // AdvisoryFacts) because the Prove stages build on the same artifact contracts. They are neutral
 // plumbing, not proof.
 
@@ -91,8 +91,7 @@ func WithCheckout(co checkout.Checkout) AssessOption {
 
 // WithAdvisorySource injects the AdvisorySource the S1 stages (advisory_intake, codebase_inventory)
 // read advisory facts through. When absent (nil), those stages fall back to defaultAdvisorySource() —
-// the process-wide default (tableSource unless SetDefaultAdvisorySource installed a corpus) — so the
-// default path is byte-identical to today.
+// the process-wide default SetDefaultAdvisorySource installed, which resolves nothing when unset.
 func WithAdvisorySource(src AdvisorySource) AssessOption {
 	return func(c *AssessConfig) { c.Source = src }
 }
@@ -269,8 +268,7 @@ func putPayload(store artifact.Store, c *assessment.Assessment, producedBy strin
 // --- Stage 1: advisory_intake -------------------------------------------------
 
 // src is the AdvisorySource this stage reads advisory facts through (the U8a intake seam). A nil
-// src falls back to defaultAdvisorySource() — the in-memory AdvisoryTable — so the default path is
-// byte-identical to the historical inline AdvisoryTable[id] lookup.
+// src falls back to defaultAdvisorySource(), the process-wide default.
 type advisoryIntake struct{ src AdvisorySource }
 
 func (advisoryIntake) Name() string              { return "advisory_intake" }
@@ -311,15 +309,11 @@ type AdvisoryFacts struct {
 	// "cna-declared" | "diff-lexed"; "reasoning" reserved). It feeds no admission or reachability
 	// path: a symbol resolves and is walked the same under every tag, and absent → "" → UNKNOWN
 	// derivation. Two consumers read it: the candidate's SymbolConfidence label, and the
-	// not_exploitable grounds, where only an osv-declared or curated set (or an untagged set the
-	// built-in table answered, BuiltIn) may ground on the listed symbols' absence. Carries no verdict.
+	// not_exploitable grounds, where only an osv-declared or curated set may ground on the listed
+	// symbols' absence. Carries no verdict.
 	//
-	// omitempty (like SymbolsTyped, unlike the other facts fields): symbol_provenance is a
-	// PUBLISHED/enrichment-corpus tag. The built-in AdvisoryTable floor fixtures are this module's own
-	// curated entries and carry none, so "" is the permanent state for every floor entry, not a field
-	// the corpus fell behind on. Serializing it as ""/present on ~40 fixtures would be misrepresentative
-	// noise, and the round-trip guard (TestAdvisoryCorpus_Valid) legitimately does not apply to a tag
-	// the floor never populates. When the published feed carries it, a non-empty value round-trips.
+	// omitempty (like SymbolsTyped, unlike the other facts fields): a record with no symbols has no
+	// derivation to tag, and an absent tag reads as unknown derivation.
 	SymbolProvenance string `json:",omitempty"`
 	// TargetConditionalSymbols are the Symbols that some build target of the package does not
 	// compile (an async entry on a framework target without async, an XmlNode entry on one without
@@ -354,10 +348,6 @@ type AdvisoryFacts struct {
 	// (branch-aware backports). Empty ⇒ the version axis falls back to UpperExclusive
 	// (or fails open when both are empty).
 	AffectedRanges []Range
-	// BuiltIn marks a fact the built-in AdvisoryTable answered. Only tableSource sets it, and it has
-	// no JSON form, so no corpus document can claim it. It is what vouches for an untagged symbol
-	// set: the table's own symbols are curated in this module.
-	BuiltIn bool `json:"-"`
 	// Provenance records where this fact was read from and how far it may be trusted.
 	// TrustTier gates refute eligibility: low-trust facts (byo/third_party) MAY narrow
 	// toward candidate but MAY NEVER refute — no laundering a false negative through an
@@ -441,12 +431,10 @@ type AdvisoryFacts struct {
 	// still carries the strings). No consumer may read nil SymbolsTyped as an empty symbol set.
 	// Carries no verdict; advisory-only framing (inv.5).
 	//
-	// omitempty (unlike the other facts fields): the built-in AdvisoryTable corpus never carries
-	// typed symbols — they are emitted by the separate cve-enrichment producer for the PUBLISHED
-	// feed only — so a nil here is the permanent declared-awaiting-emit state for every table entry,
-	// not a field the corpus "fell behind on." Serializing it as null on ~40 built-in fixtures would
-	// be misrepresentative noise; the round-trip guard (TestAdvisoryCorpus_Valid) legitimately does
-	// not apply to a producer-only axis. When the producer emits, a non-nil value round-trips.
+	// omitempty (unlike the other facts fields): typed symbols are emitted only by the separate
+	// cve-enrichment producer for the PUBLISHED feed, so nil is the declared-awaiting-emit state for
+	// every other record, and serializing it as null would be noise. When the producer emits, a
+	// non-nil value round-trips.
 	SymbolsTyped []plugin.Symbol `json:",omitempty"`
 
 	// MaliciousPackage marks an OSV malicious-package (MAL) advisory and carries the enumerated
@@ -494,7 +482,7 @@ type AffectedPackage struct {
 // via the value-based Zero() methods (both are value-zero); PLAN-220 is what exploits declared_empty
 // as an affirmative "declared none." The marker carries `json:"-"` so it never reaches the wire and
 // the advisory fixtures stay byte-identical (no regen). Zero value = PresenceAbsent, so an operand
-// left unset by the built-in AdvisoryTable path reads as "silent," unchanged.
+// left unset by a map-backed source reads as "silent," unchanged.
 type Presence uint8
 
 const (
@@ -733,662 +721,6 @@ type GuardVariant struct {
 	Sufficient                 bool
 }
 
-// AdvisoryTable pins the corpus advisories. This is honest for the corpus (the advisories are real
-// and verified against osv.dev per the fixtures) and stays offline. An unknown VulnID yields zero
-// facts → every structured field stays empty → the disqualification predicate fails open
-// (SOUNDNESS: unknown is never "not affected"). Exported because the Prove path reads the
-// FixedVersion for a known-vulnerable predecessor.
-var AdvisoryTable = map[string]AdvisoryFacts{
-	"GO-2021-0113": {
-		Module:         "golang.org/x/text",
-		Aliases:        []string{"CVE-2021-38561", "GHSA-ppp9-7jff-5vj2"},
-		UpperExclusive: "v0.3.7",
-		FixedVersion:   "v0.3.7",
-		PURL:           "pkg:golang/golang.org/x/text",
-		Symbols:        []string{"golang.org/x/text/language.Parse"},
-		CWEs:           []string{"CWE-125"},
-		Summary:        "out-of-bounds read panic in language.Parse on a malformed BCP-47 tag",
-	},
-	"GO-2022-0322": {
-		Module:         "github.com/prometheus/client_golang",
-		Aliases:        []string{"CVE-2022-21698", "GHSA-cg3q-j54f-5p7p"},
-		UpperExclusive: "v1.11.1",
-		FixedVersion:   "v1.11.1",
-		PURL:           "pkg:golang/github.com/prometheus/client_golang",
-		Symbols: []string{
-			"github.com/prometheus/client_golang/prometheus/promhttp.Handler",
-			"github.com/prometheus/client_golang/prometheus/promhttp.HandlerFor",
-		},
-		CWEs:    []string{"CWE-770"},
-		Summary: "uncontrolled resource consumption: unbounded cardinality of metric labels enables memory exhaustion",
-	},
-	"CVE-2024-45337": {
-		Module:         "golang.org/x/crypto",
-		Aliases:        []string{"GHSA-v778-237x-gjrc", "GO-2024-3321"},
-		UpperExclusive: "v0.31.0",
-		FixedVersion:   "v0.31.0",
-		PURL:           "pkg:golang/golang.org/x/crypto",
-		Symbols:        []string{"golang.org/x/crypto/ssh.NewServerConn"},
-		CWEs:           []string{"CWE-285"},
-		Summary:        "authorization bypass: an SSH server that misuses ServerConfig.PublicKeyCallback may treat a public key that was offered but never used to complete authentication as if it had authenticated the session",
-	},
-	"FERRALON-APP-SSRF-0001": {
-		PURL:    "pkg:golang/tegron/corpus/ssrf",
-		Symbols: []string{"main.fetchHandler"},
-		CWEs:    []string{"CWE-918"},
-		Summary: "server-side request forgery: fetchHandler forwards an attacker-controlled url parameter to http.Get with no allowlist",
-	},
-	"FERRALON-APP-DOS-0001": {
-		PURL:    "pkg:golang/tegron/corpus/dos",
-		Symbols: []string{"main.expandHandler"},
-		CWEs:    []string{"CWE-400"},
-		Summary: "uncontrolled resource consumption: expandHandler allocates a slice sized by an attacker-controlled count with no upper bound, faulting the process",
-	},
-	// Grafana CVE-2024-9264 (SQL Expressions → DuckDB RCE/LFI). First-party
-	// application sink: the vulnerable feature reaches an exec sink that hands
-	// attacker SQL to the DuckDB engine binary. The fix (PR #94942, "disable sql
-	// expressions") DELETES the go-duck dependency and the exec sink and redirects
-	// the route to an inert stub — a structural symbol/path removal, so the fixed
-	// tree resolves nothing → reachable_candidate → not_exploitable. Module is
-	// empty (first-party, no go.mod require to version-resolve); PURL names the app
-	// so symbol resolution scopes there, and the /api/ds/query http_route handler
-	// is the recognized ingress the call graph reaches the sink from. No version
-	// keying — this is a reachability firing, not a version-axis case.
-	"FERRALON-GO-GRAFANA-DUCKDB-0001": {
-		Aliases: []string{"CVE-2024-9264", "GHSA-q99m-qcv4-fpm7"},
-		PURL:    "pkg:golang/github.com/grafana/grafana",
-		Symbols: []string{"main.runDuckQuery"},
-		CWEs:    []string{"CWE-94", "CWE-78"},
-		Summary: "code injection / OS command execution: the SQL Expressions feature reaches runDuckQuery, which executes attacker-controlled SQL through the DuckDB engine binary (DuckDB file functions enable LFI/RCE); the upstream fix removes the go-duck dependency and the exec sink outright",
-	},
-	// Fixed go1.16.10 on the 1.16.x branch and go1.17.3 on mainline (OSV GO-2021-0264).
-	"GO-2021-0264": {
-		Aliases:       []string{"CVE-2021-41772"},
-		VersionScheme: "go-toolchain",
-		PURL:          "pkg:golang/stdlib",
-		AffectedRanges: []Range{
-			{Fixed: "go1.16.10", FixedVersion: "go1.16.10"},
-			{Introduced: "go1.17.0", Fixed: "go1.17.3", FixedVersion: "go1.17.3"},
-		},
-		Symbols: []string{"archive/zip.(*Reader).Open"},
-	},
-	// --- Go stdlib/toolchain (go-toolchain scheme, U7) -----------------------------------------
-	// These advisories fix at TOOLCHAIN releases (go1.20.10, go1.21.3 …), NOT module semver, so
-	// they carry the "go-toolchain" VersionScheme EXPLICITLY: there is no module PURL for the
-	// toolchain itself (schemeFromPURL maps pkg:golang → gomod and must stay that way, so it can
-	// never derive this scheme). Each is a branch-aware BACKPORT — the fix landed on two release
-	// branches — expressed as TWO disjoint AffectedRanges; U2's versionOutsideRanges reasons over
-	// the whole set (a version disqualifies only when it is at/past the fix on EVERY branch).
-	//
-	// CVE-2023-39325 (HTTP/2 rapid reset) is the required anchor: fixed go1.20.10 on the 1.20.x
-	// branch AND go1.21.3 on mainline (GO-2023-2102 / GHSA-4374-p667-p6c8). Module is empty
-	// (stdlib is the toolchain, not a go.mod require).
-	"CVE-2023-39325": {
-		Aliases:       []string{"GO-2023-2102", "GHSA-4374-p667-p6c8"},
-		VersionScheme: "go-toolchain",
-		PURL:          "pkg:golang/stdlib",
-		AffectedRanges: []Range{
-			{Fixed: "go1.20.10", FixedVersion: "go1.20.10"},
-			{Introduced: "go1.21.0", Fixed: "go1.21.3", FixedVersion: "go1.21.3"},
-		},
-		Symbols: []string{"net/http.(*http2Server).ServeConn"},
-		CWEs:    []string{"CWE-400"},
-		Summary: "uncontrolled resource consumption (HTTP/2 rapid reset): a client that rapidly opens and resets streams forces the net/http HTTP/2 server to spawn unbounded handler goroutines; fixed on both the go1.20.x and go1.21.x branches",
-	},
-	// CVE-2023-45283 (path/filepath, Windows \??\ device-path bypass): fixed go1.20.11 and
-	// go1.21.4 (GO-2023-2185). A second backport pair.
-	"CVE-2023-45283": {
-		Aliases:       []string{"GO-2023-2185"},
-		VersionScheme: "go-toolchain",
-		PURL:          "pkg:golang/stdlib",
-		AffectedRanges: []Range{
-			{Fixed: "go1.20.11", FixedVersion: "go1.20.11"},
-			{Introduced: "go1.21.0", Fixed: "go1.21.4", FixedVersion: "go1.21.4"},
-		},
-		Symbols: []string{"path/filepath.IsLocal", "path/filepath.Clean"},
-		CWEs:    []string{"CWE-22"},
-		Summary: "improper path traversal: on Windows path/filepath does not treat a \\??\\ device-path prefix as special, so IsLocal reports an escaping path as local; fixed on both the go1.20.x and go1.21.x branches",
-	},
-	// CVE-2024-24790 (net/netip, IPv4-mapped IPv6 Is* methods): fixed go1.21.11 and go1.22.4
-	// (GO-2024-2887). A backport across the 1.21.x and 1.22.x branches.
-	"CVE-2024-24790": {
-		Aliases:       []string{"GO-2024-2887"},
-		VersionScheme: "go-toolchain",
-		PURL:          "pkg:golang/stdlib",
-		AffectedRanges: []Range{
-			{Fixed: "go1.21.11", FixedVersion: "go1.21.11"},
-			{Introduced: "go1.22.0", Fixed: "go1.22.4", FixedVersion: "go1.22.4"},
-		},
-		Symbols: []string{"net/netip.Addr.IsPrivate", "net/netip.Addr.IsLoopback"},
-		CWEs:    []string{"CWE-125"},
-		Summary: "incorrect address classification: net/netip Is* methods (IsPrivate, IsLoopback, …) return false for IPv4-mapped IPv6 addresses that should classify by their IPv4 form, defeating allow/deny checks; fixed on both the go1.21.x and go1.22.x branches",
-	},
-	// The gogs incomplete-fix chain is TWO advisories, and they are split — not merged under one
-	// id — so that every per-CVE fact lands on the CVE it is actually true of. A merged entry has
-	// one slot for two different answers, so no per-CVE fact on it can be right.
-	//
-	// Both are first-party application sinks: the advisory affects the gogs.io/gogs application
-	// itself, not a dependency, so Module is empty (no go.mod require to version-resolve — the
-	// version axis fails open and every checkpoint proceeds to reachability). PURL names the
-	// precise sink package (gogs.io/gogs/internal/db) so symbol resolution scopes to it; the
-	// macaron route handlers reaching it are recognized ingresses, so the call graph supplies the
-	// ingress-to-sink path. The sink is the same symbol in both: (*Repository).UpdateRepoFile.
-	//
-	// Facts resolved against api.osv.dev, and the guard attribution read off the real gogs
-	// sources at each release tag (internal/db/repo_editor.go):
-	//
-	//   CVE-2024-55947 — PREDECESSOR, published 2024-12-23, aliases GHSA-qf5v-rp47-55gg /
-	//     GO-2024-3356, fixed 0.13.1. A ../ traversal through the file-update API; v0.13.1
-	//     closes it by extending the isRepositoryGitPath .git guard to that route's call sites.
-	//   CVE-2025-8110 — SUCCESSOR, published 2025-12-10, aliases GHSA-mq8m-42gh-wq7r /
-	//     GO-2025-4225, last_affected 0.13.3. A committed in-repo symlink escapes the working
-	//     tree, bypassing the v0.13.1 traversal fix. v0.13.3's osutil.IsSymlink check is
-	//     LEAF-ONLY — it inspects the final path component, so a symlink at an INTERIOR
-	//     component still escapes; v0.13.4's hasSymlinkInPath walks the whole path hierarchy
-	//     and closes it (upstream commit 553707f).
-	//
-	// Lineage joins them keyed from the predecessor: 55947 RefixedBy 8110, and 8110
-	// IncompleteFixOf 55947. IncompleteFixOf on the predecessor stays empty (honest-empty — it
-	// re-opens nothing), matching the log4shell shape.
-	//
-	// SOUNDNESS (inv.5): NEITHER entry may carry AffectedRanges/UpperExclusive/FixedVersion. The
-	// fix versions above are real, but they are not a version AXIS — with no resolvable
-	// first-party version there is nothing to compare them against, and declaring them would make
-	// the entry version-disqualifiable, refuting a live finding on a version the scan never
-	// established. They live in GuardSufficiency instead, which is Prove-side evidence framing
-	// that Assess never refutes on.
-	//
-	// Each entry carries ONLY its own OSV aliases. They are two vulnerabilities, and every join on
-	// an entry's id and aliases has one slot per entry: CISA's KEV catalog lists only
-	// CVE-2025-8110, so the successor in the predecessor's alias array would attribute that listing
-	// to CVE-2024-55947, which CISA does not list (TestNoEntryAliasesAnotherEntrysPrimaryID guards
-	// the split). The GO- ids are load-bearing, not decoration: they are the key govulncheck reports
-	// dependency findings under (reachcandidate.govulnMatchID, which takes the FIRST GO- alias), and
-	// with one GO- id per entry that key is unambiguous.
-	"CVE-2024-55947": {
-		Aliases: []string{"GHSA-qf5v-rp47-55gg", "GO-2024-3356"},
-		PURL:    "pkg:golang/gogs.io/gogs/internal/db",
-		Symbols: []string{"UpdateRepoFile"},
-		// GuardSymbols are the advisory-declared mitigations whose PRESENCE on the
-		// ingress→sink path the candidate tier reports as evidence — never as a verdict
-		// (inv.5). This CVE's guard is the .git path check alone.
-		GuardSymbols: []string{"isRepositoryGitPath"},
-		GuardSufficiency: []GuardVariant{
-			{Symbol: "isRepositoryGitPath", Version: "0.13.1", ForBypass: "CVE-2024-55947", Sufficient: true},
-		},
-		CWEs:    []string{"CWE-22"},
-		Lineage: Lineage{RefixedBy: "CVE-2025-8110"},
-		Summary: "path traversal / arbitrary file write: the repository file-update API reaches UpdateRepoFile with an attacker-controlled tree path that escapes the repository directory; fixed in v0.13.1 by extending the .git path guard to that route",
-	},
-	"CVE-2025-8110": {
-		Aliases: []string{"GHSA-mq8m-42gh-wq7r", "GO-2025-4225"},
-		PURL:    "pkg:golang/gogs.io/gogs/internal/db",
-		Symbols: []string{"UpdateRepoFile"},
-		// Presence ≠ sufficiency, and this CVE is the proof of it: v0.13.3 CARRIES IsSymlink
-		// and is still vulnerable, because the check is leaf-only. Assess reports guard
-		// presence as evidence; only runtime Prove adjudicates which guard closes the hole.
-		GuardSymbols: []string{"IsSymlink", "hasSymlinkInPath"},
-		GuardSufficiency: []GuardVariant{
-			{Symbol: "IsSymlink", Version: "0.13.3", ForBypass: "CVE-2025-8110", Sufficient: false},
-			{Symbol: "hasSymlinkInPath", Version: "0.13.4", ForBypass: "CVE-2025-8110", Sufficient: true},
-		},
-		CWEs:    []string{"CWE-22"},
-		Lineage: Lineage{IncompleteFixOf: "CVE-2024-55947"},
-		Summary: "arbitrary file write via symlink: a committed in-repo symlink at an interior path component is followed by UpdateRepoFile, escaping the working tree; bypasses the v0.13.1 traversal fix and v0.13.3's leaf-only symlink check, and is closed by the full-hierarchy walk added in v0.13.4",
-	},
-	"FERRALON-JAVA-SSRF-0001": {
-		PURL:    "pkg:maven/com.example.web/ssrf",
-		Symbols: []string{"UrlFetcher.fetch"},
-		CWEs:    []string{"CWE-918"},
-		Summary: "server-side request forgery: a servlet forwards an attacker-controlled target through UrlFetcher.fetch to an outbound HTTP request with no allowlist",
-	},
-	"FERRALON-JAVA-SPRING-SSRF-0001": {
-		PURL:    "pkg:maven/com.example.web/spring-ssrf",
-		Symbols: []string{"UrlServiceImpl.fetch"},
-		CWEs:    []string{"CWE-918"},
-		Summary: "server-side request forgery: a Spring @RestController reaches UrlServiceImpl.fetch through an @Autowired interface field; the sink issues an outbound request with no allowlist",
-	},
-	"FERRALON-JAVA-SSRF-0002": {
-		Coordinate:     "com.example.net:urlkit",
-		UpperExclusive: "2.1.0",
-		FixedVersion:   "2.1.0",
-		VersionScheme:  "maven",
-		PURL:           "pkg:maven/com.example.net/urlkit",
-		Symbols:        []string{"App.fetch"},
-		CWEs:           []string{"CWE-918"},
-		Summary:        "server-side request forgery: com.example.net:urlkit reaches an outbound HTTP GET to a caller-supplied URL with no allowlist; fixed in 2.1.0. In the unreachable repro the sink App.fetch is present but dead — never called from an ingress — so the case is not_exploitable at the reach axis.",
-	},
-	"FERRALON-JAVA-SSRF-0003": {
-		Coordinate:    "com.example.svc:iface-fetch",
-		VersionScheme: "maven",
-		PURL:          "pkg:maven/com.example.svc/iface-fetch",
-		AffectedRanges: []Range{
-			{Introduced: "1.0.0", Fixed: "1.3.0", FixedVersion: "1.3.0"},
-		},
-		Symbols: []string{"SomeServiceImpl.fetch"},
-		CWEs:    []string{"CWE-918"},
-		Summary: "server-side request forgery: com.example.svc:iface-fetch reaches SomeServiceImpl.fetch through an @Autowired SomeService interface field; the sink issues an outbound request with no allowlist. Fixed in 1.3.0 (affects [1.0.0, 1.3.0)). The tool-unavailable repro is undetermined under the analyzer-gated-but-absent overlay and not_exploitable ungated.",
-	},
-	"FERRALON-JS-SSRF-0001": {
-		PURL:    "pkg:npm/tegron-corpus-ssrf",
-		Symbols: []string{"fetchUrl"},
-		CWEs:    []string{"CWE-918"},
-		Summary: "server-side request forgery: an Express route forwards an attacker-controlled target through fetchUrl to an outbound HTTP request with no allowlist",
-	},
-	"FERRALON-JS-NEXTRCE-0001": {
-		Aliases: []string{"GHSA-5vj8-3v2h-h38v"},
-		PURL:    "pkg:npm/next",
-		Symbols: []string{"requireModule"},
-		CWEs:    []string{"CWE-94"},
-		Summary: "module-resolution RCE: the catch-all page route reaches requireModule, which require()s an attacker-controlled path with no bundles-directory containment (Next.js < 5.1.0)",
-	},
-	"FERRALON-JAVA-DEP-0001": {
-		Coordinate:     "com.example.lib:widget",
-		UpperExclusive: "1.4.0",
-		FixedVersion:   "1.4.0",
-		VersionScheme:  "maven",
-		PURL:           "pkg:maven/com.example.lib/widget",
-		Summary:        "deserialization flaw in com.example.lib:widget fixed in 1.4.0",
-	},
-	"FERRALON-JS-DEP-0001": {
-		Coordinate:     "left-pad",
-		UpperExclusive: "1.4.0",
-		FixedVersion:   "1.4.0",
-		VersionScheme:  "npm",
-		PURL:           "pkg:npm/left-pad",
-		Summary:        "prototype pollution in left-pad fixed in 1.4.0",
-	},
-	// PyPI / NuGet DEP fixtures carry NO explicit VersionScheme: the scheme is derived from
-	// the corpus PURL (pkg:pypi→pypi, pkg:nuget→nuget) by advisoryIntake.Run (§3), which is
-	// how the U8 corpus feed will light up the pypi/nuget comparators versionOutsideRange
-	// already dispatches. Version-axis fixtures only (like the Java/JS DEP entries above): no
-	// live repro, no symbols — they exercise the derived-scheme disqualification path.
-	"FERRALON-PY-DEP-0001": {
-		Coordinate:     "flask",
-		UpperExclusive: "2.3.2",
-		FixedVersion:   "2.3.2",
-		PURL:           "pkg:pypi/flask",
-		Summary:        "reflected header injection in flask fixed in 2.3.2",
-	},
-	"FERRALON-NET-DEP-0001": {
-		Coordinate:     "Newtonsoft.Json",
-		UpperExclusive: "13.0.1",
-		FixedVersion:   "13.0.1",
-		PURL:           "pkg:nuget/Newtonsoft.Json",
-		Summary:        "insecure default deserialization in Newtonsoft.Json fixed in 13.0.1",
-	},
-	"FERRALON-NET-REACH-0001": {
-		Aliases:        []string{"CVE-2021-32840"},
-		UpperExclusive: "1.3.3",
-		FixedVersion:   "1.3.3",
-		VersionScheme:  "nuget",
-		Coordinate:     "SharpZipLib",
-		PURL:           "pkg:nuget/SharpZipLib",
-		Symbols:        []string{"ICSharpCode.SharpZipLib.Zip.FastZip.ExtractZip"},
-		CWEs:           []string{"CWE-22"},
-		Summary:        "path traversal (Zip-Slip) on archive extraction: ICSharpCode.SharpZipLib before 1.3.3 does not validate archive entry paths, so FastZip.ExtractZip writes files outside the destination directory, enabling arbitrary file write and possible remote code execution. GHSA-m22m-h4rf-pwq3 / CVE-2021-32840, fixed in 1.3.3.",
-		AffectedRanges: []Range{{Fixed: "1.3.3", FixedVersion: "1.3.3"}},
-		Provenance:     Provenance{Source: "GHSA-m22m-h4rf-pwq3", InputDigest: "provisional-symbol-spelling: authored before the .NET symbol profile was fixed; re-normalisation pending. The Symbols spelling above is NOT canonical yet. NOTE the identity split: Coordinate/PURL are keyed by the NuGet PACKAGE ID (SharpZipLib) so versions.go matches the .csproj PackageReference; Symbols are keyed by the CLR NAMESPACE path (ICSharpCode.SharpZipLib.*)."},
-	},
-	// First-party pypi advisory with a KNOWN scheme (pkg:pypi → pypi) but NO version-range
-	// fix — an open/unbounded affected range, like the gogs symlink CVE. schemeFromPURL
-	// derives a comparator, but with no upper bound the version axis has nothing to soundly
-	// prove outside, so it MUST stay OPEN. Deriving a scheme selects a comparator; it never
-	// manufactures a bound. Guards inv.5 (§3): a known scheme must never disqualify an
-	// unbounded advisory.
-	"FERRALON-PY-FIRSTPARTY-0001": {
-		PURL:    "pkg:pypi/tegron-corpus-app",
-		Symbols: []string{"app.handler"},
-		CWEs:    []string{"CWE-22"},
-		Summary: "first-party path traversal with no version-range fix (open/unbounded affected range)",
-	},
-	// Apache Airflow Experimental REST API removal (PR #41434, shipped in Airflow 3.0.0).
-	// The experimental API shipped with no access control by default (CVE-2020-13927 family);
-	// the definitive fix DELETES the endpoints wholesale. First-party application sink: the
-	// advisory affects apache-airflow itself, not a dependency, so there is no version-range
-	// fix — Module/Coordinate/UpperExclusive stay empty (the version axis fails open and every
-	// checkpoint proceeds to reachability), gogs-shaped. PURL names the sink's module so symbol
-	// resolution scopes to it; the @api_experimental.route Flask-blueprint handler reaching it
-	// is a recognized http_route ingress. At the fix commit BOTH the sink module (get_code.py)
-	// and the decorated handler are removed — symbol-removal AND path-removal — so the sink no
-	// longer resolves and no ingress→sink path exists: reachable_candidate → not_exploitable.
-	"FERRALON-PY-AIRFLOW-EXPAPI-0001": {
-		Aliases: []string{"CVE-2020-13927"},
-		PURL:    "pkg:pypi/apache-airflow",
-		Symbols: []string{"airflow.api.common.experimental.get_code.get_code"},
-		CWEs:    []string{"CWE-306"},
-		Summary: "missing authentication: the experimental REST API exposes an unauthenticated get_code sink that reads arbitrary DAG source off disk; the experimental API has no access control by default and was removed wholesale in Airflow 3.0.0",
-	},
-	// --- demo-relevant real Go advisories (broad-corpus membership) -----------------------------
-	// Four real vuln.go.dev records evaluated on every Go scan (they surface reachable in
-	// demo-go-svc, whose go.mod pins x/crypto v0.30.0, x/net v0.32.0, and nanoauth at the
-	// introduced pseudo-version). Each carries its GO- alias, because govulncheck keys its findings
-	// by the GO- id and never by the CVE/GHSA primary — govulnMatchID resolves the alias so
-	// reachability can match, and v-prefixed versions. CWEs are transcribed from the CVE
-	// Program CNA record (vuln.go.dev's OSV JSON assigns no CWE — as it also omits CVE-2024-45337's
-	// CWE-285 above; the corpus convention sources CWE from the CVE record). Advisory-only: CWEs
-	// and Lineage NEVER decide a verdict (inv.5).
-	"CVE-2026-46595": {
-		Module:         "golang.org/x/crypto",
-		Aliases:        []string{"GHSA-x527-x647-q7gg", "GO-2026-5023"},
-		UpperExclusive: "v0.52.0",
-		FixedVersion:   "v0.52.0",
-		PURL:           "pkg:golang/golang.org/x/crypto",
-		Symbols:        []string{"golang.org/x/crypto/ssh.NewServerConn"},
-		CWEs:           []string{"CWE-863"},
-		// Incomplete-fix follow-on to CVE-2024-45337: the 45337 fix skipped source-address
-		// validation when a non-public-key callback is configured (golang-announce / GO-2026-5023).
-		Lineage: Lineage{IncompleteFixOf: "CVE-2024-45337"},
-		Summary: "authorization bypass (incomplete fix of CVE-2024-45337): when an SSH server's ServerConfig uses a non-public-key callback, the source-address validation added by the CVE-2024-45337 fix is skipped, re-opening the authorization bypass",
-	},
-	"CVE-2026-39831": {
-		Module:         "golang.org/x/crypto",
-		Aliases:        []string{"GHSA-89gr-r52h-f8rx", "GO-2026-5019"},
-		UpperExclusive: "v0.52.0",
-		FixedVersion:   "v0.52.0",
-		PURL:           "pkg:golang/golang.org/x/crypto",
-		Symbols: []string{
-			"golang.org/x/crypto/ssh.NewServerConn",
-			"golang.org/x/crypto/ssh.CertChecker.Authenticate",
-			"golang.org/x/crypto/ssh.CertChecker.CheckCert",
-			"golang.org/x/crypto/ssh.CertChecker.CheckHostKey",
-			"golang.org/x/crypto/ssh.Certificate.Verify",
-			"golang.org/x/crypto/ssh.Dial",
-			"golang.org/x/crypto/ssh.NewClientConn",
-		},
-		CWEs:    []string{"CWE-290"},
-		Summary: "authentication bypass: the Verify() method for FIDO/U2F security-key types (sk-ecdsa-sha2-nistp256@openssh.com, sk-ssh-ed25519@openssh.com) does not check the User Presence flag, so signatures generated without a physical touch are accepted, allowing unattended use of a hardware security key",
-	},
-	"CVE-2026-39821": {
-		Module:         "golang.org/x/net",
-		Aliases:        []string{"GO-2026-5026"},
-		UpperExclusive: "v0.55.0",
-		FixedVersion:   "v0.55.0",
-		PURL:           "pkg:golang/golang.org/x/net",
-		Symbols: []string{
-			"golang.org/x/net/idna.Profile.ToASCII",
-			"golang.org/x/net/idna.Profile.ToUnicode",
-			"golang.org/x/net/idna.ToASCII",
-			"golang.org/x/net/idna.ToUnicode",
-		},
-		CWEs:    []string{"CWE-1289"},
-		Summary: "privilege escalation via IDNA confusion: idna.ToASCII/ToUnicode incorrectly accept a Punycode-encoded label that decodes to an ASCII-only label (e.g. ToUnicode(\"xn--example-.com\") returns \"example.com\" instead of an error), so a hostname allow/deny check on the ASCII form can be bypassed after conversion to Unicode",
-	},
-	// nanoauth is a first-party-shaped dependency advisory whose affected set is an OSV-shaped
-	// introduced+fixed range of Go PSEUDO-versions. versionOutsideRange rejects pseudo-versions as
-	// prerelease, so the version axis fails OPEN (it can never disqualify) — correct and intended:
-	// nanoauth "applies" and its verdict is reachability/symbol-presence-decided, not version-decided.
-	// The range is expressed via AffectedRanges (mirroring the go-toolchain entries' shape), NOT a
-	// single UpperExclusive, because it has a real lower bound.
-	"CVE-2020-36569": {
-		Module:  "github.com/nanobox-io/golang-nanoauth",
-		Aliases: []string{"GHSA-hrm3-3xm6-x33h", "GO-2020-0004"},
-		PURL:    "pkg:golang/github.com/nanobox-io/golang-nanoauth",
-		AffectedRanges: []Range{
-			{
-				Introduced:   "v0.0.0-20160722212129-ac0cc4484ad4",
-				Fixed:        "v0.0.0-20200131131040-063a3fb69896",
-				FixedVersion: "v0.0.0-20200131131040-063a3fb69896",
-			},
-		},
-		Symbols: []string{
-			"github.com/nanobox-io/golang-nanoauth.Auth.ListenAndServe",
-			"github.com/nanobox-io/golang-nanoauth.Auth.ListenAndServeTLS",
-			"github.com/nanobox-io/golang-nanoauth.Auth.ServeHTTP",
-			"github.com/nanobox-io/golang-nanoauth.ListenAndServe",
-			"github.com/nanobox-io/golang-nanoauth.ListenAndServeTLS",
-		},
-		CWEs:    []string{"CWE-305", "CWE-287"},
-		Summary: "authentication bypass: authentication is globally bypassed in golang-nanoauth between the introduced and fixed pseudo-versions when ListenAndServe is called with an empty token; a timing side-channel may also allow token recovery",
-	},
-
-	// --- real public dependency advisories for Maven / npm / PyPI / NuGet ----------------------
-	//
-	// Twelve real, currently-published advisories, three per non-Go ecosystem. They are the DEFAULT
-	// advisory floor for Java, JS, Python and .NET, exactly as the real Go advisories above are for
-	// Go, and they are what makes a default scan of those repositories complete.
-	//
-	// Until 2026-08-05 the only Maven/npm/PyPI/NuGet entries in this table were the FERRALON-* house
-	// canaries below, which are gated off the default surface because they carry no CVE. That left
-	// the default floor for four of the five supported languages EMPTY, and scanWorkSet halts a run
-	// whose work set resolves to zero — so a default Java, JS, Python or .NET scan could not
-	// complete at all.
-	//
-	// The OSV work-set widening does not close that gap, which is the thing prose kept asserting
-	// and nobody measured. admitByFacts admits only ids this table can already resolve, so with no
-	// non-Go facts it admits nothing. Measured 2026-08-05 against api.osv.dev: a jackson-databind
-	// tree got 55 real GHSA ids back and admitted 0; a requests/pyyaml tree 8 and 0; a
-	// Newtonsoft.Json tree 1 and 0. All four still halted. The floor was the missing piece.
-	//
-	// These twelve were already AUTHORED, as on-disk fixtures under corpus/testdata/advisories/,
-	// and never wired into the table — the work was done and left unconnected. Promoting them
-	// verbatim is why each carries real Symbols: the reachability axis has something to resolve, so
-	// a finding is decided by version AND reachability rather than refuted on an advisory that
-	// declared no symbol to be absent.
-	//
-	// RANGES RE-VERIFIED against api.osv.dev on 2026-08-05, every entry, against the CVE record and
-	// its GHSA/PYSEC aliases. Three fixtures disagreed with the published affected set and are
-	// corrected here; see each entry. CWEs are left as authored — they never decide a verdict
-	// (inv.5) — and the places where the OSV record assigns a different id are recorded in the
-	// cycle deposit rather than silently reconciled.
-	"CVE-2019-14540": {
-		Coordinate:    "com.fasterxml.jackson.core:jackson-databind",
-		Aliases:       []string{"GHSA-h822-r4r5-v8jg"},
-		VersionScheme: "maven",
-		PURL:          "pkg:maven/com.fasterxml.jackson.core/jackson-databind",
-		// CORRECTED 2026-08-05. The authored fixture carried ONLY the [2.9.0, 2.9.10) branch, so a
-		// repository on 2.8.0 — genuinely affected, and covered by the published advisory — was
-		// provably outside the recorded set and would have been refuted not_exploitable. A false
-		// negative is the one outcome this scanner may never produce, so the other two branches
-		// published by GHSA-h822-r4r5-v8jg are restored.
-		AffectedRanges: []Range{
-			{Fixed: "2.6.7.3", FixedVersion: "2.6.7.3"},
-			{Introduced: "2.7.0", Fixed: "2.8.11.5", FixedVersion: "2.8.11.5"},
-			{Introduced: "2.9.0", Fixed: "2.9.10", FixedVersion: "2.9.10"},
-		},
-		Symbols: []string{
-			"com.fasterxml.jackson.databind.ObjectMapper.readValue",
-			"com.fasterxml.jackson.databind.ObjectMapper.enableDefaultTyping",
-		},
-		CWEs:    []string{"CWE-502"},
-		Summary: "deserialization of untrusted data: jackson-databind polymorphic typing did not block the com.zaxxer.hikari.HikariConfig gadget, so an attacker-controlled type in a readValue payload reaches a JNDI lookup",
-	},
-	"CVE-2020-36518": {
-		Coordinate:    "com.fasterxml.jackson.core:jackson-databind",
-		Aliases:       []string{"GHSA-57j2-w4cx-62h2"},
-		VersionScheme: "maven",
-		PURL:          "pkg:maven/com.fasterxml.jackson.core/jackson-databind",
-		AffectedRanges: []Range{
-			{Fixed: "2.12.6.1", FixedVersion: "2.12.6.1"},
-			{Introduced: "2.13.0", Fixed: "2.13.2.1", FixedVersion: "2.13.2.1"},
-		},
-		Symbols: []string{"com.fasterxml.jackson.databind.ObjectMapper.readValue"},
-		CWEs:    []string{"CWE-787"},
-		Summary: "denial of service: jackson-databind recursively parses deeply nested JSON with no depth limit, raising a Java StackOverflowError; fixed on both the 2.12.x and 2.13.x branches",
-	},
-	"CVE-2024-22243": {
-		Coordinate:    "org.springframework:spring-web",
-		Aliases:       []string{"GHSA-ccgv-vj62-xf9h"},
-		VersionScheme: "maven",
-		PURL:          "pkg:maven/org.springframework/spring-web",
-		AffectedRanges: []Range{
-			{Introduced: "5.3.0", Fixed: "5.3.32", FixedVersion: "5.3.32"},
-			{Introduced: "6.0.0", Fixed: "6.0.17", FixedVersion: "6.0.17"},
-			{Introduced: "6.1.0", Fixed: "6.1.4", FixedVersion: "6.1.4"},
-		},
-		Symbols: []string{
-			"org.springframework.web.util.UriComponentsBuilder.build",
-			"org.springframework.web.util.UriComponentsBuilder.getHost",
-		},
-		CWEs:    []string{"CWE-601"},
-		Summary: "open redirect / SSRF: UriComponentsBuilder parses the userinfo segment of an externally provided URL so a host check on the parsed result can be made to disagree with where the request is actually sent",
-	},
-	"CVE-2022-46175": {
-		Coordinate:    "json5",
-		Aliases:       []string{"GHSA-9c47-m6qq-7p4h"},
-		VersionScheme: "npm",
-		PURL:          "pkg:npm/json5",
-		AffectedRanges: []Range{
-			{Fixed: "1.0.2", FixedVersion: "1.0.2"},
-			{Introduced: "2.0.0", Fixed: "2.2.2", FixedVersion: "2.2.2"},
-		},
-		Symbols: []string{"json5.parse"},
-		CWEs:    []string{"CWE-1321"},
-		Summary: "prototype pollution: JSON5.parse does not restrict a __proto__ key, so parsing crafted input pollutes the prototype of the returned object",
-	},
-	"CVE-2023-26136": {
-		Coordinate:     "tough-cookie",
-		Aliases:        []string{"GHSA-72xf-g2v4-qvf3"},
-		UpperExclusive: "4.1.3",
-		FixedVersion:   "4.1.3",
-		VersionScheme:  "npm",
-		PURL:           "pkg:npm/tough-cookie",
-		Symbols:        []string{"MemoryCookieStore.putCookie", "CookieJar.setCookie"},
-		CWEs:           []string{"CWE-1321"},
-		Summary:        "prototype pollution: tough-cookie's cookie memstore index is a plain object, so a crafted __proto__ domain/path reaches Object.prototype",
-	},
-	"CVE-2024-29041": {
-		Coordinate:    "express",
-		Aliases:       []string{"GHSA-rv95-896h-c2vc"},
-		VersionScheme: "npm",
-		PURL:          "pkg:npm/express",
-		// The published set also carries a [5.0.0-alpha.1, 5.0.0-beta.3) prerelease branch. It is
-		// NOT recorded here: the npm comparator rejects prerelease bounds, and one unparseable
-		// range makes versionOutsideRanges fail OPEN across the whole set (it disqualifies only on
-		// provably-outside EVERY range), which would delete the version axis for the 4.x users this
-		// advisory is actually about. A 5.x prerelease version fails open on its own account, so no
-		// affected release is refuted by the omission — verified 2026-08-05.
-		UpperExclusive: "4.19.2",
-		FixedVersion:   "4.19.2",
-		Symbols:        []string{"express.response.location", "express.response.redirect"},
-		CWEs:           []string{"CWE-601"},
-		Summary:        "open redirect: Express passes a user-provided URL through encodeurl after allow-list validation, so a malformed URL can be normalized into an off-site redirect",
-	},
-	"CVE-2024-22195": {
-		// PyPI and NuGet entries below carry an EXPLICIT VersionScheme, as the authored fixtures
-		// did; schemeFromPURL would derive the same value from the PURL type.
-		Coordinate:     "jinja2",
-		Aliases:        []string{"GHSA-h5c8-rqwp-cp95", "GHSA-h75v-3vvj-5mfj"},
-		UpperExclusive: "3.1.3",
-		FixedVersion:   "3.1.3",
-		VersionScheme:  "pypi",
-		PURL:           "pkg:pypi/jinja2",
-		Symbols:        []string{"jinja2.filters.do_xmlattr"},
-		CWEs:           []string{"CWE-79"},
-		Summary:        "cross-site scripting: the Jinja2 xmlattr filter accepts attribute keys containing spaces, allowing HTML attribute injection when user input is passed as keys",
-	},
-	"CVE-2024-23334": {
-		Coordinate:    "aiohttp",
-		Aliases:       []string{"GHSA-5h86-8mv2-jq9f"},
-		VersionScheme: "pypi",
-		PURL:          "pkg:pypi/aiohttp",
-		// CORRECTED 2026-08-05: the authored fixture bounded this below at zero; the published set
-		// is introduced at 1.0.5. Widening below the real introduction over-reports rather than
-		// under-reports, so nothing unsound shipped, but the recorded range must be the published
-		// one or the citation does not check out.
-		AffectedRanges: []Range{{Introduced: "1.0.5", Fixed: "3.9.2", FixedVersion: "3.9.2"}},
-		Symbols: []string{
-			"aiohttp.web_urldispatcher.StaticResource._handle",
-			"aiohttp.web.UrlDispatcher.add_static",
-		},
-		CWEs:    []string{"CWE-22"},
-		Summary: "path traversal: aiohttp.web.static(follow_symlinks=True) serves files outside the static root when the request path traverses a symlink",
-	},
-	"CVE-2024-3772": {
-		Coordinate:    "pydantic",
-		Aliases:       []string{"GHSA-mr82-8j83-vxmv"},
-		VersionScheme: "pypi",
-		PURL:          "pkg:pypi/pydantic",
-		AffectedRanges: []Range{
-			{Fixed: "1.10.13", FixedVersion: "1.10.13"},
-			{Introduced: "2.0.0", Fixed: "2.4.0", FixedVersion: "2.4.0"},
-		},
-		CWEs:    []string{"CWE-1333"},
-		Summary: "regular expression denial of service: pydantic email validation regex is vulnerable to catastrophic backtracking on a crafted address",
-	},
-	"CVE-2019-0820": {
-		Coordinate:    "System.Text.RegularExpressions",
-		Aliases:       []string{"GHSA-cmhx-cq75-c4mj"},
-		VersionScheme: "nuget",
-		PURL:          "pkg:nuget/System.Text.RegularExpressions",
-		// CORRECTED 2026-08-05: introduced at 4.3.0 per GHSA-cmhx-cq75-c4mj, not at zero.
-		AffectedRanges: []Range{{Introduced: "4.3.0", Fixed: "4.3.1", FixedVersion: "4.3.1"}},
-		CWEs:           []string{"CWE-1333"},
-		Summary:        "regular expression denial of service in System.Text.RegularExpressions (.NET Core) timeout handling, fixed in 4.3.1",
-	},
-	"CVE-2020-5234": {
-		Coordinate:    "MessagePack",
-		Aliases:       []string{"GHSA-7q36-4xx7-xcxf"},
-		VersionScheme: "nuget",
-		PURL:          "pkg:nuget/MessagePack",
-		AffectedRanges: []Range{
-			{Fixed: "1.9.11", FixedVersion: "1.9.11"},
-			{Introduced: "2.0.0", Fixed: "2.1.90", FixedVersion: "2.1.90"},
-		},
-		Symbols: []string{
-			"MessagePack.MessagePackSerializer.Typeless.Deserialize",
-			"MessagePack.MessagePackSerializer.Deserialize",
-		},
-		CWEs:    []string{"CWE-502"},
-		Summary: "deserialization of untrusted data: MessagePack Typeless deserialization of attacker-controlled input enables hostile type instantiation",
-	},
-	"CVE-2024-21907": {
-		Coordinate:     "Newtonsoft.Json",
-		Aliases:        []string{"GHSA-5crp-9r3c-p9vr"},
-		UpperExclusive: "13.0.1",
-		FixedVersion:   "13.0.1",
-		VersionScheme:  "nuget",
-		PURL:           "pkg:nuget/Newtonsoft.Json",
-		// The unbounded depth is private JsonReader.Push, which every reader reaches through
-		// SetToken; naming it covers readers and calls no public entry below names (BsonReader,
-		// custom JsonReader subclasses, ReadAs*, a base-typed Read or Skip). The public entries
-		// keep the common routes visible in a path. Fixed by defaulting MaxDepth in upstream
-		// 7e77bbe1beccceac4fc7b174b53abfefac278b66 and b6dc05be5a0f4808f06ec430f3bb59b24d3fbc3e.
-		Symbols: []string{
-			"Newtonsoft.Json.JsonReader.Push",
-			"Newtonsoft.Json.JsonConvert.DeserializeObject",
-			"Newtonsoft.Json.JsonConvert.DeserializeAnonymousType",
-			"Newtonsoft.Json.JsonConvert.PopulateObject",
-			"Newtonsoft.Json.JsonConvert.DeserializeXmlNode",
-			"Newtonsoft.Json.JsonConvert.DeserializeXNode",
-			"Newtonsoft.Json.JsonSerializer.Deserialize",
-			"Newtonsoft.Json.JsonSerializer.Populate",
-			"Newtonsoft.Json.JsonTextReader.Read",
-			"Newtonsoft.Json.JsonTextReader.ReadAsync",
-			"Newtonsoft.Json.Linq.JToken.Parse",
-			"Newtonsoft.Json.Linq.JToken.ReadFrom",
-			"Newtonsoft.Json.Linq.JToken.ReadFromAsync",
-			"Newtonsoft.Json.Linq.JToken.Load",
-			"Newtonsoft.Json.Linq.JToken.LoadAsync",
-			"Newtonsoft.Json.Linq.JObject.Parse",
-			"Newtonsoft.Json.Linq.JObject.Load",
-			"Newtonsoft.Json.Linq.JObject.LoadAsync",
-			"Newtonsoft.Json.Linq.JArray.Parse",
-			"Newtonsoft.Json.Linq.JArray.Load",
-			"Newtonsoft.Json.Linq.JArray.LoadAsync",
-			"Newtonsoft.Json.Linq.JConstructor.Load",
-			"Newtonsoft.Json.Linq.JConstructor.LoadAsync",
-			"Newtonsoft.Json.Linq.JProperty.Load",
-			"Newtonsoft.Json.Linq.JProperty.LoadAsync",
-		},
-		// net20 through net40 compile no async entries, net20 no XNode entry, and netstandard1.0
-		// no XmlNode entry.
-		TargetConditionalSymbols: []string{
-			"Newtonsoft.Json.JsonConvert.DeserializeXmlNode",
-			"Newtonsoft.Json.JsonConvert.DeserializeXNode",
-			"Newtonsoft.Json.JsonTextReader.ReadAsync",
-			"Newtonsoft.Json.Linq.JToken.ReadFromAsync",
-			"Newtonsoft.Json.Linq.JToken.LoadAsync",
-			"Newtonsoft.Json.Linq.JObject.LoadAsync",
-			"Newtonsoft.Json.Linq.JArray.LoadAsync",
-			"Newtonsoft.Json.Linq.JConstructor.LoadAsync",
-			"Newtonsoft.Json.Linq.JProperty.LoadAsync",
-		},
-		CWEs:    []string{"CWE-400"},
-		Summary: "uncontrolled resource consumption: Newtonsoft.Json parses arbitrarily deeply nested JSON with no default MaxDepth, enabling a StackOverflow/CPU denial of service",
-	},
-}
-
 func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store artifact.Store) error {
 	vulnID := c.Request.Vulnerability.ID
 	src := s.src
@@ -1499,7 +831,6 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		CWEs             []string                  `json:"cwes,omitempty"`
 		VulnClass        string                    `json:"vuln_class,omitempty"`        // "" ⇒ class not assessed (honest)
 		TrustTier        string                    `json:"trust_tier,omitempty"`        // gates refute eligibility (inv.5); "" ⇒ untrusted
-		BuiltIn          bool                      `json:"built_in,omitempty"`          // the built-in AdvisoryTable answered (AdvisoryFacts.BuiltIn)
 		Trigger          *advisoryTrigger          `json:"trigger,omitempty"`           // v3 per-CVE reach descriptor (row 1)
 		TriggerCondition string                    `json:"trigger_condition,omitempty"` // B3: advisory-declared exploit precondition, read as candidate-only PoE qualifier context (never admission/refute)
 		Prerequisite     string                    `json:"prerequisite,omitempty"`      // B3: advisory-declared mechanism precondition, read alongside TriggerCondition
@@ -1523,7 +854,6 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		CWEs:             facts.CWEs,
 		VulnClass:        string(vulnClass),
 		TrustTier:        string(facts.Provenance.TrustTier),
-		BuiltIn:          facts.BuiltIn,
 		Trigger:          advTrigger,
 		TriggerCondition: facts.TriggerCondition,
 		Prerequisite:     facts.Prerequisite,
@@ -1566,8 +896,7 @@ type codebaseInventory struct {
 	// memo carries the scan's checkout-constant reads across advisories; nil recomputes them.
 	memo *InventoryMemo
 	// src is the AdvisorySource this stage reads advisory facts through (U8a intake seam). A nil
-	// src falls back to defaultAdvisorySource() — the in-memory AdvisoryTable — so the default path
-	// is byte-identical to the historical inline AdvisoryTable[id] lookup.
+	// src falls back to defaultAdvisorySource(), the process-wide default.
 	src AdvisorySource
 	// subjectGoVersion/ciGoVersion are the two candidate EXACT subject-toolchain sources this stage
 	// cannot discover from the tree on disk, both ranked above the go.mod floors: the subject's own
@@ -1611,8 +940,7 @@ func (codebaseInventory) Status() assessment.Status { return assessment.StatusIn
 //
 // This is the ONLY production writer of a go-toolchain-shaped resolved_version. Before it, the
 // U7 comparator had no reachable input and the axis was dark for exactly the advisory class whose
-// verdict depends on the toolchain. There is no "separate comparator path off the
-// AdvisoryTable" — the AdvisoryTable supplies the affected RANGE, never a version.
+// verdict depends on the toolchain. The advisory supplies the affected RANGE, never a version.
 func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDir string, goWork GoWorkspace, language, module, coordinate, scheme string, toolchain ToolchainFact) (dep depVersions, partiality []string, err error) {
 	if scheme == "go-toolchain" {
 		switch toolchain.Bound {

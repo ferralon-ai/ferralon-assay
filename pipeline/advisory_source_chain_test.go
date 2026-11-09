@@ -1,16 +1,12 @@
 // advisory_source_chain_test.go
 //
-// Covers chainSource: the corpus SUPPLEMENTS the built-in AdvisoryTable instead of replacing it.
-//
-// The regression these tests exist to prevent is measured, not hypothetical. Installing the
-// 2026-07-23 published corpus as THE source (NewArtifactSource alone, which is what
-// advisoryCorpusOption did) resolved 0 of the 16 ids the scan work set actually evaluates — every one
-// of them fell to zero facts and failed open, taking Java, JS and Python from demo-quality to
-// nothing. With the chain, every id that resolved before still resolves.
+// Covers chainSource: a corpus at the head of the chain SUPPLEMENTS the sources behind it instead of
+// replacing them. In a scan the source behind the corpus is the opted-in house canaries; these tests
+// use the canaries or the fixture advisories in that position.
 //
 // The other half of the contract is the partial-fact rule: FIRST HIT WINS, WHOLE FACTS ONLY. A chain
-// that topped up a thin corpus fact from the table would synthesize an advisory no producer asserted
-// and no digest pins. TestChain_NeverMergesAcrossSources is the guard.
+// that topped up a thin corpus fact from a later source would synthesize an advisory no producer
+// asserted and no digest pins. TestChain_NeverMergesAcrossSources is the guard.
 package pipeline
 
 import (
@@ -63,70 +59,44 @@ func writeCorpus(t *testing.T, docs map[string]string) string {
 	return root
 }
 
-// TestChain_CorpusMissFallsBackToTable is THE regression test for the measured outage: an id the
-// corpus does not carry must still resolve its built-in facts. Before the chain, installing a corpus
-// made every such id return (zero, false).
-func TestChain_CorpusMissFallsBackToTable(t *testing.T) {
-	// A corpus that carries ONE id, none of them from the scan work set.
+// TestChain_CorpusMissFallsBackToLaterSource: an id the corpus does not carry still resolves from the
+// source behind it. This is how an opted-in scan with a corpus keeps its house canaries: the
+// customer corpus never carries them.
+func TestChain_CorpusMissFallsBackToLaterSource(t *testing.T) {
 	root := writeCorpus(t, map[string]string{
 		"CVE-TEST-ONLY-IN-CORPUS": `{"schema_version":"ferralon.normalized_advisory.v3","vuln_id":"CVE-TEST-ONLY-IN-CORPUS","version_scheme":"gomod","module":"example.com/only"}`,
 	})
-	chain := NewChainSource(NewArtifactSource(root), NewTableSource())
+	canaries := NewHouseCanarySource()
+	chain := NewChainSource(NewArtifactSource(root), canaries)
 
-	// The full scan work set with the house canaries opted IN (cmd/ferralon-assay/acquire.go):
-	// Go 11, Java 6, JS 5, Python 5, .NET 4. Every one of them must keep its facts through the
-	// chain. The DEFAULT floors — the first rows of each language, the real published advisories —
-	// matter most: they are what a customer scan evaluates, and a chain that dropped them would
-	// empty the work set and halt the run.
-	workSet := []string{
-		// Go (10 default + the DOS canary on the opt-in)
-		"GO-2021-0113", "GO-2022-0322", "GO-2021-0264", "CVE-2024-55947", "CVE-2025-8110",
-		"CVE-2024-45337", "CVE-2026-46595", "CVE-2026-39831", "CVE-2026-39821", "CVE-2020-36569",
-		"FERRALON-APP-DOS-0001",
-		// Java / Maven
-		"CVE-2019-14540", "CVE-2020-36518", "CVE-2024-22243",
-		"FERRALON-JAVA-SSRF-0001", "FERRALON-JAVA-SPRING-SSRF-0001", "FERRALON-JAVA-DEP-0001",
-		// JS / npm
-		"CVE-2022-46175", "CVE-2023-26136", "CVE-2024-29041",
-		"FERRALON-JS-SSRF-0001", "FERRALON-JS-DEP-0001",
-		// Python / PyPI
-		"CVE-2024-22195", "CVE-2024-23334", "CVE-2024-3772",
-		"FERRALON-PY-AIRFLOW-EXPAPI-0001", "FERRALON-PY-DEP-0001",
-		// .NET / NuGet
-		"CVE-2019-0820", "CVE-2020-5234", "CVE-2024-21907",
-		"FERRALON-NET-DEP-0001",
-	}
 	corpusOnly := NewArtifactSource(root)
-	for _, id := range workSet {
+	for id := range houseCanaryFacts {
 		if _, ok := corpusOnly.Lookup(id); ok {
 			t.Fatalf("fixture drift: %s must NOT be in the test corpus — the point is that the chain rescues it", id)
 		}
-		want, ok := NewTableSource().Lookup(id)
-		if !ok {
-			t.Fatalf("work-set id %s is not in the built-in AdvisoryTable — the work set and the table have drifted", id)
-		}
+		want, _ := canaries.Lookup(id)
 		got, ok := chain.Lookup(id)
 		if !ok {
-			t.Fatalf("chain.Lookup(%s) ok=false — a corpus miss must fall through to the built-in table", id)
+			t.Fatalf("chain.Lookup(%s) ok=false — a corpus miss must fall through to the source behind it", id)
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Errorf("chain.Lookup(%s) != table fact — the fallback must return the table's fact verbatim", id)
+			t.Errorf("chain.Lookup(%s) != canary fact — the fallback must return the later source's fact verbatim", id)
 		}
 	}
 
 	// And the corpus half still works: the id only the corpus carries resolves.
 	if facts, ok := chain.Lookup("CVE-TEST-ONLY-IN-CORPUS"); !ok || facts.Module != "example.com/only" {
-		t.Errorf("chain.Lookup(corpus-only id) = %+v, %v — the corpus must SUPPLEMENT the table", facts, ok)
+		t.Errorf("chain.Lookup(corpus-only id) = %+v, %v — the corpus must SUPPLEMENT the source behind it", facts, ok)
 	}
 }
 
-// TestChain_CorpusHitWinsOverTable proves precedence: when both sources carry an id, the corpus fact
+// TestChain_CorpusHitWinsOverLaterSource proves precedence: when both sources carry an id, the corpus fact
 // is returned, unmodified.
-func TestChain_CorpusHitWinsOverTable(t *testing.T) {
+func TestChain_CorpusHitWinsOverLaterSource(t *testing.T) {
 	root := writeCorpus(t, map[string]string{
 		"GO-2021-0113": `{"schema_version":"ferralon.normalized_advisory.v3","vuln_id":"GO-2021-0113","version_scheme":"gomod","module":"golang.org/x/text","upper_exclusive":"v0.3.99","summary":"corpus narrative"}`,
 	})
-	chain := NewChainSource(NewArtifactSource(root), NewTableSource())
+	chain := NewChainSource(NewArtifactSource(root), fixtureSource())
 
 	got, ok := chain.Lookup("GO-2021-0113")
 	if !ok {
@@ -141,23 +111,23 @@ func TestChain_CorpusHitWinsOverTable(t *testing.T) {
 }
 
 // TestChain_NeverMergesAcrossSources is the partial-fact guard. The corpus carries a DELIBERATELY
-// THIN record for an id whose table entry is rich (aliases, symbols, cwes, fixed version). The chain
-// must return the thin corpus fact EXACTLY — no field may be topped up from the table.
+// THIN record for an id whose fixture entry is rich (aliases, symbols, cwes, fixed version). The chain
+// must return the thin corpus fact EXACTLY — no field may be topped up from a later source.
 //
 // A merged fact would be an advisory no producer ever asserted: a corpus version axis welded to a
-// years-old table symbol axis, weighed downstream as one coherent, digest-pinned advisory. That is
+// years-old fixture symbol axis, weighed downstream as one coherent, digest-pinned advisory. That is
 // the laundering the AdvisorySource soundness note forbids.
 func TestChain_NeverMergesAcrossSources(t *testing.T) {
 	const thin = `{"schema_version":"ferralon.normalized_advisory.v3","vuln_id":"GO-2021-0113","version_scheme":"gomod","module":"golang.org/x/text"}`
 	root := writeCorpus(t, map[string]string{"GO-2021-0113": thin})
-	chain := NewChainSource(NewArtifactSource(root), NewTableSource())
+	chain := NewChainSource(NewArtifactSource(root), fixtureSource())
 
-	table, ok := NewTableSource().Lookup("GO-2021-0113")
+	table, ok := fixtureSource().Lookup("GO-2021-0113")
 	if !ok {
-		t.Fatal("fixture drift: GO-2021-0113 must be in the built-in AdvisoryTable")
+		t.Fatal("fixture drift: GO-2021-0113 must be in the fixture advisories")
 	}
 	if len(table.Symbols) == 0 || len(table.Aliases) == 0 || table.FixedVersion == "" || table.Summary == "" {
-		t.Fatal("fixture drift: the table entry must be RICHER than the thin corpus doc for this test to mean anything")
+		t.Fatal("fixture drift: the fixture entry must be RICHER than the thin corpus doc for this test to mean anything")
 	}
 
 	got, ok := chain.Lookup("GO-2021-0113")
@@ -169,7 +139,7 @@ func TestChain_NeverMergesAcrossSources(t *testing.T) {
 		t.Fatalf("chain returned a fact the corpus did not assert:\n corpus = %+v\n chain  = %+v", corpusOnly, got)
 	}
 	if len(got.Symbols) != 0 {
-		t.Errorf("Symbols = %v, want empty — the table's symbols must NOT be merged into a corpus hit", got.Symbols)
+		t.Errorf("Symbols = %v, want empty — the later source's symbols must NOT be merged into a corpus hit", got.Symbols)
 	}
 	if len(got.Aliases) != 0 {
 		t.Errorf("Aliases = %v, want empty — no field may be topped up across sources", got.Aliases)
@@ -181,13 +151,13 @@ func TestChain_NeverMergesAcrossSources(t *testing.T) {
 		t.Errorf("Summary = %q, want empty — no field may be topped up across sources", got.Summary)
 	}
 	if got.Provenance.TrustTier != "" {
-		t.Errorf("TrustTier = %q, want empty — the table's first-party tier must never vouch for corpus fields", got.Provenance.TrustTier)
+		t.Errorf("TrustTier = %q, want empty — the later source's first-party tier must never vouch for corpus fields", got.Provenance.TrustTier)
 	}
 }
 
 // TestChain_RejectedCorpusRecordFallsThroughWhole proves that a corpus record the reader REJECTS
 // (bad digest, malformed body) is a miss, not a partial: the chain falls through and returns the
-// table's whole fact, with nothing salvaged from the rejected document.
+// later source's whole fact, with nothing salvaged from the rejected document.
 func TestChain_RejectedCorpusRecordFallsThroughWhole(t *testing.T) {
 	fixtures := filepath.Join("testdata", "advisory_source")
 	corpus := NewArtifactSource(fixtures)
@@ -210,14 +180,14 @@ func TestChain_RejectedCorpusRecordFallsThroughWhole(t *testing.T) {
 		t.Fatalf("write manifest: %v", err)
 	}
 
-	chain := NewChainSource(NewArtifactSource(root), NewTableSource())
+	chain := NewChainSource(NewArtifactSource(root), fixtureSource())
 	got, ok := chain.Lookup("GO-2021-0113")
 	if !ok {
-		t.Fatal("chain.Lookup ok=false — a digest-rejected corpus record must fall through to the table")
+		t.Fatal("chain.Lookup ok=false — a digest-rejected corpus record must fall through to the source behind it")
 	}
-	want, _ := NewTableSource().Lookup("GO-2021-0113")
+	want, _ := fixtureSource().Lookup("GO-2021-0113")
 	if !reflect.DeepEqual(got, want) {
-		t.Error("chain returned something other than the table's whole fact after a digest rejection")
+		t.Error("chain returned something other than the later source's whole fact after a digest rejection")
 	}
 	for _, s := range got.Symbols {
 		if s == "attacker.controlled.Symbol" {
@@ -239,7 +209,7 @@ func TestChain_FailOpenPreserved(t *testing.T) {
 	}{
 		{"empty chain", NewChainSource(), "GO-2021-0113"},
 		{"all-nil chain", NewChainSource(nil, nil), "GO-2021-0113"},
-		{"unknown id in a full chain", NewChainSource(NewArtifactSource(missingRoot), NewTableSource()), "CVE-0000-NOSUCH"},
+		{"unknown id in a full chain", NewChainSource(NewArtifactSource(missingRoot), fixtureSource()), "CVE-0000-NOSUCH"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -253,11 +223,11 @@ func TestChain_FailOpenPreserved(t *testing.T) {
 		})
 	}
 
-	// A wholly-unreadable corpus must not take the table down with it: the run degrades to built-in
+	// A wholly-unreadable corpus must not take the sources behind it down with it: the run degrades to their
 	// intel for LOOKUPS while advisoryCorpusOption's Validate preflight is what makes it LOUD.
-	chain := NewChainSource(NewArtifactSource(missingRoot), nil, NewTableSource())
+	chain := NewChainSource(NewArtifactSource(missingRoot), nil, fixtureSource())
 	if _, ok := chain.Lookup("GO-2021-0113"); !ok {
-		t.Error("an unreadable corpus at the head of the chain must not suppress the table behind it")
+		t.Error("an unreadable corpus at the head of the chain must not suppress the source behind it")
 	}
 }
 

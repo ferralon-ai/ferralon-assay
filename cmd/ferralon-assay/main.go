@@ -210,10 +210,10 @@ func runBaseline(args []string) error {
 		return err
 	}
 
-	// Widen the compiled-in language floor with the advisories OSV.dev reports against this
-	// repository's real dependencies. Resolved AFTER advisoryCorpusOption, which decides the fact
-	// source the widener admits against. Never fails: an unreachable OSV degrades to the floor and
-	// says so on the Report (workset.go).
+	// Choose the work set: the declared policy's ids, or the advisories OSV.dev reports against this
+	// repository's real dependencies, plus any opted-in house canaries. Resolved AFTER
+	// advisoryCorpusOption, which decides the fact source the widener admits against. An unreachable
+	// OSV degrades to the canaries and says so on the Report (workset.go); an empty set fails.
 	ws, err := f.scanWorkSet(analysis, acq)
 	if err != nil {
 		return markIfStopped(analysis, err)

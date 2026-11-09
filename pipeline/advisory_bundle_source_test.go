@@ -20,6 +20,8 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/advisorytest"
 )
 
 // validRecordBytes reads the committed FERRALON-TEST-0001 fixture and rewrites its vuln_id to id,
@@ -50,7 +52,7 @@ func entryFor(id string, recordJSON []byte) bundleEntry {
 	return bundleEntry{
 		Identifier:   id,
 		Path:         "2099/01/" + id + ".json",
-		OutputDigest: digestOf(recordJSON),
+		OutputDigest: advisorytest.Digest(recordJSON),
 		Bytes:        string(recordJSON),
 	}
 }

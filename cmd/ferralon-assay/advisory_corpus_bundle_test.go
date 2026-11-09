@@ -3,7 +3,7 @@
 // -advisory-corpus accepts either shape of on-disk corpus: a directory tree (manifest.json +
 // per-advisory JSON) or a compressed corpus bundle file (<policy>.jsonl.gz). These tests prove the
 // bundle path reaches the SAME entrypoint contract the directory path already has: preflight
-// hard-fail on a broken corpus, chain in front of the built-in table, provenance on the Report, and
+// hard-fail on a broken corpus, the corpus as the whole fact source, provenance on the Report, and
 // the work-set widener admitting against the real fact source.
 package main
 
@@ -23,8 +23,8 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
-// bundleOnlyID is carried by the test bundle and by nothing else: not the built-in table, not the
-// fixture directory corpus. A hit on it proves the bundle is being consulted.
+// bundleOnlyID is carried by the test bundle and by nothing else: not the fixture advisories, not
+// the wire-format directory corpus. A hit on it proves the bundle is being consulted.
 const bundleOnlyID = "FERRALON-TEST-BUNDLE-0001"
 
 // writeTestBundle writes a one-gzip-stream JSONL corpus bundle in the producer's wire shape
@@ -111,7 +111,7 @@ func TestAdvisoryCorpusOption_DirectoryOrBundle(t *testing.T) {
 		{name: "directory → tree reader", path: dirRoot, wantOption: true, hitID: "FERRALON-TEST-0001"},
 		{name: "bundle file → bundle reader", path: bundle, wantOption: true, wantDigest: bundleDigest, wantRecords: 2, hitID: bundleOnlyID},
 		{name: "bundle file, required → bundle reader", path: bundle, required: true, wantOption: true, wantRecords: 2, hitID: bundleOnlyID},
-		{name: "neither set → built-in table", path: ""},
+		{name: "neither set → no fact source", path: ""},
 		{name: "neither set, required → hard-fail", path: "", required: true, wantErr: "no corpus path resolved"},
 		{name: "bundle not gzip → hard-fail", path: notGzip, wantErr: "is unusable"},
 		{name: "bundle truncated → hard-fail", path: truncated, wantErr: "is unusable"},
@@ -147,8 +147,8 @@ func TestAdvisoryCorpusOption_DirectoryOrBundle(t *testing.T) {
 				t.Fatalf("option installed = %v, want %v", opt != nil, tc.wantOption)
 			}
 			if !tc.wantOption {
-				if f.resolvedFacts != report.FactSourceBuiltinTable {
-					t.Errorf("FactSource = %q, want %q", f.resolvedFacts, report.FactSourceBuiltinTable)
+				if f.resolvedFacts != report.FactSourceNone {
+					t.Errorf("FactSource = %q, want %q", f.resolvedFacts, report.FactSourceNone)
 				}
 				return
 			}
@@ -157,9 +157,9 @@ func TestAdvisoryCorpusOption_DirectoryOrBundle(t *testing.T) {
 			if _, ok := src.Lookup(tc.hitID); !ok {
 				t.Errorf("%s did not resolve through the installed source", tc.hitID)
 			}
-			// Chain semantics are shape-independent: the table still answers behind the corpus.
-			if _, ok := src.Lookup("GO-2021-0113"); !ok {
-				t.Error("built-in table id lost its facts behind the corpus — it must supplement, not replace")
+			// The corpus is the whole fact source: nothing answers behind it.
+			if _, ok := src.Lookup("GO-2021-0113"); ok {
+				t.Error("an id the corpus does not carry resolved facts from somewhere else")
 			}
 			// The widener admits against f.resolvedSource; it must see the corpus the pass reads.
 			if _, ok := f.resolvedSource.Lookup(tc.hitID); !ok {
@@ -167,8 +167,8 @@ func TestAdvisoryCorpusOption_DirectoryOrBundle(t *testing.T) {
 			}
 
 			got := f.intelProvenance(floorWorkSet(nil))
-			if got.FactSource != report.FactSourceCorpusThenBuiltinTable {
-				t.Errorf("FactSource = %q, want %q", got.FactSource, report.FactSourceCorpusThenBuiltinTable)
+			if got.FactSource != report.FactSourceCorpus {
+				t.Errorf("FactSource = %q, want %q", got.FactSource, report.FactSourceCorpus)
 			}
 			if tc.wantDigest != "" && got.CorpusDigest != tc.wantDigest {
 				t.Errorf("CorpusDigest = %q, want the .gz sha256 %q", got.CorpusDigest, tc.wantDigest)
@@ -212,7 +212,7 @@ func TestAdvisoryCorpusOption_EmptyBundleUnderRequirement(t *testing.T) {
 
 // TestAdvisoryCorpus_WidenerAdmitsBundleOnlyIDs proves the work-set widener sees the bundle: an OSV
 // id only the bundle carries is admitted through f.resolvedSource, and would be unresolvable against
-// the table alone.
+// the fixture advisories alone.
 func TestAdvisoryCorpus_WidenerAdmitsBundleOnlyIDs(t *testing.T) {
 	bundle, _ := writeTestBundle(t, bundleOnlyID)
 	f := runFlagsFor(t, "-advisory-corpus", bundle)
@@ -226,8 +226,8 @@ func TestAdvisoryCorpus_WidenerAdmitsBundleOnlyIDs(t *testing.T) {
 	if len(added) != 1 || added[0].ID != bundleOnlyID || len(unresolved) != 0 {
 		t.Fatalf("admitByFacts via resolvedSource = (%v, %v), want %s admitted", added, unresolved, bundleOnlyID)
 	}
-	if _, unresolved := admitByFacts([]string{bundleOnlyID}, nil, pipeline.NewTableSource()); len(unresolved) != 1 {
-		t.Fatal("control: the table alone should not resolve the bundle-only id")
+	if _, unresolved := admitByFacts([]string{bundleOnlyID}, nil, fixtureSource()); len(unresolved) != 1 {
+		t.Fatal("control: the fixture advisories alone should not resolve the bundle-only id")
 	}
 }
 

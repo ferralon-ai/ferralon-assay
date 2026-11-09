@@ -35,7 +35,7 @@ const attributionSignals = `{"signals_version": "1.0.0", "record_count": 4,
 // its CVE alias). A join that takes the first record any of an advisory's identifiers has — what
 // #167 shipped — hands one advisory another vulnerability's KEV listing two ways:
 //
-//   - through an alias another advisory also names (the gogs defect: AdvisoryTable merged both CVEs
+//   - through an alias another advisory also names (the gogs defect: the advisory data merged both CVEs
 //     of the chain under CVE-2024-55947, so the predecessor reported the successor's listing);
 //   - through a roll-up record. A GO, PYSEC, RUSTSEC or GHSA record may stand for several CVEs, so a
 //     CVE-keyed advisory reaching one through its GO alias can take a SIBLING CVE's listing:
@@ -49,25 +49,25 @@ const attributionSignals = `{"signals_version": "1.0.0", "record_count": 4,
 //
 // These two tests guard the join and the structural cause behind the first defect.
 
-// tableClaims are the claims of a run asked about every AdvisoryTable entry. A run's claims are its
+// tableClaims are the claims of a run asked about every fixture advisory. A run's claims are its
 // work set: every advisory the run was asked about, by its id and the aliases its record lists, and
 // every row its report holds, fresh or inherited. trigger's rankWith builds them that way, reading
-// the records through the run's fact source; here the source is the table, and every row such a run
+// the records through the run's fact source; here the source is the fixtures, and every row such a run
 // holds is an entry the work set already names.
 func tableClaims() *intel.Claims {
-	ids := make([]string, 0, len(AdvisoryTable))
-	for id := range AdvisoryTable {
+	ids := make([]string, 0, len(advisoryFixtures))
+	for id := range advisoryFixtures {
 		ids = append(ids, id)
 	}
 	claims := new(intel.Claims)
-	LookupEach(NewTableSource(), ids, func(id string, facts AdvisoryFacts, _ bool) {
+	LookupEach(fixtureSource(), ids, func(id string, facts AdvisoryFacts, _ bool) {
 		claims.Add(id, facts.Aliases...)
 	})
 	return claims
 }
 
-// TestKEVAttributionFollowsListedCVE pins the join over a run whose work set is the whole advisory
-// table (tableClaims):
+// TestKEVAttributionFollowsListedCVE pins the join over a run whose work set is every fixture
+// advisory (tableClaims):
 //
 //   - no entry takes a signals record whose identifier is the id or an alias of a DIFFERENT entry;
 //   - an entry keyed by a CVE takes only the record under its own id — never a roll-up reached
@@ -78,9 +78,9 @@ func TestKEVAttributionFollowsListedCVE(t *testing.T) {
 		t.Fatal(err)
 	}
 	claims := tableClaims()
-	// namedByOther is the invariant's own reading of the table, independent of intel.Claims.
+	// namedByOther is the invariant's own reading of the fixtures, independent of intel.Claims.
 	namedByOther := func(ident, id string) string {
-		for other, facts := range AdvisoryTable {
+		for other, facts := range advisoryFixtures {
 			if other == id {
 				continue
 			}
@@ -95,7 +95,7 @@ func TestKEVAttributionFollowsListedCVE(t *testing.T) {
 		}
 		return ""
 	}
-	for id, facts := range AdvisoryTable {
+	for id, facts := range advisoryFixtures {
 		m, ok := sig.Attribute(id, facts.Aliases, claims)
 		if !ok {
 			continue
@@ -113,9 +113,9 @@ func TestKEVAttributionFollowsListedCVE(t *testing.T) {
 	// The concrete cases, stated directly so a regression names itself.
 	kev := func(id string) (intel.KEV, bool) {
 		t.Helper()
-		facts, ok := AdvisoryTable[id]
+		facts, ok := advisoryFixtures[id]
 		if !ok {
-			t.Fatalf("%s missing from AdvisoryTable", id)
+			t.Fatalf("%s missing from the fixture advisories", id)
 		}
 		m, ok := sig.Attribute(id, facts.Aliases, claims)
 		return m.KEV, ok && m.HasKEV
@@ -137,16 +137,16 @@ func TestKEVAttributionFollowsListedCVE(t *testing.T) {
 
 // TestNoEntryAliasesAnotherEntrysPrimaryID guards the structural cause rather than the symptom.
 // Two advisories are two vulnerabilities; if one lists the other's primary id as an alias, then
-// every CVE-keyed join downstream (KEV, EPSS, govulnMatchID's first GO- alias, aliasIndex work-set
-// resolution) has one slot for two answers and must get at least one of them wrong.
+// every CVE-keyed join downstream (KEV, EPSS, govulnMatchID's first GO- alias) has one slot for
+// two answers and must get at least one of them wrong.
 func TestNoEntryAliasesAnotherEntrysPrimaryID(t *testing.T) {
-	for id, facts := range AdvisoryTable {
+	for id, facts := range advisoryFixtures {
 		for _, a := range facts.Aliases {
 			if a == id {
 				continue
 			}
-			if _, isPrimary := AdvisoryTable[a]; isPrimary {
-				t.Errorf("advisory %s lists %s in its Aliases, but %s is its own AdvisoryTable entry: "+
+			if _, isPrimary := advisoryFixtures[a]; isPrimary {
+				t.Errorf("advisory %s lists %s in its Aliases, but %s is its own fixture entry: "+
 					"two vulnerabilities merged under one id — split them and join with Lineage",
 					id, a, a)
 			}

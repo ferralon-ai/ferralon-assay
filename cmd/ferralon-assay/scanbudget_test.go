@@ -359,7 +359,7 @@ func TestScanWorkSet_Stopped(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			trapEgress(t)
 			f := runFlagsFor(t)
-			acq := treeFor(t, checkout.LangGo, false)
+			acq := treeFor(t, checkout.LangGo, true)
 			if tc.empty {
 				acq = emptyFloorFor(t, checkout.LangGo, false)
 			}
@@ -503,7 +503,8 @@ func TestRunCVEWatch_HeartbeatScanTruncated(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := runCVEWatch([]string{"-target", target, "-plugin-go", "/fake/bin", "-build-graph", "off", "-git-dir", stateDir}); err != nil {
+			if err := runCVEWatch([]string{"-target", target, "-plugin-go", "/fake/bin", "-build-graph", "off", "-git-dir", stateDir,
+				"-advisory-corpus", filepath.Join("..", "..", "pipeline", "testdata", "advisory_source")}); err != nil {
 				t.Fatalf("runCVEWatch = %v", err)
 			}
 			got, err := os.ReadFile(out)

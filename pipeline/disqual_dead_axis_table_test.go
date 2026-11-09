@@ -136,7 +136,7 @@ func mavenGraph(t *testing.T, modules ...graphModule) []javaanalysis.Option {
 }
 
 // defaultSchemeSource is the representative advisory for the "" (no derivable scheme) arm of the
-// dispatch. No AdvisoryTable entry produces it: schemeFromPURL yields "" only for a PURL type it does
+// dispatch. No fixture advisory produces it: schemeFromPURL yields "" only for a PURL type it does
 // not recognize, and every corpus advisory carries a recognized one. So the arm gets a synthetic
 // advisory whose PURL type is unrecognized and whose Module is a real go.mod require — the version
 // still comes from the real in-pipeline resolver, only the scheme selection is synthetic.
@@ -226,7 +226,7 @@ type deadAxisCase struct {
 	scheme string
 	vulnID string
 	lang   string
-	src    AdvisorySource // nil ⇒ the real corpus AdvisoryTable
+	src    AdvisorySource // nil ⇒ the fixture advisories (the process default)
 	files  map[string]string
 	graph  []graphModule // the Maven build graph the Java resolver reads; nil hands it none
 }

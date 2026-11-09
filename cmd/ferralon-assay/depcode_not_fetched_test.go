@@ -89,7 +89,7 @@ func TestCVEWatchRefusedTokenThenServing(t *testing.T) {
 	newRun := func() (*depCodeRun, []pipeline.AssessOption) {
 		run := &depCodeRun{source: report.DependencyCodeSourceFetch}
 		acq := pipeline.DependencyAcquisition{Mode: pipeline.DependencyCodeFetch, CacheDir: t.TempDir(), LookupEnv: os.LookupEnv, Client: client, Observe: run.observe}
-		return run, []pipeline.AssessOption{pipeline.WithPlugin(&inProcessJS{}), pipeline.WithDependencyAcquisition(acq)}
+		return run, []pipeline.AssessOption{pipeline.WithPlugin(&inProcessJS{}), pipeline.WithDependencyAcquisition(acq), pipeline.WithAdvisorySource(pipeline.NewHouseCanarySource())}
 	}
 	row := func(rep *report.Report) report.AdvisoryFinding {
 		t.Helper()

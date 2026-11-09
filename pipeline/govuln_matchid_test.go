@@ -27,7 +27,7 @@ func TestGovulnMatchID_CVEResolvesToGOAlias(t *testing.T) {
 	store := artifact.NewMemStore()
 	putJSON(t, store, "case-2", artifact.TypeNormalizedAdvisory, map[string]any{
 		"vuln_id": "CVE-2024-45337",
-		// aliases ordered GHSA-first, exactly as AdvisoryTable records CVE-2024-45337, to prove
+		// aliases ordered GHSA-first, exactly as the fixture records CVE-2024-45337, to prove
 		// the resolver skips the non-GO alias and picks the GO- one.
 		"aliases": []string{"GHSA-v778-237x-gjrc", "GO-2024-3321"},
 	})

@@ -30,9 +30,11 @@
 # How deep the analysis goes for YOUR ecosystem is a property of the release you pin, not of this
 # file — the per-finding verdicts and the scan-level limits in the Report you get are the answer.
 #
-# A scan whose work set resolves to zero advisories FAILS the run rather than publishing a
-# findings-free Report a reader cannot tell apart from an assessed all-clear (see `scanWorkSet` in
-# cmd/ferralon-assay/run.go). That is a deliberate refusal to imply coverage that was not performed.
+# A scan given no input that chooses advisories (an advisory corpus with a policy, or the OSV
+# widening) FAILS the run rather than publishing a findings-free Report a reader cannot tell apart
+# from an assessed all-clear (see `scanWorkSet` in cmd/ferralon-assay/run.go). That is a deliberate
+# refusal to imply coverage that was not performed. A scan given one whose corpus holds nothing for
+# the repository's dependencies publishes its Report and says nothing matched.
 #
 # NO COMMITTED BINARY. This action fetches a versioned scanner release at run time and builds
 # nothing. Nothing is committed into your repository; the footprint is a few lines of reviewable
@@ -58,8 +60,8 @@
 # companion asset, for anyone who chooses to pin.
 #
 # ADVISORY CORPUS (OFF by default). The scanner carries no advisories of its own, so a scan has
-# nothing to assess until a corpus supplies them; a run with no corpus and no house canaries fails
-# with an error naming these inputs. With `advisory-corpus-repo` set, the run fetches a PUBLIC
+# nothing to assess until a corpus supplies them; a run given no corpus policy, no OSV widening and
+# no house canaries fails with an error naming these inputs. With `advisory-corpus-repo` set, the run fetches a PUBLIC
 # advisory corpus — unauthenticated, shallow, sparse — before the scan and points the scanner at it;
 # `advisory-corpus` instead takes a directory the workflow checked out itself. Both are empty by
 # default. Setting either DECLARES the run requires a corpus, and that declaration is computed from
@@ -315,7 +317,7 @@ inputs:
     description: "Set to 'false' to disable the scanner's own SARIF code-scanning surface. Default enabled."
     required: false
     default: "true"
-  # --- advisory corpus (default OFF; a scan with no corpus and no house canaries fails) ----------
+  # --- advisory corpus (default OFF; a scan given no corpus and no house canaries fails) ---------
   # Two ways to supply one, and a REQUIREMENT that is declared from configuration alone. Both carry
   # the same version requirement — a scanner release that carries the -advisory-corpus flag. Read
   # the note on advisory-corpus-repo before wiring either.

@@ -145,10 +145,11 @@ Requires Go (see `go.mod` for the minimum version):
 ```sh
 go build -o ferralon-assay ./cmd/ferralon-assay
 go install ./cmd/assay-plugin-go
-./ferralon-assay baseline -target /path/to/repo -out ./scan-out
+./ferralon-assay baseline -target /path/to/repo -out ./scan-out \
+  -advisory-corpus /path/to/full.jsonl.gz -advisory-corpus-policy full
 ```
 
-This scans every advisory in the built-in Go advisory set against the target and writes `report.json`
+This scans every advisory the corpus policy holds for the target's dependencies and writes `report.json`
 plus its projections — `report.html`, `report.sarif.json` (SARIF 2.1.0), and `openvex.json`
 (OpenVEX) — into `-out`.
 
@@ -159,10 +160,11 @@ binary. The CLI resolves the analyzer for the detected language on `PATH` under 
 so the quickstart installs it with `go install` (keep `go env GOBIN`, or `$(go env GOPATH)/bin` when
 that is unset, on `PATH`). The other analyzers install the same way from
 `./cmd/assay-plugin-<lang>` for `java`, `kotlin`, `js`, `python` and `dotnet`; install one
-and point the scan at an advisory corpus. The scanner carries no advisories of its own, so a run whose
-*resolved* work set is zero advisories halts with an error naming the inputs that populate one —
+and point the scan at an advisory corpus. The scanner carries no advisories of its own, so a run
+given no input that chooses advisories halts with an error naming the inputs that do —
 `-advisory-corpus` with `-advisory-corpus-policy`, or `-osv-work-set` — rather than publish a
-findings-free `Report`. See [Advisory corpus](#advisory-corpus).
+findings-free `Report`. A run given one of them whose corpus holds nothing for the target's
+dependencies publishes its `Report` and says so. See [Advisory corpus](#advisory-corpus).
 
 Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-corpus` to scan
 against a filesystem corpus, and `-subject-java-version` /

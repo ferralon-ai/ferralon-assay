@@ -75,7 +75,8 @@ question that a consumer must treat as unassessed.
   ([README, Extending Assay](../README.md#pluginlanguageplugin--evidence-for-one-language)). An
   unresolved version comes back `Resolved=false`; an unimplemented operation returns
   `plugin.Unsupported()` ([`plugin/plugin.go`](../plugin/plugin.go)).
-- An empty work set halts the run rather than publish a findings-free Report (`scanWorkSet` in
+- A run given no input that chooses advisories halts rather than publish a findings-free Report; a
+  supplied input that matched nothing publishes and says so (`scanWorkSet` in
   [`cmd/ferralon-assay/run.go`](../cmd/ferralon-assay/run.go)).
 
 **Refutation and hazard gates are the highest-stakes code in the repository.** A refutation gate is

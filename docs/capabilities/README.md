@@ -53,4 +53,4 @@ A caveat is a named, stable ID such as `GO-REFLECT-CALL` or `KOTLIN-MULTI-PROJEC
 
 The five verdict values, and how they map to OpenVEX, are in [Language support](../language-support.md#verdicts).
 
-C/C++ is in development and is not in the scanner release asset. A scan of a C/C++ tree on the release publishes a Report with no findings and one `did_not_run` note naming the missing analyzer, and the run exits 0. The job summary and the PR comment lead with "Not analyzed", so the Report never reads as clean. With a C/C++ analyzer installed from a source build, the scan stops at the empty-work-set gate and fails the run ([Language support](../language-support.md)).
+C/C++ is in development and is not in the scanner release asset. A scan of a C/C++ tree on the release publishes a Report with no findings and one `did_not_run` note naming the missing analyzer, and the run exits 0. The job summary and the PR comment lead with "Not analyzed", so the Report never reads as clean. With a C/C++ analyzer installed from a source build, the scan fails at the no-work gate unless it is given a corpus policy ([Language support](../language-support.md)).

@@ -323,7 +323,9 @@ Writing through the Refs API needs `contents: write`.
 
 A full scan of every advisory in the work set: every advisory in the declared policy
 (`advisory-corpus-policy`) whose affected package is one of the repository's own dependencies, plus
-any house canaries the run opted in. A run whose work set comes out empty fails. With a store selected, the result is persisted so later
+any house canaries the run opted in. A run given no work-set input (no corpus policy, no OSV
+widening, no house canary for the language) fails; a run whose policy holds nothing for the
+repository publishes a findings-free Report that says nothing matched. With a store selected, the result is persisted so later
 runs can read it. With **no** store selected, `baseline` uses a throwaway store in a temporary
 directory: the scan runs and the output directory is written, but nothing persists. That is the
 zero-config path the README Quickstart uses.

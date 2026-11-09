@@ -597,6 +597,7 @@ full list.
 - [docs/releases/README.md](docs/releases/README.md) — how a release is cut: push a `vX.Y.Z`
   tag and the workflow builds and publishes it, minting the BUSL Change Date onto a release-only
   leaf rather than a branch. Releases are never published from a local checkout.
+- [docs/glossary.md](docs/glossary.md) — the terms, labels and identifiers used in this repository, each cited to its source.
 
 If you installed through the Ferralon console, its upgrade pull requests come from the Ferralon Team
 bot; you can reply on any of them with questions.

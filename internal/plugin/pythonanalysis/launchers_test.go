@@ -248,6 +248,97 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			partial: true,
 		},
 		{
+			name: "Django patterns() tuples naming views by import path",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def login(request):\n    return None\n\ndef home(request):\n    return None\n",
+				"urls.py": "from django.conf.urls import patterns, include, url\nfrom django.contrib import admin\n\nurlpatterns = patterns('',\n    (r'^accounts/login/', 'site.views.login', {'next': '/'}),\n    (r'^admin/', include(admin.site.urls)),\n    url(r'^$', 'site.views.home', name='home'),\n)\n",
+			},
+			want: []ing{
+				{"http_route", funcSCIP("site/views", nil, "login", 1), "^accounts/login/"},
+				{"http_route", funcSCIP("site/views", nil, "home", 1), "^$"},
+			},
+			roots: []string{funcSCIP("site/views", nil, "login", 1)},
+		},
+		{
+			name: "Django patterns() prefix joins onto its string views",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n\ndef feed(request):\n    return None\n\ndef keyed(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nurlpatterns = patterns('site.views',\n    url(r'^d/$', 'dash'),\n    (r'^f/$', 'feed'),\n    url(r'^k/$', view='keyed'),\n)\n",
+			},
+			want: []ing{
+				{"http_route", funcSCIP("site/views", nil, "dash", 1), "^d/$"},
+				{"http_route", funcSCIP("site/views", nil, "feed", 1), "^f/$"},
+				{"http_route", funcSCIP("site/views", nil, "keyed", 1), "^k/$"},
+			},
+		},
+		{
+			name: "Django url() outside patterns() naming a view by import path",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import url\n\nurlpatterns = [url(r'^d/$', 'site.views.dash')]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "^d/$"}},
+		},
+		{
+			name: "Django patterns() prefix the lane cannot read leaves its string views partial",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nPREFIX = 'site.views'\nurlpatterns = patterns(PREFIX,\n    url(r'^d/$', 'dash'),\n    (r'^e/$', 'dash'),\n)\n",
+			},
+			absent:  []string{funcSCIP("site/views", nil, "dash", 1)},
+			partial: true,
+		},
+		{
+			name: "Django string view naming a dependency is no ingress and not partial",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns\n\nurlpatterns = patterns('',\n    (r'^media/(?P<path>.*)$', 'django.views.static.serve', {'document_root': '/srv'}),\n)\n",
+			},
+			absent: []string{funcSCIP("site/views", nil, "dash", 1)},
+		},
+		{
+			name: "Django string view naming no first-party function resolves to nothing",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns\n\nurlpatterns = patterns('', (r'^x/$', 'site.views.gone'))\n",
+			},
+			absent:  []string{funcSCIP("site/views", nil, "dash", 1)},
+			partial: true,
+		},
+		{
+			name: "Django string view naming a class attribute is no view",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "class Obj:\n    def run(self, request):\n        return None\n",
+				"site/urls.py": "from django.conf.urls import patterns\n\nurlpatterns = patterns('', (r'^r/$', 'site.views.Obj.run'))\n",
+			},
+			absent: []string{funcSCIP("site/views", []string{"Obj"}, "run", 2)},
+		},
+		{
+			name: "Django string view rebound in its module",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def make():\n    def dash(request):\n        return None\n    return dash\n\ndef dash(request):\n    return None\n\ndash = make()\n",
+				"site/urls.py": "from django.conf.urls import patterns\n\nurlpatterns = patterns('', (r'^d/$', 'site.views.dash'))\n",
+			},
+			partial: true,
+		},
+		{
+			name: "Django string view re-exported by its module",
+			files: map[string]string{
+				"site/__init__.py": "", "site/impl.py": "def dash(request):\n    return None\n",
+				"site/views.py": "from site.impl import dash\n",
+				"site/urls.py":  "from django.conf.urls import patterns\n\nurlpatterns = patterns('', (r'^d/$', 'site.views.dash'))\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/impl", nil, "dash", 1), "^d/$"}},
+		},
+		{
+			name: "a patterns() call not bound from django is no view",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from routes import patterns\n\nurlpatterns = patterns('', (r'^d/$', 'site.views.dash'))\n",
+			},
+			absent: []string{funcSCIP("site/views", nil, "dash", 1)},
+		},
+		{
 			name: "Django class-based view on a base from a first-party star import",
 			files: map[string]string{
 				"site/__init__.py": "", "site/base.py": "class Base:\n    def get(self, request):\n        return None\n",

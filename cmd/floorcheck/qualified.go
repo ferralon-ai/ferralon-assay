@@ -27,7 +27,12 @@ func qualifiedSets(fs []report.AdvisoryFinding) []string {
 		if !qualified(f.Verdict) || f.Advisory.ID == "" {
 			continue
 		}
-		ids := append([]string{f.Advisory.ID}, f.Advisory.Aliases...)
+		ids := []string{f.Advisory.ID}
+		for _, a := range f.Advisory.Aliases {
+			if a != "" {
+				ids = append(ids, a)
+			}
+		}
 		for _, id := range ids {
 			if _, ok := parent[id]; !ok {
 				parent[id] = id

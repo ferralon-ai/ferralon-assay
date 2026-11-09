@@ -103,6 +103,8 @@ func TestFloorWorkflow(t *testing.T) {
 		{"build", "actions/upload-artifact@v4"},
 		{"scan", "token: ${{ startsWith(matrix.repo, 'ferralon-demo/') && secrets.FLOOR_DEMO_TOKEN || github.token }}"},
 		{"build", "for policy in $POLICIES; do"},
+		{"build", `DEST="$fetched"`},
+		{"build", `mv "$fetched/$policy.jsonl.gz" "$fetched/signals.json.gz" "$dest/"`},
 		{"build", "POLICIES: ${{ steps.targets.outputs.policies }}"},
 		{"scan", "POLICY: ${{ matrix.policy }}"},
 		{"scan", "bash assay/floor/scan.sh"},

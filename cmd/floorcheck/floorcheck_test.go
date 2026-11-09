@@ -245,6 +245,8 @@ func TestQualifiedSets(t *testing.T) {
 		want []string
 	}{
 		{"none", nil, []string{}},
+		{"an empty alias joins nothing", []report.AdvisoryFinding{adv(rc, "PYSEC-1", ""), adv(rc, "PYSEC-2", "")},
+			[]string{"PYSEC-1", "PYSEC-2"}},
 		{"one row, its aliases form one set", []report.AdvisoryFinding{adv(rc, "PYSEC-2016-15", "CVE-2016-2512", "GHSA-pw27-w7w4-9qc7")},
 			[]string{"CVE-2016-2512 / GHSA-pw27-w7w4-9qc7 / PYSEC-2016-15"}},
 		{"three rows of one advisory count once", []report.AdvisoryFinding{

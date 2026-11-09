@@ -57,18 +57,19 @@
 # does not — so we do not ship a default. Every release publishes its tarball sha256 as a `.sha256`
 # companion asset, for anyone who chooses to pin.
 #
-# ADVISORY CORPUS (optional, OFF by default). With `advisory-corpus-repo` set, the run fetches a
-# PUBLIC advisory corpus — unauthenticated, shallow, sparse — before the scan and points the scanner
-# at it; `advisory-corpus` instead takes a directory the workflow checked out itself. Both are empty
-# by default, in which case the scan resolves advisory facts from the scanner's built-in table.
-# Setting either DECLARES the run requires a corpus, and that declaration is computed from these
-# inputs alone rather than from whether the fetch step succeeded — so a broken fetch fails the run
-# instead of silently degrading to built-in intel. Both inputs require a scanner release carrying
-# the `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below. On its own a corpus
-# supplies advisory FACTS; it does not change which advisories the scan evaluates.
+# ADVISORY CORPUS (OFF by default). The scanner carries no advisories of its own, so a scan has
+# nothing to assess until a corpus supplies them; a run with no corpus and no house canaries fails
+# with an error naming these inputs. With `advisory-corpus-repo` set, the run fetches a PUBLIC
+# advisory corpus — unauthenticated, shallow, sparse — before the scan and points the scanner at it;
+# `advisory-corpus` instead takes a directory the workflow checked out itself. Both are empty by
+# default. Setting either DECLARES the run requires a corpus, and that declaration is computed from
+# these inputs alone rather than from whether the fetch step succeeded — so a broken fetch fails the
+# run instead of silently scanning without it. Both inputs require a scanner release carrying the
+# `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below. On its own a corpus supplies
+# advisory FACTS; `advisory-corpus-policy` is what chooses the advisories the scan evaluates.
 #
-# With `advisory-corpus-policy` also set, the policy defines the scan's work set: the built-in floor
-# plus every advisory in the policy whose affected package is one of the repository's own
+# With `advisory-corpus-policy` also set, the policy defines the scan's work set: any opted-in house
+# canaries plus every advisory in the policy whose affected package is one of the repository's own
 # dependencies. The repo fetch downloads that policy's prebuilt bundle
 # (`<policy>.jsonl.gz`) from a `corpus-*` release instead of git-fetching the record tree, and
 # verifies it before the scan. First the release's bundles.json is verified with cosign (v3.1.3,
@@ -314,7 +315,7 @@ inputs:
     description: "Set to 'false' to disable the scanner's own SARIF code-scanning surface. Default enabled."
     required: false
     default: "true"
-  # --- advisory corpus (optional; default OFF = the built-in advisory table) --------------------
+  # --- advisory corpus (default OFF; a scan with no corpus and no house canaries fails) ----------
   # Two ways to supply one, and a REQUIREMENT that is declared from configuration alone. Both carry
   # the same version requirement — a scanner release that carries the -advisory-corpus flag. Read
   # the note on advisory-corpus-repo before wiring either.
@@ -327,7 +328,7 @@ inputs:
       supplies advisory facts; it does not change which advisories the scan evaluates. Findings are
       ranked by EPSS/KEV from the signals.json at the directory's root when it has one (and carry
       no priority when it has none); nothing is fetched or verified for it. Empty (default) = no
-      corpus, and the scan resolves advisory facts from the built-in table.
+      corpus.
     required: false
     default: ""
   advisory-corpus-repo:
@@ -338,7 +339,7 @@ inputs:
       only). Empty (default) = no fetch. Setting this OR advisory-corpus DECLARES that this run
       requires a corpus, which is forwarded to the scanner out of band
       (ASSAY_ADVISORY_CORPUS_REQUIRED) so that a corpus which is missing or carries zero records
-      FAILS the run rather than quietly falling back to the built-in table. VERSION REQUIREMENT: a
+      FAILS the run rather than quietly scanning without one. VERSION REQUIREMENT: a
       scanner release carrying the -advisory-corpus flag — confirm the release named by the
       scanner-version default carries it before you opt in. A release that lacks it fails the scan
       loudly ("flag provided but not defined: -advisory-corpus") rather than ignoring either corpus
@@ -363,8 +364,8 @@ inputs:
     description: >-
       Policy of advisory-corpus-repo that defines what the scan evaluates (e.g. published-7d,
       full), in place of the whole corpus. Every advisory in the policy whose affected package is
-      one of this repository's own dependencies joins the scan's work set, alongside the scanner's
-      built-in floor; an advisory that names no affected package cannot be matched; it is disclosed
+      one of this repository's own dependencies joins the scan's work set, alongside any opted-in
+      house canaries; an advisory that names no affected package cannot be matched; it is disclosed
       as an analysis limit (count and ids) without qualifying the report headline. When the corpus release named by advisory-corpus-ref publishes a bundle for the
       policy, the run downloads that one file instead of git-fetching the record tree, and verifies
       it first (sha256 against the release's bundles.json; members against the policy manifest at
@@ -600,7 +601,7 @@ runs:
     # here and in the run step below. It is deliberately NOT passed between the steps as a step
     # output: a step output only exists when the step ran and succeeded, so consuming one would make
     # "the corpus was requested" indistinguishable from "the fetch worked" — and a failed fetch would
-    # then present as an unconfigured run and silently downgrade to built-in intel. The duplication
+    # then present as an unconfigured run and silently scan without the corpus. The duplication
     # is the point; keep the two literals in sync.
     #
     # The bundle route writes to a second fixed path, $RUNNER_TEMP/ferralon-assay-corpus-bundle/
@@ -839,13 +840,12 @@ runs:
         # reads no step output, and consults no step status, so it says "this workflow was
         # configured to scan against a corpus", never "a fetch worked". That distinction is the
         # whole mechanism: if the requirement were derived from the fetch's success, a failed fetch
-        # would be byte-identical to an unconfigured run and the scan would silently degrade to
-        # built-in intel with nothing to show for it. Under a declared requirement the scanner fails
+        # would be byte-identical to an unconfigured run and the scan would silently run without
+        # the corpus with nothing to show for it. Under a declared requirement the scanner fails
         # the run when no corpus resolves, and equally when one resolves with zero records.
         # '1'/'0' rather than '1'/'': the scanner parses this as a boolean and REFUSES to guess on an
         # unparseable value, so the falsey branch has to be a real boolean literal, not an empty
-        # string. '0' is exactly equivalent to leaving it unset, which keeps the built-in-intel path
-        # — a supported, unchanged configuration — working for every consumer who sets no corpus.
+        # string. '0' is exactly equivalent to leaving it unset.
         ASSAY_ADVISORY_CORPUS_REQUIRED: ${{ (inputs.advisory-corpus != '' || inputs.advisory-corpus-repo != '') && '1' || '0' }}
         # THE POLICY DECLARATION. Declaring the policy is what makes the scanner build its work set
         # from the corpus; without it the corpus is a fact source only. It is set only for the

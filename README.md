@@ -52,12 +52,15 @@ jobs:
         with:
           mode: baseline
           target: .
-          # Recommended: consume the public advisory corpus for real coverage.
-          # Left on its default ref (main) on purpose — new advisories land there
-          # continuously, so pinning this ref would freeze your vulnerability intel.
-          # Omit it and the scan falls back to a small built-in table (a few
-          # hand-picked test cases, not advisory coverage).
+          # The scanner carries no advisories of its own: the corpus supplies them,
+          # and a scan with none fails. Left on its default ref (main) on purpose —
+          # new advisories land there continuously, so pinning this ref would freeze
+          # your vulnerability intel. The policy chooses which of its advisories the
+          # scan evaluates; the release that carries it is signed by this identity.
           advisory-corpus-repo: ferralon-ai/vulnerability-corpus
+          advisory-corpus-policy: full
+          corpus-signer-identity: ferralon-intel-publisher@ferralon.iam.gserviceaccount.com
+          corpus-signer-issuer: https://accounts.google.com
 
       # The Action materializes report.sarif.json; the upload to code scanning is this
       # step, so drop it and the `code-scanning` surface produces a file and nothing else.
@@ -156,12 +159,13 @@ binary. The CLI resolves the analyzer for the detected language on `PATH` under 
 so the quickstart installs it with `go install` (keep `go env GOBIN`, or `$(go env GOPATH)/bin` when
 that is unset, on `PATH`). The other analyzers install the same way from
 `./cmd/assay-plugin-<lang>` for `java`, `kotlin`, `js`, `python` and `dotnet`; install one
-and a default scan of that ecosystem completes against the built-in test-case advisories, as a default
-run of the shipped Action does. What halts a run is a *resolved* work set of zero advisories — for example pointing
-`-advisory-corpus` at a table that has nothing for your detected language. See [Scope](#scope).
+and point the scan at an advisory corpus. The scanner carries no advisories of its own, so a run whose
+*resolved* work set is zero advisories halts with an error naming the inputs that populate one —
+`-advisory-corpus` with `-advisory-corpus-policy`, or `-osv-work-set` — rather than publish a
+findings-free `Report`. See [Advisory corpus](#advisory-corpus).
 
 Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-corpus` to scan
-against a filesystem corpus instead of the built-in table, and `-subject-java-version` /
+against a filesystem corpus, and `-subject-java-version` /
 `-subject-maven-profiles` to state the JVM and Maven profile selection your build uses (env
 `ASSAY_SUBJECT_JAVA_VERSION`, `ASSAY_SUBJECT_MAVEN_PROFILES`). For `pr-inherit` and `cve-watch`,
 `-subject-go-version` states the target's Go toolchain explicitly; `baseline` resolves it from
@@ -244,16 +248,14 @@ stops analysis and gives the scan a few seconds to publish what it assessed. The
 
 ## Advisory corpus
 
-Advisories load from an external advisory corpus, and **a real run should consume one** — point the
+Advisories load from an external advisory corpus, and **a run must consume one** — point the
 Action's `advisory-corpus-repo` at the public [`ferralon-ai/vulnerability-corpus`](https://github.com/ferralon-ai/vulnerability-corpus),
 which the Action fetches unauthenticated at run time, or hand an already-checked-out corpus directory
 to `advisory-corpus`. Advisory sourcing does not vary by language; a corpus supplies whatever
 advisories it carries for whichever languages it covers, and the `Report` records the corpus's own
-`corpus_digest` so a run's advisory state is independently identifiable. With neither input set the
-scan falls back to a small built-in table so the engine still runs standalone — Go carries 10 of
-these, and each of the other five languages carries 3
-([`cmd/ferralon-assay/acquire.go`](cmd/ferralon-assay/acquire.go)); that built-in table is a
-set of hand-picked test cases, so consume the corpus for advisory coverage.
+`corpus_digest` so a run's advisory state is independently identifiable. The scanner carries no
+advisories of its own: with neither input set there is nothing to assess, and the run fails with an
+error naming these inputs.
 
 Let the corpus track its default `main` (`advisory-corpus-ref` defaults to `main`). New advisories land
 in it continuously, so pinning the corpus ref would freeze your vulnerability intel and miss everything
@@ -270,7 +272,7 @@ no manifest, so a scan that reads a bundle records its digest without this block
 
 To scan against one corpus policy rather than the whole corpus, set `advisory-corpus-policy` (for
 example `published-7d` or `full`). The policy then defines what the scan evaluates, not only which
-advisory facts are available: the work set is the built-in test-case advisories plus every advisory in the policy
+advisory facts are available: the work set is every advisory in the policy
 whose affected package is one of your repository's own dependencies — matched by package identity
 (the Go module path, or the Go standard library for a toolchain advisory; otherwise the ecosystem
 coordinate) — and each advisory's affected version range is then checked during the scan. Choosing
@@ -314,9 +316,9 @@ The CLI reads the corpus from `-advisory-corpus` or, when the flag is absent, th
 `ASSAY_ADVISORY_CORPUS_DIR` environment variable (the name says directory; it accepts a bundle file
 too). `-advisory-corpus-policy` or `ASSAY_ADVISORY_CORPUS_POLICY` declares the policy the corpus was
 selected by; the flag wins over the variable. Only a declared policy makes the corpus define the work
-set, and the `Report` records it as `corpus_policy`. A corpus supplements the built-in table rather than replacing it: the corpus answers first, and
-an advisory it lacks still resolves from the table. To make a missing corpus a failure instead of a
-quiet fall-back to the built-in table, pass `-require-advisory-corpus` or set
+set, and the `Report` records it as `corpus_policy`; without one, `-osv-work-set` chooses the work set
+from OSV.dev and admits only the advisories the corpus holds facts for. To make a missing corpus a
+failure rather than a scan without it, pass `-require-advisory-corpus` or set
 `ASSAY_ADVISORY_CORPUS_REQUIRED` to `true`; the flag wins over the variable. The Action sets that
 declaration for you whenever `advisory-corpus-repo` or `advisory-corpus` is set.
 
@@ -458,7 +460,7 @@ implementation detail with no compatibility promise; the packages below are the 
 | `checkout` | The codebase-acquisition seam (`Checkout`) and its git implementation. |
 | `statestore` | The persisted-state seam (`StateStore`) and its git-ref implementations. |
 | `resultsink` | The publish seam (`ResultSink`) and the GitHub adapters under `resultsink/github`. |
-| `corpus` | Checked-in golden regression fixtures and their loader. Importable only so another module's tests can reach them, with no API-stability promise. The built-in advisory table is `pipeline.AdvisoryTable`. |
+| `corpus` | Checked-in golden regression fixtures and their loader. Importable only so another module's tests can reach them, with no API-stability promise. |
 | `vulnclass` | Maps an advisory's CWE to a closed vulnerability-class enum. |
 | `hostmatch` | A standalone host-allowlist matcher used by the checkout credential seam. |
 | `telemetry` | OpenTelemetry wiring for the pipeline's spans and metrics. |
@@ -513,7 +515,7 @@ stages do not collect.
 `AdvisorySource` ([`pipeline/advisory_source.go`](pipeline/advisory_source.go)) is a single
 `Lookup(vulnID) (AdvisoryFacts, bool)`, and it is the only route S1 reads advisories through.
 Implement it to feed Assay a private advisory set, an internal mirror, or an enrichment layer over
-the built-in corpus. `NewChainSource` composes several — it tries each in order and returns the first
+a corpus. `NewChainSource` composes several — it tries each in order and returns the first
 whole fact any of them resolves, never merging across sources; `NewArtifactSource` reads a
 digest-pinned directory of facts.
 
@@ -577,7 +579,7 @@ you import it:
   or `golang.org/x/vuln` type would pin every consumer to our version of it. The public surface is
   audited for this, and there are no exceptions.
 - **Exported process-wide mutable state.** A few exported variables and setters
-  (`pipeline.AdvisoryTable`, `pipeline.SetDefaultAdvisorySource`, `trigger.AnalyzerVersion`, and the
+  (`pipeline.SetDefaultAdvisorySource`, `trigger.AnalyzerVersion`, and the
   marker/title variables in `resultsink/github`) are writable at runtime and are not `-race`-safe.
   Their contract is set-before-spawn.
 

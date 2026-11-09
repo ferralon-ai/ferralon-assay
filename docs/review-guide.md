@@ -206,13 +206,14 @@ A release is minted by `.github/workflows/release.yml` from a pushed tag, never 
 - `action.yml`'s `scanner-version` default stays a `vX.Y` minor alias. A branch moves the alias in
   the change that needs the new minor's scanner, never as a release step.
 
-### The built-in advisory table is a set of test cases
+### The scanner carries no advisories
 
-Real runs read advisories from an external corpus. With no corpus configured, the scan falls back
-to a small built-in table so the engine still runs standalone
-([README, Advisory corpus](../README.md#advisory-corpus)). The entries are hand-picked test cases
-that let a default scan complete; they are not Assay's advisory coverage. A doc, release note or
-comment that presents the table as coverage is a finding.
+Every run reads advisories from an external corpus, and a run with no work fails
+([README, Advisory corpus](../README.md#advisory-corpus)). Advisory fixtures live under `testdata`
+and load only in tests; a change that compiles advisory facts into a non-test package, or adds a
+path that quietly scans a fixture when no corpus is configured, is a finding. The house canaries are
+first-party synthetic advisories that a run reads only when it opts in to them; a doc, release note
+or comment that presents them as coverage is a finding.
 
 ### Performance and size
 
@@ -363,7 +364,7 @@ Release PRs are titled `Release: vA.B.C` and carry `docs/releases/vA.B.C.md`
       consumer must do, stated flatly. Commentary on the version scheme, or on whether a change
       counts as breaking, does not help that reader.
 - [ ] Every claim is verifiable from the repository or the release.
-- [ ] The built-in advisory table is not described as coverage.
+- [ ] The house canaries are not described as coverage.
 - [ ] No step asks a reader to cut, tag or publish anything by hand.
 
 ### Docs-only changes
@@ -397,7 +398,7 @@ Release PRs are titled `Release: vA.B.C` and carry `docs/releases/vA.B.C.md`
   `indeterminate` is a `verdict.Direction`. Keep them apart in reviews and docs.
 - **`#NN` means a PR or issue in this repository.** Refer to another repository's item as
   `ferralon-ai/<repo>#NN`.
-- **Exported state is shared.** `pipeline.AdvisoryTable` and the other exported variables in
+- **Exported state is shared.** `pipeline.SetDefaultAdvisorySource` and the other exported state in
   [api-stability.md](api-stability.md) are not safe to write concurrently. A test or feature that
   writes them needs a reason.
 - **The PR template is the shape of the body:** what changed, why, and how it was tested

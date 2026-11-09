@@ -292,9 +292,9 @@ func TestFindIngresses_Launchers(t *testing.T) {
 			name: "Django string view naming a dependency is no ingress and not partial",
 			files: map[string]string{
 				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
-				"site/urls.py": "from django.conf.urls import patterns\n\nurlpatterns = patterns('',\n    (r'^media/(?P<path>.*)$', 'django.views.static.serve', {'document_root': '/srv'}),\n)\n",
+				"site/urls.py":     "from django.conf.urls import patterns\n\nurlpatterns = patterns('',\n    (r'^media/(?P<path>.*)$', 'django.views.static.serve', {'document_root': '/srv'}),\n)\n",
+				"requirements.txt": "Django==1.8.7\n",
 			},
-			absent: []string{funcSCIP("site/views", nil, "dash", 1)},
 		},
 		{
 			name: "Django string view naming no first-party function resolves to nothing",
@@ -329,6 +329,108 @@ func TestFindIngresses_Launchers(t *testing.T) {
 				"site/urls.py":  "from django.conf.urls import patterns\n\nurlpatterns = patterns('', (r'^d/$', 'site.views.dash'))\n",
 			},
 			want: []ing{{"http_route", funcSCIP("site/impl", nil, "dash", 1), "^d/$"}},
+		},
+		{
+			name: "Django string view under a top-level name neither first-party nor a dependency is partial",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nurlpatterns = patterns('', (r'^d/$', 'mysite.site.views.dash'))\n",
+			},
+			absent:  []string{funcSCIP("site/views", nil, "dash", 1)},
+			partial: true,
+		},
+		{
+			name: "Django single-name string view outside patterns() is partial",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nurlpatterns = [url(r'^d/$', 'dash')]\n",
+			},
+			absent:  []string{funcSCIP("site/views", nil, "dash", 1)},
+			partial: true,
+		},
+		{
+			name: "Django patterns() spread argument is partial",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nurls = [url(r'^d/$', 'dash')]\nurlpatterns = patterns('site.views', *urls)\n",
+			},
+			absent:  []string{funcSCIP("site/views", nil, "dash", 1)},
+			partial: true,
+		},
+		{
+			name: "Django patterns() name argument is partial",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nROUTES = (r'^d/$', 'site.views.dash')\nurlpatterns = patterns('', ROUTES)\n",
+			},
+			absent:  []string{funcSCIP("site/views", nil, "dash", 1)},
+			partial: true,
+		},
+		{
+			name: "Django url() literal prefix joins onto its string view",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nurlpatterns = [url(r'^d/$', 'dash', prefix='site.views')]\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "^d/$"}},
+		},
+		{
+			name: "Django url() positional prefix joins after the patterns() prefix",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nurlpatterns = patterns('site', url(r'^d/$', 'dash', None, 'd', 'views'))\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "^d/$"}},
+		},
+		{
+			name: "Django url() prefix the lane cannot read is partial",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nP = 'site.views'\nurlpatterns = [url(r'^d/$', 'dash', prefix=P)]\n",
+			},
+			absent:  []string{funcSCIP("site/views", nil, "dash", 1)},
+			partial: true,
+		},
+		{
+			name: "Django patterns() list argument names its view",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nurlpatterns = patterns('', [r'^d/$', 'site.views.dash'])\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "^d/$"}},
+		},
+		{
+			name: "Django patterns() parenthesised registrar keeps the prefix",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nurlpatterns = patterns('site.views', (url(r'^d/$', 'dash')))\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "^d/$"}},
+		},
+		{
+			name: "Django patterns() tuple with a callable view",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nfrom site import views\nurlpatterns = patterns('nowhere', (r'^d/$', views.dash))\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "^d/$"}},
+		},
+		{
+			name: "Django nested patterns() keeps its own prefix",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, include, url\n\nurlpatterns = patterns('nowhere',\n    url(r'^a/', include(patterns('site.views', url(r'^d/$', 'dash')))),\n)\n",
+			},
+			want: []ing{{"http_route", funcSCIP("site/views", nil, "dash", 1), "^d/$"}},
+		},
+		{
+			name: "Django patterns() argument from a non-django registrar is partial",
+			files: map[string]string{
+				"site/__init__.py": "", "site/views.py": "def dash(request):\n    return None\n",
+				"site/urls.py": "from django.conf.urls import patterns, url\n\nfrom routes import route\nurlpatterns = patterns('site.views', route(r'^d/$', 'dash'))\n",
+			},
+			absent:  []string{funcSCIP("site/views", nil, "dash", 1)},
+			partial: true,
 		},
 		{
 			name: "a patterns() call not bound from django is no view",

@@ -418,19 +418,25 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 			continue
 		}
 		if leaf == "patterns" {
-			out = append(out, legacyPatterns(r, args, lits, prefixes)...)
+			out = append(out, legacyPatterns(r, args, lits, prefixes, fromDjango)...)
 			continue
 		}
-		var view [2]int
-		found := false
+		var view, own [2]int
+		found, hasOwn := false, false
 		for n, a := range args {
-			s := string(r[a[0]:a[1]])
-			if k, _, kw := keywordArg(strings.TrimSpace(s)); kw {
-				if k == "view" {
-					view, found = [2]int{a[0] + strings.IndexRune(s, '=') + 1, a[1]}, true
+			s := []rune(string(r[a[0]:a[1]]))
+			if k, _, kw := keywordArg(strings.TrimSpace(string(s))); kw {
+				at := [2]int{a[0] + slices.Index(s, '=') + 1, a[1]}
+				switch k {
+				case "view":
+					view, found = at, true
+				case "prefix":
+					own, hasOwn = at, leaf == "url"
 				}
 			} else if n == 1 {
 				view, found = a, true
+			} else if n == 4 && leaf == "url" {
+				own, hasOwn = a, true
 			}
 		}
 		if !found {
@@ -439,6 +445,19 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 		p, in := prefixes[start]
 		if !in {
 			p.known = true
+		}
+		if hasOwn {
+			// url(..., prefix=) joins its own prefix onto a string view; patterns() then
+			// joins its prefix onto that.
+			pre, isLit := literalSpan(r, own, lits)
+			switch {
+			case !isLit:
+				p.known = false
+			case pre != "" && p.prefix != "":
+				p.prefix += "." + pre
+			case pre != "":
+				p.prefix = pre
+			}
 		}
 		v, ok := urlViewArg(r, view, lits, p)
 		if !ok {
@@ -453,23 +472,43 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 }
 
 // legacyPatterns reads a patterns(prefix, ...) call's arguments, args: each (route, view, ...)
-// tuple's view, and each other argument's start in prefixes, so the registrar call there
-// joins the prefix onto a string view.
-func legacyPatterns(r []rune, args [][2]int, lits map[int]strLiteral, prefixes map[int]urlPrefix) []urlView {
+// tuple or list's view, and each Django registrar call's start in prefixes, so the call there
+// joins the prefix onto a string view. A parenthesised argument is read as what it wraps. Any
+// other argument (a name, a spread, a call the lane does not know) hides patterns the lane
+// cannot read, so it is an unnamed view.
+func legacyPatterns(r []rune, args [][2]int, lits map[int]strLiteral, prefixes map[int]urlPrefix, fromDjango func(string) bool) []urlView {
 	if len(args) == 0 {
 		return nil
 	}
 	var p urlPrefix
 	p.prefix, p.known = literalSpan(r, args[0], lits)
 	var out []urlView
-	for _, a := range args[1:] {
+	pending := slices.Clone(args[1:])
+	for len(pending) > 0 {
+		a := pending[0]
+		pending = pending[1:]
 		at := skipAllSpace(r, a[0])
-		if at >= a[1] || r[at] != '(' || skipSpaceBack(r, a[1]-1) != matchingClose(r, at) {
-			prefixes[at] = p
+		if at >= a[1] {
+			continue
+		}
+		if (r[at] != '(' && r[at] != '[') || skipSpaceBack(r, a[1]-1) != matchingClose(r, at) {
+			if registrarAt(r, at, a[1], fromDjango) {
+				prefixes[at] = p
+			} else {
+				out = append(out, urlView{unnamed: true})
+			}
 			continue
 		}
 		elems, closed := callArgs(r, at)
-		if !closed || len(elems) < 2 {
+		if !closed || len(elems) == 0 {
+			continue
+		}
+		if len(elems) == 1 && r[at] == '(' {
+			pending = append(pending, elems[0])
+			continue
+		}
+		if len(elems) < 2 {
+			out = append(out, urlView{unnamed: true})
 			continue
 		}
 		v, ok := urlViewArg(r, elems[1], lits, p)
@@ -484,9 +523,31 @@ func legacyPatterns(r []rune, args [][2]int, lits map[int]strLiteral, prefixes m
 	return out
 }
 
+// registrarAt reports whether the span r[at:end] is one call of a Django URL registrar.
+func registrarAt(r []rune, at, end int, fromDjango func(string) bool) bool {
+	if !isIdentStartRune(r[at]) {
+		return false
+	}
+	var chain []string
+	i := at
+	for {
+		w, e := readWordRunes(r, i)
+		chain = append(chain, w)
+		i = e
+		if i+1 < end && r[i] == '.' && isIdentStartRune(r[i+1]) {
+			i++
+			continue
+		}
+		break
+	}
+	open := skipSpaceRunes(r, i)
+	return open < end && r[open] == '(' && skipSpaceBack(r, end-1) == matchingClose(r, open) &&
+		(urlRegistrars[chain[len(chain)-1]] || chain[len(chain)-1] == "patterns") && fromDjango(chain[0])
+}
+
 // urlViewArg reads the view argument at span: a string literal naming the view by its dotted
-// import path, p's prefix joined on (a string naming no module and attribute is no view), or
-// else as viewRef reads it.
+// import path, p's prefix joined on, or else as viewRef reads it. A string that names a single
+// name once joined can only lean on a prefix the lane did not read, so it is unnamed.
 func urlViewArg(r []rune, span [2]int, lits map[int]strLiteral, p urlPrefix) (urlView, bool) {
 	name, isLit := literalSpan(r, span, lits)
 	if !isLit {
@@ -498,9 +559,12 @@ func urlViewArg(r []rune, span [2]int, lits map[int]strLiteral, p urlPrefix) (ur
 	if p.prefix != "" {
 		name = p.prefix + "." + name
 	}
-	segs := dottedSegs(name)
-	if !isDottedName(name) || len(segs) < 2 {
+	if !isDottedName(name) {
 		return urlView{}, false
+	}
+	segs := dottedSegs(name)
+	if len(segs) < 2 {
+		return urlView{unnamed: true}, true
 	}
 	return urlView{chain: segs, named: true}, true
 }
@@ -637,8 +701,15 @@ func (prog *program) fileLaunchTargets(f *fileParse) []launchTarget {
 			out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
 			continue
 		case v.named:
-			// Django imports all but the last name as a module and reads the last off it.
-			out = append(out, launchTarget{segs: v.chain, mod: len(v.chain) - 1, kind: "http_route", selector: v.selector})
+			// Django imports all but the last name as a module and reads the last off it. A
+			// path reaching no module the lane reads names a dependency only when a dependency
+			// or the standard library provides its top-level name; else it is first-party code
+			// the lane cannot place.
+			t := launchTarget{segs: v.chain, mod: len(v.chain) - 1, kind: "http_route", selector: v.selector}
+			if _, module, _ := prog.resolvePath(t.segs, t.mod, false); module == "" && !prog.dists.knownTop(strings.Join(v.chain, ".")) {
+				t = launchTarget{kind: "http_route", selector: v.selector, unread: true}
+			}
+			out = append(out, t)
 			continue
 		}
 		if slices.ContainsFunc(v.heads, func(h string) bool {

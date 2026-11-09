@@ -9,6 +9,7 @@
   "Symbols": [
     "app.handler"
   ],
+  "SymbolProvenance": "curated",
   "GuardSymbols": null,
   "CWEs": [
     "CWE-22"
@@ -18,7 +19,7 @@
   "Provenance": {
     "Source": "",
     "InputDigest": "",
-    "TrustTier": ""
+    "TrustTier": "first_party"
   },
   "Lineage": {
     "IncompleteFixOf": "",

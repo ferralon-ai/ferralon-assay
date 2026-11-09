@@ -21,7 +21,7 @@ func TestAdvisoryTargetConditionalSymbols_Intake(t *testing.T) {
 			if err := (advisoryIntake{}).Run(context.Background(), c, store); err != nil {
 				t.Fatalf("advisory_intake: %v", err)
 			}
-			got, want := AdvisoryTargetConditionalSymbols(store, c.ID), AdvisoryTable[id].TargetConditionalSymbols
+			got, want := AdvisoryTargetConditionalSymbols(store, c.ID), advisoryFixtures[id].TargetConditionalSymbols
 			if !slices.Equal(got, want) {
 				t.Fatalf("target-conditional symbols = %v, want %v", got, want)
 			}

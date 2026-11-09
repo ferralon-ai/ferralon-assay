@@ -188,9 +188,9 @@ The Java lane hands candidate paths and resolved sink coordinates to the paid ti
 
 ### JAVA-VETTED-SYMBOLS
 
-**Trigger.** An advisory without a vetted symbol set (not osv-declared, curated, or built-in).
+**Trigger.** An advisory without a vetted symbol set (not osv-declared or curated, and not a house canary).
 
-**Effect.** The trigger does not emit `not_exploitable` even from a Searched result. The three built-in Java advisories are hand-picked test cases so a default scan completes; advisories come from the external opt-in corpus.
+**Effect.** The trigger does not emit `not_exploitable` even from a Searched result. Advisories come from the advisory corpus; the Java house canaries are first-party demo records a scan reads only with `-include-house-canaries`.
 
 ### JAVA-INGRESS-LIST
 

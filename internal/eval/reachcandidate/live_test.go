@@ -11,14 +11,14 @@
 //	  go test -tags eval_live ./eval/reachcandidate/ -run TestLiveReachCandidateEval -v
 //
 // It measures each corpus fixture's reachable-candidate signal against the CURRENT corpus
-// symbol lists (pipeline.AdvisoryTable — the pre-populate baseline). RECALL is fully
+// symbol lists (the fixture corpus under corpus/testdata/advisories — the pre-populate baseline). RECALL is fully
 // measured (no ground truth needed — candidate formed or not). PRECISION is measured only
 // for CVEs annotated in testdata/expected_sinks.json (curated, each one verified against the
 // upstream fix commit); un-annotated CVEs print sink "-" and are excluded from the
 // precision denominator, honestly rather than circularly.
 //
 // To measure a POPULATE delta (corpus vN → vN+1), the producer's complete symbol lists land
-// in AdvisoryTable (or a future artifactSource); re-run and Diff against a saved baseline.
+// in the corpus (or a future artifactSource); re-run and Diff against a saved baseline.
 
 package reachcandidate
 
@@ -30,7 +30,6 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/corpus"
-	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -84,8 +83,8 @@ func TestLiveReachCandidateEval(t *testing.T) {
 			t.Logf("SKIP %s: acquisition mode %q not vendored_repro", fix.Advisory.ID, fix.Codebase.Acquisition.Mode)
 			continue
 		}
-		// Baseline symbols come from the current in-memory corpus (what S1 would read today).
-		facts := pipeline.AdvisoryTable[fix.Advisory.ID]
+		// Baseline symbols come from the fixture advisory corpus.
+		facts := advisoryFixtures[fix.Advisory.ID]
 		// empty expected ⇒ precision unmeasured for this CVE
 		cases = append(cases, CaseFrom(fix, facts, expected[fix.Advisory.ID]))
 	}

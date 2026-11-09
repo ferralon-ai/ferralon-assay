@@ -43,7 +43,7 @@ const VulnClassSchemaVersion = "tegron.corpus.vulnclass.v1"
 // resolves them to absolute, like the golden fixtures).
 type VulnClassFixture struct {
 	SchemaVersion  string `json:"schema_version"`
-	ID             string `json:"id"`              // advisory id (matches the pipeline advisoryTable entry)
+	ID             string `json:"id"`              // advisory id
 	VulnClass      string `json:"vuln_class"`      // expected proof.Class (e.g. "ssrf", "dos")
 	Source         string `json:"source"`          // advisory source: osv|nvd|ghsa
 	Summary        string `json:"summary"`         // advisory summary (human + provenance)

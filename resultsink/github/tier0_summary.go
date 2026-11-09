@@ -342,7 +342,11 @@ func reportHeadline(r report.Report, c counts) string {
 	if noAnalyzerRan(r) {
 		return noAnalyzerHeadline
 	}
-	return headline(c, headlineTail(r))
+	h := headline(c, headlineTail(r))
+	if nothingMatched(r) {
+		h += " " + nothingMatchedLine
+	}
+	return h
 }
 
 // coverageLead opens the did-not-run disclosure on both surfaces. It says "partial coverage" only
@@ -959,4 +963,18 @@ func escapeData(s string) string {
 func escapeProp(s string) string {
 	r := strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A", ":", "%3A", ",", "%2C")
 	return r.Replace(s)
+}
+
+// nothingMatchedLine follows the headline of a run whose work-set input chose no advisory for this
+// repository, so a reader sees the empty Report is that answer rather than a scan that assessed
+// nothing. A Report carrying partiality notes, or whose selection did not run (WorkSetNone), leaves
+// the qualifier to those notes and does not claim it.
+const nothingMatchedLine = "None of the advisories this run was given applies to this repository's dependencies."
+
+func nothingMatched(r report.Report) bool {
+	in := r.Provenance.Intel
+	if in == nil || in.WorkSetSource == "" || in.WorkSetSource == report.WorkSetNone {
+		return false
+	}
+	return in.WorkSetSize == 0 && len(r.Advisories) == 0 && len(r.Partiality) == 0
 }

@@ -46,7 +46,7 @@ func unmeasuredResult() reachcandidate.CaseResult { return reachcandidate.CaseRe
 func boundGoBearingIDs(fixtures []corpus.Fixture) []string {
 	bound := bindFixtures(fixtures)
 	var ids []string
-	for id, r := range pipeline.AdvisoryTable {
+	for id, r := range advisoryFixtures {
 		if pipeline.EcosystemToken(r) != "golang" || !pipeline.SymbolBearing(r) {
 			continue
 		}

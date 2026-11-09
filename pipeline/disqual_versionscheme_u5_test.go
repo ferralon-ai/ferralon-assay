@@ -70,7 +70,7 @@ func TestLanguageEcosystem_PythonDotNetFailOpen(t *testing.T) {
 }
 
 // runIntakeDisqual drives advisory_intake (which derives the comparator scheme from the
-// corpus PURL) for the given AdvisoryTable id, seeds the resolved version, then runs
+// corpus PURL) for the given fixture advisory id, seeds the resolved version, then runs
 // disqualification_discovery — the real derived-scheme version axis end to end. It also
 // returns the scheme intake stamped onto the emitted affected range, so a test can assert
 // the PURL selected the right comparator.

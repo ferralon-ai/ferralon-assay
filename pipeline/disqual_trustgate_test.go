@@ -107,26 +107,6 @@ func TestExtractAdvisoryTrust_Recognition(t *testing.T) {
 	}
 }
 
-// tableSource stamps the curated table's first-party provenance (fill-only) so its facts remain
-// refute-eligible, while preserving every other field. A miss stays (zero, false).
-func TestTableSource_StampsFirstPartyTrust(t *testing.T) {
-	facts, ok := tableSource{}.Lookup("GO-2021-0113")
-	if !ok {
-		t.Fatalf("Lookup(GO-2021-0113) = _,false; want a hit")
-	}
-	if facts.Provenance.TrustTier != TrustFirstParty {
-		t.Fatalf("TrustTier = %q, want %q (curated table is first-party)", facts.Provenance.TrustTier, TrustFirstParty)
-	}
-	// U8a field parity: the stamp fills only the previously-zero tier, never touches other fields.
-	want := AdvisoryTable["GO-2021-0113"]
-	if facts.Module != want.Module || facts.UpperExclusive != want.UpperExclusive || facts.FixedVersion != want.FixedVersion {
-		t.Fatalf("non-provenance fields drifted from AdvisoryTable: got %+v", facts)
-	}
-	if _, ok := (tableSource{}).Lookup("NO-SUCH-ID"); ok {
-		t.Fatalf("Lookup(miss) = _,true; want false")
-	}
-}
-
 // The full disqualification stage suppresses a would-be version refute when the serialized advisory
 // carries a low-trust tier, and fires it when the tier is first_party — the end-to-end gate.
 func TestRun_OutOfRange_TrustGatedAtStage(t *testing.T) {

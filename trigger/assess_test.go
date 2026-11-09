@@ -30,7 +30,7 @@ type groundsFixture struct {
 	scoped          []artifact.ScopedPartialityFlag
 	provenance      string // symbol_provenance; "" = osv-declared
 	untagged        bool   // the record carries no symbol_provenance
-	builtIn         bool   // S1's marker for a record the built-in table answered
+	builtIn         bool   // the house-canary source's origin marker
 }
 
 func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {

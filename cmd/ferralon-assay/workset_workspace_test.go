@@ -42,7 +42,7 @@ func goWorkFixture(t *testing.T, declared string) *acquired {
 		buildDir:   filepath.Join(tree, "a"),
 		language:   checkout.LangGo,
 		goWork:     declared,
-		advisories: goAdvisoryCorpus(false),
+		advisories: houseCanaries(checkout.LangGo, true),
 	}
 }
 
@@ -135,7 +135,7 @@ func TestPolicyWorkSet_AdmitsWorkspaceMembers(t *testing.T) {
 // which has no released version, and the member is disclosed as unversioned instead.
 func TestOSVWorkSet_WorkspaceMemberIsNamedNotQueried(t *testing.T) {
 	osv := &fakeOSV{}
-	ws := resolveWorkSet(context.Background(), goWorkFixture(t, ""), osv, pipeline.NewTableSource())
+	ws := resolveWorkSet(context.Background(), goWorkFixture(t, ""), osv, fixtureSource())
 	for _, p := range osv.seen {
 		if p.Name == "example.com/mono/b" {
 			t.Errorf("OSV was asked about the member: %+v", p)

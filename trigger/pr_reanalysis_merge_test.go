@@ -86,7 +86,7 @@ type twoPackageSource struct{}
 
 func (twoPackageSource) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
 	if id != twoPackageAdvisory.ID {
-		return pipeline.NewTableSource().Lookup(id)
+		return fixtureSource().Lookup(id)
 	}
 	affected := func(module string) pipeline.AffectedPackage {
 		return pipeline.AffectedPackage{

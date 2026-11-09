@@ -192,7 +192,7 @@ func (s *bundleSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 // Validate is the STARTUP-ONLY bundle preflight (implements CorpusValidator). It triggers the load
 // and returns the load error VERBATIM: a bundle that cannot be opened, decompressed, parsed as JSONL,
 // or that carries a duplicate identifier is WHOLLY unusable, and an entrypoint hard-fails loudly on
-// it before serving — never silently degrades to stale built-in intel.
+// it before serving — never silently runs without the advisory facts it was configured for.
 //
 // inv.5 SPLIT: Validate is SEPARATE from Lookup and never runs inside it. It gates the bundle
 // CONTAINER (openable, decompressible, parseable, unique ids), NOT each document — a single

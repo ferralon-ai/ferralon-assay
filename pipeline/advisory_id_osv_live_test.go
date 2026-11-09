@@ -104,14 +104,25 @@ func fetchOSV(t *testing.T, client *http.Client, id string) (rec osvRecord, foun
 	}
 }
 
-// shippedIdentifiers collects every advisory identifier in the built-in table, mapped to the
-// advisory entry it is published under, so a failure can name where to go and fix it.
+// checkedAdvisories are the advisory records whose identifiers this file resolves, by where each
+// set lives: the house canaries the scanner ships, and the fixture corpus tests and goldens cite.
+func checkedAdvisories() map[string]map[string]AdvisoryFacts {
+	return map[string]map[string]AdvisoryFacts{
+		"houseCanaryFacts": houseCanaryFacts,
+		"fixture":          advisoryFixtures,
+	}
+}
+
+// shippedIdentifiers collects every advisory identifier in checkedAdvisories, mapped to the entry it
+// is published under, so a failure can name where to go and fix it.
 func shippedIdentifiers() map[string][]string {
 	out := map[string][]string{}
-	for id, facts := range AdvisoryTable {
-		out[id] = append(out[id], "AdvisoryTable key")
-		for _, alias := range idsFrom(facts) {
-			out[alias] = append(out[alias], "identifier on AdvisoryTable["+id+"]")
+	for set, records := range checkedAdvisories() {
+		for id, facts := range records {
+			out[id] = append(out[id], set+" key")
+			for _, alias := range idsFrom(facts) {
+				out[alias] = append(out[alias], "identifier on "+set+"["+id+"]")
+			}
 		}
 	}
 	return out
@@ -172,8 +183,14 @@ func TestOSV_AliasesAgreeWithOSV(t *testing.T) {
 	requireOSVGate(t)
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	keys := make([]string, 0, len(AdvisoryTable))
-	for id := range AdvisoryTable {
+	records := map[string]AdvisoryFacts{}
+	for _, set := range checkedAdvisories() {
+		for id, facts := range set {
+			records[id] = facts
+		}
+	}
+	keys := make([]string, 0, len(records))
+	for id := range records {
 		keys = append(keys, id)
 	}
 	sort.Strings(keys)
@@ -183,7 +200,7 @@ func TestOSV_AliasesAgreeWithOSV(t *testing.T) {
 		if firstPartyNamespaces[ns] {
 			continue
 		}
-		ours := AdvisoryTable[id].Aliases
+		ours := records[id].Aliases
 		if len(ours) == 0 {
 			continue
 		}

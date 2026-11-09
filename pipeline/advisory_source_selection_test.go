@@ -16,7 +16,7 @@ import (
 
 // selectionStubSource is a distinctive AdvisorySource: it returns the same sentinel facts for every
 // id, so a test can tell whether a read went through the injected/default-swapped source (sentinel
-// module) or the built-in AdvisoryTable (the real module).
+// module) or the fixture default TestMain installs (the real module).
 type selectionStubSource struct{ facts AdvisoryFacts }
 
 func (s selectionStubSource) Lookup(string) (AdvisoryFacts, bool) { return s.facts, true }
@@ -30,29 +30,26 @@ func swapDefaultSource(t *testing.T, src AdvisorySource) {
 	SetDefaultAdvisorySource(src)
 }
 
-// Unset (nil var) ⇒ defaultAdvisorySource() is tableSource: a known AdvisoryTable id resolves
-// byte-identically to the built-in table, so an unconfigured process is unchanged.
-func TestDefaultAdvisorySource_UnsetIsTableSource(t *testing.T) {
-	// Guard against any leaked global state from another test in this package.
+// Unset (nil var) ⇒ defaultAdvisorySource() resolves nothing: an unconfigured process carries no
+// advisory facts, not even for an id every fixture corpus holds.
+func TestDefaultAdvisorySource_UnsetResolvesNothing(t *testing.T) {
 	prev := defaultAdvisorySourceVar
 	defaultAdvisorySourceVar = nil
 	t.Cleanup(func() { defaultAdvisorySourceVar = prev })
 
-	if _, ok := defaultAdvisorySource().(tableSource); !ok {
-		t.Fatalf("defaultAdvisorySource() = %T, want tableSource when unset", defaultAdvisorySource())
-	}
-	facts, ok := defaultAdvisorySource().Lookup("GO-2021-0113")
-	if !ok {
-		t.Fatal("defaultAdvisorySource().Lookup(GO-2021-0113) ok=false, want true (table hit)")
-	}
-	if facts.Module != "golang.org/x/text" {
-		t.Fatalf("Module = %q, want golang.org/x/text (the AdvisoryTable value)", facts.Module)
+	for _, id := range []string{"GO-2021-0113", "FERRALON-APP-DOS-0001"} {
+		if facts, ok := defaultAdvisorySource().Lookup(id); ok {
+			t.Errorf("defaultAdvisorySource().Lookup(%s) = %+v, true; want a miss when unset", id, facts)
+		}
+		if got := LookupAdvisoryFacts(id); !reflect.DeepEqual(got, AdvisoryFacts{}) {
+			t.Errorf("LookupAdvisoryFacts(%s) = %+v, want the zero facts when unset", id, got)
+		}
 	}
 }
 
 // SetDefaultAdvisorySource swaps what BOTH defaultAdvisorySource() and LookupAdvisoryFacts (the
-// Prove-side read point) resolve through: after the swap a known table id returns the installed
-// source's facts, not the table's.
+// Prove-side read point) resolve through: after the swap a fixture id returns the installed
+// source's facts, not the fixture's.
 func TestSetDefaultAdvisorySource_SwapsDefaultAndLookupAdvisoryFacts(t *testing.T) {
 	const sentinel = "example.com/swapped/module"
 	swapDefaultSource(t, selectionStubSource{facts: AdvisoryFacts{Module: sentinel}})
@@ -60,7 +57,7 @@ func TestSetDefaultAdvisorySource_SwapsDefaultAndLookupAdvisoryFacts(t *testing.
 	if got := defaultAdvisorySource(); got.(selectionStubSource).facts.Module != sentinel {
 		t.Fatalf("defaultAdvisorySource() did not return the installed source (got %T)", got)
 	}
-	// GO-2021-0113 is a real AdvisoryTable id (module golang.org/x/text). Through the swapped
+	// GO-2021-0113 is a fixture id (module golang.org/x/text). Through the swapped
 	// default it must resolve to the sentinel instead — proving the swap reaches LookupAdvisoryFacts.
 	if got := LookupAdvisoryFacts("GO-2021-0113"); got.Module != sentinel {
 		t.Fatalf("LookupAdvisoryFacts(GO-2021-0113).Module = %q, want the swapped sentinel %q", got.Module, sentinel)

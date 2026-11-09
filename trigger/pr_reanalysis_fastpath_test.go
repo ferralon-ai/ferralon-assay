@@ -196,7 +196,7 @@ func TestInheritFastPath_CursorClaimsOnlyRowedOrDisclosed(t *testing.T) {
 type forkNamingSource struct{}
 
 func (forkNamingSource) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
-	facts, ok := pipeline.NewTableSource().Lookup(id)
+	facts, ok := fixtureSource().Lookup(id)
 	if id != wiringAdvisory.ID {
 		return facts, ok
 	}

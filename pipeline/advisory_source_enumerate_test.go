@@ -45,7 +45,7 @@ func TestLookupEach_MatchesLookup(t *testing.T) {
 	}{
 		{"tree reader", NewArtifactSource(advisoryFixtureRoot)},
 		{"tree reader, missing manifest", NewArtifactSource("testdata/advisory_source/does-not-exist")},
-		{"chain (plain Lookup)", NewChainSource(NewArtifactSource(advisoryFixtureRoot), NewTableSource())},
+		{"chain (plain Lookup)", NewChainSource(NewArtifactSource(advisoryFixtureRoot), fixtureSource())},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var seen []string
@@ -72,7 +72,7 @@ func TestAffectedPackageKeys(t *testing.T) {
 		want  []PackageKey
 	}{
 		{
-			name:  "go module from the table (module field)",
+			name:  "go module from the module field",
 			facts: AdvisoryFacts{Module: "golang.org/x/text", PURL: "pkg:golang/golang.org/x/text"},
 			want:  []PackageKey{{"golang", "golang.org/x/text"}},
 		},

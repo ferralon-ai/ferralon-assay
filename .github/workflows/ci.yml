@@ -74,12 +74,14 @@ jobs:
       # on an error, never on a verdict, and the job keeps that contract. It checks that the Action
       # runs, not what advisories say about this repository's dependencies: gating on findings would
       # turn a newly published advisory into a red check on every unrelated pull request. The
-      # verdicts land in the job summary and in the ferralon-assay-out directory.
+      # verdicts land in the job summary and in the ferralon-assay-out directory. The house canaries
+      # give the scan work without an advisory corpus.
       - name: Run the Ferralon Assay against this repository
         uses: ./
         with:
           mode: baseline
           target: .
+          include-house-canaries: "true"
           link-to-console: "false"
           issue: "false"
           pr-comment: "false"

@@ -2,9 +2,9 @@
 //
 // The WithAdvisorySource option must flow through the AssessStages / SBOMStages assembly seam into
 // the S1 advisory_intake stage, so a stage built with the option reads the INJECTED source rather
-// than the built-in AdvisoryTable. GO-2021-0113 is a real table id (module golang.org/x/text); the
-// injected source returns a distinct sentinel module, so the artifact's module tells us which source
-// the stage actually read.
+// than the process default. GO-2021-0113 is a fixture id (module golang.org/x/text); the injected
+// source returns a distinct sentinel module, so the artifact's module tells us which source the stage
+// actually read.
 package pipeline
 
 import (
@@ -42,8 +42,8 @@ func intakeModuleFromStages(t *testing.T, stages []Stage, vulnID string) string 
 	return adv.Module
 }
 
-// AssessStages(WithAdvisorySource(src)) threads the injected source into advisory_intake: a known
-// table id resolves through the injected source (sentinel module), not the AdvisoryTable.
+// AssessStages(WithAdvisorySource(src)) threads the injected source into advisory_intake: a fixture
+// id resolves through the injected source (sentinel module), not the default.
 func TestAssessStages_WithAdvisorySource_ReadsInjected(t *testing.T) {
 	src := selectionStubSource{facts: AdvisoryFacts{Module: injectedSentinelModule}}
 	got := intakeModuleFromStages(t, AssessStages(WithAdvisorySource(src)), "GO-2021-0113")
@@ -52,16 +52,17 @@ func TestAssessStages_WithAdvisorySource_ReadsInjected(t *testing.T) {
 	}
 }
 
-// Without the option, advisory_intake falls back to the default (table) source, unchanged: the same
-// id resolves to the real AdvisoryTable module. Guards the nil⇒default byte-identity.
-func TestAssessStages_NoOption_ReadsTableDefault(t *testing.T) {
-	prev := defaultAdvisorySourceVar
-	defaultAdvisorySourceVar = nil
-	t.Cleanup(func() { defaultAdvisorySourceVar = prev })
+// Without the option, advisory_intake reads the process default: with the fixtures installed the id
+// resolves to their module, and with nothing installed it resolves nothing at all.
+func TestAssessStages_NoOption_ReadsDefault(t *testing.T) {
+	swapDefaultSource(t, fixtureSource())
+	if got := intakeModuleFromStages(t, AssessStages(), "GO-2021-0113"); got != "golang.org/x/text" {
+		t.Fatalf("module = %q, want golang.org/x/text (the installed default)", got)
+	}
 
-	got := intakeModuleFromStages(t, AssessStages(), "GO-2021-0113")
-	if got != "golang.org/x/text" {
-		t.Fatalf("module = %q, want golang.org/x/text (the table default when no option is set)", got)
+	defaultAdvisorySourceVar = nil
+	if got := intakeModuleFromStages(t, AssessStages(), "GO-2021-0113"); got != "" {
+		t.Fatalf("module = %q, want empty: an unset default carries no advisory facts", got)
 	}
 }
 

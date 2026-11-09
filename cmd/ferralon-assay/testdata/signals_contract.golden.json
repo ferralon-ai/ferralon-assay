@@ -5,9 +5,9 @@
     "advisory_cursor": "",
     "timestamp": "2026-10-26T00:00:00Z",
     "intel": {
-      "work_set_source": "builtin_language_set",
+      "work_set_source": "policy",
       "work_set_size": 2,
-      "fact_source": "builtin_table",
+      "fact_source": "corpus",
       "signals_digest": "sha256:e4f2193b5cb252760dedfa7c4f3260d6fb99b26256db9bbb7400d0e181c7c220"
     }
   },

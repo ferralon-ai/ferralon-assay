@@ -30,6 +30,7 @@ var metricsReader = sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 
 func TestMain(m *testing.M) {
 	gittest.ScrubProcess()
+	SetDefaultAdvisorySource(fixtureSource())
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(metricsReader))
 	otel.SetMeterProvider(mp)
 	os.Exit(m.Run())

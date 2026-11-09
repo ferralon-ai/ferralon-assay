@@ -284,14 +284,14 @@ func TestRun_AbsentSymbolButAffectedVersion_Proceeds(t *testing.T) {
 	}
 }
 
-// --- Advisory table facts -----------------------------------------------------
+// --- Fixture advisory facts --------------------------------------------------
 
-// TestAdvisoryTable_CVE202445337_Facts pins the CVE-2024-45337 (x/crypto/ssh) facts against the
+// TestFixtureAdvisory_CVE202445337_Facts pins the CVE-2024-45337 (x/crypto/ssh) facts against the
 // GHSA-v778-237x-gjrc advisory so a future edit that drifts them fails loudly.
-func TestAdvisoryTable_CVE202445337_Facts(t *testing.T) {
-	facts, ok := AdvisoryTable["CVE-2024-45337"]
+func TestFixtureAdvisory_CVE202445337_Facts(t *testing.T) {
+	facts, ok := advisoryFixtures["CVE-2024-45337"]
 	if !ok {
-		t.Fatalf("AdvisoryTable[%q] missing", "CVE-2024-45337")
+		t.Fatalf("advisoryFixtures[%q] missing", "CVE-2024-45337")
 	}
 	if facts.Module != "golang.org/x/crypto" {
 		t.Errorf("Module = %q, want %q", facts.Module, "golang.org/x/crypto")

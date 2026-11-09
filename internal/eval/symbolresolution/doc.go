@@ -6,8 +6,7 @@
 // # Two corpora, joined by vuln_id
 //
 // The metric joins two recorded datasets and counts; it executes no target code (§3
-// non-negotiables). The DENOMINATOR is the advisory corpus (pipeline.AdvisoryTable — 38 records
-// / 5 ecosystems, each carrying PURL + Symbols but NO codebase). The BuildDir+Category source is
+// non-negotiables). The DENOMINATOR is the advisory corpus (the advisory corpus, // / 5 ecosystems, each carrying PURL + Symbols but NO codebase). The BuildDir+Category source is
 // the code-fixture corpus (corpus.Fixture, vendored_repro mode → a checked-out repo). A record
 // with a bound vendored_repro fixture can be measured by the {go} resolver today; a record with
 // none is honestly artifact-not-indexed. That boundary is the point of the metric, not a defect.

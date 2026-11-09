@@ -7,7 +7,6 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 	"github.com/ferralon-ai/ferralon-assay/internal/intel/inteltest"
-	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/projection"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -87,7 +86,7 @@ func TestSourcedZeroPercentileSurvivesEndToEnd(t *testing.T) {
 			Evidence: report.EvidenceSummary{Grade: report.GradeControlFlowOnly},
 		})
 	}
-	rankWith(b, sig, nil, pipeline.NewTableSource())
+	rankWith(b, sig, nil, fixtureSource())
 	encoded, err := json.Marshal(b.Build())
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +190,7 @@ func TestRankWithRefusesAnAliasAnotherRowNames(t *testing.T) {
 		for _, f := range fs {
 			b.AddFinding(f)
 		}
-		rankWith(b, sig, nil, pipeline.NewTableSource())
+		rankWith(b, sig, nil, fixtureSource())
 		got := make(map[string]*report.Priority)
 		for _, f := range b.Build().Advisories {
 			got[f.Advisory.ID] = f.Priority

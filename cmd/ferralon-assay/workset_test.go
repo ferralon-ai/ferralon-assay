@@ -1,9 +1,10 @@
 // workset_test.go
 //
-// I-17(b): the scan path's work set is no longer 16 compiled-in ids. These tests pin the three
-// properties that keep the widening honest — the compiled-in set is a floor that cannot be lost, a
-// widening that did not happen is disclosed rather than rendered clean, and only ids the advisory
-// source can actually answer for are admitted.
+// These tests pin the three properties that keep the work-set widening honest: the opted-in house
+// canaries are a floor that cannot be lost, a widening that did not happen is disclosed rather than
+// rendered clean, and only ids the advisory source can actually answer for are admitted. The fixture
+// runs opt the Go canaries in so the floor is non-empty, and resolve facts from the fixture
+// advisories under corpus/testdata/advisories.
 package main
 
 import (
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -58,7 +60,7 @@ func goFixture(t *testing.T, gomod string) *acquired {
 		buildDir:   dir,
 		language:   checkout.LangGo,
 		repo:       "example.com/fixture",
-		advisories: goAdvisoryCorpus(false),
+		advisories: houseCanaries(checkout.LangGo, true),
 	}
 }
 
@@ -98,13 +100,13 @@ func hasReason(notes []report.PartialityNote, reason string) bool {
 	return false
 }
 
-// --- Property 1: the compiled-in set is a FLOOR --------------------------------------------
+// --- Property 1: the opted-in canaries are a FLOOR --------------------------------------------
 
 // TestWorkSet_FloorIsNeverLost is the acceptance gate the handoff states: no id that was evaluated
 // before may stop being evaluated. It is asserted against the hostile cases — OSV returning nothing,
 // OSV returning only junk, and OSV failing outright.
 func TestWorkSet_FloorIsNeverLost(t *testing.T) {
-	floor := goAdvisoryCorpus(false)
+	floor := houseCanaries(checkout.LangGo, true)
 
 	for _, tc := range []struct {
 		name string
@@ -113,11 +115,11 @@ func TestWorkSet_FloorIsNeverLost(t *testing.T) {
 		{"osv returns nothing", &fakeOSV{}},
 		{"osv returns only ids we have no facts for", &fakeOSV{ids: []string{"GHSA-zzzz-zzzz-zzzz", "CVE-1999-0001"}}},
 		{"osv fails", &fakeOSV{err: errors.New("dial tcp: no route to host")}},
-		{"osv returns ids already in the floor", &fakeOSV{ids: []string{"CVE-2024-45337", "GO-2021-0113"}}},
+		{"osv returns ids already in the floor", &fakeOSV{ids: []string{"FERRALON-APP-DOS-0001", "GO-2021-0113"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			acq := goFixture(t, fixtureGoMod)
-			ws := resolveWorkSet(context.Background(), acq, tc.osv, pipeline.NewTableSource())
+			ws := resolveWorkSet(context.Background(), acq, tc.osv, fixtureSource())
 
 			for _, want := range floor {
 				if !hasID(ws.advisories, want.ID) {
@@ -135,9 +137,9 @@ func TestWorkSet_FloorIsNeverLost(t *testing.T) {
 // be evaluated twice (each evaluation is a full S1-S6 pass).
 func TestWorkSet_NoDuplicateIDs(t *testing.T) {
 	acq := goFixture(t, fixtureGoMod)
-	osv := &fakeOSV{ids: []string{"CVE-2024-45337", "CVE-2024-45337", "GO-2021-0113"}}
+	osv := &fakeOSV{ids: []string{"CVE-2024-45337", "CVE-2024-45337", "GO-2021-0113", "FERRALON-APP-DOS-0001"}}
 
-	ws := resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+	ws := resolveWorkSet(context.Background(), acq, osv, fixtureSource())
 
 	seen := map[string]int{}
 	for _, id := range ids(ws.advisories) {
@@ -156,13 +158,13 @@ func TestWorkSet_NoDuplicateIDs(t *testing.T) {
 // set could not be determined is analysis that did not happen. It must not render as a clean scan.
 func TestWorkSet_UnreachableOSVIsDisclosed(t *testing.T) {
 	acq := goFixture(t, fixtureGoMod)
-	ws := resolveWorkSet(context.Background(), acq, &fakeOSV{err: errors.New("network unreachable")}, pipeline.NewTableSource())
+	ws := resolveWorkSet(context.Background(), acq, &fakeOSV{err: errors.New("network unreachable")}, fixtureSource())
 
 	if !hasReason(ws.partiality, reasonWorkSetNotWidened) {
 		t.Fatalf("an unreachable OSV emitted no partiality note; notes = %+v", ws.partiality)
 	}
-	if ws.source != report.WorkSetBuiltinLanguageSet {
-		t.Errorf("WorkSetSource = %q, want %q — only the floor actually ran", ws.source, report.WorkSetBuiltinLanguageSet)
+	if ws.source != report.WorkSetHouseCanaries {
+		t.Errorf("WorkSetSource = %q, want %q — only the floor actually ran", ws.source, report.WorkSetHouseCanaries)
 	}
 	if ws.widened != 0 {
 		t.Errorf("widened = %d, want 0", ws.widened)
@@ -175,11 +177,11 @@ func TestWorkSet_NoManifestIsDisclosed(t *testing.T) {
 	acq := &acquired{
 		buildDir:   t.TempDir(), // no go.mod
 		language:   checkout.LangGo,
-		advisories: goAdvisoryCorpus(false),
+		advisories: houseCanaries(checkout.LangGo, true),
 	}
 	osv := &fakeOSV{ids: []string{"CVE-2023-39325"}}
 
-	ws := resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+	ws := resolveWorkSet(context.Background(), acq, osv, fixtureSource())
 
 	if !hasReason(ws.partiality, plugin.PartialReasonNoManifest) {
 		t.Fatalf("missing go.mod emitted no partiality note; notes = %+v", ws.partiality)
@@ -197,7 +199,7 @@ func TestWorkSet_UnresolvableIDsAreDisclosedNotDropped(t *testing.T) {
 	acq := goFixture(t, fixtureGoMod)
 	osv := &fakeOSV{ids: []string{"GHSA-nope-nope-nope", "CVE-1999-0001"}}
 
-	ws := resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+	ws := resolveWorkSet(context.Background(), acq, osv, fixtureSource())
 
 	if !hasReason(ws.partiality, reasonAdvisoryFactsUnavailable) {
 		t.Fatalf("unresolvable OSV ids emitted no partiality note; notes = %+v", ws.partiality)
@@ -208,7 +210,7 @@ func TestWorkSet_UnresolvableIDsAreDisclosedNotDropped(t *testing.T) {
 }
 
 // TestWorkSet_DisabledIsNotAPartiality proves a deliberately offline run is a supported
-// configuration, not a degradation. Its Report says builtin_language_set plainly and carries no
+// configuration, not a degradation. Its Report says house_canaries plainly and carries no
 // note — the distinction from a FAILED widening is intent.
 func TestWorkSet_DisabledIsNotAPartiality(t *testing.T) {
 	f := runFlagsFor(t, "-osv-work-set=false")
@@ -221,8 +223,8 @@ func TestWorkSet_DisabledIsNotAPartiality(t *testing.T) {
 	if len(ws.partiality) != 0 {
 		t.Errorf("a deliberately offline run emitted partiality %+v, want none", ws.partiality)
 	}
-	if ws.source != report.WorkSetBuiltinLanguageSet {
-		t.Errorf("WorkSetSource = %q, want %q", ws.source, report.WorkSetBuiltinLanguageSet)
+	if ws.source != report.WorkSetHouseCanaries {
+		t.Errorf("WorkSetSource = %q, want %q", ws.source, report.WorkSetHouseCanaries)
 	}
 	if len(ws.advisories) != len(acq.advisories) {
 		t.Errorf("work set = %d, want the floor's %d", len(ws.advisories), len(acq.advisories))
@@ -276,42 +278,27 @@ func TestWorkSet_UnparseableOptOutIsAnError(t *testing.T) {
 	}
 }
 
-// --- Property 3: only ids with FACTS are admitted, and aliases join ------------------------
+// --- Property 3: only ids with FACTS are admitted ------------------------------------------
 
-// TestWorkSet_AliasAdmission is the join that makes the widening reach anything at all. OSV answers
-// in the upstream feed's namespace (GO-2023-2102, GHSA-4374-p667-p6c8); the advisory source keys the
-// same vulnerability under CVE-2023-39325. Admission must resolve the alias AND admit under the
-// PRIMARY id, because that is where the facts — and therefore the finding — live.
-func TestWorkSet_AliasAdmission(t *testing.T) {
+// TestWorkSet_AdmitsUnderTheAnsweredID pins admission to a bare Lookup on the id OSV answered with.
+// The fixture source keys the HTTP/2 rapid-reset advisory under CVE-2023-39325; OSV's GO- and GHSA-
+// ids for it resolve nothing there, so they are disclosed as unresolved, never admitted, and never
+// rewritten to another id.
+func TestWorkSet_AdmitsUnderTheAnsweredID(t *testing.T) {
 	acq := goFixture(t, fixtureGoMod)
+	osv := &fakeOSV{ids: []string{"CVE-2023-39325", "GO-2023-2102", "GHSA-4374-p667-p6c8"}}
 
-	for _, alias := range []string{"GO-2023-2102", "GHSA-4374-p667-p6c8"} {
-		t.Run(alias, func(t *testing.T) {
-			ws := resolveWorkSet(context.Background(), acq, &fakeOSV{ids: []string{alias}}, pipeline.NewTableSource())
+	ws := resolveWorkSet(context.Background(), acq, osv, fixtureSource())
 
-			if !hasID(ws.advisories, "CVE-2023-39325") {
-				t.Fatalf("alias %q was not admitted under its primary id CVE-2023-39325; got %v", alias, ids(ws.advisories))
-			}
-			if hasID(ws.advisories, alias) {
-				t.Errorf("alias %q was admitted under its OWN id; facts are keyed on the primary", alias)
-			}
-		})
+	if !hasID(ws.advisories, "CVE-2023-39325") {
+		t.Fatalf("CVE-2023-39325 was not admitted; got %v", ids(ws.advisories))
 	}
-}
-
-// TestWorkSet_AliasIndexIsDeterministic guards against Go's randomized map iteration leaking into
-// the work set: two runs over the same table must produce the same index.
-func TestWorkSet_AliasIndexIsDeterministic(t *testing.T) {
-	first := aliasIndex()
-	for i := 0; i < 20; i++ {
-		next := aliasIndex()
-		if len(next) != len(first) {
-			t.Fatalf("aliasIndex size varies across calls: %d vs %d", len(next), len(first))
+	for _, alias := range []string{"GO-2023-2102", "GHSA-4374-p667-p6c8"} {
+		if hasID(ws.advisories, alias) {
+			t.Errorf("%q was admitted with no facts keyed under it", alias)
 		}
-		for k, v := range first {
-			if next[k] != v {
-				t.Fatalf("aliasIndex[%q] varies across calls: %q vs %q", k, v, next[k])
-			}
+		if !slices.Contains(ws.unresolved, alias) {
+			t.Errorf("%q is not disclosed as unresolved; unresolved = %v", alias, ws.unresolved)
 		}
 	}
 }
@@ -323,8 +310,8 @@ func TestWorkSet_WidenedSetIsDeterministic(t *testing.T) {
 	forward := []string{"CVE-2023-39325", "CVE-2023-45283", "CVE-2024-24790"}
 	reverse := []string{"CVE-2024-24790", "CVE-2023-45283", "CVE-2023-39325"}
 
-	a := resolveWorkSet(context.Background(), acq, &fakeOSV{ids: forward}, pipeline.NewTableSource())
-	b := resolveWorkSet(context.Background(), acq, &fakeOSV{ids: reverse}, pipeline.NewTableSource())
+	a := resolveWorkSet(context.Background(), acq, &fakeOSV{ids: forward}, fixtureSource())
+	b := resolveWorkSet(context.Background(), acq, &fakeOSV{ids: reverse}, fixtureSource())
 
 	got, want := ids(a.advisories), ids(b.advisories)
 	if len(got) != len(want) {
@@ -341,7 +328,7 @@ func TestWorkSet_WidenedSetIsDeterministic(t *testing.T) {
 // record which work-set source was used and how many ids it contained.
 func TestWorkSet_ProvenanceRecordsSourceAndSize(t *testing.T) {
 	acq := goFixture(t, fixtureGoMod)
-	ws := resolveWorkSet(context.Background(), acq, &fakeOSV{ids: []string{"CVE-2023-39325"}}, pipeline.NewTableSource())
+	ws := resolveWorkSet(context.Background(), acq, &fakeOSV{ids: []string{"CVE-2023-39325"}}, fixtureSource())
 
 	f := runFlagsFor(t)
 	if _, err := f.advisoryCorpusOption(); err != nil {
@@ -349,15 +336,15 @@ func TestWorkSet_ProvenanceRecordsSourceAndSize(t *testing.T) {
 	}
 	got := f.intelProvenance(ws)
 
-	if got.WorkSetSource != workSetSourceBuiltinUnionOSV {
-		t.Errorf("WorkSetSource = %q, want %q", got.WorkSetSource, workSetSourceBuiltinUnionOSV)
+	if got.WorkSetSource != workSetSourceCanariesUnionOSV {
+		t.Errorf("WorkSetSource = %q, want %q", got.WorkSetSource, workSetSourceCanariesUnionOSV)
 	}
 	if got.WorkSetSize != len(ws.advisories) {
 		t.Errorf("WorkSetSize = %d, want %d", got.WorkSetSize, len(ws.advisories))
 	}
-	if got.WorkSetSize <= len(goAdvisoryCorpus(false)) {
+	if got.WorkSetSize <= len(houseCanaries(checkout.LangGo, true)) {
 		t.Errorf("WorkSetSize = %d did not exceed the %d-id floor — nothing was widened",
-			got.WorkSetSize, len(goAdvisoryCorpus(false)))
+			got.WorkSetSize, len(houseCanaries(checkout.LangGo, true)))
 	}
 }
 
@@ -515,7 +502,7 @@ func TestWorkSet_StdlibQueryPoint(t *testing.T) {
 			acq.goToolchain = tc.tc
 			osv := &fakeOSV{}
 
-			ws := resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+			ws := resolveWorkSet(context.Background(), acq, osv, fixtureSource())
 
 			var queried []report.Package
 			for _, p := range osv.seen {
@@ -578,7 +565,7 @@ func TestWorkSet_StdlibQueryPointBazel(t *testing.T) {
 			acq.goToolchain = subjectGoToolchain{declared: "go1.21.5"}
 			osv := &fakeOSV{}
 
-			resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+			resolveWorkSet(context.Background(), acq, osv, fixtureSource())
 
 			var queried []report.Package
 			for _, p := range osv.seen {
@@ -619,7 +606,7 @@ func TestWorkSet_StdlibQueryPointFromBuildToolchain(t *testing.T) {
 			acq.plugin = build
 			osv := &fakeOSV{}
 
-			resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+			resolveWorkSet(context.Background(), acq, osv, fixtureSource())
 
 			var queried []report.Package
 			for _, p := range osv.seen {
@@ -690,36 +677,28 @@ func TestInventory_UnknownLanguageQueriesNothing(t *testing.T) {
 	acq := &acquired{buildDir: t.TempDir(), language: checkout.LangUnknown, advisories: nil}
 	osv := &fakeOSV{ids: []string{"CVE-2023-39325"}}
 
-	ws := resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+	ws := resolveWorkSet(context.Background(), acq, osv, fixtureSource())
 
 	if len(osv.seen) != 0 {
 		t.Errorf("OSV queried for a language with no inventory path (%d packages)", len(osv.seen))
 	}
-	if ws.source != report.WorkSetBuiltinLanguageSet {
-		t.Errorf("WorkSetSource = %q, want %q", ws.source, report.WorkSetBuiltinLanguageSet)
+	if ws.source != report.WorkSetNone {
+		t.Errorf("WorkSetSource = %q, want %q", ws.source, report.WorkSetNone)
 	}
 }
 
-// TestWorkSet_EveryLanguageFloorSurvives is the handoff's "Java, JS and Python scans produce at
-// least what they produce today" gate, generalized to every language that has a floor.
-//
-// It matters most for the three non-Go ecosystems, whose floors are entirely first-party FERRALON-*
-// fixtures that OSV.dev has never heard of and never will. Any design that REPLACED the compiled-in
-// set with the OSV answer — rather than unioning with it — would silently delete all seven of them
-// and turn those scans from demo-quality into nothing.
-//
-// The three non-Go floors are requested with the house canaries ON because that is now the only way
-// they are non-empty: their corpora are house canaries in their entirety. The property under test is
-// union-not-replace, which needs a non-empty floor to have anything to say.
+// TestWorkSet_EveryLanguageFloorSurvives pins union-not-replace for every language with house
+// canaries. The canaries are first-party FERRALON-* fixtures that OSV.dev has never heard of, so a
+// design that REPLACED the floor with the OSV answer would silently delete them all.
 func TestWorkSet_EveryLanguageFloorSurvives(t *testing.T) {
 	for _, tc := range []struct {
 		language string
 		floor    []assessment.VulnRef
 	}{
-		{checkout.LangGo, goAdvisoryCorpus(false)},
-		{checkout.LangJava, javaAdvisoryCorpus(true)},
-		{checkout.LangJS, jsAdvisoryCorpus(true)},
-		{checkout.LangPython, pythonAdvisoryCorpus(true)},
+		{checkout.LangGo, houseCanaries(checkout.LangGo, true)},
+		{checkout.LangJava, houseCanaries(checkout.LangJava, true)},
+		{checkout.LangJS, houseCanaries(checkout.LangJS, true)},
+		{checkout.LangPython, houseCanaries(checkout.LangPython, true)},
 	} {
 		t.Run(tc.language, func(t *testing.T) {
 			if len(tc.floor) == 0 {
@@ -729,7 +708,7 @@ func TestWorkSet_EveryLanguageFloorSurvives(t *testing.T) {
 			// inventory is therefore absent, which is the WORST case for floor preservation.
 			acq := &acquired{buildDir: t.TempDir(), language: tc.language, advisories: tc.floor}
 
-			ws := resolveWorkSet(context.Background(), acq, &fakeOSV{ids: []string{"CVE-2023-39325"}}, pipeline.NewTableSource())
+			ws := resolveWorkSet(context.Background(), acq, &fakeOSV{ids: []string{"CVE-2023-39325"}}, fixtureSource())
 
 			for _, want := range tc.floor {
 				if !hasID(ws.advisories, want.ID) {

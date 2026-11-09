@@ -13,7 +13,7 @@ import (
 // of unbound records — kept visible, never dropped).
 func TestLedgerSlicesByLaneAndCategory(t *testing.T) {
 	fixtures := loadCorpus(t)
-	led := BuildLedger(context.Background(), pipeline.AdvisoryTable, pipeline.AttributionStore{}, fixtures, spreadRunner(fixtures).run)
+	led := BuildLedger(context.Background(), advisoryFixtures, pipeline.AttributionStore{}, fixtures, spreadRunner(fixtures).run)
 
 	// Lane axis: the measured lane plus every unmeasurable lane, all present.
 	for _, lane := range append(append([]string{}, measuredLanes...), unmeasurableLanes...) {
@@ -31,7 +31,7 @@ func TestLedgerSlicesByLaneAndCategory(t *testing.T) {
 	for _, outs := range led.ByCategory {
 		total += len(outs)
 	}
-	if want := len(pipeline.AdvisoryTable) * len(measuredLanes); total != want {
+	if want := len(advisoryFixtures) * len(measuredLanes); total != want {
 		t.Errorf("total sliced outcomes = %d, want %d", total, want)
 	}
 	if _, ok := led.ByCategory[corpus.Category("")]; !ok {
@@ -62,7 +62,7 @@ func TestLedgerSlicesByLaneAndCategory(t *testing.T) {
 // non-Go lanes report unmeasurable with a reason naming the missing input and NO denominators.
 func TestLaneHonestyMeasuredVsUnmeasurable(t *testing.T) {
 	fixtures := loadCorpus(t)
-	led := BuildLedger(context.Background(), pipeline.AdvisoryTable, pipeline.AttributionStore{}, fixtures, spreadRunner(fixtures).run)
+	led := BuildLedger(context.Background(), advisoryFixtures, pipeline.AttributionStore{}, fixtures, spreadRunner(fixtures).run)
 
 	goEntry := led.ByLane["go"]
 	if goEntry.State != LaneMeasured {
@@ -97,7 +97,7 @@ func TestMeasuredZeroVsUnmeasurableDistinguishable(t *testing.T) {
 	fixtures := loadCorpus(t)
 	// A runner that resolves nothing: every step-5 record returns "measured, no match".
 	resolveNothing := &fakeRunner{dflt: noMatchResult()}
-	led := BuildLedger(context.Background(), pipeline.AdvisoryTable, pipeline.AttributionStore{}, fixtures, resolveNothing.run)
+	led := BuildLedger(context.Background(), advisoryFixtures, pipeline.AttributionStore{}, fixtures, resolveNothing.run)
 
 	goEntry := led.ByLane["go"]
 	javaEntry := led.ByLane["java"]

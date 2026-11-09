@@ -20,7 +20,7 @@ import (
 // acquired holds the resolved scan inputs shared by the baseline / pr-inherit / cve-watch
 // run modes: the local BuildDir to inventory (always a vendored_repro path), the detected
 // source language, the language-matched analyzer plugin, the neutral repo identity, the
-// per-language advisory corpus, and a cleanup for any transient clone. The three run modes
+// opted-in house canaries for that language, and a cleanup for any transient clone. The three run modes
 // differ only in what they do with these inputs, not in how the target is materialized.
 type acquired struct {
 	buildDir   string
@@ -79,17 +79,16 @@ func (a *acquired) provenance(revision, commit string) (string, string) {
 //
 // The source language is detected from the materialized tree (checkout.DetectLanguage) and
 // drives BOTH the plugin (NewGoPlugin / NewJavaPlugin / NewJSPlugin / NewPythonPlugin /
-// NewDotNetPlugin) and the advisory corpus, so a Java tree is analyzed by the Java plugin
-// against the Maven corpus, a JS tree by the JS plugin against the npm corpus, etc. The
+// NewDotNetPlugin) and the house-canary membership, so a Java tree is analyzed by the Java plugin
+// against the Maven canaries, a JS tree by the JS plugin against the npm ones, etc. The
 // pipeline's codebase_inventory only runs a plugin whose Language() matches the tree it
 // inventories, so selecting the wrong plugin here would silently disable analysis — hence
 // detection and selection are bound together in one place.
 //
-// includeHouseCanaries opts the first-party house canaries (the synthetic FERRALON-APP-* Go
-// application-sink advisories and the synthetic Java/JS/Python corpus advisories) into the
-// corpus. It defaults OFF so a customer/investor scan never evaluates them (see
-// goAdvisoryCorpus); the demo scan sets it via -include-house-canaries so the DOS canary
-// surfaces as a reachable_candidate the pipeline can enumerate and fire.
+// includeHouseCanaries opts the first-party house canaries into the work set (see houseCanaries).
+// It defaults OFF so a customer/investor scan never evaluates them; the demo scan sets it via
+// -include-house-canaries so the DOS canary surfaces as a reachable_candidate the pipeline can
+// enumerate and fire.
 func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBin string, includeHouseCanaries bool, graphReq graphRequest) (*acquired, error) {
 	start := time.Now()
 	var buildDir, language, repo, analyzeRef, analyzedCommit string
@@ -226,7 +225,7 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		language:   language,
 		plugin:     plugin.Memoize(lp),
 		repo:       repo,
-		advisories: advisoryCorpus(language, includeHouseCanaries),
+		advisories: houseCanaries(language, includeHouseCanaries),
 		cleanup:    cleanup,
 
 		analyzeRef:     analyzeRef,
@@ -400,214 +399,52 @@ func repoIdentity(target string) string {
 	return s
 }
 
-// advisoryCorpus returns the compiled-in advisory FLOOR for a target of the given language — the
-// starting point a run's work set is resolved from, not the set it ends up evaluating (the OSV
-// widening in workset.go can add to it). Emptiness is therefore judged downstream, on the resolved
-// work set, by the gate in run.go; nothing here refuses a scan.
+// houseCanaries returns the first-party house canaries for a target of the given language when the
+// scan opted them in (-include-house-canaries), and nil otherwise. The binary carries no other
+// advisory membership: real work comes from a corpus (its policy) or the OSV widening in
+// workset.go, and a run given neither halts at errEmptyWorkSet unless the canaries populate its set.
 //
-// The corpus is language-scoped because an advisory names a package in one ecosystem
-// (pkg:golang / pkg:maven / pkg:npm / pkg:pypi / pkg:nuget); running Go advisories against a Java
-// tree would resolve nothing.
-//
-// EVERY SUPPORTED LANGUAGE HAS A NON-EMPTY DEFAULT FLOOR. That is what makes a default scan of a
-// Java, JS, Python or .NET repository complete instead of halting on an empty work set, and it is a
-// property the five-language regression table in language_support_test.go holds in place.
-//
-// includeHouseCanaries opts the first-party house canaries into the corpus, ON TOP of that floor
-// (default OFF). Every ecosystem honors it: Go carries the FERRALON-APP-* application-sink
-// canaries, and Java/JS/Python/.NET carry synthetic first-party sinks and synthetic dependency
-// advisories over com.example / tegron-corpus / stand-in packages, none of them public CVE/GHSA/OSV
-// records. Nothing gated behind this flag ever reaches a default findings surface.
-func advisoryCorpus(language string, includeHouseCanaries bool) []assessment.VulnRef {
+// The canaries are language-scoped because each names a package in one ecosystem; a Go canary
+// would resolve nothing in a Java tree. They are first-party demo records, not sourced from a feed:
+// mostly sinks and dependencies over com.example / tegron-corpus / stand-in packages, a few
+// mirroring a public advisory, that our own demo scan uses to drive enumerate, fire, prove and
+// auto-fix end to end. Even opted in they stay
+// candidate-only at the scan tier; proof comes from the fire. Kotlin's canary has no facts in
+// pipeline's canary source, so it evaluates as unresolved; C-family has none.
+func houseCanaries(language string, include bool) []assessment.VulnRef {
+	if !include {
+		return nil
+	}
 	switch language {
 	case checkout.LangGo:
-		return goAdvisoryCorpus(includeHouseCanaries)
+		return []assessment.VulnRef{
+			{ID: "FERRALON-APP-DOS-0001", Source: "osv"}, // tegron/corpus/dos — unbounded allocation sink, application reachability
+		}
 	case checkout.LangJava:
-		return javaAdvisoryCorpus(includeHouseCanaries)
+		return []assessment.VulnRef{
+			{ID: "FERRALON-JAVA-SSRF-0001", Source: "osv"},        // com.example.web/ssrf — UrlFetcher.fetch taint reachability
+			{ID: "FERRALON-JAVA-SPRING-SSRF-0001", Source: "osv"}, // com.example.web/spring-ssrf — Spring SSRF taint reachability
+			{ID: "FERRALON-JAVA-DEP-0001", Source: "osv"},         // com.example.lib:widget — version-resolvable Maven dependency
+		}
 	case checkout.LangKotlin:
-		return kotlinAdvisoryCorpus(includeHouseCanaries)
+		return []assessment.VulnRef{
+			{ID: "FERRALON-KOTLIN-DEP-0001", Source: "osv"}, // com.example.lib:widget — version-resolvable Maven dependency
+		}
 	case checkout.LangJS:
-		return jsAdvisoryCorpus(includeHouseCanaries)
+		return []assessment.VulnRef{
+			{ID: "FERRALON-JS-SSRF-0001", Source: "osv"}, // tegron-corpus-ssrf — SSRF taint reachability
+			{ID: "FERRALON-JS-DEP-0001", Source: "osv"},  // left-pad — version-resolvable npm dependency
+		}
 	case checkout.LangPython:
-		return pythonAdvisoryCorpus(includeHouseCanaries)
+		return []assessment.VulnRef{
+			{ID: "FERRALON-PY-AIRFLOW-EXPAPI-0001", Source: "ghsa"}, // apache-airflow — experimental-API get_code sink, first-party reachability
+			{ID: "FERRALON-PY-DEP-0001", Source: "osv"},             // flask — version-resolvable PyPI dependency
+		}
 	case checkout.LangDotNet:
-		return dotnetAdvisoryCorpus(includeHouseCanaries)
-	case checkout.LangCFamily:
-		// Row zero (Phase 0): the C-family lane is a detection+routing skeleton with no analysis
-		// and no advisory floor yet. C/C++ advisories are version-range-only (no vulnerable-symbol
-		// identifier) and there is no C/C++ ecosystem wired, so there is nothing honest to seed here.
-		// A floor is NOT a coverage claim; fabricating one to force a completing scan is exactly the
-		// dishonesty this codebase forbids. cfamily is therefore deliberately NOT in the release
-		// supportedLanguages set (tested in language_support_test.go), and the release ships no cfamily
-		// plugin. A scan of a C/C++ tree therefore never reaches a verdict: where the plugin is not
-		// installed, acquireTarget stops before the work set and the run publishes a zero-finding
-		// Report whose did_not_run note names the language and the missing plugin, then exits 0
-		// (publishAnalyzerMissing); where a source build installed it, this empty floor halts the run
-		// at the empty-work-set gate (errEmptyWorkSet) with no Report. Neither is a clean verdict. A
-		// real floor lands with the Phase-1 engine.
-		return nil
+		return []assessment.VulnRef{
+			{ID: "FERRALON-NET-DEP-0001", Source: "osv"}, // Newtonsoft.Json — version-resolvable NuGet dependency
+		}
 	default:
 		return nil
 	}
-}
-
-// goAdvisoryCorpus is the set of Go-language advisories the OSS tool evaluates a Go repository
-// against. They are the version-resolvable and symbol-reachability Go entries the analyzer knows
-// (pipeline.AdvisoryTable). An advisory whose affected module is a dependency of the target resolves
-// a real SBOM package; one whose symbol is absent yields a not_exploitable finding.
-//
-// includeHouseCanaries opts the first-party house canaries in (default OFF, see below). Only the
-// DOS canary is opt-in-able today; the SSRF canary stays scrubbed unconditionally.
-func goAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
-	corpus := []assessment.VulnRef{
-		{ID: "GO-2021-0113", Source: "osv"}, // golang.org/x/text — version-resolvable
-		{ID: "GO-2022-0322", Source: "osv"}, // github.com/prometheus/client_golang — version-resolvable
-		{ID: "GO-2021-0264", Source: "osv"}, // archive/zip (stdlib) — symbol reachability
-		// The gogs incomplete-fix chain is TWO advisories and both are evaluated: the
-		// predecessor traversal and its symlink-bypass successor are separate findings with
-		// separate facts (see the AdvisoryTable split). Only CVE-2025-8110 is KEV-listed.
-		{ID: "CVE-2024-55947", Source: "ghsa"}, // gogs.io/gogs — first-party application sink (path-traversal predecessor, fixed 0.13.1)
-		{ID: "CVE-2025-8110", Source: "ghsa"},  // gogs.io/gogs — first-party application sink (symlink-bypass successor, last_affected 0.13.3; CISA KEV)
-		{ID: "CVE-2024-45337", Source: "ghsa"}, // golang.org/x/crypto/ssh — SSH-server authorization bypass (PublicKeyCallback misuse), version-resolvable
-		// Four real vuln.go.dev advisories in broad-corpus membership, evaluated on every Go scan.
-		// Each carries its GO- alias, because govulncheck keys its findings by the GO- id and never
-		// by the CVE/GHSA primary — govulnMatchID resolves the alias so reachability can match.
-		{ID: "CVE-2026-46595", Source: "ghsa"}, // golang.org/x/crypto/ssh — authz bypass, incomplete fix of CVE-2024-45337 (< v0.52.0), version-resolvable
-		{ID: "CVE-2026-39831", Source: "ghsa"}, // golang.org/x/crypto/ssh — FIDO/U2F user-presence bypass (< v0.52.0), version-resolvable
-		{ID: "CVE-2026-39821", Source: "osv"},  // golang.org/x/net/idna — Punycode ASCII-confusion privilege escalation (< v0.55.0), version-resolvable
-		{ID: "CVE-2020-36569", Source: "ghsa"}, // github.com/nanobox-io/golang-nanoauth — auth bypass, pseudo-version range (version axis fails open), reachability-decided
-	}
-	// The synthetic house advisories FERRALON-APP-SSRF-0001 / FERRALON-APP-DOS-0001 are scrubbed
-	// from the DEFAULT Go corpus membership. They carry no CVE — they are first-party canaries we
-	// wrote to exercise the pipeline — so they must never be evaluated on a customer scan, where a
-	// finding with no upstream advisory behind it reads as noise at best and as a fabricated result
-	// at worst.
-	//
-	// The DOS canary is OPT-IN via includeHouseCanaries (the -include-house-canaries flag): our own
-	// demo scan sets it so the canary surfaces as a reachable_candidate the pipeline can enumerate →
-	// fire → prove → auto-fix-PR end to end. The flag defaults OFF, so the default surface carries no
-	// canary at all. Even opted in it stays candidate-only at the scan tier (reachable_candidate +
-	// attacker_tainted, never proof — inv. 5); proof comes from the fire. The SSRF canary has no
-	// opt-in and stays scrubbed unconditionally. Their AdvisoryTable facts, corpus repros
-	// (corpus/testdata/repros/FERRALON-APP-*), and vulnclass entries are unaffected by the flag.
-	if includeHouseCanaries {
-		corpus = append(corpus, assessment.VulnRef{ID: "FERRALON-APP-DOS-0001", Source: "osv"})
-	}
-	return corpus
-}
-
-// mavenAdvisoryFloor is the DEFAULT floor for every JVM/Maven-ecosystem language — three real,
-// public Maven advisories, the same kind of membership the Go corpus has always had. Until
-// 2026-08-05 javaAdvisoryCorpus returned nil unless the canary flag was set, which made the default
-// floor empty and halted every default Java scan at the empty-work-set gate in run.go. The OSV
-// widening did not rescue it: admitByFacts admits only ids the fact source can resolve, and the
-// table held no Maven facts at all, so a live query that returned 55 real GHSA ids for a
-// jackson-databind tree admitted none of them. See the block of twelve in pipeline.AdvisoryTable for
-// where these came from and how their ranges were verified.
-//
-// Kotlin shares this floor rather than carrying its own: a Kotlin build resolves its dependencies
-// through the same Maven coordinate system (Gradle/Maven repositories, group:artifact:version) as
-// Java, so a Maven-ecosystem advisory names a real package in a Kotlin tree exactly as it does in a
-// Java one — this is the correct ecosystem floor for Kotlin, not a borrowed placeholder.
-func mavenAdvisoryFloor() []assessment.VulnRef {
-	return []assessment.VulnRef{
-		{ID: "CVE-2019-14540", Source: "ghsa"}, // com.fasterxml.jackson.core:jackson-databind — HikariConfig deserialization gadget
-		{ID: "CVE-2020-36518", Source: "ghsa"}, // com.fasterxml.jackson.core:jackson-databind — nested-object StackOverflow DoS
-		{ID: "CVE-2024-22243", Source: "ghsa"}, // org.springframework:spring-web — UriComponentsBuilder open redirect / SSRF
-	}
-}
-
-// javaAdvisoryCorpus is the set of Java/Maven advisories the OSS tool evaluates a Java source tree
-// against (pipeline.AdvisoryTable, pkg:maven ecosystem). See mavenAdvisoryFloor for the DEFAULT
-// floor's provenance.
-//
-// includeHouseCanaries adds the synthetic first-party advisories on top: two SSRF sinks resolved by
-// call-graph reachability plus one version-resolvable dependency, all over com.example.* packages
-// and none carrying a CVE. They stay off the default surface.
-func javaAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
-	corpus := mavenAdvisoryFloor()
-	if includeHouseCanaries {
-		corpus = append(corpus,
-			assessment.VulnRef{ID: "FERRALON-JAVA-SSRF-0001", Source: "osv"},        // com.example.web/ssrf — UrlFetcher.fetch taint reachability
-			assessment.VulnRef{ID: "FERRALON-JAVA-SPRING-SSRF-0001", Source: "osv"}, // com.example.web/spring-ssrf — Spring SSRF taint reachability
-			assessment.VulnRef{ID: "FERRALON-JAVA-DEP-0001", Source: "osv"},         // com.example.lib:widget — version-resolvable Maven dependency
-		)
-	}
-	return corpus
-}
-
-// kotlinAdvisoryCorpus is the default advisory floor for the Kotlin lane (pkg:maven ecosystem):
-// the SAME real, public mavenAdvisoryFloor the Java lane ships, because a Kotlin build resolves its
-// dependencies through the same Maven coordinate system as Java (see mavenAdvisoryFloor). Sharing
-// it is the honest ecosystem floor for Kotlin — not a fabricated one, and not a .NET-style synthetic
-// stand-in.
-//
-// includeHouseCanaries adds one synthetic first-party advisory on top, honoring the same opt-in
-// contract every other ecosystem's canary honors (see javaAdvisoryCorpus): a version-resolvable
-// dependency over a com.example.* package, carrying no CVE, off the default surface.
-func kotlinAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
-	corpus := mavenAdvisoryFloor()
-	if includeHouseCanaries {
-		corpus = append(corpus,
-			assessment.VulnRef{ID: "FERRALON-KOTLIN-DEP-0001", Source: "osv"}, // com.example.lib:widget — version-resolvable Maven dependency
-		)
-	}
-	return corpus
-}
-
-// jsAdvisoryCorpus is the set of JS/npm advisories the OSS tool evaluates a JS/TS source tree
-// against (pipeline.AdvisoryTable, pkg:npm ecosystem): three real, public npm advisories by
-// default, with the house canaries — one SSRF sink resolved by reachability plus one
-// version-resolvable dependency — added only on the opt-in (see javaAdvisoryCorpus).
-func jsAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
-	corpus := []assessment.VulnRef{
-		{ID: "CVE-2022-46175", Source: "ghsa"}, // json5 — JSON5.parse prototype pollution
-		{ID: "CVE-2023-26136", Source: "ghsa"}, // tough-cookie — memstore prototype pollution
-		{ID: "CVE-2024-29041", Source: "ghsa"}, // express — response.redirect open redirect
-	}
-	if includeHouseCanaries {
-		corpus = append(corpus,
-			assessment.VulnRef{ID: "FERRALON-JS-SSRF-0001", Source: "osv"}, // tegron-corpus-ssrf — SSRF taint reachability
-			assessment.VulnRef{ID: "FERRALON-JS-DEP-0001", Source: "osv"},  // left-pad — version-resolvable npm dependency
-		)
-	}
-	return corpus
-}
-
-// pythonAdvisoryCorpus is the set of Python/PyPI advisories the OSS tool evaluates a Python source
-// tree against (pipeline.AdvisoryTable, pkg:pypi ecosystem): three real, public PyPI advisories by
-// default, with the house canaries — the Airflow experimental-API get_code sink, whose real removal
-// flips reachable_candidate → not_exploitable, plus one version-resolvable dependency — added only
-// on the opt-in (see javaAdvisoryCorpus).
-func pythonAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
-	corpus := []assessment.VulnRef{
-		{ID: "CVE-2024-22195", Source: "ghsa"}, // jinja2 — xmlattr attribute-key injection
-		{ID: "CVE-2024-23334", Source: "ghsa"}, // aiohttp — static-route path traversal via symlink
-		{ID: "CVE-2024-3772", Source: "ghsa"},  // pydantic — email-validation ReDoS
-	}
-	if includeHouseCanaries {
-		corpus = append(corpus,
-			assessment.VulnRef{ID: "FERRALON-PY-AIRFLOW-EXPAPI-0001", Source: "ghsa"}, // apache-airflow — experimental-API get_code sink (unauth DAG source read), first-party reachability
-			assessment.VulnRef{ID: "FERRALON-PY-DEP-0001", Source: "osv"},             // flask — version-resolvable PyPI dependency
-		)
-	}
-	return corpus
-}
-
-// dotnetAdvisoryCorpus is the set of .NET/NuGet advisories the OSS tool evaluates a .NET source
-// tree against (pipeline.AdvisoryTable, pkg:nuget ecosystem): three real, public NuGet advisories
-// by default, adjudicated by the U5 NuGet comparator over the U6 dotnetanalysis resolver, with the
-// version-resolvable house canary added only on the opt-in (see javaAdvisoryCorpus).
-func dotnetAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
-	corpus := []assessment.VulnRef{
-		{ID: "CVE-2019-0820", Source: "ghsa"},  // System.Text.RegularExpressions — timeout-handling ReDoS
-		{ID: "CVE-2020-5234", Source: "ghsa"},  // MessagePack — Typeless deserialization gadget
-		{ID: "CVE-2024-21907", Source: "ghsa"}, // Newtonsoft.Json — nesting-depth StackOverflow DoS
-	}
-	if includeHouseCanaries {
-		corpus = append(corpus,
-			assessment.VulnRef{ID: "FERRALON-NET-DEP-0001", Source: "osv"}, // Newtonsoft.Json — synthetic stand-in for the real CVE-2024-21907 in the default floor above
-		)
-	}
-	return corpus
 }

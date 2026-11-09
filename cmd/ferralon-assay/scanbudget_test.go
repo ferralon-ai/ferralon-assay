@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
@@ -262,22 +264,40 @@ func TestWriteScanTruncated(t *testing.T) {
 }
 
 func TestPhaseTimer_Advisories(t *testing.T) {
+	ms := func(n int) time.Duration { return time.Duration(n) * time.Millisecond }
+	// 20 advisories: GO-0..GO-17 at 10..27 ms, and two cold ones. Nearest-rank p95 of 20 is the 19th.
+	var many []advisoryTime
+	for i := 0; i < 18; i++ {
+		many = append(many, advisoryTime{fmt.Sprintf("GO-%d", i), ms(10 + i), ""})
+	}
+	many = append(many, advisoryTime{"GO-COLD-B", 50 * time.Second, ""}, advisoryTime{"GO-COLD-A", 57 * time.Second, ""})
 	cases := []struct {
 		name  string
-		times []time.Duration
+		times []advisoryTime
 		want  string
 	}{
 		{name: "none assessed"},
-		{name: "odd", times: []time.Duration{3 * time.Second, time.Second, 2 * time.Second}, want: brand.Name + ": time: advisories 3 assessed, p50 2s, max 3s\n"},
-		{name: "even takes the lower middle", times: []time.Duration{4 * time.Second, time.Second, 2 * time.Second, 3 * time.Second}, want: brand.Name + ": time: advisories 4 assessed, p50 2s, max 4s\n"},
+		{name: "odd", times: []advisoryTime{{"A", 3 * time.Second, ""}, {"B", time.Second, ""}, {"C", 2 * time.Second, ""}},
+			want: brand.Name + ": time: advisories 3 assessed, p50 2s, p95 3s, max 3s\n" +
+				brand.Name + ": time: slowest advisories: A 3s, C 2s, B 1s\n"},
+		{name: "even takes the lower middle", times: []advisoryTime{{"A", 4 * time.Second, ""}, {"B", time.Second, ""}, {"C", 2 * time.Second, ""}, {"D", 3 * time.Second, ""}},
+			want: brand.Name + ": time: advisories 4 assessed, p50 2s, p95 4s, max 4s\n" +
+				brand.Name + ": time: slowest advisories: A 4s, D 3s, C 2s, B 1s\n"},
+		{name: "one id from two sources is told apart, a lone id is not", times: []advisoryTime{{"GO-1", 2 * time.Second, "osv"}, {"GO-1", 3 * time.Second, "ghsa"}, {"GO-2", time.Second, "osv"}},
+			want: brand.Name + ": time: advisories 3 assessed, p50 2s, p95 3s, max 3s\n" +
+				brand.Name + ": time: slowest advisories: GO-1 (ghsa) 3s, GO-1 (osv) 2s, GO-2 1s\n"},
+		{name: "two cold advisories among many warm ones, ties broken by id", times: append(many, advisoryTime{"GO-17b", ms(27), ""}),
+			want: brand.Name + ": time: advisories 21 assessed, p50 20ms, p95 50s, max 57s\n" +
+				brand.Name + ": time: slowest advisories: GO-COLD-A 57s, GO-COLD-B 50s, GO-17 27ms, GO-17b 27ms, GO-16 26ms\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var w strings.Builder
 			p := &phaseTimer{w: &w}
 			p.observe("inventory", 1500*time.Millisecond)
-			for _, d := range tc.times {
-				p.observe("advisory", d)
+			for _, a := range tc.times {
+				p.observe("advisory", a.d) // the phase hook alone must not collect
+				p.observeAdvisory(assessment.VulnRef{ID: a.id, Source: a.src}, a.d)
 			}
 			p.logAdvisories()
 			want := brand.Name + ": time: inventory 1.5s\n" + tc.want

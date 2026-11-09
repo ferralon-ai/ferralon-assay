@@ -182,7 +182,7 @@ func runBaseline(args []string) error {
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
 	stages, clock := startRunClock(budget.analysis)
-	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
+	ctx, analysis := budget.flush, trigger.WithAdvisoryTiming(trigger.WithTiming(stages, timer.observe), timer.observeAdvisory)
 
 	acq, err := acquireTarget(analysis, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	var missing *analyzerMissingError

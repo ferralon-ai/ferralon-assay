@@ -1243,7 +1243,7 @@ func runPRInherit(args []string) error {
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
 	stages, clock := startRunClock(budget.analysis)
-	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
+	ctx, analysis := budget.flush, trigger.WithAdvisoryTiming(trigger.WithTiming(stages, timer.observe), timer.observeAdvisory)
 
 	cfg, err := f.resolve(analysis, true)
 	var missing *analyzerMissingError
@@ -1339,7 +1339,7 @@ func runCVEWatch(args []string) error {
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
 	stages, clock := startRunClock(budget.analysis)
-	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
+	ctx, analysis := budget.flush, trigger.WithAdvisoryTiming(trigger.WithTiming(stages, timer.observe), timer.observeAdvisory)
 
 	// widen=false: cve-watch's work set is the OSV query it makes below, against the STORED SBOM and
 	// diffed against a cursor. That mechanism is the one the scan path now borrows; re-widening the

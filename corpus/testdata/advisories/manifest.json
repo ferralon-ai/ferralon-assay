@@ -3,168 +3,168 @@
   "advisories": {
     "CVE-2019-0820": {
       "file": "CVE-2019-0820.json",
-      "digest": "sha256:580de5659d954d8f2c63d1912b0d22cfd1108b32d7f7dbd2401171ca4e83b40e"
+      "digest": "sha256:098a2295b8204bf69782f2cf18aa10dc70bc0866d253218bc51a42e13b6d8b16"
     },
     "CVE-2019-14540": {
       "file": "CVE-2019-14540.json",
-      "digest": "sha256:1ba85322a81552a87e06ca0c47fc24266e08dd123db8923db44146ca85d8367e"
+      "digest": "sha256:979e7167ecb7f2251e3c1511d783cf197e9e8383a7e4c044a2dffb24bf0e96f9"
     },
     "CVE-2020-36518": {
       "file": "CVE-2020-36518.json",
-      "digest": "sha256:507a7c086627af33dca84f07f667f9a06219d2fe75346a6827db510bc8b9885a"
+      "digest": "sha256:30c015da2f5210be2f01e7bb837519f6a1314434e0fb9ca8df05c156a92fb829"
     },
     "CVE-2020-36569": {
       "file": "CVE-2020-36569.json",
-      "digest": "sha256:74b93472d14f30942dc26f9569601815123e2cb63816e5ef9ae875e985fe67dc"
+      "digest": "sha256:d5307f4d5ed73b68ad886f111a75610e129fc27f1d7d8e1ad9e1977c3f4cdc1c"
     },
     "CVE-2020-5234": {
       "file": "CVE-2020-5234.json",
-      "digest": "sha256:2c014f1c7f3a0dcfd953016c509658e98404bab2d555974c51eb0be8e23fd826"
+      "digest": "sha256:90412e95b5d3fc6432763e0cc9f5b8c069d5d980de3ebc82c40a03ad22a8ed71"
     },
     "CVE-2022-46175": {
       "file": "CVE-2022-46175.json",
-      "digest": "sha256:9467303d071c14cd0647d9b04b435eb6e869989b6e5f7e8edea3c44afe879474"
+      "digest": "sha256:6daa244d9111d9293eb47132543b9b8c5fc0a6ac65f75f1fbe924aca7e98621c"
     },
     "CVE-2023-26136": {
       "file": "CVE-2023-26136.json",
-      "digest": "sha256:9be55e85697bd55b616cb82ac647b85d81a5a27134cc5c13b979e97937f2e706"
+      "digest": "sha256:b14c7fe17f88e2ea82b715582164c6039ea5259e54647c6c1a38ed04adf9ca1b"
     },
     "CVE-2023-39325": {
       "file": "CVE-2023-39325.json",
-      "digest": "sha256:6c846d3128abab6c39f65a8dac840fcf4ef7c55dc9b2618b26c9bfaa1c67e417"
+      "digest": "sha256:8e8b08e290c669e7e8f6dea753e858622359f15e540557750032be408e15c60a"
     },
     "CVE-2023-45283": {
       "file": "CVE-2023-45283.json",
-      "digest": "sha256:140b4220033386bb89fac2d8e1777ab654919d0bb8946f9c25a84d8e6c0b061d"
+      "digest": "sha256:513f6de65afc22a1f95ce535b62f75371a319a1ba5ae6b7bab532d3bdc0d9d21"
     },
     "CVE-2024-21907": {
       "file": "CVE-2024-21907.json",
-      "digest": "sha256:a9ca61ede07eae6c686709a4b04c3865ab0bd2a39ca5c7e0a638eba8aacc6fb8"
+      "digest": "sha256:6f3b994a4b216668f71765b7951e9f013af2a4da31109bc1cde22a6c38fb4a8e"
     },
     "CVE-2024-22195": {
       "file": "CVE-2024-22195.json",
-      "digest": "sha256:7d075a4c6092ba57b7ba2e181cd1bfd339d4e4e8135e0242d2eb9de0fd3bf094"
+      "digest": "sha256:fcf6920fec748b0930532ac5f992bb7c4f7048b7cf936e8d1fa6a97aceb5a990"
     },
     "CVE-2024-22243": {
       "file": "CVE-2024-22243.json",
-      "digest": "sha256:70cb5ad4859c9a8a34e3469db1cbcc1fe3938cfa9139b6a8de8caafb80683c2f"
+      "digest": "sha256:14619c625d671fda7cb4b9632100dd10108e746bbc1cca6429bd7a48603f757e"
     },
     "CVE-2024-23334": {
       "file": "CVE-2024-23334.json",
-      "digest": "sha256:776f05bc1fa9f6f76cc54dc3043ccf950eb2db47db83920c1ff41e93b2fc728a"
+      "digest": "sha256:58cec2d44087b614bacc08a9837ac2193b8d5374272568f06f658d86be034044"
     },
     "CVE-2024-24790": {
       "file": "CVE-2024-24790.json",
-      "digest": "sha256:e527cc8689d8466723589315dd2e95b682a9b8228416dcab24d88aacb797a30a"
+      "digest": "sha256:d320a467a073643c49dc09911064f0cc5896d3c634a6cb1ae3b857eaf7037783"
     },
     "CVE-2024-29041": {
       "file": "CVE-2024-29041.json",
-      "digest": "sha256:342b25a1afd168d8ecd45b871a0aca2cc615d7710122eea5a231ac7478ebff36"
+      "digest": "sha256:15e4ca9f3c7f96b850b954adcb5afe0dcb538a7c9f71a2f9ea86b61f15ce8e5d"
     },
     "CVE-2024-3772": {
       "file": "CVE-2024-3772.json",
-      "digest": "sha256:891991013bce5296bf165291ba2e0a6a8b0403c6b8070c011426c3d1cb3c8e8f"
+      "digest": "sha256:11ae479f70b6159488850f50ee1ed7db21094e7b843e702e85813c5dc5fdec53"
     },
     "CVE-2024-45337": {
       "file": "CVE-2024-45337.json",
-      "digest": "sha256:c99dc1e9dcd392f2ffeccc104c4f5d11908b727f54d751bd85d2d9516e581504"
+      "digest": "sha256:afce7279e39547ee289b0cb9ce757dc5a469b12229998ebd8abd18a5038f82a4"
     },
     "CVE-2024-55947": {
       "file": "CVE-2024-55947.json",
-      "digest": "sha256:6193857cf05c765c5a40f7e287815e3266dcfbeaed0a4f1b9b30bc98e90d39a7"
+      "digest": "sha256:b85e9f0f9775c56b8711d86cc2fa603c6f8f292613ff30357fed89d868d5b95c"
     },
     "CVE-2025-8110": {
       "file": "CVE-2025-8110.json",
-      "digest": "sha256:5663e90498605cfef01cf6cdd284d545f2a0648537e80dd37104b5ad92c4adeb"
+      "digest": "sha256:40c6b476d168ddb15d1f6cc3d1cb75584efff201191e25624d1006acec81147a"
     },
     "CVE-2026-39821": {
       "file": "CVE-2026-39821.json",
-      "digest": "sha256:cbc3dedae79eca256104307ce7578be4a6c4756a705ab1cfa9a13661427589bc"
+      "digest": "sha256:82d2dbd73f7038ad1bf1f6970d7aca78b52ded4a4da4cedabe54ec0fab130166"
     },
     "CVE-2026-39831": {
       "file": "CVE-2026-39831.json",
-      "digest": "sha256:87876d28ba9d260ee5e1c7b5656d1420b507cc4399b88b569e370a1f74e6f0f9"
+      "digest": "sha256:7f77fd73b3d8607790e7425e465fb67f4426980fd605ba79cea69ed22066b005"
     },
     "CVE-2026-46595": {
       "file": "CVE-2026-46595.json",
-      "digest": "sha256:b7aaa92a91b879be69bd4d0f4f4897db6d3f8732fa15c7ecc88e421f10e5e77e"
+      "digest": "sha256:a48586d2f5d385aef0267ae192707a9665de4f21c9aea2637f23c3c525831f92"
     },
     "FERRALON-APP-DOS-0001": {
       "file": "FERRALON-APP-DOS-0001.json",
-      "digest": "sha256:637a450b84d52a2110ee25a092872b9b0d46fe8d74f21e453fa0d6cef6537327"
+      "digest": "sha256:fd84faad807ebc7ba76223944e079514377e5d21e4d5936d19c9dd14f0ab0128"
     },
     "FERRALON-APP-SSRF-0001": {
       "file": "FERRALON-APP-SSRF-0001.json",
-      "digest": "sha256:c35caeba7fef1fe714940165de66230a4cfc264c1981f4c1b1a3781ccbd7dfc7"
+      "digest": "sha256:a5f0b6e9e2844e99c6df0c802e901bccc9b27723dde0930263a3ffc32f70cc76"
     },
     "FERRALON-GO-GRAFANA-DUCKDB-0001": {
       "file": "FERRALON-GO-GRAFANA-DUCKDB-0001.json",
-      "digest": "sha256:afa5d09c73e8e41242e865f0faa99e62dd707a9dba5aa9aa5c3999a29bb4a86a"
+      "digest": "sha256:30a2f2b7a4d30ff0cd5c64b2dd20d909d6d209bde85493839c6b70e5346b91fc"
     },
     "FERRALON-JAVA-DEP-0001": {
       "file": "FERRALON-JAVA-DEP-0001.json",
-      "digest": "sha256:c042a01b452a087b1904fe619818555555e3d3ae7df8da0038bb9ba228c5c388"
+      "digest": "sha256:e82daff4c5dc18ab3c075d957b4ee6bb0aa9a3dfc9be0669d1dd4aaf61fcefc5"
     },
     "FERRALON-JAVA-SPRING-SSRF-0001": {
       "file": "FERRALON-JAVA-SPRING-SSRF-0001.json",
-      "digest": "sha256:69b1c89ce5193e9e9cee6b2ba78e48390156d5332af3825eab996428557a4bd5"
+      "digest": "sha256:dd88e83930264901601ecc6e371f4915fa8bd020a5c4320743383db4448171f9"
     },
     "FERRALON-JAVA-SSRF-0001": {
       "file": "FERRALON-JAVA-SSRF-0001.json",
-      "digest": "sha256:01ccfd541860a83ebd230082fb94a42ef7a9d9e525c972b7e2afb09927b5ff90"
+      "digest": "sha256:1af454da0e390d843bb044fd7c9b5402378a361ee12be88f26f9426694da51fa"
     },
     "FERRALON-JAVA-SSRF-0002": {
       "file": "FERRALON-JAVA-SSRF-0002.json",
-      "digest": "sha256:fa7859551cdcb1ef9dc4c27a850ba9510d09e6a2eb46c0d9686bcda79b4a0973"
+      "digest": "sha256:ae57ec36c3224c0b5891580684e5d472e37442199db6dc0a4d133983ea08359a"
     },
     "FERRALON-JAVA-SSRF-0003": {
       "file": "FERRALON-JAVA-SSRF-0003.json",
-      "digest": "sha256:58a71fa86b9953aaa49149c3ffc19d0331a5dc6c401cf3c3dcaaaff7534d0f61"
+      "digest": "sha256:02be333f35f056deb507315d309cff046adf3add6e562118de68b78d0f36629f"
     },
     "FERRALON-JS-DEP-0001": {
       "file": "FERRALON-JS-DEP-0001.json",
-      "digest": "sha256:41c352a37d1cc74413efb4e9df1b853c3b1cee3ad192ec33f713b31b52b35db3"
+      "digest": "sha256:3c016a52a3323a73b66ddb0f58c8aa9f58e86ededf4157f2b994a3a1b3c0349f"
     },
     "FERRALON-JS-NEXTRCE-0001": {
       "file": "FERRALON-JS-NEXTRCE-0001.json",
-      "digest": "sha256:4fd591bd5f5b8a0bcdd34dd009c6302eadceb2dd7193d0f0e2e21d79c9ff1993"
+      "digest": "sha256:b746393aaccfa249c00434a69a753454d5a71bfdcad43472941a866745f56e49"
     },
     "FERRALON-JS-SSRF-0001": {
       "file": "FERRALON-JS-SSRF-0001.json",
-      "digest": "sha256:38179e509525defaa56c20eb6b6495ed496e0ffbea7d9aced95595d42fe91911"
+      "digest": "sha256:8d111466b5c2f880cadc9f30974b1e016441ece6360bcb1869994c19d27799c6"
     },
     "FERRALON-NET-DEP-0001": {
       "file": "FERRALON-NET-DEP-0001.json",
-      "digest": "sha256:4dde15e5796a677555060c6fc232c8a2f2304f19269f72adb7e409e7c6b39592"
+      "digest": "sha256:8764639f3715dd285cad9bed111cf01a8f2b69690bfa8b28542deedfb6eb29b5"
     },
     "FERRALON-NET-REACH-0001": {
       "file": "FERRALON-NET-REACH-0001.json",
-      "digest": "sha256:52607534da92679f1f9f8ebd688de42120c7b2f5d113c3fec2efacf4c2187611"
+      "digest": "sha256:f3d2f3eaef9283f666038877971475a3fb10eb410ef82e0a072f0d055db3f039"
     },
     "FERRALON-PY-AIRFLOW-EXPAPI-0001": {
       "file": "FERRALON-PY-AIRFLOW-EXPAPI-0001.json",
-      "digest": "sha256:907106a7cd60bf8a6b11b14aae34e52948e342520ab186ef848baf59089c39be"
+      "digest": "sha256:1049625387fcd85140d1120590c05024937019d35eb43ad34881c5565bfb68b2"
     },
     "FERRALON-PY-DEP-0001": {
       "file": "FERRALON-PY-DEP-0001.json",
-      "digest": "sha256:dd978ede9924c4b8e9251345493eb3ea53bcbcc402313ac5ba7114022cba1491"
+      "digest": "sha256:ba74eb0b178e8488ad6486fea58ed98e5f23179facc01dc19a4f7b318da1587e"
     },
     "FERRALON-PY-FIRSTPARTY-0001": {
       "file": "FERRALON-PY-FIRSTPARTY-0001.json",
-      "digest": "sha256:b9a196bc6275fc300bc8237bfacb850ab2e01fb844ea3d5a57d0f02d33083862"
+      "digest": "sha256:bb78b98779188c40e93c4f099a7098f72f424088c3a99e8960dd78be69f61b82"
     },
     "GO-2021-0113": {
       "file": "GO-2021-0113.json",
-      "digest": "sha256:5b1c1fd32c40257406f5a7e79d9078fbd1064465be8a303658b434aa88850d49"
+      "digest": "sha256:b0bebb2166e88a7ad203c28626ab37bd4744ece0aa272e4e9741a5885590808e"
     },
     "GO-2021-0264": {
       "file": "GO-2021-0264.json",
-      "digest": "sha256:76fa5f679e8c319a92d624e44f1d18156d91b4d472916127351b170b2f0cbf0a"
+      "digest": "sha256:12d89bda0c2b488aee184924a68780cd4f8e0416a40a360a73fa5d2d60089b64"
     },
     "GO-2022-0322": {
       "file": "GO-2022-0322.json",
-      "digest": "sha256:f653515b083786f0d3c84969a2c158b3a2899950f445fc61f25983aa7bedf3e1"
+      "digest": "sha256:fa8dd905f899c7eb807ba5c632090e55b9dba8dbc6997342e5afa456887aec94"
     }
   },
-  "corpus_digest": "sha256:8c2baa13e2776fcc8c7a7063cf41b1e843d80980881aa9dccff8dd271be18eb2"
+  "corpus_digest": "sha256:9855d8fba2b3a2f8a5e38e166e6fb5e84653d07290ebd9a8ffeff8c5de3c1765"
 }

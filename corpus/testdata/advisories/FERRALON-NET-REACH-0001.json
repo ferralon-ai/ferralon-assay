@@ -11,6 +11,7 @@
   "Symbols": [
     "ICSharpCode.SharpZipLib.Zip.FastZip.ExtractZip"
   ],
+  "SymbolProvenance": "curated",
   "GuardSymbols": null,
   "CWEs": [
     "CWE-22"
@@ -27,7 +28,7 @@
   "Provenance": {
     "Source": "GHSA-m22m-h4rf-pwq3",
     "InputDigest": "provisional-symbol-spelling: authored before the .NET symbol profile was fixed; re-normalisation pending. The Symbols spelling above is NOT canonical yet. NOTE the identity split: Coordinate/PURL are keyed by the NuGet PACKAGE ID (SharpZipLib) so versions.go matches the .csproj PackageReference; Symbols are keyed by the CLR NAMESPACE path (ICSharpCode.SharpZipLib.*).",
-    "TrustTier": ""
+    "TrustTier": "first_party"
   },
   "Lineage": {
     "IncompleteFixOf": "",

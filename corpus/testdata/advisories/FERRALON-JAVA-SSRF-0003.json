@@ -9,6 +9,7 @@
   "Symbols": [
     "SomeServiceImpl.fetch"
   ],
+  "SymbolProvenance": "curated",
   "GuardSymbols": null,
   "CWEs": [
     "CWE-918"
@@ -25,7 +26,7 @@
   "Provenance": {
     "Source": "",
     "InputDigest": "",
-    "TrustTier": ""
+    "TrustTier": "first_party"
   },
   "Lineage": {
     "IncompleteFixOf": "",

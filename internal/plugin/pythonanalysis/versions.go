@@ -87,6 +87,8 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 	var (
 		all     []plugin.ResolvedDependency
 		origins []manifestOrigin
+		// sources[i] is the file all[i] was read from.
+		sources []string
 	)
 	want := normalizePyCoordinate(req.Coordinate)
 	manifests, parseFailed, scriptWithheld, installs, poetry, tooling, unrecognised, inactive, configNamed := versionSurfacesCached(ctx, req.BuildDir)
@@ -103,9 +105,15 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 		deps = poetry.scope(m, deps)
 		all = append(all, deps...)
 		origins = append(origins, o...)
+		for range deps {
+			sources = append(sources, m)
+		}
 	}
 	pixiDeps, pixiOrigins, pixiRead := pixiManifestDeps(req.BuildDir)
 	all, origins = append(all, pixiDeps...), append(origins, pixiOrigins...)
+	for _, o := range pixiOrigins {
+		sources = append(sources, filepath.Join(o.dir, "pixi.toml"))
+	}
 	parseFailed = parseFailed || !pixiRead
 
 	part := plugin.Complete()
@@ -131,6 +139,10 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 	if (parseFailed || sourced) && res.Found {
 		res.Match.Version = ""
 		res.Match.Resolved = false
+		for _, o := range copyOrigins {
+			sources = append(sources, o.dir)
+		}
+		res.Annotations = append(res.Annotations, readPins(req.BuildDir, want, append(all[:len(all):len(all)], copies...), sources)...)
 	}
 	// A uv override or constraint only vetoes: it never makes a name Found. An override replaces
 	// the declarations, so a Match stands only when every override entry agrees with it; a
@@ -171,6 +183,34 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 		!installedCopyPresent(req.BuildDir, want, false) &&
 		uvEntriesAdmit(overrideOrigins, res.Matches) && uvEntriesAdmit(constraintOrigins, res.Matches)
 	return res, nil
+}
+
+// ReadPinReason is the Annotation.Reason of a pin the resolver read for the request coordinate
+// but did not count, because a surface it could not read, or a uv source, may install another
+// version. Path is the file the pin was read from (a site-packages directory for an installed
+// copy) and Detail is "<name>==<version>". It is disclosure only: Match stays unresolved, and no
+// version axis reads it. The finding row lists these pins on its package (trigger's
+// readPinsOf, which reads the same reason).
+const ReadPinReason = "disclosure:read_pin"
+
+// readPins returns one ReadPinReason annotation for each distinct exact pin of want in deps,
+// in the order read; sources[i] is the file deps[i] came from.
+func readPins(root, want string, deps []plugin.ResolvedDependency, sources []string) []plugin.Annotation {
+	var out []plugin.Annotation
+	for i, d := range deps {
+		if !d.Resolved || d.Version == "" || normalizePyCoordinate(d.Coordinate) != want || i >= len(sources) {
+			continue
+		}
+		path := filepath.Base(sources[i])
+		if rel, err := filepath.Rel(root, sources[i]); err == nil {
+			path = filepath.ToSlash(rel)
+		}
+		a := plugin.Annotation{Reason: ReadPinReason, Path: path, Detail: want + "==" + d.Version}
+		if !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // uvEntriesAdmit reports whether every version in matches satisfies every uv override and

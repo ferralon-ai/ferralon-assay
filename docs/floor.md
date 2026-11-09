@@ -112,9 +112,10 @@ The run uses no other secret. The workflow's own `GITHUB_TOKEN` is read-only
 The job summary (and `floor-summary.md` in the artifact) starts with **PASS** or **FAIL**, then:
 
 - **By language**: the number of targets per language across both lanes, how many passed, and the
-  qualified findings (`reachable_candidate`, `malicious_package_present`) on each lane, counted once per alias set per
-  repository, so a finding filed under PYSEC, CVE and GHSA ids counts once. A language marked
-  **no target** has no demo repository yet. Today that is `kotlin`, `dotnet`, `cfamily` and `rust`.
+  qualified findings (`reachable_candidate`, `malicious_package_present`) on each lane, counted
+  once per alias set per repository, so a finding filed under PYSEC, CVE and GHSA ids counts once.
+  A language marked **no target** has no demo repository yet. Today that is `kotlin`, `dotnet`,
+  `cfamily` and `rust`.
   There is no .NET, Kotlin or Rust target today.
 - **By repo**: one row per target. The columns are the Assay commit the scanner was built from, the
   corpus policy, verdict counts, the qualified alias sets, the three most common `undetermined_reason` codes, whether the

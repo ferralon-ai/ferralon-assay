@@ -402,12 +402,13 @@ func repoIdentity(target string) string {
 // houseCanaries returns the first-party house canaries for a target of the given language when the
 // scan opted them in (-include-house-canaries), and nil otherwise. The binary carries no other
 // advisory membership: real work comes from a corpus (its policy) or the OSV widening in
-// workset.go, and an empty resolved work set halts the run at errEmptyWorkSet.
+// workset.go, and a run given neither halts at errEmptyWorkSet unless the canaries populate its set.
 //
 // The canaries are language-scoped because each names a package in one ecosystem; a Go canary
-// would resolve nothing in a Java tree. None is a public CVE/GHSA/OSV record: they are synthetic
-// sinks and dependencies over com.example / tegron-corpus / stand-in packages that our own demo
-// scan uses to drive enumerate, fire, prove and auto-fix end to end. Even opted in they stay
+// would resolve nothing in a Java tree. They are first-party demo records, not sourced from a feed:
+// mostly sinks and dependencies over com.example / tegron-corpus / stand-in packages, a few
+// mirroring a public advisory, that our own demo scan uses to drive enumerate, fire, prove and
+// auto-fix end to end. Even opted in they stay
 // candidate-only at the scan tier; proof comes from the fire. Kotlin's canary has no facts in
 // pipeline's canary source, so it evaluates as unresolved; C-family has none.
 func houseCanaries(language string, include bool) []assessment.VulnRef {

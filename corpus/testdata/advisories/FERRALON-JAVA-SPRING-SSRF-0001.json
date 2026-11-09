@@ -9,7 +9,6 @@
   "Symbols": [
     "UrlServiceImpl.fetch"
   ],
-  "SymbolProvenance": "curated",
   "GuardSymbols": null,
   "CWEs": [
     "CWE-918"

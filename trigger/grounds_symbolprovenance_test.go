@@ -19,10 +19,12 @@ const (
 	spPURL = "pkg:nuget/newtonsoft.json"
 )
 
-// spRecord is what varies between rows: the record's symbol provenance, the trust tier the record
-// declares about itself, whether it lists its affected packages, and the lane's refutation.
+// spRecord is what varies between rows: the record's symbol provenance, whether S1 marked it as
+// answered by a house canary, the trust tier the record declares about itself, whether it lists its
+// affected packages, and the lane's refutation.
 type spRecord struct {
 	provenance string
+	builtIn    bool
 	trust      string
 	affected   bool
 	refutation *plugin.Refutation
@@ -41,6 +43,9 @@ func symbolProvenanceFinding(t *testing.T, r spRecord) report.AdvisoryFinding {
 	}
 	if r.provenance != "" {
 		adv["symbol_provenance"] = r.provenance
+	}
+	if r.builtIn {
+		adv["built_in"] = true
 	}
 	if r.trust != "" {
 		adv["trust_tier"] = r.trust
@@ -67,8 +72,8 @@ func symbolProvenanceFinding(t *testing.T, r spRecord) report.AdvisoryFinding {
 }
 
 // TestFinding_SymbolProvenanceGate grounds not_exploitable on "no listed symbol reached" only when the
-// symbol set is vetted: declared by OSV, or curated. Any other set is withheld as
-// advisory_symbols_unvetted, whatever trust tier or origin the record declares about itself, and a
+// symbol set is vetted: declared by OSV, curated, or an untagged set a house canary answered. Any
+// other set is withheld as advisory_symbols_unvetted, whatever trust tier the record declares, and a
 // lane refutation that does not rest on the listed symbols still grounds.
 func TestFinding_SymbolProvenanceGate(t *testing.T) {
 	const searched = "no path from any entry point reaches " + spSym + " in Newtonsoft.Json@12.0.3"
@@ -83,12 +88,13 @@ func TestFinding_SymbolProvenanceGate(t *testing.T) {
 	}{
 		{"osv-declared", spRecord{provenance: "osv-declared"}, searched, ""},
 		{"curated", spRecord{provenance: "curated"}, searched, ""},
+		{"untagged house canary", spRecord{builtIn: true, trust: firstParty}, searched, ""},
 
 		{"diff-lexed", spRecord{provenance: "diff-lexed"}, "", report.ReasonAdvisorySymbolsUnvetted},
 		{"no provenance", spRecord{}, "", report.ReasonAdvisorySymbolsUnvetted},
 		{"cna-declared", spRecord{provenance: "cna-declared"}, "", report.ReasonAdvisorySymbolsUnvetted},
 		{"unknown provenance", spRecord{provenance: "reasoning"}, "", report.ReasonAdvisorySymbolsUnvetted},
-		{"diff-lexed in a first-party record", spRecord{provenance: "diff-lexed", trust: firstParty},
+		{"diff-lexed in a house canary", spRecord{provenance: "diff-lexed", builtIn: true, trust: firstParty},
 			"", report.ReasonAdvisorySymbolsUnvetted},
 		{"untagged corpus record declaring trust_tier first_party", spRecord{trust: firstParty},
 			"", report.ReasonAdvisorySymbolsUnvetted},

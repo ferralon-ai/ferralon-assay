@@ -91,7 +91,7 @@
     },
     "FERRALON-APP-DOS-0001": {
       "file": "FERRALON-APP-DOS-0001.json",
-      "digest": "sha256:fd84faad807ebc7ba76223944e079514377e5d21e4d5936d19c9dd14f0ab0128"
+      "digest": "sha256:ed26a3534e21ec06d922b17bb07b7d975e00a4615ba08fd265ce9562432d4489"
     },
     "FERRALON-APP-SSRF-0001": {
       "file": "FERRALON-APP-SSRF-0001.json",
@@ -107,11 +107,11 @@
     },
     "FERRALON-JAVA-SPRING-SSRF-0001": {
       "file": "FERRALON-JAVA-SPRING-SSRF-0001.json",
-      "digest": "sha256:dd88e83930264901601ecc6e371f4915fa8bd020a5c4320743383db4448171f9"
+      "digest": "sha256:ff9f47651d10212803b671b329f9594ad9de6d657f7e5eda16aab4e8acc48d7a"
     },
     "FERRALON-JAVA-SSRF-0001": {
       "file": "FERRALON-JAVA-SSRF-0001.json",
-      "digest": "sha256:1af454da0e390d843bb044fd7c9b5402378a361ee12be88f26f9426694da51fa"
+      "digest": "sha256:2fc38ca11c993eb7397f7cc1963c820745e43ad7b35cc9379bd15a83f3328ac8"
     },
     "FERRALON-JAVA-SSRF-0002": {
       "file": "FERRALON-JAVA-SSRF-0002.json",
@@ -131,7 +131,7 @@
     },
     "FERRALON-JS-SSRF-0001": {
       "file": "FERRALON-JS-SSRF-0001.json",
-      "digest": "sha256:8d111466b5c2f880cadc9f30974b1e016441ece6360bcb1869994c19d27799c6"
+      "digest": "sha256:8e00a86b28c3fcb23d13478d29876acdd453a07dde971d37e58e9282785e9f89"
     },
     "FERRALON-NET-DEP-0001": {
       "file": "FERRALON-NET-DEP-0001.json",
@@ -143,7 +143,7 @@
     },
     "FERRALON-PY-AIRFLOW-EXPAPI-0001": {
       "file": "FERRALON-PY-AIRFLOW-EXPAPI-0001.json",
-      "digest": "sha256:1049625387fcd85140d1120590c05024937019d35eb43ad34881c5565bfb68b2"
+      "digest": "sha256:aae56b043594c43d676928374c5b2b479edcae5b30f01b2ef1a00473a732da09"
     },
     "FERRALON-PY-DEP-0001": {
       "file": "FERRALON-PY-DEP-0001.json",
@@ -166,5 +166,5 @@
       "digest": "sha256:fa8dd905f899c7eb807ba5c632090e55b9dba8dbc6997342e5afa456887aec94"
     }
   },
-  "corpus_digest": "sha256:9855d8fba2b3a2f8a5e38e166e6fb5e84653d07290ebd9a8ffeff8c5de3c1765"
+  "corpus_digest": "sha256:f44edaf4f095c00edfb2e0bb0d7ba6b20b7c848a8bc3bcaf715d9c8ba3ee94ac"
 }

@@ -9,7 +9,6 @@
   "Symbols": [
     "main.expandHandler"
   ],
-  "SymbolProvenance": "curated",
   "GuardSymbols": null,
   "CWEs": [
     "CWE-400"

@@ -18,11 +18,13 @@ import (
 
 const advisoryFixtureRoot = "testdata/advisory_source"
 
-// The house canary source serves exactly houseCanaryFacts and misses everything else: it is the
-// only advisory data the scanner carries, and it answers only for the canaries.
+// The house canary source serves exactly houseCanaryFacts, marked with the BuiltIn origin, and
+// misses everything else: it is the only advisory data the scanner carries, and it answers only for
+// the canaries.
 func TestHouseCanarySource_ServesOnlyCanaries(t *testing.T) {
 	src := NewHouseCanarySource()
 	for id, want := range houseCanaryFacts {
+		want.BuiltIn = true
 		got, ok := src.Lookup(id)
 		if !ok {
 			t.Errorf("Lookup(%q) ok=false, want true", id)

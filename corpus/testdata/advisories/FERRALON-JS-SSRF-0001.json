@@ -9,7 +9,6 @@
   "Symbols": [
     "fetchUrl"
   ],
-  "SymbolProvenance": "curated",
   "GuardSymbols": null,
   "CWEs": [
     "CWE-918"

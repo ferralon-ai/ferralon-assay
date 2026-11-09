@@ -67,8 +67,8 @@ func TestShippedDefaults_ScanPathContactsNobody(t *testing.T) {
 		t.Fatalf("a shipped-default scan contacted %v; the workflow it ships with says the run "+
 			"contacts the two endpoints in its `with:` block and nothing else", trap.hosts)
 	}
-	if ws.source != report.WorkSetBuiltinLanguageSet {
-		t.Errorf("WorkSetSource = %q, want %q", ws.source, report.WorkSetBuiltinLanguageSet)
+	if ws.source != report.WorkSetHouseCanaries {
+		t.Errorf("WorkSetSource = %q, want %q", ws.source, report.WorkSetHouseCanaries)
 	}
 	if len(ws.partiality) != 0 {
 		t.Errorf("the DEFAULT configuration disclosed partiality %+v; not asking to widen is not a "+

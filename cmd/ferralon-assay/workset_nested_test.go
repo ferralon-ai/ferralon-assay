@@ -68,10 +68,10 @@ func TestWorkSet_GoModuleBelowCheckoutRoot(t *testing.T) {
 			if tc.workspace {
 				t.Setenv("GOMODCACHE", t.TempDir())
 			}
-			acq := &acquired{buildDir: dir, language: checkout.LangGo, repo: "example.com/mono", advisories: goAdvisoryCorpus(false)}
+			acq := &acquired{buildDir: dir, language: checkout.LangGo, repo: "example.com/mono", advisories: houseCanaries(checkout.LangGo, true)}
 
 			osv := &fakeOSV{}
-			ws := resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+			ws := resolveWorkSet(context.Background(), acq, osv, fixtureSource())
 			for _, n := range ws.partiality {
 				if n.Reason == plugin.PartialReasonNoManifest {
 					t.Errorf("no_manifest disclosed for a module FindGoModuleRoot finds: %+v", n)
@@ -118,9 +118,9 @@ func TestWorkSet_GoNestedModuleRootQuery(t *testing.T) {
 	gitT(t, dir, "commit", "-q", "-m", "init")
 	gitT(t, dir, "tag", "services/api/v1.2.3")
 
-	acq := &acquired{buildDir: dir, language: checkout.LangGo, repo: "example.com/mono", advisories: goAdvisoryCorpus(false)}
+	acq := &acquired{buildDir: dir, language: checkout.LangGo, repo: "example.com/mono", advisories: houseCanaries(checkout.LangGo, true)}
 	osv := &fakeOSV{}
-	resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+	resolveWorkSet(context.Background(), acq, osv, fixtureSource())
 	for _, p := range osv.seen {
 		if p.Root && p.Name == "example.com/api" && p.Version == "v1.2.3" && p.Ecosystem == ecosystemGo {
 			return

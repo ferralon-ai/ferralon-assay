@@ -15,7 +15,7 @@ import (
 )
 
 // pocSummarySource is a stub AdvisorySource returning fixed facts for any id — enough to drive the
-// advisory_intake public_poc write without the in-memory AdvisoryTable.
+// advisory_intake public_poc write without a corpus.
 type pocSummarySource struct{ facts AdvisoryFacts }
 
 func (s pocSummarySource) Lookup(string) (AdvisoryFacts, bool) { return s.facts, true }

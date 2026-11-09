@@ -75,7 +75,7 @@ import (
 // "plugin resolves, pipeline ranges" symmetry: this op resolves only the concrete installed
 // literal version. Advisory RANGE matching (PEP 440 specifiers, ordering) is applied by the
 // pipeline disqualification predicate (pipeline/pypi_version.go), never here.
-func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
 		return plugin.DependencyVersionResult{}, fmt.Errorf("pythonanalysis: stat build dir %q: %w", req.BuildDir, err)
@@ -89,11 +89,11 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		origins []manifestOrigin
 	)
 	want := normalizePyCoordinate(req.Coordinate)
-	manifests, parseFailed, scriptWithheld, installs, poetry, tooling, unrecognised, inactive, configNamed := versionSurfaces(req.BuildDir)
+	manifests, parseFailed, scriptWithheld, installs, poetry, tooling, unrecognised, inactive, configNamed := versionSurfacesCached(ctx, req.BuildDir)
 	if tooling[want] {
 		parseFailed, scriptWithheld = true, true
 	}
-	copies, copyOrigins, copiesRead := installedCopies(req.BuildDir)
+	copies, copyOrigins, copiesRead := installedCopiesCached(ctx, req.BuildDir)
 	parseFailed = parseFailed || !copiesRead
 	for _, m := range manifests {
 		deps, o, ok := parseManifest(m)
@@ -454,8 +454,7 @@ func parseManifestData(path string, data []byte) ([]plugin.ResolvedDependency, [
 		}
 		return hatchEnvDeps(h, dir)
 	default: // requirements*.txt
-		deps, ok = parseRequirementLines(data, dir)
-		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok
+		return parseRequirementLines(data, dir)
 	}
 	return deps, originsFor(deps, manifestOrigin{dir: dir, lock: base}), ok
 }
@@ -496,22 +495,25 @@ func buildRequires(path string, data []byte) []plugin.ResolvedDependency {
 
 // --- requirements.txt --------------------------------------------------------
 
-// parseRequirementLines parses a pip requirements file located in dir. Only an EXACT "=="
-// pin yields a resolved version; a range/compatible/prefix spec is UNRESOLVED, and so is a
-// URL or VCS requirement that names its project ("pkg @ https://...",
-// "git+https://...#egg=pkg", editable or not), since it installs a version nobody can read
-// here.
+// parseRequirementLines parses a pip requirements file located in dir, returning each entry's
+// origin alongside it. Only an EXACT "==" pin yields a resolved version; a
+// range/compatible/prefix spec is UNRESOLVED, and so is a URL or VCS requirement that names its
+// project ("pkg @ https://...", "git+https://...#egg=pkg", editable or not), since it installs a
+// version nobody can read here. Its origin is a direct reference, so no lock pin stands for it.
 //
 // The file reports false, exactly as an unparseable one does, when it can install a
 // distribution whose name or version cannot be read here: a URL or VCS requirement that
 // names no project, a local path or file: install other than the project's own directory
-// ("-e ./vendor/x", "./dist/x.whl"; "-e ." and "." are the project itself), or any -r/-c
-// include, which is not followed. The caller then leaves every Found match unresolved; the
-// entries that were read are still returned. Other option lines are skipped. Continuation lines ("\") and hashed pins
+// ("-e ./vendor/x", "./dist/x.whl"; "-e ." and "." are the project itself), a -c include, or a
+// -r include followedInclude does not follow. The caller then leaves every Found match
+// unresolved; the entries that were read are still returned. Other option lines are skipped. Continuation lines ("\") and hashed pins
 // ("pkg==1.2.3 --hash=sha256:...") are handled; environment markers (";...") and inline
 // comments ("#...") are stripped.
-func parseRequirementLines(data []byte, dir string) ([]plugin.ResolvedDependency, bool) {
-	var out []plugin.ResolvedDependency
+func parseRequirementLines(data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+	var (
+		out     []plugin.ResolvedDependency
+		origins []manifestOrigin
+	)
 	readable := true
 	for _, req := range joinContinuations(string(data)) {
 		line := stripReqComment(req)
@@ -520,7 +522,9 @@ func parseRequirementLines(data []byte, dir string) ([]plugin.ResolvedDependency
 			continue
 		}
 		if isInclude(line) {
-			readable = false
+			if !followedInclude(line, dir) {
+				readable = false
+			}
 			continue
 		}
 		target, editable := trimEditable(line)
@@ -536,6 +540,7 @@ func parseRequirementLines(data []byte, dir string) ([]plugin.ResolvedDependency
 		if isDirectReference(target) {
 			if name := directReferenceName(req); name != "" {
 				out = append(out, pyResolved(name, "", false, "requirements.txt"))
+				origins = append(origins, manifestOrigin{dir: dir, directRef: true})
 			} else {
 				readable = false
 			}
@@ -567,8 +572,45 @@ func parseRequirementLines(data []byte, dir string) ([]plugin.ResolvedDependency
 			d.Constraint = requirementConstraint(line)
 		}
 		out = append(out, d)
+		origins = append(origins, manifestOrigin{dir: dir})
 	}
-	return out, readable
+	return out, origins, readable
+}
+
+// followedInclude reports whether a -r/--requirement line, and nothing else, names a file the
+// manifest walk itself discovers and parses as a requirements file (manifestFiles), so the
+// include adds nothing left to read. The path must be relative and must not climb (this file
+// is read without the build root, so a climb could leave it), and every name on it must be the
+// exact name of a real directory the walk enters, then of a regular file with a requirements
+// name: never a symlink. Nothing is followed into, so an include cycle terminates.
+func followedInclude(line, dir string) bool {
+	words, ok := shellSplit(line)
+	if !ok || len(words) == 0 || isConstraintFlag(words[0]) {
+		return false
+	}
+	want := 1 // "-rbase.txt", "--requirement=base.txt"
+	if words[0] == "-r" || words[0] == "--requirement" {
+		want = 2
+	}
+	target, _ := includeTarget(words, 0)
+	if len(words) != want || target == "" || strings.ContainsAny(target, `:$\`) || filepath.IsAbs(target) ||
+		slices.Contains(strings.Split(target, "/"), "..") || !isRequirementsName(filepath.Base(target)) {
+		return false
+	}
+	parts := strings.Split(filepath.Clean(target), string(filepath.Separator))
+	for i, p := range parts {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return false
+		}
+		k := slices.IndexFunc(entries, func(e os.DirEntry) bool { return e.Name() == p })
+		last := i == len(parts)-1
+		if k < 0 || last && !entries[k].Type().IsRegular() || !last && (!entries[k].IsDir() || skipDir(p)) {
+			return false
+		}
+		dir = filepath.Join(dir, p)
+	}
+	return true
 }
 
 // isInclude reports whether line is a -r/--requirement or -c/--constraint include

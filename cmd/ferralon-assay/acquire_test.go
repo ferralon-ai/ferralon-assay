@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -76,7 +76,7 @@ func TestSelectPlugin(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.lang, func(t *testing.T) {
-			p, err := selectPlugin(tc.lang, "/fake/analyzer-bin", nil, nil, nil)
+			p, err := selectPlugin(tc.lang, "/fake/analyzer-bin", nil, nil, nil, nil)
 			if err != nil {
 				t.Fatalf("selectPlugin(%q): %v", tc.lang, err)
 			}
@@ -86,93 +86,59 @@ func TestSelectPlugin(t *testing.T) {
 		})
 	}
 
-	if _, err := selectPlugin(checkout.LangUnknown, "", nil, nil, nil); err == nil {
+	if _, err := selectPlugin(checkout.LangUnknown, "", nil, nil, nil, nil); err == nil {
 		t.Fatal("selectPlugin(unknown): expected error, got nil")
 	}
 }
 
-// TestAdvisoryCorpusByLanguage proves the corpus is language-scoped: each language sees only its own
-// ecosystem's advisories, EVERY supported language has a non-empty default floor, and the canary
-// opt-in only ever adds to it.
-//
-// The floors used to be Go-only: Java, JS, Python and .NET returned nil unless the canary flag was
-// set, which is what halted a default scan of those languages on an empty work set. The counts below
-// are the load-bearing part — a language whose default count returns to zero cannot complete a scan.
-func TestAdvisoryCorpusByLanguage(t *testing.T) {
+// TestHouseCanariesByLanguage pins the scanner's only built-in work-set membership: nothing unless
+// the scan opted the house canaries in, and with the opt-in each language's own canaries and no
+// other ecosystem's.
+func TestHouseCanariesByLanguage(t *testing.T) {
 	for _, tc := range []struct {
-		lang           string
-		wantDefault    int
-		wantWithCanary int
+		lang string
+		want []string
 	}{
-		// Go: five original entries, four real vuln.go.dev advisories, and the gogs chain's
-		// successor CVE (the chain is two advisories, not one), plus the DOS canary on the opt-in.
-		{checkout.LangGo, 10, 11},
-		// The four non-Go floors are three real public advisories each (two for the ecosystems'
-		// house canaries below), promoted from the authored corpus fixtures on 2026-08-05.
-		{checkout.LangJava, 3, 6},
-		{checkout.LangJS, 3, 5},
-		{checkout.LangPython, 3, 5},
-		{checkout.LangDotNet, 3, 4},
+		{checkout.LangGo, []string{"FERRALON-APP-DOS-0001"}},
+		{checkout.LangJava, []string{"FERRALON-JAVA-SSRF-0001", "FERRALON-JAVA-SPRING-SSRF-0001", "FERRALON-JAVA-DEP-0001"}},
+		{checkout.LangKotlin, []string{"FERRALON-KOTLIN-DEP-0001"}},
+		{checkout.LangJS, []string{"FERRALON-JS-SSRF-0001", "FERRALON-JS-DEP-0001"}},
+		{checkout.LangPython, []string{"FERRALON-PY-AIRFLOW-EXPAPI-0001", "FERRALON-PY-DEP-0001"}},
+		{checkout.LangDotNet, []string{"FERRALON-NET-DEP-0001"}},
 	} {
 		t.Run(tc.lang, func(t *testing.T) {
-			if got := len(advisoryCorpus(tc.lang, false)); got != tc.wantDefault {
-				t.Fatalf("default %s corpus size = %d, want %d", tc.lang, got, tc.wantDefault)
+			if got := houseCanaries(tc.lang, false); len(got) != 0 {
+				t.Fatalf("houseCanaries(%s, false) = %v, want none: a scan that did not opt in carries no advisories", tc.lang, got)
 			}
-			if got := len(advisoryCorpus(tc.lang, true)); got != tc.wantWithCanary {
-				t.Fatalf("%s corpus size (canaries on) = %d, want %d", tc.lang, got, tc.wantWithCanary)
+			var got []string
+			for _, v := range houseCanaries(tc.lang, true) {
+				got = append(got, v.ID)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("houseCanaries(%s, true) = %v, want %v", tc.lang, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestNoCodenameOnDefaultSurface is the regression gate on the house-canary ids: no advisory id
-// reaching a default, ungated scan may carry the FERRALON- prefix, in any ecosystem.
-func TestNoCodenameOnDefaultSurface(t *testing.T) {
-	for _, lang := range []string{
-		checkout.LangGo, checkout.LangJava, checkout.LangJS,
-		checkout.LangPython, checkout.LangDotNet,
-	} {
-		for _, v := range advisoryCorpus(lang, false) {
-			if strings.HasPrefix(v.ID, "FERRALON-") {
-				t.Fatalf("default %s corpus advertises codename-bearing advisory %q on the customer-facing surface", lang, v.ID)
-			}
-		}
-	}
-}
-
-// TestHouseCanaryOptIn proves the opt-in: the DOS house canary
-// (FERRALON-APP-DOS-0001) is absent from the default Go corpus (the customer/investor surface
-// stays byte-identical to before) and present ONLY when includeHouseCanaries is set (the Ferralon
-// demo scan's -include-house-canaries). The SSRF canary stays scrubbed unconditionally. The
-// canary is surfaced by corpus membership alone; it stays a candidate at the scan tier
-// (reachable_candidate + attacker_tainted) — proof comes from the fire (inv. 5).
+// TestHouseCanaryOptIn pins the DOS canary's work-set key: its Source must be "osv" so the
+// enumerator's Fireable candidate keys the same advisory (osv:FERRALON-APP-DOS-0001) the fire path
+// proves (backend cmd/auto-prove). The SSRF canary has no opt-in: it stays out even with the flag.
 func TestHouseCanaryOptIn(t *testing.T) {
 	const dosCanary = "FERRALON-APP-DOS-0001"
 	const ssrfCanary = "FERRALON-APP-SSRF-0001"
 
-	off := advisoryCorpus(checkout.LangGo, false)
-	on := advisoryCorpus(checkout.LangGo, true)
-
-	if containsAdvisory(off, dosCanary) {
-		t.Fatalf("default Go corpus (flag off) must not contain the DOS house canary %q — the customer surface must stay clean", dosCanary)
-	}
+	on := houseCanaries(checkout.LangGo, true)
 	if !containsAdvisory(on, dosCanary) {
-		t.Fatalf("Go corpus with -include-house-canaries must contain the DOS house canary %q", dosCanary)
+		t.Fatalf("Go canaries with -include-house-canaries must contain %q", dosCanary)
 	}
-	// The opt-in adds exactly the one DOS canary — nothing else moves.
-	if len(on) != len(off)+1 {
-		t.Fatalf("house-canary opt-in changed corpus size by %d, want +1 (only the DOS canary)", len(on)-len(off))
-	}
-	// The DOS canary's Source must be "osv" so the enumerator's Fireable candidate keys the same
-	// advisory (osv:FERRALON-APP-DOS-0001) the fire path detonates (backend cmd/auto-prove).
 	for _, v := range on {
 		if v.ID == dosCanary && v.Source != "osv" {
 			t.Fatalf("DOS house canary Source = %q, want \"osv\" (must match the fire path's advisory key)", v.Source)
 		}
 	}
-	// The SSRF canary has no opt-in: scrubbed even with the flag on.
 	if containsAdvisory(on, ssrfCanary) {
-		t.Fatalf("SSRF house canary %q must stay scrubbed even with -include-house-canaries", ssrfCanary)
+		t.Fatalf("SSRF house canary %q must stay out even with -include-house-canaries", ssrfCanary)
 	}
 }
 
@@ -186,8 +152,7 @@ func containsAdvisory(corpus []assessment.VulnRef, id string) bool {
 }
 
 // TestAcquireTargetLocalPath proves the local-path branch: an existing source directory is
-// inventoried in place (no clone), its language detected, and the matching plugin + corpus
-// selected. A Go tree routes to the Go plugin; a Java tree to the Java plugin.
+// inventoried in place (no clone), its language detected, and the matching plugin selected. A Go tree routes to the Go plugin; a Java tree to the Java plugin.
 func TestAcquireTargetLocalPath(t *testing.T) {
 	t.Run("go tree → go plugin", func(t *testing.T) {
 		dir := t.TempDir()
@@ -208,8 +173,8 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 		if acq.buildDir != dir {
 			t.Fatalf("buildDir = %q, want in-place %q", acq.buildDir, dir)
 		}
-		if len(acq.advisories) != 10 { // the full default Go corpus, house canaries off
-			t.Fatalf("advisories = %d, want go corpus (10)", len(acq.advisories))
+		if len(acq.advisories) != 0 { // house canaries off: the scanner carries no advisories of its own
+			t.Fatalf("advisories = %v, want none", ids(acq.advisories))
 		}
 		if acq.repo != filepath.Base(dir) {
 			t.Fatalf("repo = %q, want %q", acq.repo, filepath.Base(dir))
@@ -220,17 +185,16 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "App.java"), "class App {}\n")
 
-		// The default (customer-facing) acquire resolves the three real Maven advisories, with no
-		// canary among them. Emptiness is still judged later, on the resolved work set
-		// (scanWorkSet), because the OSV widening runs off this acquisition — acquisition itself
-		// never refuses a scan.
+		// The default acquire carries no advisories. Emptiness is judged later, on the resolved
+		// work set (scanWorkSet), because the corpus policy and the OSV widening run off this
+		// acquisition — acquisition itself never refuses a scan.
 		bare, err := acquireTarget(context.Background(), dir, "", "acme/app", "/fake/bin", false, graphRequest{mode: buildGraphOff})
 		if err != nil {
 			t.Fatalf("acquireTarget (canaries off): %v", err)
 		}
 		bare.cleanup()
-		if len(bare.advisories) != 3 {
-			t.Fatalf("default java floor = %d advisories, want 3 (the real Maven corpus)", len(bare.advisories))
+		if len(bare.advisories) != 0 {
+			t.Fatalf("default java floor = %v, want none", ids(bare.advisories))
 		}
 
 		acq, err := acquireTarget(context.Background(), dir, "", "acme/app", "/fake/bin", true, graphRequest{mode: buildGraphOff})
@@ -248,8 +212,8 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 		if acq.repo != "acme/app" {
 			t.Fatalf("repo = %q, want override acme/app", acq.repo)
 		}
-		if len(acq.advisories) != 6 {
-			t.Fatalf("advisories (canaries on) = %d, want java corpus (6: 3 real + 3 canaries)", len(acq.advisories))
+		if len(acq.advisories) != 3 {
+			t.Fatalf("advisories (canaries on) = %v, want the 3 java house canaries", ids(acq.advisories))
 		}
 	})
 

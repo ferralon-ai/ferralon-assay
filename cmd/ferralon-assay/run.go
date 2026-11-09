@@ -273,6 +273,7 @@ func publishResult(ctx context.Context, outDir string, rep *report.Report, intel
 	if err != nil {
 		return err
 	}
+	res.DependencyFetch = deps.fetchNotes()
 	runsURL := resolveEndpoint(linkedToConsole(), os.Getenv(envRunsURL), bakedRunsURL)
 	refs := deliveryRefs{refName: os.Getenv(envRefName), defaultBranch: os.Getenv(envDefaultBranch), analyzeRef: analyzeRef}
 	env := github.DetectEnv(surfaceToggles())
@@ -573,26 +574,26 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		revision:       fs.String("revision", "", "revision recorded on the Report (e.g. a PR head branch)"),
 		commit:         fs.String("commit", "", "resolved commit SHA recorded on the Report"),
 		plugin:         fs.String("plugin-go", "", "explicit path to the analyzer binary for the detected language (assay-plugin-<lang>; default: PATH lookup)"),
-		advisoryCorpus: fs.String("advisory-corpus", "", "path to an advisory corpus consulted BEFORE the built-in advisory table: a directory (manifest.json + digest-pinned per-advisory JSON) or a compressed corpus bundle file (<policy>.jsonl.gz). Without -advisory-corpus-policy it supplies facts only and does not change what is scanned; overrides "+envAdvisoryCorpusDir),
+		advisoryCorpus: fs.String("advisory-corpus", "", "path to the advisory corpus the scan resolves advisory facts from: a directory (manifest.json + digest-pinned per-advisory JSON) or a compressed corpus bundle file (<policy>.jsonl.gz). With -advisory-corpus-policy it also defines what is scanned; without one it supplies facts only, and the work set comes from -osv-work-set. Overrides "+envAdvisoryCorpusDir),
 		// corpusPolicy declares which advisory policy the corpus was selected by. Declaring one makes
 		// the corpus define the work set (selectWorkSet); without it the corpus is fact scope only.
-		corpusPolicy: fs.String("advisory-corpus-policy", "", "the advisory policy -advisory-corpus was selected by (e.g. published-7d, full). When set, the work set is the built-in floor plus every advisory in the corpus whose affected package is one of the repository's dependencies, and no OSV.dev query is made; requires -advisory-corpus; overrides "+envAdvisoryCorpusPolicy),
+		corpusPolicy: fs.String("advisory-corpus-policy", "", "the advisory policy -advisory-corpus was selected by (e.g. published-7d, full). When set, the work set is every advisory in the corpus whose affected package is one of the repository's dependencies (plus the house canaries, when included), and no OSV.dev query is made; requires -advisory-corpus; overrides "+envAdvisoryCorpusPolicy),
 		// signalsPath is the EPSS/KEV signals file findings are ranked with. The scanner holds no
 		// signals of its own and fetches none: without one, no finding carries a priority.
 		signalsPath:   fs.String("advisory-signals", "", "path to an EPSS/KEV signals file (signals.json or signals.json.gz, signals_version 1.x) used to rank findings; each value is reported with its own date. Default: the signals.json of an -advisory-corpus directory, when it has one. Without signals no finding carries EPSS/KEV priority; overrides "+envAdvisorySignals),
 		signalsMaxAge: fs.Duration("advisory-signals-max-age", defaultSignalsMaxAge, "warn in the run summary when the newest EPSS value in the signals file, or over half of its EPSS values, are older than this (the file still loads)"),
 		// requireCorpus declares that this run EXPECTS a corpus. Without it, an absent corpus
 		// path is indistinguishable from a corpus fetch that failed and left the path empty.
-		requireCorpus: fs.Bool("require-advisory-corpus", false, "fail the run when no advisory corpus resolves, instead of falling back to the built-in advisory table; overrides "+envAdvisoryCorpusRequired),
+		requireCorpus: fs.Bool("require-advisory-corpus", false, "fail the run when no advisory corpus resolves, even when -include-house-canaries would give it work; overrides "+envAdvisoryCorpusRequired),
 		// houseCanaries opts the first-party house canaries (the FERRALON-APP-* Go application-sink
-		// advisories and the synthetic Java/JS/Python corpus advisories) into the corpus. OFF by
+		// advisories and the synthetic Java/Kotlin/JS/Python/.NET advisories) into the work set. OFF by
 		// default so a customer/investor scan never evaluates them; the Ferralon demo scan sets it
 		// so the DOS canary surfaces as a reachable_candidate.
-		houseCanaries: fs.Bool("include-house-canaries", false, "include the first-party house-canary advisories in the scan corpus (off by default; the Ferralon demo scan sets this)"),
+		houseCanaries: fs.Bool("include-house-canaries", false, "include the first-party house-canary advisories in the work set, with their facts behind any corpus (off by default; the Ferralon demo scan sets this)"),
 		// osvWorkSet widens the scan's work set with the advisories OSV.dev reports against the
 		// repository's real dependencies. OPT-IN — see osvWorkSetDefault for why, and
 		// envOSVWorkSet for the second channel that switches it on.
-		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
+		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to choose the advisory work set, unless -advisory-corpus-policy defines it; an id is admitted only when -advisory-corpus (or an included house canary) holds its facts (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
 		// subjectGoWork is the GOWORK the build runs under; a caller statement, never the scanner's own.
 		subjectGoWork: fs.String("subject-gowork", "", "the GOWORK the SCANNED repository's Go build runs under: off, auto (find the go.work as when unset), or the path of its go.work relative to the scanned directory (-target). A go.work that does not exist, does not parse or does not use the scanned module withholds every verdict. Overrides "+envSubjectGoWork+" (default: the go.work the go command finds from the module, searched no higher than the repository; one that does not use the module is not the build's)"),
 		subjectGo:     fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
@@ -610,7 +611,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\". With -build-graph auto it is passed to Maven as -P, and stating one for a Gradle build fails the run; with a graph file, the file must record the same selection; with off it is unused. Overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
 		libEntrypoints: fs.String("library-entrypoints", "", "which of the SCANNED repository's packages code outside the build may import: auto (inferred; a package under cmd/, examples/ or a test directory is not one), none (the build ships programs only), or paths relative to the repository root, e.g. \"pkg/api,!pkg/api/internal\", where !path takes a path out and naming no path keeps auto for the rest. A refutation a declaration lets stand carries it on the report as an assumption. Overrides "+envLibraryEntrypoints+" (default: auto)"),
 
-		depCode:        fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: fetch, which fetches each lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; offline, which reads only an operator-seeded -dependency-cache; or off. A fetch that fails, even for one package, reads no dependency code and says so on the report. Overrides "+envDependencyCode+" (default: fetch)"),
+		depCode:        fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: fetch, which fetches each lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; offline, which reads only an operator-seeded -dependency-cache; or off. A package whose fetch fails is not read: when its registry served this build other packages the scan reads those and withholds each one it could not fetch, otherwise it reads no dependency code and says so on the report. A registry that refuses a token the scan sent (an expired or wrong token, or a curation proxy blocking a package) fails the run. On cve-watch, a registry answering a transient error, or one that has served this repository and now serves nothing, holds the advisory cursor, and the run fails once that hold has lasted "+fmt.Sprintf("%d runs and %d hours", stallRuns, int(stallAge.Hours()))+". A cve-watch run that read less than the lock pins reports each disqualified or not_exploitable verdict it reached on an advisory affecting a package it could not fetch, or one it cannot tie to the packages it fetched, as undetermined (dependency_not_fetched), and the next cve-watch run assesses those advisories again, along with any it left undetermined; a run with off stops that. Overrides "+envDependencyCode+" (default: fetch)"),
 		depCache:       fs.String("dependency-cache", "", "the content-addressed directory dependency tarballs are verified into and read from; required for -dependency-code=offline. Overrides "+envDependencyCache+" (default for fetch: the user cache directory)"),
 		depUncredCache: fs.String("dependency-uncredentialed-cache", "", "a directory apart from -dependency-cache that only ever holds tarballs from a registry with no auth entry in the npm configuration, fetched without presenting a credential; each is linked into -dependency-cache, which the scan reads. A tarball from a registry with an auth entry is never written here, and one found here is removed. Set it to persist dependency tarballs where a credentialed one must not go. Overrides "+envDependencyUncredCache+" (default: unset, one directory)"),
 		depNPMRCEnv:    fs.String("dependency-npmrc-env", "", "comma-separated environment variables a .npmrc ${VAR} reference may read, beyond NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY, NODE_AUTH_TOKEN and NPM_TOKEN; any other reference reads as unset. Overrides "+envDependencyNPMRCEnv),
@@ -632,7 +633,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 //
 // NOT SWITCHING IT ON IS NOT A PARTIALITY. A run that never asked to widen is a supported
 // configuration — the default one — and its Report says so plainly (WorkSetSource stays
-// builtin_language_set). A widening that was asked for and FAILED is different and does emit a
+// house_canaries, or the run was given no work and halts). A widening that was asked for and FAILED is different and does emit a
 // note; the distinction is intent, exactly as with the corpus require gate. What is disclosed is
 // the gap between what was asked for and what happened.
 func (f *runFlags) osvWorkSetEnabled() (bool, error) {
@@ -656,9 +657,9 @@ func (f *runFlags) osvWorkSetEnabled() (bool, error) {
 	return v, nil
 }
 
-// scanWorkSet resolves the work set for a SCAN-path run (baseline / pr-inherit): the compiled-in
-// language floor, widened with the ids of the declared advisory policy that match the repository's
-// own dependencies when a policy is declared, or otherwise OPTIONALLY with the advisories OSV.dev
+// scanWorkSet resolves the work set for a SCAN-path run (baseline / pr-inherit): the opted-in house
+// canaries, widened with the ids of the declared advisory policy that match the repository's own
+// dependencies when a policy is declared, or otherwise OPTIONALLY with the advisories OSV.dev
 // reports against those dependencies (selectWorkSet). The OSV widening is off unless it is
 // explicitly switched on (osvWorkSetDefault) and never runs when the policy defines the work set, so
 // by default this makes no network call.
@@ -666,26 +667,30 @@ func (f *runFlags) osvWorkSetEnabled() (bool, error) {
 // cve-watch deliberately does NOT call this. That mode already drives its analysis from an OSV query
 // (against the stored SBOM, diffed against a cursor) and its behaviour is unchanged here.
 //
-// A RESOLVED WORK SET OF ZERO HALTS THE RUN. This is the one place that judgement is made, and it is
-// made HERE rather than at acquisition because the compiled-in floor is not the set the pass
-// evaluates: the widening above takes the acquired target as input and can populate a floor that
-// resolved to nothing. Gating the floor failed every Java/JS/Python scan that asked for the widening,
-// with an error naming remedies the user had not asked for.
+// A RUN GIVEN NO WORK HALTS. This is the one place that judgement is made, and it is made HERE
+// rather than at acquisition because the canaries are not the set the pass evaluates: the widening
+// above takes the acquired target as input and can populate a set that started empty.
+//
+// "No work" means no input that chooses advisories was supplied: no corpus with a declared policy,
+// no OSV widening, and no house canary for the detected language. A corpus configured without a
+// policy is a fact source only and chooses nothing. When a work-set input WAS supplied and resolved
+// to zero advisories — the policy or OSV holds nothing for this repository's dependencies — that is
+// an assessed answer, and the run publishes its Report: the intel block records the source and a
+// work set of zero, and any degraded selection (an unenumerable policy, an OSV query that failed)
+// carries its partiality note.
 //
 // It is a HARD error, not a warning, on the precedent this CLI already sets for a degraded advisory
 // input: advisoryCorpusOption hard-fails a wholly-unusable -advisory-corpus rather than silently
-// falling back to the built-in table (decisions.md #1), and a tree whose language is not recognized
-// is refused at checkout ("not a recognized source tree", checkout/vendored.go). Both refuse to
-// produce a Report the inputs cannot support. (A detected language whose analyzer is not installed
-// never gets here: acquireTarget stops first. Outside the release's languages the run publishes a
-// Report that says nothing was assessed — publishAnalyzerMissing; for a release language it fails as
-// an install fault.) An empty work set is the worst-consequence member of that family: the run
-// succeeds, exits 0, and publishes a findings-free Report a reader cannot distinguish from an
-// assessed all-clear.
+// scanning without it (decisions.md #1), and a tree whose language is not recognized is refused at
+// checkout ("not a recognized source tree", checkout/vendored.go). Both refuse to produce a Report
+// the inputs cannot support. (A detected language whose analyzer is not installed never gets here:
+// acquireTarget stops first. Outside the release's languages the run publishes a Report that says
+// nothing was assessed — publishAnalyzerMissing; for a release language it fails as an install
+// fault.) A run given no work is the worst-consequence member of that family: it would succeed, exit
+// 0, and publish a findings-free Report a reader cannot distinguish from an assessed all-clear.
 //
-// The condition is strictly THE SET IS EMPTY — never a language, never a source. An ecosystem that
-// resolves nothing today stops failing the moment anything populates its work set, with no code
-// change and nothing to remove.
+// The condition is never a language. An ecosystem that resolves nothing today stops failing the
+// moment an input populates its work set, with no code change and nothing to remove.
 func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, error) {
 	enabled, err := f.osvWorkSetEnabled()
 	if err != nil {
@@ -700,48 +705,80 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 		ws = cutWorkSet(ws, context.Cause(ctx))
 	}
 	if len(ws.advisories) == 0 {
-		return workSet{}, errEmptyWorkSet(acq.language)
+		if !f.choosesWork(enabled) {
+			return workSet{}, errEmptyWorkSet(acq.language)
+		}
+		// A corpus input chooses by dependency ecosystem; for a language with none, nothing could
+		// have matched, so an empty set is no work rather than a clean match.
+		if ecosystemForLanguage(acq.language) == "" {
+			return workSet{}, errNoAdvisoryEcosystem(acq.language)
+		}
 	}
 	return ws, nil
 }
 
-// errEmptyWorkSet is the run-halting error for a work set that resolved to no advisories.
-//
-// The message states the fact and names the inputs that populate a work set, flatly. It does NOT
-// branch on which input was supplied: the compiled-in advisory table is temporary scaffolding, and
-// under the policy/manifest corpus that replaces it the honest sentence becomes "your policy
-// resolved no advisories for this ecosystem" — a rewrite of one string, which a remedy decision tree
-// would turn into an unpicking job.
-func errEmptyWorkSet(language string) error {
-	return fmt.Errorf("work set is empty: 0 advisories resolved for the detected %s ecosystem — the scan would emit a findings-free Report without having assessed anything, which reads as an all-clear it did not establish; a work set is populated by the built-in advisory table, -advisory-corpus, -include-house-canaries and -osv-work-set", language)
+// choosesWork reports whether the run supplied an input that chooses advisories beyond the house
+// canaries: an advisory corpus together with a declared policy or the OSV widening (osvEnabled).
+// The widening admits only what the corpus holds facts for, so without a corpus it chooses nothing.
+func (f *runFlags) choosesWork(osvEnabled bool) bool {
+	return f.corpusReader != nil && (f.resolvedPolicy != "" || osvEnabled)
 }
 
-// advisoryCorpusOption resolves the optional corpus AssessOption for a run, realizing the
-// flag > env precedence (decisions.md #3): the -advisory-corpus flag wins; absent it, the
-// envAdvisoryCorpusDir env var (the orchestrator's channel) is consulted; absent both it returns
-// (nil, nil) — the built-in AdvisoryTable default, unchanged. This is the CLI half of the
-// system-wide "both flag + env, flag wins" surface.
+// errEmptyWorkSet is the run-halting error for a run given no input that chooses advisories, whose
+// work set is therefore empty.
 //
-// THE CORPUS SUPPLEMENTS THE TABLE, IT DOES NOT REPLACE IT. This used to install the corpus as THE
-// source, which meant every id the corpus did not carry resolved to zero facts and failed open.
-// Measured against the 2026-07-23 published corpus, that emptied the ENTIRE 16-id scan work set. The
-// source is now a chain — corpus first, built-in table behind it — so a corpus can only ever add
-// facts (pipeline.NewChainSource; first hit wins, no merging across sources).
+// The message states the fact and names every input that populates a work set, flatly, on both
+// surfaces a run is configured from (the command line and the GitHub Action). It does NOT branch on
+// which input was supplied: the inputs combine, and a remedy decision tree would have to be unpicked
+// each time one changes.
+func errEmptyWorkSet(language string) error {
+	return fmt.Errorf("no work: the run was given no input that chooses advisories for the detected %s ecosystem, so the scan would emit a findings-free Report without having assessed anything, which reads as an all-clear it did not establish. "+
+		"The scanner carries no advisories of its own; a work set comes from an advisory corpus: -advisory-corpus with -advisory-corpus-policy (or %s and %s; in the GitHub Action, the advisory-corpus or advisory-corpus-repo input with advisory-corpus-policy), "+
+		"or -osv-work-set (%s) to choose advisories from OSV.dev, which admits only those the corpus holds facts for. -include-house-canaries adds the first-party demo canaries",
+		language, envAdvisoryCorpusDir, envAdvisoryCorpusPolicy, envOSVWorkSet)
+}
+
+// errNoAdvisoryEcosystem is the run-halting error for a run whose corpus input could choose nothing
+// because the detected language has no advisory ecosystem to match its dependencies in.
+func errNoAdvisoryEcosystem(language string) error {
+	return fmt.Errorf("no work: the advisory corpus has no advisory ecosystem for this repository's language (%s), so no advisory could match its dependencies and the scan would emit a findings-free Report without having assessed anything. "+
+		"Corpus advisories are chosen by dependency ecosystem (Go, Maven, npm, PyPI, NuGet); -include-house-canaries adds the first-party demo canaries for languages that have them",
+		language)
+}
+
+// errNoFactSource is the run-halting error for a cve-watch run with no advisory corpus: every
+// advisory OSV.dev reports against the stored SBOM would be assessed with no facts, so the run
+// would publish findings it could not ground. The house canaries do not count: they answer only
+// for their own demo ids, never for what OSV reports.
+func errNoFactSource() error {
+	return fmt.Errorf("no advisory fact source: the scanner carries no advisories of its own, and cve-watch assesses the advisories OSV.dev reports against facts from an advisory corpus. "+
+		"Set -advisory-corpus (or %s; in the GitHub Action, the advisory-corpus or advisory-corpus-repo input). -include-house-canaries does not stand in for one: the canaries answer only for their own demo ids",
+		envAdvisoryCorpusDir)
+}
+
+// advisoryCorpusOption resolves the corpus AssessOption for a run, realizing the flag > env
+// precedence (decisions.md #3): the -advisory-corpus flag wins; absent it, the envAdvisoryCorpusDir
+// env var (the orchestrator's channel) is consulted. This is the CLI half of the system-wide "both
+// flag + env, flag wins" surface.
+//
+// The fact source is the corpus, with the house canaries behind it when the run opted them in
+// (pipeline.NewChainSource; first hit wins, no merging across sources). With no corpus it is the
+// canaries alone, and with neither there is no fact source: it returns (nil, nil), leaves
+// f.resolvedSource nil, and the run, given no work, halts.
 //
 // The resolved path is either a corpus directory or a corpus bundle file (corpusSourceFor); both
 // readers carry the same Validate/Describe contract, so everything below is shape-agnostic.
 //
 // A resolved path is preflight-Validated and a wholly-unusable corpus HARD-FAILS the run
-// (decisions.md #1) with a descriptive error, so a broken corpus is loud, never silently degraded
-// to stale built-in intel. When the run declares that it EXPECTS a corpus, an ABSENT one hard-fails
-// too — see advisoryCorpusRequired. It also records what it resolved on f, so the run can put its
-// intel provenance on the Report.
+// (decisions.md #1) with a descriptive error, so a broken corpus is loud, never silently scanned
+// around. When the run declares that it EXPECTS a corpus, an ABSENT one hard-fails too — see
+// advisoryCorpusRequired. It also records what it resolved on f, so the run can put its intel
+// provenance on the Report.
 func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
-	f.resolvedFacts = report.FactSourceBuiltinTable
+	f.resolvedFacts = report.FactSourceNone
 	f.resolvedCorpus, f.resolvedCorpusOK = pipeline.CorpusInfo{}, false
-	// The built-in table is the source until a corpus resolves in front of it. Recorded so the
-	// work-set widener can ask the REAL fact source what it can answer for.
-	f.resolvedSource = pipeline.NewTableSource()
+	// Recorded so the work-set widener can ask the REAL fact source what it can answer for.
+	f.resolvedSource = nil
 	f.corpusReader = nil
 	f.resolvedPolicy = ""
 	f.resolvedSigner = nil
@@ -759,6 +796,10 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	if err != nil {
 		return nil, err
 	}
+	var canaries pipeline.AdvisorySource
+	if *f.houseCanaries {
+		canaries = pipeline.NewHouseCanarySource()
+	}
 
 	dir := *f.advisoryCorpus
 	if dir == "" {
@@ -771,11 +812,15 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	if dir == "" {
 		if required {
 			return nil, fmt.Errorf("advisory corpus is required for this run (-require-advisory-corpus / %s) but no corpus path resolved:"+
-				" neither -advisory-corpus nor %s is set. A corpus fetch step that failed leaves exactly this state, and analysis"+
-				" against stale built-in intel would render as a clean scan. Fix the fetch, or drop the requirement to scan with built-in intel only",
+				" neither -advisory-corpus nor %s is set. A corpus fetch step that failed leaves exactly this state. Fix the fetch",
 				envAdvisoryCorpusRequired, envAdvisoryCorpusDir)
 		}
-		return nil, nil
+		if canaries == nil {
+			return nil, nil
+		}
+		f.resolvedFacts = report.FactSourceHouseCanaries
+		f.resolvedSource = canaries
+		return pipeline.WithAdvisorySource(canaries), nil
 	}
 
 	src := corpusSourceFor(dir)
@@ -791,19 +836,23 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 		f.resolvedCorpus, f.resolvedCorpusOK = d.Describe()
 	}
 	// An EMPTY corpus is a fetch that "succeeded" and delivered nothing. Under a declared
-	// requirement that is the same failure as an absent one: the run would resolve every fact from
-	// built-in intel while reporting a corpus digest.
+	// requirement that is the same failure as an absent one: the run would resolve no facts while
+	// reporting a corpus digest.
 	if required && f.resolvedCorpusOK && f.resolvedCorpus.Records == 0 {
 		return nil, fmt.Errorf("advisory corpus %q is required for this run but contains zero records", dir)
 	}
-	f.resolvedFacts = report.FactSourceCorpusThenBuiltinTable
 
-	chain := pipeline.NewChainSource(src, pipeline.NewTableSource())
-	f.resolvedSource = chain
+	facts := src
+	f.resolvedFacts = report.FactSourceCorpus
+	if canaries != nil {
+		facts = pipeline.NewChainSource(src, canaries)
+		f.resolvedFacts = report.FactSourceCorpusThenHouseCanaries
+	}
+	f.resolvedSource = facts
 	f.corpusReader = src
 	f.resolvedPolicy = policy
 	f.resolvedSigner = signer
-	return pipeline.WithAdvisorySource(chain), nil
+	return pipeline.WithAdvisorySource(facts), nil
 }
 
 // advisoryCorpusSigner returns the signer the corpus release was verified against, from
@@ -890,8 +939,8 @@ func (f *runFlags) advisoryCorpusPolicy() (string, error) {
 //
 // THE PROBLEM IT SOLVES. "No corpus was configured" and "the corpus fetch failed, so no corpus was
 // configured" are byte-identical at this seam: both are an empty path. The first is a legitimate
-// zero-config local scan; the second is analysis that did not happen, and degrading it silently to
-// built-in intel renders a failed scan as a clean one. Distinguishing them needs a signal that does
+// zero-config local scan (which halts as given no work unless it opted in the house canaries); the second is analysis that did not happen, and scanning the canaries alone without
+// saying so renders a failed scan as a clean one. Distinguishing them needs a signal that does
 // NOT come from the corpus path, because the corpus path is the thing that went missing.
 //
 // THE MECHANISM. An explicit declaration, from the caller that knows a corpus was supposed to be
@@ -1149,7 +1198,7 @@ func envEnabled(v string) bool {
 // BuildDir as a vendored_repro path, so no Checkout seam is injected — the acquisition
 // already happened here.
 // widen selects whether this run's work set is widened by an OSV query over the repository's real
-// dependencies (the scan path) or is the compiled-in floor alone (cve-watch, which drives its own
+// dependencies (the scan path) or is the opted-in house canaries alone (cve-watch, which drives its own
 // OSV query against the stored SBOM and must be left alone).
 // ctx is the run's analysis context.
 func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) {
@@ -1176,9 +1225,15 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		return nil, err
 	}
 
-	// Resolved AFTER advisoryCorpusOption, which is what decides the fact source the widener
-	// consults when admitting an OSV-reported id.
+	// Resolved AFTER runAssessOptions, which configures the corpus. A cve-watch run (widen false)
+	// assesses whatever OSV reports against the stored SBOM, so its facts must come from a corpus;
+	// the house canaries answer only for their own ids and do not count. The scan path's widener
+	// consults the same fact source when admitting an OSV-reported id.
 	ws := floorWorkSet(acq.advisories)
+	if !widen && f.corpusReader == nil {
+		acq.cleanup()
+		return nil, errNoFactSource()
+	}
 	if widen {
 		if ws, err = f.scanWorkSet(ctx, acq); err != nil {
 			acq.cleanup()
@@ -1242,7 +1297,7 @@ func runPRInherit(args []string) error {
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
 	stages, clock := startRunClock(budget.analysis)
-	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
+	ctx, analysis := budget.flush, trigger.WithAdvisoryTiming(trigger.WithTiming(stages, timer.observe), timer.observeAdvisory)
 
 	cfg, err := f.resolve(analysis, true)
 	var missing *analyzerMissingError
@@ -1338,7 +1393,7 @@ func runCVEWatch(args []string) error {
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
 	stages, clock := startRunClock(budget.analysis)
-	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
+	ctx, analysis := budget.flush, trigger.WithAdvisoryTiming(trigger.WithTiming(stages, timer.observe), timer.observeAdvisory)
 
 	// widen=false: cve-watch's work set is the OSV query it makes below, against the STORED SBOM and
 	// diffed against a cursor. That mechanism is the one the scan path now borrows; re-widening the
@@ -1382,8 +1437,13 @@ func runCVEWatch(args []string) error {
 		// no advisory moved, since a dormant repo may only ever run on this cadence.
 		postScan(ctx, cfg.store, cfg.subject, rescan)
 	} else {
-		fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)
-		fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
+		fmt.Fprintf(os.Stdout, "%s cve-watch — earnest re-analysis\n", brand.Name)
+		if len(res.NewAdvisories) > 0 {
+			fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
+		}
+		if len(res.Reassessed) > 0 {
+			fmt.Fprintf(os.Stdout, "  reassessed: %s (last assessed without their dependency code)\n", strings.Join(res.Reassessed, ", "))
+		}
 		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
 		publishStart := time.Now()
 		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph, cfg.deps, clock); err != nil {
@@ -1400,14 +1460,19 @@ func runCVEWatch(args []string) error {
 
 // cveWatchRequest is the run's cve-watch request. It carries the run's work set, whose advisories
 // claim their aliases when the report is ranked. A failed build graph holds the cursor, so the
-// advisories this run assessed without it are assessed again on the next.
+// advisories this run assessed without it are assessed again on the next; it failed before the
+// run, so HoldCursor carries it. The dependency-code policy's hold depends on fetches the
+// re-assessments make, so Hold consults it after them.
 func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchRequest {
 	return trigger.CVEWatchRequest{
-		Subject:       cfg.subject,
-		Codebase:      cfg.codebase,
-		AssessOptions: cfg.assessOptions,
-		Signals:       signals,
-		Advisories:    cfg.advisories,
-		HoldCursor:    runExit(cfg.graph, cfg.deps) != nil,
+		Subject:         cfg.subject,
+		Codebase:        cfg.codebase,
+		AssessOptions:   cfg.assessOptions,
+		Signals:         signals,
+		Advisories:      cfg.advisories,
+		HoldCursor:      cfg.graph.err() != nil,
+		Hold:            cfg.deps.holds,
+		DependencyFetch: cfg.deps.fetchUpdate(),
+		Disclose:        cfg.deps.disclose(),
 	}
 }

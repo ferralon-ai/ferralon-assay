@@ -53,7 +53,7 @@ func TestFinding_DependencyInclusiveGraphYieldsNotExploitable(t *testing.T) {
 	const sink = "jvmref com/example/net/UrlKit#get(Ljava/lang/String;)V"
 	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, map[string]any{
 		"module": "com.example:urlkit", "purl": "pkg:maven/com.example/urlkit@1.0.0",
-		"advisory_symbols": []string{"com.example.net.UrlKit.get"}, "built_in": true,
+		"advisory_symbols": []string{"com.example.net.UrlKit.get"}, "symbol_provenance": "curated",
 	})
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{
 		Partiality: plugin.Complete(),
@@ -147,7 +147,7 @@ func TestFinding_CallGraphDidNotRunHoldsTheRow(t *testing.T) {
 			store := artifact.NewMemStore()
 			putJSON(t, store, a.ID, artifact.TypeNormalizedAdvisory, map[string]any{
 				"module": "com.example:urlkit", "purl": "pkg:maven/com.example/urlkit@1.0.0",
-				"advisory_symbols": []string{"com.example.net.UrlKit.get"}, "built_in": true,
+				"advisory_symbols": []string{"com.example.net.UrlKit.get"}, "symbol_provenance": "curated",
 			})
 			sym := tt.sym
 			if sym.Reasons == nil && sym.Scoped == nil {
@@ -216,7 +216,7 @@ func TestFinding_KotlinUnreadableJarHoldsOnlyItsClosure(t *testing.T) {
 			advSym := strings.ReplaceAll(cls, "/", ".") + ".sink"
 			putJSON(t, store, a.ID, artifact.TypeNormalizedAdvisory, map[string]any{
 				"module": tt.group + ":" + tt.art, "purl": purl + "@1.0",
-				"advisory_symbols": []string{advSym}, "built_in": true,
+				"advisory_symbols": []string{advSym}, "symbol_provenance": "curated",
 			})
 			putJSON(t, store, a.ID, artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{
 				Partiality: plugin.Complete(),

@@ -44,25 +44,33 @@ type RootPackage struct {
 // returns false when the manifest declares no publishable identity: no manifest, a private npm
 // package, a Maven or Gradle project with no group.
 func ReadRootPackage(ctx context.Context, buildDir, language string) (RootPackage, bool) {
+	r, ok, _ := readRootPackage(ctx, buildDir, language)
+	return r, ok
+}
+
+// readRootPackage is ReadRootPackage, also reporting whether the answer is settled: false when a
+// git read it rests on failed, which the answer absorbs as an unknown version.
+func readRootPackage(ctx context.Context, buildDir, language string) (r RootPackage, ok, settled bool) {
 	if buildDir == "" {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
 	switch language {
 	case checkout.LangGo:
-		return goRootPackage(ctx, buildDir)
+		return goRootPackageSettled(ctx, buildDir)
 	case checkout.LangJS:
-		return npmRootPackage(buildDir)
+		r, ok = npmRootPackage(buildDir)
 	case checkout.LangPython:
-		return pypiRootPackage(buildDir)
+		r, ok = pypiRootPackage(buildDir)
 	case checkout.LangJava, checkout.LangKotlin:
-		if r, ok := mavenRootPackage(ctx, buildDir); ok {
-			return r, true
+		if r, ok, settled = mavenRootPackageSettled(ctx, buildDir); ok {
+			return r, true, settled
 		}
-		return gradleRootPackage(buildDir)
+		r, ok = gradleRootPackage(buildDir)
+		return r, ok, settled
 	case checkout.LangDotNet:
-		return nugetRootPackage(buildDir)
+		r, ok = nugetRootPackage(buildDir)
 	}
-	return RootPackage{}, false
+	return r, ok, true
 }
 
 // Matches reports whether an advisory package identity (as AffectedPackageKeys reads it) names the
@@ -299,42 +307,49 @@ func CanonicalName(purlType, name string) string {
 // vN with one). It is "" when HEAD carries no such tag, or more than one: the reader cannot tell
 // which of them the build publishes.
 func goRootPackage(ctx context.Context, buildDir string) (RootPackage, bool) {
+	r, ok, _ := goRootPackageSettled(ctx, buildDir)
+	return r, ok
+}
+
+func goRootPackageSettled(ctx context.Context, buildDir string) (RootPackage, bool, bool) {
 	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
 	if err != nil {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
 	mf, err := modfile.Parse("go.mod", data, nil)
 	if err != nil || mf.Module == nil || mf.Module.Mod.Path == "" {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
-	return RootPackage{PURLType: "golang", Name: mf.Module.Mod.Path, Version: goModuleTagAtHead(ctx, buildDir, mf.Module.Mod.Path)}, true
+	version, settled := goModuleTagAtHead(ctx, buildDir, mf.Module.Mod.Path)
+	return RootPackage{PURLType: "golang", Name: mf.Module.Mod.Path, Version: version}, true, settled
 }
 
-func goModuleTagAtHead(ctx context.Context, dir, mod string) string {
+// goModuleTagAtHead returns the module's version tag at HEAD; settled is false when a git read
+// failed and the version is "" for that reason.
+func goModuleTagAtHead(ctx context.Context, dir, mod string) (version string, settled bool) {
 	_, pathMajor, ok := module.SplitPathVersion(mod)
 	if !ok {
-		return ""
+		return "", true
 	}
 	prefix, err := gitOutput(ctx, dir, "rev-parse", "--show-prefix")
 	if err != nil {
-		return ""
+		return "", false
 	}
 	tags, err := gitOutput(ctx, dir, "tag", "--points-at", "HEAD")
 	if err != nil {
-		return ""
+		return "", false
 	}
-	version := ""
 	for _, t := range strings.Fields(tags) {
 		v, ok := strings.CutPrefix(t, prefix)
 		if !ok || !semver.IsValid(v) || semver.Canonical(v) != v || module.CheckPathMajor(v, pathMajor) != nil {
 			continue
 		}
 		if version != "" && version != v {
-			return ""
+			return "", true
 		}
 		version = v
 	}
-	return version
+	return version, true
 }
 
 // gitRepositoryEnv names the variables that point git at a repository, work tree or config other
@@ -501,24 +516,30 @@ func setupCfgRootPackage(buildDir string) (RootPackage, bool) {
 // version is left unknown where something this reader cannot see may set it (see
 // mavenVersionWritersVisible).
 func mavenRootPackage(ctx context.Context, buildDir string) (RootPackage, bool) {
+	r, ok, _ := mavenRootPackageSettled(ctx, buildDir)
+	return r, ok
+}
+
+func mavenRootPackageSettled(ctx context.Context, buildDir string) (RootPackage, bool, bool) {
 	pomPath := filepath.Join(buildDir, "pom.xml")
 	data, err := os.ReadFile(pomPath)
 	if err != nil {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
 	var pom mavenPOM
 	if err := xml.Unmarshal(data, &pom); err != nil {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
 	group, version := pom.coordinates()
 	artifact := strings.TrimSpace(pom.ArtifactID)
 	if group == "" || artifact == "" || strings.Contains(group+artifact, "${") {
-		return RootPackage{}, false
+		return RootPackage{}, false, true
 	}
-	if !mavenVersionWritersVisible(ctx, buildDir, pomPath, data, pom) {
+	visible, settled := mavenVersionWritersVisible(ctx, buildDir, pomPath, data, pom)
+	if !visible {
 		version = ""
 	}
-	return RootPackage{PURLType: "maven", Name: group + ":" + artifact, Version: establishedVersion("maven", version)}, true
+	return RootPackage{PURLType: "maven", Name: group + ":" + artifact, Version: establishedVersion("maven", version)}, true, settled
 }
 
 type mavenPOM struct {
@@ -554,32 +575,35 @@ func (p mavenPOM) coordinates() (group, version string) {
 //     repository, which can carry extensions of its own.
 //
 // Anything that cannot be read counts as a writer.
-func mavenVersionWritersVisible(ctx context.Context, buildDir, pomPath string, data []byte, pom mavenPOM) bool {
+func mavenVersionWritersVisible(ctx context.Context, buildDir, pomPath string, data []byte, pom mavenPOM) (visible, settled bool) {
 	if mavenCoreExtensions(buildDir) || !stockMavenWrappers(buildDir) {
-		return false
+		return false, true
 	}
 	root := buildDir
+	settled = true
 	if top, err := gitOutput(ctx, buildDir, "rev-parse", "--show-toplevel"); err == nil && top != "" {
 		root = top
+	} else if err != nil {
+		settled = false
 	}
 	root, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return false
+		return false, settled
 	}
 	seen := map[string]bool{}
 	for {
 		if bytes.Contains(data, []byte("<extensions")) {
-			return false
+			return false, settled
 		}
 		if pom.Parent == nil {
-			return true
+			return true, settled
 		}
 		rel := "../pom.xml"
 		if pom.Parent.RelativePath != nil {
 			rel = strings.TrimSpace(*pom.Parent.RelativePath)
 		}
 		if rel == "" {
-			return false
+			return false, settled
 		}
 		next := filepath.Join(filepath.Dir(pomPath), filepath.FromSlash(rel))
 		if info, err := os.Stat(next); err == nil && info.IsDir() {
@@ -587,23 +611,23 @@ func mavenVersionWritersVisible(ctx context.Context, buildDir, pomPath string, d
 		}
 		real, err := filepath.EvalSymlinks(next)
 		if err != nil || seen[real] {
-			return false
+			return false, settled
 		}
 		if r, err := filepath.Rel(root, real); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
-			return false
+			return false, settled
 		}
 		seen[real] = true
 		want := *pom.Parent
 		if data, err = os.ReadFile(real); err != nil {
-			return false
+			return false, settled
 		}
 		pom = mavenPOM{}
 		if xml.Unmarshal(data, &pom) != nil {
-			return false
+			return false, settled
 		}
 		group, version := pom.coordinates()
 		if group != strings.TrimSpace(want.GroupID) || strings.TrimSpace(pom.ArtifactID) != strings.TrimSpace(want.ArtifactID) || version != strings.TrimSpace(want.Version) || strings.Contains(version, "${") {
-			return false
+			return false, settled
 		}
 		pomPath = real
 	}

@@ -23,7 +23,7 @@ import (
 // held would be a second stamp that could disagree with the first.
 func TestStampIntel(t *testing.T) {
 	const ranked = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-	entry := report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery, WorkSetSize: 3, FactSource: report.FactSourceBuiltinTable, CorpusPolicy: "published-7d"}
+	entry := report.IntelProvenance{WorkSetSource: report.WorkSetOSVQuery, WorkSetSize: 3, FactSource: report.FactSourceCorpus, CorpusPolicy: "published-7d"}
 	for _, c := range []struct {
 		name string
 		prev *report.IntelProvenance
@@ -144,14 +144,20 @@ func signalsFixtureReport(t *testing.T) []byte {
 			Revision:    "HEAD",
 			Acquisition: assessment.Acquisition{Mode: "vendored_repro", Path: dir},
 		},
-		Advisories:    advisories,
-		AssessOptions: []pipeline.AssessOption{pipeline.WithPlugin(unsearchingAnalyzer{language: "go"})},
-		Signals:       f.resolvedSignals,
+		Advisories: advisories,
+		AssessOptions: []pipeline.AssessOption{
+			pipeline.WithPlugin(unsearchingAnalyzer{language: "go"}),
+			pipeline.WithAdvisorySource(fixtureSource()),
+		},
+		Signals: f.resolvedSignals,
 	})
 	if err != nil {
 		t.Fatalf("baseline: %v", err)
 	}
-	stampIntel(rep, f.intelProvenance(floorWorkSet(advisories)))
+	// The run stands in for a corpus-policy scan: the policy chose the work set and the corpus
+	// supplied its facts.
+	f.resolvedFacts = report.FactSourceCorpus
+	stampIntel(rep, f.intelProvenance(workSet{advisories: advisories, source: report.WorkSetPolicy}))
 	rep.Provenance.Timestamp = time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC)
 	out, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {

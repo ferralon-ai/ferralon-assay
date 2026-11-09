@@ -69,6 +69,10 @@ const (
 	// a repo that never sees a signed revoke produces no revoke blob — preserving the
 	// zero-new-objects heartbeat guarantee.
 	fileRevoke = "revoke"
+	// fileDepFetch holds the dependency-fetch record (DepFetch, JSON). It is omitted
+	// from the tree while the record is empty, for the same zero-new-objects reason as
+	// fileRevoke.
+	fileDepFetch = "depfetch.json"
 )
 
 // modelled reports whether name is a state file this version reads and writes. Every
@@ -78,7 +82,7 @@ const (
 // field cleared on purpose (a revoke counter reset to 0) still drops the file.
 func modelled(name string) bool {
 	switch name {
-	case fileReport, fileSBOM, fileCursor, fileVEXLog, fileRevoke:
+	case fileReport, fileSBOM, fileCursor, fileVEXLog, fileRevoke, fileDepFetch:
 		return true
 	}
 	return false
@@ -168,6 +172,17 @@ type State struct {
 	// fires when it reaches the confirmation threshold (N=2). Zero for a state that has
 	// never seen a revoke (the file is then absent from the tree).
 	RevokeCount int
+	// DepFetch is the dependency-fetch record (depfetch.json). nil when the tree has
+	// none, or has one that describes a report.json other than the one beside it.
+	DepFetch *DepFetch
+	// Remerge, when set, is applied to the State a store builds by merging this one onto a
+	// concurrent winner after a lost CAS, before that State is written. A writer that derives
+	// part of its State from the rest (a projection over the Report and DepFetch) sets it so the
+	// derivation is redone over the merged values rather than lost to the union. It is never
+	// persisted, and it is carried onto the merged State so every retry applies it. Every
+	// StateStore implementation must apply it on each merge-retry (mergeForRetry does), and
+	// must clear it on the State it returns from Write.
+	Remerge func(*State) error
 	// CommitSHA is the commit the State was read from — the CAS expected-old token.
 	// Empty for a freshly constructed State (signals create-if-absent to Write).
 	CommitSHA string

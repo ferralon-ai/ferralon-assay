@@ -227,8 +227,8 @@ func TestPolicyWorkSet_FullDoesNotExpandToCorpus(t *testing.T) {
 			if err != nil {
 				t.Fatalf("scanWorkSet: %v", err)
 			}
-			if ws.source != workSetSourceBuiltinUnionPolicy {
-				t.Errorf("WorkSetSource = %q, want %q", ws.source, workSetSourceBuiltinUnionPolicy)
+			if ws.source != workSetSourceCanariesUnionPolicy {
+				t.Errorf("WorkSetSource = %q, want %q", ws.source, workSetSourceCanariesUnionPolicy)
 			}
 			for i, a := range acq.advisories {
 				if ws.advisories[i].ID != a.ID {
@@ -257,7 +257,7 @@ func TestPolicyWorkSet_MakesNoOSVQuery(t *testing.T) {
 	entries, want := fullShapedCorpus()
 	bundle := writePolicyBundle(t, entries)
 	corpus := pipeline.NewBundleSource(bundle)
-	chain := pipeline.NewChainSource(corpus, pipeline.NewTableSource())
+	chain := pipeline.NewChainSource(corpus, fixtureSource())
 
 	t.Run("client seam", func(t *testing.T) {
 		acq := goFixture(t, fixtureGoMod)
@@ -297,7 +297,7 @@ func TestPolicyWorkSet_MakesNoOSVQuery(t *testing.T) {
 func TestPolicyWorkSet_NonEnumerableCorpusFallsBack(t *testing.T) {
 	entries, _ := fullShapedCorpus()
 	corpus := lookupOnly{src: pipeline.NewBundleSource(writePolicyBundle(t, entries))}
-	chain := pipeline.NewChainSource(corpus, pipeline.NewTableSource())
+	chain := pipeline.NewChainSource(corpus, fixtureSource())
 
 	for _, tc := range []struct {
 		name       string
@@ -355,7 +355,7 @@ func TestPolicyWorkSet_UnjudgeableIDsAreDisclosed(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			acq := goFixture(t, fixtureGoMod)
-			ws := selectWorkSet(context.Background(), acq, tc.corpus, pipeline.NewChainSource(tc.corpus, pipeline.NewTableSource()), "full", false, &fakeOSV{})
+			ws := selectWorkSet(context.Background(), acq, tc.corpus, pipeline.NewChainSource(tc.corpus, fixtureSource()), "full", false, &fakeOSV{})
 
 			if got := extraIDs(ws, len(acq.advisories)); !reflect.DeepEqual(got, []string{"TEST-MATCH-CRYPTO"}) {
 				t.Errorf("admitted = %v, want only TEST-MATCH-CRYPTO", got)
@@ -420,8 +420,8 @@ func TestPolicyWorkSet_NoInventoryIsDisclosed(t *testing.T) {
 	if len(ws.advisories) != len(acq.advisories) {
 		t.Errorf("work set = %d, want the floor's %d", len(ws.advisories), len(acq.advisories))
 	}
-	if ws.source != report.WorkSetBuiltinLanguageSet {
-		t.Errorf("WorkSetSource = %q, want %q: only the floor ran", ws.source, report.WorkSetBuiltinLanguageSet)
+	if ws.source != report.WorkSetHouseCanaries {
+		t.Errorf("WorkSetSource = %q, want %q: only the floor ran", ws.source, report.WorkSetHouseCanaries)
 	}
 	if len(ws.partiality) == 0 {
 		t.Fatal("an unreadable inventory on a policy run was not disclosed")
@@ -431,7 +431,7 @@ func TestPolicyWorkSet_NoInventoryIsDisclosed(t *testing.T) {
 // TestSelectWorkSet_NoCorpusIsUnchanged proves a run with no corpus resolves exactly what it did
 // before the policy mode existed, for both OSV settings.
 func TestSelectWorkSet_NoCorpusIsUnchanged(t *testing.T) {
-	table := pipeline.NewTableSource()
+	table := fixtureSource()
 	osvIDs := []string{"CVE-2023-39325", "GHSA-nope-nope-nope"}
 
 	acq := goFixture(t, fixtureGoMod)

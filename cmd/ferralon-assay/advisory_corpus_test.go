@@ -94,7 +94,7 @@ func TestAdvisoryCorpusOption_Precedence(t *testing.T) {
 			t.Fatalf("advisoryCorpusOption err = %v, want nil", err)
 		}
 		if opt != nil {
-			t.Fatal("expected nil option when neither flag nor env is set (built-in table default)")
+			t.Fatal("expected nil option when neither flag nor env is set (no corpus configured)")
 		}
 	})
 

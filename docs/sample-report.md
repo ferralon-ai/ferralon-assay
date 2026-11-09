@@ -81,9 +81,9 @@ inside are invented for illustration and correspond to no real advisory or codeb
     "advisory_cursor": "2026-08-01",
     "timestamp": "2026-08-01T00:00:00Z",
     "intel": {
-      "work_set_source": "builtin_language_set",
+      "work_set_source": "policy",
       "work_set_size": 2,
-      "fact_source": "builtin_table",
+      "fact_source": "corpus",
       "signals_digest": "sha256:5d1e…"
     }
   }

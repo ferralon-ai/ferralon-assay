@@ -53,6 +53,12 @@ type launchTarget struct {
 	optional bool
 	view     bool
 	unread   bool
+	// exact marks a target that names a module by its full path from the build root
+	// (a declared entrypoint, entrypoints.go): only the file of that module, not another
+	// that merely ends in the path. loadOnly one whose module is run for its own sake, so
+	// its file is reached but no function of it is a root the target does not name.
+	exact    bool
+	loadOnly bool
 }
 
 // urlView is a Django URL pattern's view as its file writes it: the dotted name (nil when
@@ -64,6 +70,9 @@ type urlView struct {
 	asView   bool
 	selector string
 	heads    []string
+	// named marks a view a string literal names by its dotted import path (Django before
+	// 2.0), its patterns() prefix joined on; unnamed one whose prefix the lane cannot read.
+	named, unnamed bool
 }
 
 // scriptGroups are the entry-point groups an installer turns into commands.
@@ -115,6 +124,9 @@ func readManifestLaunchers(buildDir string) (targets []launchTarget, ok, support
 		return base == "pyproject.toml" || base == "setup.cfg"
 	})
 	for _, f := range manifests {
+		if rel, err := filepath.Rel(buildDir, filepath.Dir(f)); err == nil && inTestDir(filepath.ToSlash(rel)) {
+			continue // a declaration inside a test directory describes test tooling
+		}
 		data, err := readRegular(f)
 		if err != nil {
 			ok = false
@@ -156,6 +168,9 @@ func pyprojectLaunchers(data []byte) ([]launchTarget, bool) {
 	var out []launchTarget
 	ok := true
 	add := func(group string, entries map[string]any) {
+		if testPluginGroup(group) {
+			return
+		}
 		for _, name := range slices.Sorted(mapKeys(entries)) {
 			spec, isString := entries[name].(string)
 			if table, isTable := entries[name].(map[string]any); isTable {
@@ -235,6 +250,9 @@ func declaresEntryPoints(data []byte) bool {
 
 // entryLines reads the "name = spec" lines of one entry-point group, skipping blank lines.
 func entryLines(group, text string) ([]launchTarget, bool) {
+	if testPluginGroup(group) {
+		return nil, true
+	}
 	var out []launchTarget
 	ok := true
 	for _, line := range strings.Split(text, "\n") {
@@ -262,8 +280,12 @@ func setupPyLaunchers(clean string, lits map[int]strLiteral) (out []launchTarget
 	starts := slices.Sorted(mapIntKeys(lits))
 	supported = true
 	group := ""
+	groups := setupPyGroups(clean, lits)
 	for _, at := range starts {
 		lit := lits[at]
+		if testPluginGroup(groups[at]) {
+			continue
+		}
 		if k := skipAllSpace(r, lit.end); k < len(r) && r[k] == ':' {
 			group = lit.body
 			continue
@@ -295,7 +317,7 @@ func setupPyLaunchers(clean string, lits map[int]strLiteral) (out []launchTarget
 // dotted string beside an "=" is too common in a setup.py to be read as an entry point.
 func setupPySpec(group, s string) (launchTarget, bool) {
 	name, spec, found := strings.Cut(s, "=")
-	if !found || !strings.Contains(spec, ":") || strings.TrimSpace(name) == "" {
+	if testPluginGroup(group) || !found || !strings.Contains(spec, ":") || strings.TrimSpace(name) == "" {
 		return launchTarget{}, false
 	}
 	return entryTarget(spec, entryKind(group), strings.TrimSpace(name))
@@ -347,8 +369,17 @@ func settingsLaunchers(clean string, lits map[int]strLiteral) []launchTarget {
 // urlRegistrars are the Django URL-pattern functions whose second argument is the view.
 var urlRegistrars = map[string]bool{"path": true, "re_path": true, "url": true}
 
+// urlPrefix is the view prefix a Django patterns() call gives the patterns in it: its first
+// argument, known when that is a string literal.
+type urlPrefix struct {
+	prefix string
+	known  bool
+}
+
 // djangoURLViews reads the views a file's URL patterns register. A registrar counts when
-// the file binds it, or the module it is read from, by an import from django.
+// the file binds it, or the module it is read from, by an import from django. A
+// patterns(prefix, ...) call (Django before 1.10) registers each tuple argument's second
+// element as a view and gives its prefix to the string views of the registrar calls in it.
 func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]map[string]scopedBinding) []urlView {
 	fromDjango := func(local string) bool {
 		b, ok := bindings[""][local]
@@ -356,6 +387,7 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 	}
 	r := []rune(clean)
 	var out []urlView
+	prefixes := map[int]urlPrefix{} // a registrar call's start, by the patterns() it is an argument of
 	for i := 0; i < len(r); {
 		if !isIdentStartRune(r[i]) || (i > 0 && (isIdentPart(r[i-1]) || r[i-1] == '.')) {
 			i++
@@ -375,7 +407,7 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 		}
 		open := skipSpaceRunes(r, i)
 		leaf := chain[len(chain)-1]
-		if open >= len(r) || r[open] != '(' || !urlRegistrars[leaf] || precededByDef(r, start) {
+		if open >= len(r) || r[open] != '(' || !urlRegistrars[leaf] && leaf != "patterns" || precededByDef(r, start) {
 			continue
 		}
 		if !fromDjango(chain[0]) {
@@ -385,21 +417,49 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 		if !closed {
 			continue
 		}
-		view, found := "", false
+		if leaf == "patterns" {
+			out = append(out, legacyPatterns(r, args, lits, prefixes, fromDjango)...)
+			continue
+		}
+		var view, own [2]int
+		found, hasOwn := false, false
 		for n, a := range args {
-			s := strings.TrimSpace(string(r[a[0]:a[1]]))
-			if k, val, kw := keywordArg(s); kw {
-				if k == "view" {
-					view, found = val, true
+			s := []rune(string(r[a[0]:a[1]]))
+			if k, _, kw := keywordArg(strings.TrimSpace(string(s))); kw {
+				at := [2]int{a[0] + slices.Index(s, '=') + 1, a[1]}
+				switch k {
+				case "view":
+					view, found = at, true
+				case "prefix":
+					own, hasOwn = at, leaf == "url"
 				}
 			} else if n == 1 {
-				view, found = s, true
+				view, found = a, true
+			} else if n == 4 && leaf == "url" {
+				own, hasOwn = a, true
 			}
 		}
 		if !found {
 			continue
 		}
-		v, ok := viewRef(view)
+		p, in := prefixes[start]
+		if !in {
+			p.known = true
+		}
+		if hasOwn {
+			// url(..., prefix=) joins its own prefix onto a string view; patterns() then
+			// joins its prefix onto that.
+			pre, isLit := literalSpan(r, own, lits)
+			switch {
+			case !isLit:
+				p.known = false
+			case pre != "" && p.prefix != "":
+				p.prefix += "." + pre
+			case pre != "":
+				p.prefix = pre
+			}
+		}
+		v, ok := urlViewArg(r, view, lits, p)
 		if !ok {
 			continue
 		}
@@ -409,6 +469,104 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 		out = append(out, v)
 	}
 	return out
+}
+
+// legacyPatterns reads a patterns(prefix, ...) call's arguments, args: each (route, view, ...)
+// tuple or list's view, and each Django registrar call's start in prefixes, so the call there
+// joins the prefix onto a string view. A parenthesised argument is read as what it wraps. Any
+// other argument (a name, a spread, a call the lane does not know) hides patterns the lane
+// cannot read, so it is an unnamed view.
+func legacyPatterns(r []rune, args [][2]int, lits map[int]strLiteral, prefixes map[int]urlPrefix, fromDjango func(string) bool) []urlView {
+	if len(args) == 0 {
+		return nil
+	}
+	var p urlPrefix
+	p.prefix, p.known = literalSpan(r, args[0], lits)
+	var out []urlView
+	pending := slices.Clone(args[1:])
+	for len(pending) > 0 {
+		a := pending[0]
+		pending = pending[1:]
+		at := skipAllSpace(r, a[0])
+		if at >= a[1] {
+			continue
+		}
+		if (r[at] != '(' && r[at] != '[') || skipSpaceBack(r, a[1]-1) != matchingClose(r, at) {
+			if registrarAt(r, at, a[1], fromDjango) {
+				prefixes[at] = p
+			} else {
+				out = append(out, urlView{unnamed: true})
+			}
+			continue
+		}
+		elems, closed := callArgs(r, at)
+		if !closed || len(elems) == 0 {
+			continue
+		}
+		if len(elems) == 1 && r[at] == '(' {
+			pending = append(pending, elems[0])
+			continue
+		}
+		if len(elems) < 2 {
+			out = append(out, urlView{unnamed: true})
+			continue
+		}
+		v, ok := urlViewArg(r, elems[1], lits, p)
+		if !ok {
+			continue
+		}
+		if route, isLit := literalSpan(r, elems[0], lits); isLit {
+			v.selector = route
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// registrarAt reports whether the span r[at:end] is one call of a Django URL registrar.
+func registrarAt(r []rune, at, end int, fromDjango func(string) bool) bool {
+	if !isIdentStartRune(r[at]) {
+		return false
+	}
+	var chain []string
+	i := at
+	for {
+		w, e := readWordRunes(r, i)
+		chain = append(chain, w)
+		i = e
+		if i+1 < end && r[i] == '.' && isIdentStartRune(r[i+1]) {
+			i++
+			continue
+		}
+		break
+	}
+	open := skipSpaceRunes(r, i)
+	return open < end && r[open] == '(' && skipSpaceBack(r, end-1) == matchingClose(r, open) &&
+		(urlRegistrars[chain[len(chain)-1]] || chain[len(chain)-1] == "patterns") && fromDjango(chain[0])
+}
+
+// urlViewArg reads the view argument at span: a string literal naming the view by its dotted
+// import path, p's prefix joined on, or else as viewRef reads it. A string that names a single
+// name once joined can only lean on a prefix the lane did not read, so it is unnamed.
+func urlViewArg(r []rune, span [2]int, lits map[int]strLiteral, p urlPrefix) (urlView, bool) {
+	name, isLit := literalSpan(r, span, lits)
+	if !isLit {
+		return viewRef(string(r[span[0]:span[1]]))
+	}
+	if !p.known {
+		return urlView{unnamed: true}, true
+	}
+	if p.prefix != "" {
+		name = p.prefix + "." + name
+	}
+	if !isDottedName(name) {
+		return urlView{}, false
+	}
+	segs := dottedSegs(name)
+	if len(segs) < 2 {
+		return urlView{unnamed: true}, true
+	}
+	return urlView{chain: segs, named: true}, true
 }
 
 // viewRef reads a URL pattern's view argument: a dotted name, a dotted name's as_view()
@@ -522,45 +680,67 @@ func keywordArg(s string) (name, value string, kw bool) {
 }
 
 // launchTargets is every launcher target of the build: the manifests', and each file's
-// settings and URL patterns, its view names read through the file's module-level imports.
-// A view the file neither defines nor imports from first-party code is a dependency's; a
-// wrapper or unread argument naming first-party code is an unread target.
+// (fileLaunchTargets).
 func (prog *program) launchTargets() []launchTarget {
 	out := slices.Clone(prog.launchers)
 	for i := range prog.files {
-		f := &prog.files[i]
-		out = append(out, f.settings...)
-		for _, v := range f.urlViews {
-			if slices.ContainsFunc(v.heads, func(h string) bool {
-				return prog.namesFirstParty(f, h, map[string]bool{})
-			}) {
+		out = append(out, prog.fileLaunchTargets(&prog.files[i])...)
+	}
+	return out
+}
+
+// fileLaunchTargets is the launcher targets a file names: its settings and URL patterns, its
+// view names read through the file's module-level imports. A view the file neither defines
+// nor imports from first-party code is a dependency's; a wrapper or unread argument naming
+// first-party code is an unread target.
+func (prog *program) fileLaunchTargets(f *fileParse) []launchTarget {
+	out := slices.Clone(f.settings)
+	for _, v := range f.urlViews {
+		switch {
+		case v.unnamed:
+			out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
+			continue
+		case v.named:
+			// Django imports all but the last name as a module and reads the last off it. A
+			// path reaching no module the lane reads names a dependency only when a dependency
+			// or the standard library provides its top-level name; else it is first-party code
+			// the lane cannot place.
+			t := launchTarget{segs: v.chain, mod: len(v.chain) - 1, kind: "http_route", selector: v.selector}
+			if _, module, _ := prog.resolvePath(t.segs, t.mod, false); module == "" && !prog.dists.knownTop(strings.Join(v.chain, ".")) {
+				t = launchTarget{kind: "http_route", selector: v.selector, unread: true}
+			}
+			out = append(out, t)
+			continue
+		}
+		if slices.ContainsFunc(v.heads, func(h string) bool {
+			return prog.namesFirstParty(f, h, map[string]bool{})
+		}) {
+			out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
+		}
+		if v.chain == nil {
+			continue
+		}
+		var bases [][]string
+		if paths := f.attrBinds(v.chain[0]); len(paths) > 0 {
+			for _, p := range paths {
+				bases = append(bases, append(strings.Split(p, "/"), v.chain[1:]...))
+			}
+			if prog.rebindsFirstParty(f, v.chain[0]) {
 				out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
 			}
-			if v.chain == nil {
-				continue
+		} else if prog.definesFirstParty(f, v.chain[0]) {
+			bases = append(bases, append(strings.Split(f.module, "/"), v.chain...))
+		} else {
+			paths, open := prog.starBinds(f, v.chain[0])
+			for _, p := range paths {
+				bases = append(bases, append(strings.Split(p, "/"), v.chain...))
 			}
-			var bases [][]string
-			if paths := f.attrBinds(v.chain[0]); len(paths) > 0 {
-				for _, p := range paths {
-					bases = append(bases, append(strings.Split(p, "/"), v.chain[1:]...))
-				}
-				if prog.rebindsFirstParty(f, v.chain[0]) {
-					out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
-				}
-			} else if prog.definesFirstParty(f, v.chain[0]) {
-				bases = append(bases, append(strings.Split(f.module, "/"), v.chain...))
-			} else {
-				paths, open := prog.starBinds(f, v.chain[0])
-				for _, p := range paths {
-					bases = append(bases, append(strings.Split(p, "/"), v.chain...))
-				}
-				if open {
-					out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
-				}
+			if open {
+				out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
 			}
-			for _, segs := range bases {
-				out = append(out, launchTarget{segs: segs, kind: "http_route", selector: v.selector, view: v.asView})
-			}
+		}
+		for _, segs := range bases {
+			out = append(out, launchTarget{segs: segs, kind: "http_route", selector: v.selector, view: v.asView})
 		}
 	}
 	return out
@@ -666,7 +846,7 @@ type pathHit struct {
 // function or class by the name, a class-based view's base it cannot find, or a name the
 // path reads that a file also binds to a value the lane does not follow).
 func (prog *program) launchDecls(t launchTarget) (decls []funcDecl, module string, whole, missing bool) {
-	hits, module, whole := prog.resolvePath(t.segs, t.mod)
+	hits, module, whole := prog.resolvePath(t.segs, t.mod, t.exact)
 	seen := map[string]bool{}
 	add := func(fd funcDecl) {
 		if !seen[fd.scip()] {
@@ -736,7 +916,7 @@ func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[stri
 		var next []pathHit
 		if paths := g.attrBinds(segs[0]); len(paths) > 0 {
 			for _, p := range paths {
-				hs, _, _ := prog.resolvePath(append(strings.Split(p, "/"), segs[1:]...), 0)
+				hs, _, _ := prog.resolvePath(append(strings.Split(p, "/"), segs[1:]...), 0, false)
 				next = append(next, hs...)
 			}
 		} else if prog.definesFirstParty(g, segs[0]) {
@@ -745,7 +925,7 @@ func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[stri
 			continue // a dependency's base
 		} else if len(g.starPaths) > 0 {
 			for _, sp := range g.starPaths {
-				hs, _, _ := prog.resolvePath(append(strings.Split(sp, "/"), segs...), 0)
+				hs, _, _ := prog.resolvePath(append(strings.Split(sp, "/"), segs...), 0, false)
 				next = append(next, hs...)
 			}
 		} else if segs[0] == "object" || len(g.stars) > 0 {
@@ -768,10 +948,23 @@ func (prog *program) viewMethods(h pathHit, add func(funcDecl), visited map[stri
 // module, or 0 for the longest prefix that names one; module and whole are as for
 // launchDecls. The attribute is followed through first-party re-exports of the module it
 // is read from; a path is tried once, so a re-export cycle ends.
-func (prog *program) resolvePath(segs []string, mod int) (hits []pathHit, module string, whole bool) {
+func (prog *program) resolvePath(segs []string, mod int, exact bool) (hits []pathHit, module string, whole bool) {
+	// filesOf is the files a path names: with exact, only the module of that path; for a
+	// path a re-export is followed to (follow), that module when it exists, else any file
+	// the path ends.
+	filesOf := func(path string, follow bool) []int {
+		if !exact && !follow {
+			return prog.byModule[path]
+		}
+		own := slices.DeleteFunc(slices.Clone(prog.byModule[path]), func(i int) bool { return prog.files[i].module != path })
+		if len(own) == 0 && !exact {
+			return prog.byModule[path]
+		}
+		return own
+	}
 	visited := map[string]bool{}
-	var walk func(segs []string, mod int)
-	walk = func(segs []string, mod int) {
+	var walk func(segs []string, mod int, follow bool)
+	walk = func(segs []string, mod int, follow bool) {
 		key := strings.Join(segs, "/")
 		if visited[key] {
 			return
@@ -779,11 +972,11 @@ func (prog *program) resolvePath(segs []string, mod int) (hits []pathHit, module
 		visited[key] = true
 		k := mod
 		if k == 0 {
-			for k = len(segs); k > 0 && len(prog.byModule[strings.Join(segs[:k], "/")]) == 0; k-- {
+			for k = len(segs); k > 0 && len(filesOf(strings.Join(segs[:k], "/"), follow)) == 0; k-- {
 			}
 		}
 		path := strings.Join(segs[:k], "/")
-		if k == 0 || len(prog.byModule[path]) == 0 {
+		if k == 0 || len(filesOf(path, follow)) == 0 {
 			return
 		}
 		attrs := segs[k:]
@@ -793,14 +986,14 @@ func (prog *program) resolvePath(segs []string, mod int) (hits []pathHit, module
 		if len(attrs) == 0 {
 			return
 		}
-		for _, i := range prog.byModule[path] {
+		for _, i := range filesOf(path, follow) {
 			hits = append(hits, pathHit{file: i, attrs: attrs})
 			for _, next := range prog.files[i].attrBinds(attrs[0]) {
-				walk(append(strings.Split(next, "/"), attrs[1:]...), 0)
+				walk(append(strings.Split(next, "/"), attrs[1:]...), 0, true)
 			}
 		}
 	}
-	walk(segs, mod)
+	walk(segs, mod, false)
 	return hits, module, whole
 }
 

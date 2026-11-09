@@ -22,6 +22,15 @@ module in the build holds the advisory's package, and none of the build's module
 symbol. The row's `evidence.basis` and `evidence.detail` state which. Anything short of that is
 `undetermined`, with the missing ground as its reason.
 
+In Go, a refutation also has to hold for code outside the build that imports your packages. The
+`library-entrypoints` input (`-library-entrypoints`, `ASSAY_LIBRARY_ENTRYPOINTS`) says which packages
+those are: `auto` (the default) takes every importable package outside a `cmd`, `example`, `examples`,
+`test`, `tests` or `testdata` path element, `none` says the build ships programs only, and a list of paths relative to the repository
+root names them, with `!path` taking a path out. When one of them reaches the advisory's vulnerable
+package, the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that holds only
+because of what you declared carries that declaration on the report as an assumption, and the Report
+lists the sets under `library_entrypoints`.
+
 In Go, the call-graph search does not follow calls made through `reflect` or a template's `Execute`,
 so Assay bounds them per advisory. From the build's entry points it collects every type the program
 converts to an interface, closed over the types those are built from (fields, elements, map keys and
@@ -65,17 +74,23 @@ failing step.
 
 A `reachable_candidate` can carry a grade describing how strong its reachability evidence is:
 
-- `attacker_tainted` — an attacker-controllable ingress (for example an HTTP route) reaches the
-  vulnerable symbol, and tainted data flows along that path. The strongest candidate signal a scan
-  emits.
-- `control_flow_only` — a control-flow path to the symbol exists, but the analysis found no
-  attacker-controllable data flowing along it.
+- `attacker_tainted` — the call path to the vulnerable symbol passes through an attacker-controllable
+  ingress, for example an HTTP route or an RPC handler. The strongest candidate signal a scan emits.
+- `control_flow_only` — a call path to the symbol exists, but no attacker-controllable ingress lies on
+  it: it starts from an internal entry point such as `main` or a CLI command, or from one the analyzer
+  could not classify.
+
+The grade is decided by which entry points lie on the call path, not by tracking data values along it.
+The path is the one the language's taint analysis reported, else the one the reachability search
+found. Go's taint analysis follows values through SSA from an ingress parameter to the sink's
+argument; every other language reports call-graph path presence from an ingress to the sink. So
+`attacker_tainted` says an entry point an attacker can call leads to the symbol. On its own it does
+not say attacker-supplied data reaches the symbol.
 
 A graded candidate also reports its **entry point** — the symbol, its kind (`http_route`, `rpc`,
 `cli`, `test` or `unknown`), and whether that kind is attacker-controllable — and, when the analyzer
-resolved them, the **call path** frames from entry point to sink. Taint here is path presence on the
-call graph, not value-level dataflow. Either grade is still a candidate: neither proves the code can be
-exploited.
+resolved them, the **call path** frames from entry point to sink. Either grade is still a candidate:
+neither proves the code can be exploited.
 
 ### EPSS and KEV
 
@@ -232,8 +247,10 @@ toolchain from `go.mod` alone.
 
 ## Subject build conditions for Java and Maven
 
-Maven profile activation depends on the JVM and the profile selection your build runs with, which the
-scan does not look up. State them:
+With `-build-graph auto` (the default) the scan runs your repository's own Maven or Gradle with the
+job's JDK, and Maven activates profiles as your build does; the graph records the JVM the build tool
+ran on and each module's active profiles. State the JDK and the profile selection when your build runs
+under conditions the job does not reproduce:
 
 | What you state | CLI flag | Environment variable |
 |---|---|---|
@@ -241,9 +258,9 @@ scan does not look up. State them:
 | The build's explicit profile selection in `-P` syntax: its `-P` list together with `settings.xml` `<activeProfiles>` (for example `release,!docs`, or `,` for none) | `-subject-maven-profiles` | `ASSAY_SUBJECT_MAVEN_PROFILES` |
 
 The flag wins over the environment variable. The Action has no inputs for these; set the variables in
-the `env:` of the step that runs it, as for `ASSAY_SUBJECT_GO_VERSION`. Profiles activated by `<jdk>`
-stay undecided until you state the Java version, and every profile of the reactor and its parents stays
-undecided until you state the selection.
+the `env:` of the step that runs it, as for `ASSAY_SUBJECT_GO_VERSION`. With `-build-graph auto`, a
+stated profile selection is passed to Maven as `-P`, and stating one for a Gradle build fails the run.
+With a graph file, the file must record the same statements.
 
 The Java version you state is also the JDK your program runs on. It must be the same major version
 as the JVM that runs the build, or the run fails. When your program runs on another JDK than the build,
@@ -274,8 +291,9 @@ ferralon-assay resolve-graph -dir . -out "$RUNNER_TEMP/graph"
 | `-profiles` | Comma-separated Maven profiles to activate. |
 | `-java-version` | The JDK the job states, which the program runs on; a build tool on a different major version fails. |
 
-A resolution that fails prints a typed cause, exits non-zero and writes no graph. A scan reads the
-graph with `-build-graph <out>/buildgraph.json`, and accepts it only when the scan states the same JDK
+A resolution that fails prints a typed cause, exits non-zero and writes no graph. By default
+(`-build-graph auto`) a Java or Kotlin scan runs this resolution itself. A scan reads a graph resolved
+ahead of it with `-build-graph <out>/buildgraph.json`, and accepts it only when the scan states the same JDK
 and profiles (`-subject-java-version`, `-subject-maven-profiles`). This command runs your build's scripts and plugins, and the build tool fetches from
 the repositories your build configures; see [threat-model.md](threat-model.md).
 
@@ -303,9 +321,11 @@ Writing through the Refs API needs `contents: write`.
 
 ### `baseline`
 
-A full scan of every advisory in the work set: the built-in floor, plus — when an advisory policy is
-declared (`advisory-corpus-policy`) — every advisory in that policy whose affected package is one of
-the repository's own dependencies. With a store selected, the result is persisted so later
+A full scan of every advisory in the work set: every advisory in the declared policy
+(`advisory-corpus-policy`) whose affected package is one of the repository's own dependencies, plus
+any house canaries the run opted in. A run given no work-set input (no corpus policy, no OSV
+widening, no house canary for the language) fails; a run whose policy holds nothing for the
+repository publishes a findings-free Report that says nothing matched. With a store selected, the result is persisted so later
 runs can read it. With **no** store selected, `baseline` uses a throwaway store in a temporary
 directory: the scan runs and the output directory is written, but nothing persists. That is the
 zero-config path the README Quickstart uses.
@@ -363,7 +383,7 @@ jobs:
       - name: Run the Ferralon Assay
         id: assay
         # Use the same ref as your main workflow (see the README Quickstart).
-        uses: ferralon-ai/ferralon-assay@v0.5
+        uses: ferralon-ai/ferralon-assay@v0.6
         with:
           mode: cve-watch
           state-repo: ${{ github.repository }}

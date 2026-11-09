@@ -20,8 +20,8 @@ const (
 )
 
 // spRecord is what varies between rows: the record's symbol provenance, whether S1 marked it as
-// answered by the built-in table, the trust tier the record declares about itself, whether it lists
-// its affected packages, and the lane's refutation.
+// answered by a house canary, the trust tier the record declares about itself, whether it lists its
+// affected packages, and the lane's refutation.
 type spRecord struct {
 	provenance string
 	builtIn    bool
@@ -72,7 +72,7 @@ func symbolProvenanceFinding(t *testing.T, r spRecord) report.AdvisoryFinding {
 }
 
 // TestFinding_SymbolProvenanceGate grounds not_exploitable on "no listed symbol reached" only when the
-// symbol set is vetted: declared by OSV, curated, or an untagged set the built-in table answered. Any
+// symbol set is vetted: declared by OSV, curated, or an untagged set a house canary answered. Any
 // other set is withheld as advisory_symbols_unvetted, whatever trust tier the record declares, and a
 // lane refutation that does not rest on the listed symbols still grounds.
 func TestFinding_SymbolProvenanceGate(t *testing.T) {
@@ -88,13 +88,13 @@ func TestFinding_SymbolProvenanceGate(t *testing.T) {
 	}{
 		{"osv-declared", spRecord{provenance: "osv-declared"}, searched, ""},
 		{"curated", spRecord{provenance: "curated"}, searched, ""},
-		{"untagged built-in record", spRecord{builtIn: true, trust: firstParty}, searched, ""},
+		{"untagged house canary", spRecord{builtIn: true, trust: firstParty}, searched, ""},
 
 		{"diff-lexed", spRecord{provenance: "diff-lexed"}, "", report.ReasonAdvisorySymbolsUnvetted},
 		{"no provenance", spRecord{}, "", report.ReasonAdvisorySymbolsUnvetted},
 		{"cna-declared", spRecord{provenance: "cna-declared"}, "", report.ReasonAdvisorySymbolsUnvetted},
 		{"unknown provenance", spRecord{provenance: "reasoning"}, "", report.ReasonAdvisorySymbolsUnvetted},
-		{"diff-lexed in a built-in record", spRecord{provenance: "diff-lexed", builtIn: true, trust: firstParty},
+		{"diff-lexed in a house canary", spRecord{provenance: "diff-lexed", builtIn: true, trust: firstParty},
 			"", report.ReasonAdvisorySymbolsUnvetted},
 		{"untagged corpus record declaring trust_tier first_party", spRecord{trust: firstParty},
 			"", report.ReasonAdvisorySymbolsUnvetted},
@@ -133,18 +133,18 @@ func TestFinding_SymbolProvenanceGate(t *testing.T) {
 	}
 }
 
-// TestFinding_BuiltInRecordThroughIntake runs a built-in table id through S1 and into the gate: the
-// table's untagged symbol set grounds not_exploitable because S1 marked the record as the table's,
-// not because of anything the record says about itself.
-func TestFinding_BuiltInRecordThroughIntake(t *testing.T) {
+// TestFinding_CuratedRecordThroughIntake runs a curated fixture advisory through S1 and into the
+// gate: intake carries the record's curated tag onto the normalized advisory, and that tag is what
+// grounds not_exploitable on the unreached symbol.
+func TestFinding_CuratedRecordThroughIntake(t *testing.T) {
 	const (
 		id   = "FERRALON-JAVA-SSRF-0002"
 		sink = "jvmref com/example/net/App#fetch(Ljava/lang/String;)V"
 		purl = "pkg:maven/com.example.net/urlkit"
 	)
 	store := artifact.NewMemStore()
-	c := &assessment.Assessment{ID: "builtin-e2e", Request: assessment.Request{
-		Vulnerability: assessment.VulnRef{ID: id, Source: "builtin"},
+	c := &assessment.Assessment{ID: "curated-e2e", Request: assessment.Request{
+		Vulnerability: assessment.VulnRef{ID: id, Source: "corpus"},
 	}}
 	if err := pipeline.NewAdvisoryIntake().Run(context.Background(), c, store); err != nil {
 		t.Fatal(err)
@@ -155,13 +155,12 @@ func TestFinding_BuiltInRecordThroughIntake(t *testing.T) {
 	}
 	var rec struct {
 		SymbolProvenance string `json:"symbol_provenance"`
-		BuiltIn          bool   `json:"built_in"`
 	}
 	if err := json.Unmarshal(arts[0].Payload, &rec); err != nil {
 		t.Fatal(err)
 	}
-	if rec.SymbolProvenance != "" || !rec.BuiltIn {
-		t.Fatalf("intake wrote %s as %+v, want an untagged record marked built_in", id, rec)
+	if rec.SymbolProvenance != "curated" {
+		t.Fatalf("intake wrote %s with symbol_provenance %q, want curated", id, rec.SymbolProvenance)
 	}
 	putJSON(t, store, c.ID, artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{
 		Partiality: plugin.Complete(),
@@ -177,7 +176,7 @@ func TestFinding_BuiltInRecordThroughIntake(t *testing.T) {
 		},
 		plugin.ReachabilityResult{Partiality: plugin.Complete(), Searched: []string{sink}})
 	pkg := &report.Package{Ecosystem: "Maven", Name: "com.example.net:urlkit", Version: "2.0.0", PURL: purl + "@2.0.0"}
-	f := finding(store, c.ID, report.Advisory{ID: id, Source: "builtin"}, pkg)
+	f := finding(store, c.ID, report.Advisory{ID: id, Source: "corpus"}, pkg)
 	if f.Verdict != report.VerdictNotExploitable || f.Evidence.Basis != verdict.BasisSymbolUnreachable {
 		t.Fatalf("verdict = %q basis %q (reason %q: %s), want not_exploitable on %q",
 			f.Verdict, f.Evidence.Basis, f.UndeterminedReason, f.Evidence.Detail, verdict.BasisSymbolUnreachable)

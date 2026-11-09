@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"context"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -81,6 +82,22 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"python -mpip, module attached", map[string]string{"requirements.txt": reqs, "install.sh": "python3 -mpip install jinja2==3.1.2\n"}, false, ""},
 		{"python -Impip, module attached to an option cluster", map[string]string{"requirements.txt": reqs, "install.sh": "python -Impip install -r requirements.txt\n"}, false, ""},
 		{"python -mpip of a read file still withholds", map[string]string{"requirements.txt": reqs, "Makefile": "deps:\n\tpython -mpip install -r requirements.txt\n"}, false, ""},
+		{"pip by absolute path", map[string]string{"requirements.txt": reqs, "install.sh": "/usr/bin/pip install jinja2==3.1.2\n"}, false, ""},
+		{"pipN.M by a venv path", map[string]string{"requirements.txt": reqs, "install.sh": "./venv/bin/pip3.12 install jinja2==3.1.2\n"}, false, ""},
+		{"pip.exe", map[string]string{"requirements.txt": reqs, "install.cmd": "venv\\Scripts\\pip.exe install jinja2==3.1.2\r\n"}, false, ""},
+		{"pipx run", map[string]string{"requirements.txt": reqs, "Makefile": "lint:\n\tpipx run black .\n"}, false, ""},
+		{"pipenv install of a package", map[string]string{"requirements.txt": reqs, "install.sh": "pipenv install jinja2==3.1.2\n"}, false, ""},
+		{"pip-sync", map[string]string{"requirements.txt": reqs, "install.sh": "pip-sync requirements.txt\n"}, false, ""},
+		{"python -m piptools sync", map[string]string{"requirements.txt": reqs, "install.sh": "python -m piptools sync requirements.txt\n"}, false, ""},
+		{"python -mpip_run, module attached", map[string]string{"requirements.txt": reqs, "install.sh": "python -mpip_run jinja2==3.1.2 -- app.py\n"}, false, ""},
+		{"conda-lock install", map[string]string{"requirements.txt": reqs, "install.sh": "conda-lock install -n app conda-lock.yml\n"}, false, ""},
+		{"get-pip.py", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + "python get-pip.py && pip install -r requirements.txt\n"}, false, ""},
+		{"pipdate", map[string]string{"requirements.txt": reqs, "install.sh": "pipdate\n"}, false, ""},
+		{"pipm install", map[string]string{"requirements.txt": reqs, "install.sh": "pipm install jinja2==3.1.2\n"}, false, ""},
+		{"pipup", map[string]string{"requirements.txt": reqs, "install.sh": "pipup jinja2==3.1.2\n"}, false, ""},
+		{"pipxu install", map[string]string{"requirements.txt": reqs, "install.sh": "pipxu install black\n"}, false, ""},
+		{"python -m pipdate", map[string]string{"requirements.txt": reqs, "install.sh": "python -m pipdate\n"}, false, ""},
+		{"pip zipapp", map[string]string{"requirements.txt": reqs, "install.sh": "python pip.pyz install jinja2==3.1.2\n"}, false, ""},
 
 		// Expansions, variables and lines that do not tokenise.
 		{"PIP_INDEX_URL set by Dockerfile ENV", map[string]string{"requirements.txt": reqs,
@@ -159,6 +176,8 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"Dockerfile uv venv, activate, pip install -r", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + "uv venv /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt\n"}, true, ""},
 		{"Dockerfile nvm before pip install -r", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + ". $NVM_DIR/nvm.sh && nvm install 20 && nvm use 20\nRUN pip install -r requirements.txt\n"}, true, ""},
 		{"pipenv run, an empty scripts table", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n\n[scripts]\n", "Pipfile.lock": "{}\n", "Procfile": "web: pipenv run gunicorn app:app\n"}, true, ""},
+		{"set -euo pipefail before an allowed install", map[string]string{"requirements.txt": reqs, "install.sh": "#!/usr/bin/env bash\nset -euo pipefail\npip install -r requirements.txt\n"}, true, ""},
+		{"a module named pipelineAgg, run with -m", map[string]string{"requirements.txt": reqs, "Makefile": "agg:\n\tpython -m pipelineAgg --since 7d\n"}, true, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -350,7 +369,7 @@ func TestResolveVersions_PipSelfUpgradeExhaustive(t *testing.T) {
 	if r := resolveVersion(t, dir, "pip"); r.Found || r.Exhaustive {
 		t.Fatalf("pip = found %v exhaustive %v, want absent and not exhaustive", r.Found, r.Exhaustive)
 	}
-	names, complete, read := declaredDistributions(dir)
+	names, complete, read := declaredDistributions(context.Background(), dir)
 	if !names["pip"] || !complete || !read {
 		t.Fatalf("declaredDistributions = %v complete %v read %v, want pip declared, complete and read", names, complete, read)
 	}
@@ -433,6 +452,80 @@ func TestResolveVersions_PipSelfUpgradeConfig(t *testing.T) {
 	})
 }
 
+// laneToken names every word that starts with pip or conda except the known non-installers, so
+// an unknown pip-prefixed word is withheld.
+func TestLaneToken(t *testing.T) {
+	tests := []struct {
+		word string
+		want bool
+	}{
+		{"pip", true},
+		{"pip3", true},
+		{"pip3.12", true},
+		{"pip.exe", true},
+		{"pip3.exe", true},
+		{"pip3.12.exe", true},
+		{"pip.pyz", true},
+		{"pip.py", true},
+		{"pip._internal", true},
+		{"pip.conf", true},
+		{"pipenv", true},
+		{"pipenv.exe", true},
+		{"pipx", true},
+		{"piptools", true},
+		{"pipwin", true},
+		{"pipsi", true},
+		{"pipupgrade", true},
+		{"pip-sync", true},
+		{"pip-compile", true},
+		{"pip_run", true},
+		{"conda", true},
+		{"conda.exe", true},
+		{"conda-lock", true},
+		{"conda-env", true},
+		{"conda_lock", true},
+		{"condax", true},
+		{"pipdate", true},
+		{"pipm", true},
+		{"pipup", true},
+		{"pipxu", true},
+		{"pipette", true},
+		{"condaenv", true},
+		{"-mpipdate", true},
+		{"pipe-x", true},
+		{"-mpip", true},
+		{"-Impip", true},
+		{"-mpip3.12", true},
+		{"-mpiptools", true},
+		{"-mpip_run", true},
+		{"-mconda", true},
+		{"mamba", true},
+		{"uv", true},
+
+		{"pipefail", false},
+		{"pipeline", false},
+		{"pipelineAgg", false},
+		{"pipelines", false},
+		{"pipeline.run", false},
+		{"pipe", false},
+		{"pipes", false},
+		{"piped", false},
+		{"condarc", false},
+		{"-mpipeline", false},
+		{"mypip", false},
+		{"setup-pip", false},
+		{"my.pipx", false},
+		{"xconda", false},
+		{"pi", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := laneToken(tt.word); got != tt.want {
+			t.Errorf("laneToken(%q) = %v, want %v", tt.word, got, tt.want)
+		}
+	}
+}
+
 // ensurepip installs the pip its interpreter bundles, and setuptools before Python 3.12, so the
 // allowed form withholds those two coordinates alone; any other form withholds every pin.
 func TestResolveVersions_Ensurepip(t *testing.T) {
@@ -485,7 +578,7 @@ func TestResolveVersions_EnsurepipExhaustive(t *testing.T) {
 			t.Fatalf("%s = found %v exhaustive %v, want absent and not exhaustive", c, r.Found, r.Exhaustive)
 		}
 	}
-	names, complete, read := declaredDistributions(dir)
+	names, complete, read := declaredDistributions(context.Background(), dir)
 	if !names["pip"] || !names["setuptools"] || !complete || !read {
 		t.Fatalf("declaredDistributions = %v complete %v read %v, want pip and setuptools declared, complete and read", names, complete, read)
 	}
@@ -697,7 +790,7 @@ func TestResolveVersions_SeededExhaustive(t *testing.T) {
 			if r := resolveVersion(t, dir, "PyJWT"); r.Found || !r.Exhaustive {
 				t.Fatalf("PyJWT = found %v exhaustive %v, want absent and exhaustive", r.Found, r.Exhaustive)
 			}
-			names, _, _ := declaredDistributions(dir)
+			names, _, _ := declaredDistributions(context.Background(), dir)
 			for _, c := range []string{"pip", "setuptools", "wheel"} {
 				if r := resolveVersion(t, dir, c); r.Found || r.Exhaustive {
 					t.Fatalf("%s = found %v exhaustive %v, want absent and not exhaustive", c, r.Found, r.Exhaustive)

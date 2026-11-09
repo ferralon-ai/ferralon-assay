@@ -20,12 +20,12 @@ func (s factSource) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
 }
 
 // sharedAliasAdvisory names CVE-2021-38561, which GO-2021-0113 also aliases, and is in no
-// AdvisoryTable entry: the fact source the run is given is the only place its aliases are read.
+// fixture advisory: the fact source the run is given is the only place its aliases are read.
 const sharedAliasAdvisory = "GHSA-2099-aaaa-0001"
 
-// claimsScopeSource is the table, plus sharedAliasAdvisory.
+// claimsScopeSource is the fixture advisories, plus sharedAliasAdvisory.
 func claimsScopeSource() pipeline.AdvisorySource {
-	return pipeline.NewChainSource(factSource{sharedAliasAdvisory: {Aliases: []string{"CVE-2021-38561"}}}, pipeline.NewTableSource())
+	return pipeline.NewChainSource(factSource{sharedAliasAdvisory: {Aliases: []string{"CVE-2021-38561"}}}, fixtureSource())
 }
 
 // TestRankWithClaimsTheWorkSet: a run's claims are its work set, not only its rows. A GO row aliasing
@@ -167,7 +167,7 @@ func TestReanalysisClaimsTheWorkSet(t *testing.T) {
 	opts := func(aliases ...string) []pipeline.AssessOption {
 		return []pipeline.AssessOption{
 			pipeline.WithPlugin(fakeInventoryPlugin{lang: "go", inv: twoPackageInventory()}),
-			pipeline.WithAdvisorySource(pipeline.NewChainSource(factSource{sharedAliasAdvisory: {Module: "golang.org/x/net", Aliases: aliases}}, pipeline.NewTableSource())),
+			pipeline.WithAdvisorySource(pipeline.NewChainSource(factSource{sharedAliasAdvisory: {Module: "golang.org/x/net", Aliases: aliases}}, fixtureSource())),
 		}
 	}
 	subject := Subject{Repo: "example.com/app", ResolvedCommit: "sha"}
@@ -226,7 +226,7 @@ func TestClaimedAliasStillVotes(t *testing.T) {
 	src := pipeline.NewChainSource(factSource{
 		goX:  {Module: "golang.org/x/text", Aliases: []string{"CVE-2024-55947", cveB}},
 		cveB: {Module: "golang.org/x/text", Aliases: []string{goX}},
-	}, pipeline.NewTableSource())
+	}, fixtureSource())
 	rep, err := buildBaselineReport(context.Background(), BaselineRequest{
 		Subject:    Subject{Repo: "example.com/app", ResolvedCommit: "sha"},
 		Codebase:   goFixtureModule(t),

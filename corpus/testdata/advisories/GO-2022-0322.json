@@ -13,6 +13,7 @@
     "github.com/prometheus/client_golang/prometheus/promhttp.Handler",
     "github.com/prometheus/client_golang/prometheus/promhttp.HandlerFor"
   ],
+  "SymbolProvenance": "curated",
   "GuardSymbols": null,
   "CWEs": [
     "CWE-770"
@@ -22,7 +23,7 @@
   "Provenance": {
     "Source": "",
     "InputDigest": "",
-    "TrustTier": ""
+    "TrustTier": "first_party"
   },
   "Lineage": {
     "IncompleteFixOf": "",

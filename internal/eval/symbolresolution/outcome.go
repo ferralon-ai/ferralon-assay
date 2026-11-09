@@ -16,7 +16,7 @@ import (
 // so a record the pipeline never reached still produces an outcome carrying the reason that says
 // so — byte-distinguishable from a resolved one.
 type ResolutionOutcome struct {
-	RecordID  string           `json:"record_id"`          // advisory vuln_id — the pipeline.AdvisoryTable / corpus key
+	RecordID  string           `json:"record_id"`          // advisory vuln_id — the advisory corpus key
 	Lane      string           `json:"lane"`               // in-scope lane token, e.g. "go"
 	Ecosystem string           `json:"ecosystem"`          // pipeline.EcosystemToken(r): "golang"/"maven"/… or "(none)"
 	Category  corpus.Category  `json:"category,omitempty"` // from the BOUND corpus.Fixture; "" when no fixture is bound (kept visible, never dropped — §5)

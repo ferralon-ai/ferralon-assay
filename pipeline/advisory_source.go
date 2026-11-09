@@ -1,10 +1,9 @@
 // advisory_source.go
 //
-// The AdvisorySource seam: the single point S1 reads normalized advisory facts through. Before
-// this seam, the two S1 read sites did a bare `AdvisoryTable[id]` map lookup (stages.go); they now
-// route through AdvisorySource.Lookup so the fact origin can be swapped — from the in-memory
-// AdvisoryTable to a digest-pinned artifact corpus, and eventually to a live published feed —
-// WITHOUT changing S1's logic or its fail-open posture.
+// The AdvisorySource seam: the single point S1 reads normalized advisory facts through. The two
+// S1 read sites route through AdvisorySource.Lookup, so the fact origin (a digest-pinned artifact
+// corpus, a bundle, the opted-in house canaries) is chosen by the entrypoint WITHOUT changing S1's
+// logic or its fail-open posture.
 //
 // SOUNDNESS (inv.5): the seam is trusted-or-nulled. Every failure mode — unknown id, unreadable
 // artifact, malformed document, shape-validation failure, digest mismatch — collapses to
@@ -32,7 +31,7 @@ import (
 )
 
 // AdvisorySource resolves normalized advisory facts by vuln id. It is the single seam S1 reads
-// advisories through, replacing the inline AdvisoryTable[id] lookups.
+// advisories through.
 type AdvisorySource interface {
 	// Lookup returns the pinned facts for vulnID. found=false yields the ZERO AdvisoryFacts
 	// (fail-open downstream, byte-identical to today's map miss). Every failure mode — unknown
@@ -42,8 +41,8 @@ type AdvisorySource interface {
 }
 
 // defaultAdvisorySourceVar backs defaultAdvisorySource(). It is nil until an entrypoint installs a
-// source via SetDefaultAdvisorySource; nil ⇒ tableSource{}, so an unset process is byte-identical to
-// the historical inline AdvisoryTable[id] lookups.
+// source via SetDefaultAdvisorySource; nil ⇒ a source that resolves nothing, so an unset process
+// carries no advisory facts at all.
 //
 // CONCURRENCY CONTRACT — set-before-spawn. SetDefaultAdvisorySource is called at most ONCE, at process
 // boot from main(), BEFORE any pipeline goroutine (the worker pool / orchestrator) is started — the
@@ -56,66 +55,35 @@ var defaultAdvisorySourceVar AdvisorySource
 // resolves through — and therefore BOTH S1 stages' nil-src fallback AND LookupAdvisoryFacts (the
 // Prove-side read point). This is the SWAP POINT, runtime-selectable: an entrypoint that has
 // materialized a filesystem corpus calls SetDefaultAdvisorySource(NewArtifactSource(dir)) at boot to
-// route every seam read through the digest-pinned corpus instead of the built-in AdvisoryTable.
-// Passing tableSource{} (or leaving it unset) keeps the built-in default.
+// route every seam read through the digest-pinned corpus. Passing nil restores the empty default.
 //
 // Set-before-spawn only (see defaultAdvisorySourceVar's concurrency contract).
 func SetDefaultAdvisorySource(src AdvisorySource) { defaultAdvisorySourceVar = src }
 
 // defaultAdvisorySource is the AdvisorySource an S1 stage reads through when it is constructed without
 // an explicit source (the production path), and the source LookupAdvisoryFacts reads through. It
-// returns the process-wide default installed by SetDefaultAdvisorySource, falling back to tableSource{}
-// — the bare AdvisoryTable map read — when unset, so an unset process stays byte-identical to the
-// historical inline AdvisoryTable[id] lookups.
+// returns the process-wide default installed by SetDefaultAdvisorySource, or, when unset, an empty
+// chain that misses every id (fail open: zero facts).
 func defaultAdvisorySource() AdvisorySource {
 	if defaultAdvisorySourceVar != nil {
 		return defaultAdvisorySourceVar
 	}
-	return tableSource{}
+	return chainSource{}
 }
 
 // LookupAdvisoryFacts resolves advisory facts for vulnID through the default AdvisorySource seam —
 // the SAME seam S1 reads through — returning the zero AdvisoryFacts on any miss/failure (fail open,
 // byte-identical to a map miss). It is the exported read point for Service-side consumers (e.g.
-// fixSourceFor) that must go through the seam rather than indexing AdvisoryTable directly: closing
-// a seam-bypass, so those consumers automatically follow the source flip and see the
-// v3 enrichment fields (e.g. Fix) a live corpus carries.
+// fixSourceFor) that must go through the seam rather than reading a corpus directly, so those
+// consumers follow the installed source and see the v3 enrichment fields (e.g. Fix) a live corpus
+// carries.
 func LookupAdvisoryFacts(vulnID string) AdvisoryFacts {
 	facts, _ := defaultAdvisorySource().Lookup(vulnID)
 	return facts
 }
 
-// tableSource wraps the in-memory AdvisoryTable. It is the default and fallback: its Lookup is
-// the exact map read the two S1 sites did inline, so wiring it changes no behavior.
-type tableSource struct{}
-
-// NewTableSource returns the built-in AdvisoryTable as an AdvisorySource. It is the exported handle
-// on the compiled-in default so an entrypoint can put the table EXPLICITLY at the tail of a chain
-// (NewChainSource) rather than having a corpus replace it wholesale.
-func NewTableSource() AdvisorySource { return tableSource{} }
-
-func (tableSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
-	facts, ok := AdvisoryTable[vulnID]
-	if !ok {
-		return AdvisoryFacts{}, false
-	}
-	// The curated AdvisoryTable is this module's own offline, osv-verified first-party corpus. Stamp
-	// that provenance when the entry left it zero (fill-only; never overwrite a declared tier) so
-	// legitimate refutes stay eligible under the inv.5 trust-gate. `facts` is a copy of the map
-	// value, so this never mutates the table. Every other field is byte-identical to the bare
-	// map read.
-	if facts.Provenance.TrustTier == "" {
-		facts.Provenance.TrustTier = TrustFirstParty
-	}
-	facts.BuiltIn = true
-	return facts, true
-}
-
-// chainSource resolves an advisory through an ordered list of sources. It exists so a corpus can
-// SUPPLEMENT the built-in AdvisoryTable instead of REPLACING it: before the chain, installing a
-// filesystem corpus swapped the table out entirely, so every id the corpus did not carry resolved to
-// zero facts and failed open. Measured against the 2026-07-23 published corpus, that silently emptied
-// the whole 16-id scan work set.
+// chainSource resolves an advisory through an ordered list of sources, so an opted-in source (the
+// house canaries) can sit behind a corpus without either replacing the other.
 //
 // THE PARTIAL-FACT RULE: FIRST HIT WINS, WHOLE FACTS ONLY. NO MERGING, EVER.
 //
@@ -123,11 +91,11 @@ func (tableSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 // "top up" empty fields on the first source's fact. This is the load-bearing rule, not a convenience:
 //
 //   - Every source already guarantees whole-fact-or-nothing. artifactSource.toFacts returns
-//     (zero, false) on ANY shape-validation failure, and tableSource returns a whole map value. So
+//     (zero, false) on ANY shape-validation failure, and a map-backed source returns a whole value. So
 //     ok=true from a source means "this producer asserted this entire fact", and there is no such
 //     thing as a partial fact to top up in the first place.
 //   - A merged fact is one NO producer ever asserted and NO digest pins. Its version axis could come
-//     from the corpus while its symbol axis came from a years-old table entry, and the disqualification
+//     from one source while its symbol axis came from another, and the disqualification
 //     stages would weigh the blend as a single coherent advisory. That is exactly the laundering the
 //     seam's soundness note (inv.5) forbids.
 //   - Provenance.TrustTier gates whether facts may drive a refute. Merging would let one source's
@@ -158,7 +126,7 @@ func (c chainSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 }
 
 // Refresh forwards the freshness check to every member that implements CorpusRefresher and joins their
-// errors. Members that cannot refresh (the built-in table) are skipped.
+// errors. Members that cannot refresh (the house canaries) are skipped.
 func (c chainSource) Refresh() error {
 	var errs []error
 	for _, s := range c.sources {
@@ -268,7 +236,7 @@ func NewArtifactSource(root string) AdvisorySource { return &artifactSource{root
 
 // CorpusValidator is implemented by an AdvisorySource that supports a STARTUP-ONLY preflight of its
 // backing corpus. An entrypoint type-asserts the source it built to this interface and calls Validate()
-// once, before serving; a source with no on-disk corpus to preflight (e.g. tableSource) does not
+// once, before serving; a source with no on-disk corpus to preflight (e.g. the house canaries) does not
 // implement it.
 //
 // SOUNDNESS SPLIT (inv.5): Validate is SEPARATE from Lookup. Lookup keeps its per-advisory fail-open
@@ -303,7 +271,7 @@ type CorpusDescriber interface {
 
 // AdvisoryEnumerator is implemented by an AdvisorySource that can enumerate the full identifier set
 // it carries. It is OPTIONAL and deliberately NOT part of the one-method AdvisorySource seam:
-// tableSource/chainSource do not implement it, and Lookup's fail-open contract is unaffected. An
+// the house canaries and chainSource do not implement it, and Lookup's fail-open contract is unaffected. An
 // entrypoint type-asserts to it (the same pattern as CorpusValidator/CorpusDescriber) to derive the
 // scan work set from the corpus itself: both corpus readers (artifactSource, bundleSource) implement
 // it, so the policy a corpus was built from defines what a scan evaluates.
@@ -874,7 +842,7 @@ func (s *artifactSource) readManifest() (advisoryManifest, map[string]advisoryMa
 // the corpus is WHOLLY unusable — root/manifest missing, manifest unreadable, or manifest invalid
 // (record_count≠len, duplicate identifier). An entrypoint calls it once at boot and HARD-FAILS the
 // process on error, so a broken orchestrator-materialized corpus is loud, never silently degraded to
-// stale built-in intel.
+// a scan without it.
 //
 // It reads the same served state as Lookup, so it can never accept a manifest Lookup would choke on, nor
 // reject one Lookup would accept. After a failed Refresh it still reports on the manifest being served
@@ -1096,7 +1064,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 // goModulePath resolves the Go MODULE PATH for a package block, projecting `coordinate` onto it when
 // the document carries no explicit `module`.
 //
-// In the gomod scheme the two name the same string. The built-in AdvisoryTable puts it in `module`;
+// In the gomod scheme the two name the same string. AdvisoryFacts keys it as `Module`;
 // the published corpus puts it in `coordinate` and omits `module` entirely (FIELDS.md: "`coordinate`
 // — the package coordinate/name in its ecosystem (e.g. `golang.org/x/crypto`)", alongside a purl of
 // `pkg:golang/golang.org/x/crypto`). The engine's whole Go version axis is keyed on Module —

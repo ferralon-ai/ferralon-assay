@@ -30,6 +30,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
+	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/resultsink"
@@ -181,7 +182,7 @@ func runBaseline(args []string) error {
 	defer budget.release()
 	timer := &phaseTimer{w: os.Stderr}
 	stages, clock := startRunClock(budget.analysis)
-	ctx, analysis := budget.flush, trigger.WithTiming(stages, timer.observe)
+	ctx, analysis := budget.flush, trigger.WithAdvisoryTiming(trigger.WithTiming(stages, timer.observe), timer.observeAdvisory)
 
 	acq, err := acquireTarget(analysis, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	var missing *analyzerMissingError
@@ -209,10 +210,10 @@ func runBaseline(args []string) error {
 		return err
 	}
 
-	// Widen the compiled-in language floor with the advisories OSV.dev reports against this
-	// repository's real dependencies. Resolved AFTER advisoryCorpusOption, which decides the fact
-	// source the widener admits against. Never fails: an unreachable OSV degrades to the floor and
-	// says so on the Report (workset.go).
+	// Choose the work set: the declared policy's ids, or the advisories OSV.dev reports against this
+	// repository's real dependencies, plus any opted-in house canaries. Resolved AFTER
+	// advisoryCorpusOption, which decides the fact source the widener admits against. An unreachable
+	// OSV degrades to the canaries and says so on the Report (workset.go); an empty set fails.
 	ws, err := f.scanWorkSet(analysis, acq)
 	if err != nil {
 		return markIfStopped(analysis, err)
@@ -220,19 +221,7 @@ func runBaseline(args []string) error {
 	fmt.Fprintf(os.Stdout, "%s baseline — work set: %s\n", brand.Name, ws.describe())
 
 	revision, commit := acq.provenance(*f.revision, *f.commit)
-	req := trigger.BaselineRequest{
-		Subject: trigger.Subject{Repo: acq.repo, Revision: revision, ResolvedCommit: commit},
-		Codebase: assessment.CodebaseRef{
-			Repo:        acq.repo,
-			Revision:    revision,
-			Acquisition: assessment.Acquisition{Mode: "vendored_repro", Path: acq.buildDir},
-		},
-		Advisories:    ws.advisories,
-		WorkSetLimits: ws.partiality,
-		AssessOptions: assessOptions,
-		Signals:       f.resolvedSignals,
-		Analysis:      analysis,
-	}
+	req := baselineRequest(analysis, acq, revision, commit, ws, assessOptions, f.resolvedSignals, f.depRun)
 
 	rep, err := trigger.RunBaseline(ctx, store, req)
 	if err != nil {
@@ -252,6 +241,27 @@ func runBaseline(args []string) error {
 	printRescanContext(rescan)
 	postScan(ctx, store, req.Subject, rescan)
 	return runExit(acq.graph, f.depRun.forLanguage(acq.language))
+}
+
+// baselineRequest is the trigger request a baseline of acq at revision/commit runs. deps is the
+// run's dependency-code state, applied only when acq is a JS scan.
+func baselineRequest(analysis context.Context, acq *acquired, revision, commit string, ws workSet, assessOptions []pipeline.AssessOption, signals *intel.Signals, deps *depCodeRun) trigger.BaselineRequest {
+	deps = deps.forLanguage(acq.language)
+	return trigger.BaselineRequest{
+		Subject: trigger.Subject{Repo: acq.repo, Revision: revision, ResolvedCommit: commit},
+		Codebase: assessment.CodebaseRef{
+			Repo:        acq.repo,
+			Revision:    revision,
+			Acquisition: assessment.Acquisition{Mode: "vendored_repro", Path: acq.buildDir},
+		},
+		Advisories:      ws.advisories,
+		WorkSetLimits:   ws.partiality,
+		AssessOptions:   assessOptions,
+		Signals:         signals,
+		Analysis:        analysis,
+		DependencyFetch: deps.fetchUpdate(),
+		Disclose:        deps.disclose(),
+	}
 }
 
 // baselineStore resolves the StateStore the baseline writes to. When an operator selects a store

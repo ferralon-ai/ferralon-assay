@@ -76,7 +76,7 @@ func TestOSVWorkSet_QueriesTheVersionedRoot(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			acq := jsFixture(t, tc.manifest)
 			osv := &fakeOSV{}
-			resolveWorkSet(context.Background(), acq, osv, pipeline.NewTableSource())
+			resolveWorkSet(context.Background(), acq, osv, fixtureSource())
 			queried := false
 			for _, p := range osv.seen {
 				if p.Root && p.Name == "next" && p.Version == "14.1.0" && p.Ecosystem == ecosystemNPM {

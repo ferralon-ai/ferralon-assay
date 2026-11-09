@@ -1,20 +1,16 @@
 // workset_empty_gate_test.go
 //
-// The halt-on-empty gate, and above all its ORDERING against the OSV work-set widening.
+// The no-work gate, and above all its ORDERING against the OSV work-set widening.
 //
-// The gate used to sit in acquireTarget, where it measured the compiled-in language floor. That is
-// not the set a pass evaluates: -osv-work-set widens the set afterwards, in resolveWorkSet, taking
-// the acquired target as INPUT. Java/JS/Python floors were house canaries in their entirety at the
-// time, so with the canary gate on they resolved to zero and every such scan that asked for the
-// widening died at acquisition — before OSV was ever queried — telling the user to add advisories to
-// the corpus or pass -include-house-canaries, neither of which is what they had asked for.
+// The scanner carries no advisories of its own: a scan's work set is the opted-in house canaries
+// plus whatever a corpus policy or the OSV widening chooses against the repository's dependencies.
+// A run given none of those inputs must halt with an error naming every one of them, rather than
+// publish a findings-free Report that reads as an assessed all-clear. A run that WAS given one, and
+// whose input chose nothing for this repository, has an assessed answer and publishes it.
 //
-// Those floors now carry real advisories (acquire.go), so the empty floor these tests turn on is
-// constructed rather than borrowed from an ecosystem — see emptyFloorFor.
-//
-// TestEmptyWorkSet_WideningRunsBeforeTheGate and TestEmptyWorkSet_WideningPopulatesAnEmptyFloor are
-// the regression pair for that ordering: both are unreachable under the old placement, because the
-// run never got as far as the work set.
+// The gate sits after the widening (scanWorkSet), never at acquisition: -osv-work-set widens the set
+// in resolveWorkSet, taking the acquired target as INPUT. TestEmptyWorkSet_WideningRunsBeforeTheGate
+// and TestEmptyWorkSet_WideningPopulatesAnEmptyFloor pin that ordering.
 package main
 
 import (
@@ -30,6 +26,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
+	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
 // treeFor writes a one-file source tree of the given language and acquires it, so these tests run
@@ -68,46 +65,179 @@ func languageFixture(t *testing.T, language string) (file, content string) {
 		return "app.py", "x = 1\n"
 	case checkout.LangDotNet:
 		return "App.cs", "class App {}\n"
+	case checkout.LangCFamily:
+		return "main.c", "int main(void) { return 0; }\n"
 	}
 	t.Fatalf("no fixture for language %q", language)
 	return "", ""
 }
 
 // emptyFloorFor acquires a real tree of the given language and then empties its advisory floor.
-//
-// THERE IS NO LONGER A LANGUAGE WHOSE FLOOR IS NATURALLY EMPTY, and that is the point of the change
-// that made this helper necessary. These tests used to use .NET as their empty-in-both-directions
-// specimen; .NET now carries three real NuGet advisories by default, as do Java, JS and Python, so
-// every supported language resolves a non-empty work set. That property is what makes a default
-// scan of those repositories complete, and language_support_test.go holds it in place.
-//
-// LangUnknown is not an alternative: an unrecognized tree does not reach scanWorkSet at all. It
-// fails two stages earlier, in checkout.ResolveVendored ("is not a recognized source tree"), before
-// selectPlugin is ever consulted — verified by running it, 2026-08-05.
-//
-// So the empty set is constructed rather than found. That is a FAITHFUL model of the state the gate
-// exists for, not a weaker one: the gate's condition is strictly "the resolved set is empty", never
-// a language and never a flag, and a floor that resolved to nothing is exactly what it must catch.
-// It is also the same manoeuvre the widening tests below already use on acq.plugin, and it is
-// durable — an empty specimen sourced from a real ecosystem is a fixture that breaks every time
-// coverage improves, which is precisely how these tests broke.
+// With the canaries off the floor is already empty; with them on, emptying it models a run whose
+// opted-in canaries name nothing in this ecosystem, so the gate is shown to key on the resolved set
+// and never on the flag.
 func emptyFloorFor(t *testing.T, language string, canaries bool) *acquired {
 	t.Helper()
 	acq := treeFor(t, language, canaries)
-	if len(acq.advisories) == 0 {
-		t.Fatalf("%s floor (canaries=%v) is already empty — the default floor for every supported "+
-			"language must be non-empty, or a default scan of it cannot complete", language, canaries)
-	}
 	acq.advisories = nil
 	return acq
 }
 
-// TestEmptyWorkSet_HaltsTheRun is the firing half: a work set that resolves to nothing must fail the
-// run loudly rather than publish a findings-free Report that reads as an assessed all-clear.
+// emptyWorkSetInputs is every input the halt message must name: the corpus flag and its Action
+// inputs, the OSV widening, and the house-canary opt-in.
+var emptyWorkSetInputs = []string{
+	"-advisory-corpus", "-advisory-corpus-policy", envAdvisoryCorpusDir,
+	"advisory-corpus-repo", "advisory-corpus-policy",
+	"-osv-work-set", "-include-house-canaries",
+}
+
+// TestEmptyWorkSet_DefaultScanHalts runs the gate through acquisition: a scan with no corpus, no
+// OSV widening and no canaries resolves nothing in any supported language, and halts.
+func TestEmptyWorkSet_DefaultScanHalts(t *testing.T) {
+	for _, language := range []string{checkout.LangGo, checkout.LangJava, checkout.LangKotlin, checkout.LangJS, checkout.LangPython, checkout.LangDotNet} {
+		t.Run(language, func(t *testing.T) {
+			trapEgress(t)
+			f := runFlagsFor(t)
+			if _, err := f.advisoryCorpusOption(); err != nil {
+				t.Fatalf("advisoryCorpusOption: %v", err)
+			}
+			acq := treeFor(t, language, false)
+			if len(acq.advisories) != 0 {
+				t.Fatalf("a default %s acquisition carries advisories %v; the scanner carries none of its own", language, ids(acq.advisories))
+			}
+			if _, err := f.scanWorkSet(context.Background(), acq); err == nil {
+				t.Fatal("a default scan with no work-set input did not halt")
+			}
+		})
+	}
+}
+
+// TestCVEWatch_NoFactSourceHalts: a cve-watch heartbeat with no advisory corpus has nothing to
+// resolve OSV-reported advisories against, so it halts naming the corpus inputs before reading the
+// stored state or querying OSV. The house canaries are a fact source only for their own demo ids,
+// so opting them in does not let the heartbeat assess OSV's ids with no facts.
+func TestCVEWatch_NoFactSourceHalts(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		extra []string
+	}{
+		{"no corpus", nil},
+		{"house canaries, no corpus", []string{"-include-house-canaries"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			trap := trapEgress(t)
+			target := t.TempDir()
+			if err := os.WriteFile(filepath.Join(target, "go.mod"), []byte(fixtureGoMod), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stateDir := t.TempDir()
+			if err := gitInitBare(stateDir); err != nil {
+				t.Fatal(err)
+			}
+			args := append([]string{"-target", target, "-plugin-go", "/fake/bin", "-build-graph", "off", "-git-dir", stateDir}, tc.extra...)
+			err := runCVEWatch(args)
+			if err == nil {
+				t.Fatal("cve-watch with no advisory corpus did not halt")
+			}
+			for _, want := range []string{"no advisory fact source", "-advisory-corpus", envAdvisoryCorpusDir, "advisory-corpus-repo"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not name %q: %v", want, err)
+				}
+			}
+			if len(trap.hosts) != 0 {
+				t.Errorf("cve-watch queried %v before halting", trap.hosts)
+			}
+		})
+	}
+}
+
+// TestEmptyWorkSet_SuppliedInputMatchingNothingPublishes is the other side of the gate: a run given
+// a work-set input that chose nothing for this repository was given real work, and its empty set is
+// an assessed answer the run publishes, not an error. A corpus with no policy chooses nothing and
+// still halts.
+func TestEmptyWorkSet_SuppliedInputMatchingNothingPublishes(t *testing.T) {
+	wireCorpus := filepath.Join("..", "..", "pipeline", "testdata", "advisory_source")
+	policyBundle := writePolicyBundle(t, []corpusEntry{{doc: goRecord("TEST-NOT-A-DEPENDENCY", "example.com/not-a-dependency")}})
+
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		java       bool // a Java tree with a one-coordinate inventory, for the OSV widening to query
+		cfamily    bool // a C-family tree, whose language has no advisory ecosystem
+		osv        []string
+		wantSource string
+		wantHalt   string // the halt message's distinguishing text, or "" when the run publishes
+		wantNote   bool
+	}{
+		{name: "policy matches no dependency", args: []string{"-advisory-corpus", policyBundle, "-advisory-corpus-policy", "full"},
+			wantSource: report.WorkSetPolicy},
+		// The reported id has no facts in the corpus, which the run discloses rather than assesses.
+		{name: "OSV reports nothing the corpus holds", args: []string{"-osv-work-set=true", "-advisory-corpus", wireCorpus},
+			java: true, osv: []string{"GHSA-not-in-the-corpus"}, wantSource: report.WorkSetOSVQuery, wantNote: true},
+		{name: "OSV unreachable", args: []string{"-osv-work-set=true", "-advisory-corpus", wireCorpus},
+			java: true, wantSource: report.WorkSetNone, wantNote: true},
+		{name: "corpus without a policy", args: []string{"-advisory-corpus", wireCorpus}, wantHalt: "no work"},
+		// Nothing could match a language with no advisory ecosystem, so the input is no work.
+		{name: "policy on a language with no advisory ecosystem", args: []string{"-advisory-corpus", policyBundle, "-advisory-corpus-policy", "full"},
+			cfamily: true, wantHalt: "no advisory ecosystem"},
+		{name: "OSV on a language with no advisory ecosystem", args: []string{"-osv-work-set=true", "-advisory-corpus", wireCorpus},
+			cfamily: true, wantHalt: "no advisory ecosystem"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(envAdvisoryCorpusDir, "")
+			t.Setenv(envAdvisoryCorpusRequired, "")
+			t.Setenv(envAdvisoryCorpusPolicy, "")
+			t.Setenv(envOSVWorkSet, "")
+			if tc.osv != nil {
+				stubOSV(t, tc.osv...)
+			} else {
+				trapEgress(t)
+			}
+			f := runFlagsFor(t, tc.args...)
+			if _, err := f.advisoryCorpusOption(); err != nil {
+				t.Fatalf("advisoryCorpusOption: %v", err)
+			}
+			var acq *acquired
+			switch {
+			case tc.java:
+				acq = treeFor(t, checkout.LangJava, false)
+				acq.plugin = mavenInventoryPlugin{}
+			case tc.cfamily:
+				acq = treeFor(t, checkout.LangCFamily, false)
+			default:
+				acq = goFixture(t, fixtureGoMod)
+				acq.advisories = nil
+			}
+
+			ws, err := f.scanWorkSet(context.Background(), acq)
+			if tc.wantHalt != "" {
+				if err == nil || !strings.Contains(err.Error(), "no work") || !strings.Contains(err.Error(), tc.wantHalt) {
+					t.Fatalf("the input chooses nothing; want the %q halt, got %v", tc.wantHalt, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("a supplied work-set input that matched nothing halted the run: %v", err)
+			}
+			if len(ws.advisories) != 0 {
+				t.Fatalf("work set = %v, want empty", ids(ws.advisories))
+			}
+			if ws.source != tc.wantSource {
+				t.Errorf("work set source = %q, want %q", ws.source, tc.wantSource)
+			}
+			if got := len(ws.partiality) != 0; got != tc.wantNote {
+				t.Errorf("partiality = %+v, want a degraded-selection note: %v", ws.partiality, tc.wantNote)
+			}
+		})
+	}
+}
+
+// TestEmptyWorkSet_HaltsTheRun is the firing half: a run given no input that chooses advisories must
+// fail loudly, naming every input that would populate its work set, rather than publish a
+// findings-free Report that reads as an assessed all-clear. Nothing falls back to fixture advisories.
 //
-// Every supported language is covered in BOTH flag directions, which is what proves the condition is
-// the resolved set and not the flag: -include-house-canaries is set on half these cases and exempts
-// none of them. The canaries-on rows carry the property the old .NET specimen carried alone.
+// Every supported language is covered in BOTH flag directions: -include-house-canaries is set on
+// half these cases, and canaries that name nothing in the ecosystem exempt none of them.
 func TestEmptyWorkSet_HaltsTheRun(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -118,6 +248,7 @@ func TestEmptyWorkSet_HaltsTheRun(t *testing.T) {
 		{"go, canaries on", checkout.LangGo, true},
 		{"java, canaries off", checkout.LangJava, false},
 		{"java, canaries on", checkout.LangJava, true},
+		{"kotlin, canaries off", checkout.LangKotlin, false},
 		{"js, canaries off", checkout.LangJS, false},
 		{"js, canaries on", checkout.LangJS, true},
 		{"python, canaries off", checkout.LangPython, false},
@@ -131,11 +262,11 @@ func TestEmptyWorkSet_HaltsTheRun(t *testing.T) {
 			f := runFlagsFor(t)
 			acq := emptyFloorFor(t, tc.language, tc.canaries)
 
-			_, err := f.scanWorkSet(context.Background(), acq)
+			ws, err := f.scanWorkSet(context.Background(), acq)
 			if err == nil {
-				t.Fatal("an empty resolved work set did not halt the run")
+				t.Fatalf("an empty resolved work set did not halt the run; it resolved %v", ids(ws.advisories))
 			}
-			for _, want := range []string{tc.language, "0 advisories"} {
+			for _, want := range append([]string{tc.language, "no work"}, emptyWorkSetInputs...) {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("error %q does not name %q", err, want)
 				}
@@ -146,9 +277,8 @@ func TestEmptyWorkSet_HaltsTheRun(t *testing.T) {
 
 // TestEmptyWorkSet_MessageDoesNotBranch pins the ruling that the error stays ONE flat string: it
 // states the fact and names the inputs that populate a work set, and it does not grow a remedy
-// decision tree keyed on which input was supplied. The compiled-in advisory table is scaffolding on
-// its way out in favour of a policy manifest; when that lands the honest sentence is a different
-// one, and replacing it should cost one string rewrite rather than an unpicking job.
+// decision tree keyed on which input was supplied. Replacing it should cost one string rewrite
+// rather than an unpicking job.
 //
 // Two runs whose ONLY difference is an input flag must therefore produce the same sentence.
 func TestEmptyWorkSet_MessageDoesNotBranch(t *testing.T) {
@@ -181,31 +311,12 @@ func TestEmptyWorkSet_MessageDoesNotBranch(t *testing.T) {
 // the SET rather than on the language: the moment anything populates an ecosystem's work set the
 // halt stops firing, with no code change and nothing to remove.
 func TestEmptyWorkSet_DormantOnANonEmptySet(t *testing.T) {
-	cases := []struct {
-		name     string
-		language string
-		canaries bool
-	}{
-		// EVERY supported language's default floor carries real advisories, so the gate must never
-		// fire on any of them in either flag direction. This is the halt-side mirror of
-		// language_support_test.go: the same property, asserted through the gate rather than
-		// through the corpus.
-		{"go, canaries off", checkout.LangGo, false},
-		{"go, canaries on", checkout.LangGo, true},
-		{"java, canaries off", checkout.LangJava, false},
-		{"java, canaries on", checkout.LangJava, true},
-		{"js, canaries off", checkout.LangJS, false},
-		{"js, canaries on", checkout.LangJS, true},
-		{"python, canaries off", checkout.LangPython, false},
-		{"python, canaries on", checkout.LangPython, true},
-		{"dotnet, canaries off", checkout.LangDotNet, false},
-		{"dotnet, canaries on", checkout.LangDotNet, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	// Every language with house canaries, opted in: the canaries alone populate the set.
+	for _, language := range []string{checkout.LangGo, checkout.LangJava, checkout.LangKotlin, checkout.LangJS, checkout.LangPython, checkout.LangDotNet} {
+		t.Run(language, func(t *testing.T) {
 			trapEgress(t)
-			f := runFlagsFor(t)
-			acq := treeFor(t, tc.language, tc.canaries)
+			f := runFlagsFor(t, "-include-house-canaries")
+			acq := treeFor(t, language, true)
 
 			ws, err := f.scanWorkSet(context.Background(), acq)
 			if err != nil {
@@ -218,22 +329,19 @@ func TestEmptyWorkSet_DormantOnANonEmptySet(t *testing.T) {
 	}
 }
 
-// TestEmptyWorkSet_WideningRunsBeforeTheGate is the regression test for the defect.
+// TestEmptyWorkSet_WideningRunsBeforeTheGate pins the gate's ordering.
 //
-// A Java run with -osv-work-set set and the house canaries off has an EMPTY compiled-in floor. Under
-// the old placement it died inside acquireTarget and never reached the widening at all. It must now
-// acquire, query OSV, and only then be judged on what the work set resolved to.
+// A Java run with -osv-work-set set and the house canaries off has an EMPTY floor. It must acquire,
+// query OSV, and only then be judged on what the work set resolved to.
 //
-// The egress trap refuses the request, so this run does still halt — the widening it asked for could
-// not run, and nothing else populated the set. What the test pins is that the OSV query HAPPENED
-// first: that outbound request is the observable proof the gate no longer pre-empts the widening.
+// No corpus is configured, so the widening has no facts to admit an OSV-reported id against and the
+// run was given no work: it halts. What the test pins is that the OSV query HAPPENED first: that
+// outbound request is the observable proof the gate does not pre-empt the widening.
 func TestEmptyWorkSet_WideningRunsBeforeTheGate(t *testing.T) {
 	trap := trapEgress(t)
 	f := runFlagsFor(t, "-osv-work-set=true")
 
-	// Acquisition itself must survive an empty floor. This is the exact call that used to fail.
-	// The floor is emptied explicitly because no language has a naturally empty one any more — see
-	// emptyFloorFor for why that is the durable form of this fixture.
+	// Acquisition itself must survive an empty floor.
 	acq := emptyFloorFor(t, checkout.LangJava, false)
 	// A dependency inventory is what the widening has to ask OSV ABOUT; the acquired Java plugin
 	// points at a fake binary and can produce none, which would make the absent request ambiguous
@@ -251,24 +359,24 @@ func TestEmptyWorkSet_WideningRunsBeforeTheGate(t *testing.T) {
 			t.Errorf("the widening contacted %q, want api.osv.dev only", h)
 		}
 	}
-	// The widening was refused by the trap, so the set is still empty and the gate is right to fire.
 	if err == nil {
-		t.Fatal("the work set resolved empty after an unreachable OSV and the run did not halt")
+		t.Fatal("an -osv-work-set run with no corpus was given no work and did not halt")
 	}
 }
 
-// TestEmptyWorkSet_WideningPopulatesAnEmptyFloor is the payoff half, and the case the user in the
-// bug report was actually asking for: OSV answers, the answer resolves to facts we hold, and a Java
-// scan whose compiled-in floor is empty runs on the widened set instead of halting.
-//
-// Unreachable under the old placement for the same reason as the test above.
+// TestEmptyWorkSet_WideningPopulatesAnEmptyFloor is the payoff half: OSV answers, the answer resolves
+// to facts the configured corpus holds, and a Java scan whose floor is empty runs on the widened set
+// instead of halting.
 func TestEmptyWorkSet_WideningPopulatesAnEmptyFloor(t *testing.T) {
-	// FERRALON-JAVA-DEP-0001 is a Maven advisory the built-in table holds facts for and that the
-	// canaries-off floor does NOT carry, so admitting it is a real widening rather than a floor hit.
-	const admitted = "FERRALON-JAVA-DEP-0001"
+	// FERRALON-TEST-0001 is a record of the wire-format test corpus, so admitting it is a widening
+	// against the configured fact source and nothing else.
+	const admitted = "FERRALON-TEST-0001"
 	stubOSV(t, admitted)
 
-	f := runFlagsFor(t, "-osv-work-set=true")
+	f := runFlagsFor(t, "-osv-work-set=true", "-advisory-corpus", filepath.Join("..", "..", "pipeline", "testdata", "advisory_source"))
+	if _, err := f.advisoryCorpusOption(); err != nil {
+		t.Fatalf("advisoryCorpusOption: %v", err)
+	}
 	acq := treeFor(t, checkout.LangJava, false)
 	acq.plugin = mavenInventoryPlugin{}
 

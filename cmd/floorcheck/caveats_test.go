@@ -240,7 +240,7 @@ func TestAddCaveats(t *testing.T) {
 		"| `unmapped:relationship_unexpressed:uninspectable_package` | 1 (api) | 1 |",
 		"#### go\n\nNo caveat fired.", "#### python\n\nNo caveat fired.",
 		// The existing tables are unchanged.
-		"| Repo | Language | Assay commit | Policy | Verdicts | Top undetermined reasons | Truncated | Duration | Result |",
+		"| Repo | Language | Assay commit | Policy | Verdicts | Qualified (alias sets) | Top undetermined reasons | Truncated | Duration | Result |",
 	} {
 		if !strings.Contains(md, w) {
 			t.Errorf("markdown lacks %q:\n%s", w, md)

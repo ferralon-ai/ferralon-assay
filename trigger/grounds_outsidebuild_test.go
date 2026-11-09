@@ -79,7 +79,7 @@ func TestFinding_OutsideBuildGrounds(t *testing.T) {
 			fx.pkg = &report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.15.0", PURL: "pkg:golang/golang.org/x/net@v0.15.0"}
 		}, false, ""},
 		{"a curated symbol set", func(fx *groundsFixture) { fx.provenance = "curated" }, true, ""},
-		{"an untagged built-in symbol set", func(fx *groundsFixture) { fx.untagged, fx.builtIn = true, true }, true, ""},
+		{"an untagged house-canary symbol set", func(fx *groundsFixture) { fx.untagged, fx.builtIn = true, true }, true, ""},
 		{"an untagged corpus symbol set", func(fx *groundsFixture) { fx.untagged = true },
 			false, report.ReasonAdvisorySymbolsUnvetted},
 		{"a diff-lexed symbol set", func(fx *groundsFixture) { fx.provenance = "diff-lexed" },

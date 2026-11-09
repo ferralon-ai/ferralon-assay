@@ -95,13 +95,13 @@ func writeGoMod(t *testing.T, body string) string {
 	return dir
 }
 
-// stdlibNoRangeSource serves the built-in advisory table with GO-2021-0264's toolchain ranges removed.
+// stdlibNoRangeSource serves the fixture advisories with GO-2021-0264's toolchain ranges removed.
 // The toolchain tests use it as a stdlib advisory the version axis can never settle, so that the
 // reachability licence alone decides its disposition.
 type stdlibNoRangeSource struct{}
 
 func (stdlibNoRangeSource) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
-	f, ok := pipeline.NewTableSource().Lookup(id)
+	f, ok := fixtureSource().Lookup(id)
 	if ok && id == "GO-2021-0264" {
 		f.VersionScheme, f.AffectedRanges = "", nil
 	}
@@ -306,14 +306,14 @@ func TestBaseline_DisqualifiedToolchainAdvisoryIsReported(t *testing.T) {
 	}
 }
 
-// TestBaseline_StdlibAdvisoryIsSettledByItsToolchainRanges runs GO-2021-0264 as the built-in table
+// TestBaseline_StdlibAdvisoryIsSettledByItsToolchainRanges runs GO-2021-0264 as the fixture corpus
 // carries it: fixed go1.16.10 and go1.17.3. A floor past both disqualifies it, including the
 // go1.21.0 floor a toolchain line implies. A go directive below 1.21 is no floor at all — go1.16.5 may
 // have built a `go 1.17` module — so with nothing else established the toolchain is unresolved and
 // the advisory is undetermined for that reason, never disqualified off the directive.
 func TestBaseline_StdlibAdvisoryIsSettledByItsToolchainRanges(t *testing.T) {
 	stdlib := []assessment.VulnRef{{ID: "GO-2021-0264", Source: "corpus"}}
-	table := pipeline.WithAdvisorySource(pipeline.NewTableSource())
+	table := pipeline.WithAdvisorySource(fixtureSource())
 
 	rep := runGoBaseline(t, "module example.com/target\n\ngo 1.21.0\n", stdlib, table)
 	if got := verdictByID(rep)["GO-2021-0264"]; got != report.VerdictDisqualified {

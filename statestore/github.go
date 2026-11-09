@@ -171,6 +171,12 @@ func (s *GitHubRefStore) readAt(ctx context.Context) (*State, error) {
 			return nil, err
 		}
 	}
+	if b, ok := files[fileDepFetch]; ok {
+		st.DepFetch, err = decodeDepFetch(b, files[fileReport])
+		if err != nil {
+			return nil, err
+		}
+	}
 	return st, nil
 }
 
@@ -206,8 +212,8 @@ func (s *GitHubRefStore) Write(ctx context.Context, next *State) (*State, error)
 			fresh := *cur
 			fresh.CommitSHA = ""
 			cur = &fresh
-		} else {
-			cur = Merge(winner, cur)
+		} else if cur, err = mergeForRetry(winner, cur); err != nil {
+			return nil, err
 		}
 
 		select {
@@ -247,6 +253,8 @@ func (s *GitHubRefStore) tryWrite(ctx context.Context, st *State) (*State, error
 
 	out := *st
 	out.CommitSHA = commitSHA
+	// The hook belongs to this write; the committed State must not hand it to another writer.
+	out.Remerge = nil
 	if out.Report != nil {
 		out.SBOM = out.Report.SBOM
 	}
@@ -285,11 +293,13 @@ func (s *GitHubRefStore) buildTree(ctx context.Context, st *State) (string, erro
 	}
 	var entries []entry
 
+	var reportJSON []byte
 	if st.Report != nil {
 		b, err := marshalCanonical(st.Report)
 		if err != nil {
 			return "", fmt.Errorf("statestore: marshal report: %w", err)
 		}
+		reportJSON = b
 		entries = append(entries, entry{fileReport, b})
 	}
 	sbom := st.SBOM
@@ -313,6 +323,11 @@ func (s *GitHubRefStore) buildTree(ctx context.Context, st *State) (string, erro
 	// drops the blob (read-absent → 0), and a repo that never revokes writes none.
 	if st.RevokeCount > 0 {
 		entries = append(entries, entry{fileRevoke, []byte(strconv.Itoa(st.RevokeCount))})
+	}
+	if b, ok, err := encodeDepFetch(st.DepFetch, reportJSON); err != nil {
+		return "", err
+	} else if ok {
+		entries = append(entries, entry{fileDepFetch, b})
 	}
 
 	carried, err := s.unmodelledEntries(ctx, st.CommitSHA)

@@ -130,8 +130,8 @@ func compareVersions(a, b, scheme string) (int, bool) {
 		}
 		return compareNuGetVersion(x, y), true
 	case "go-toolchain":
-		x, xok := parseGoToolchainVersion(a)
-		y, yok := parseGoToolchainVersion(b)
+		x, xok := parseGoToolchainBound(a)
+		y, yok := parseGoToolchainBound(b)
 		if !xok || !yok {
 			return 0, false
 		}

@@ -12,7 +12,7 @@
 //  2. It resolves the SUBJECT'S TOOLCHAIN. This file previously asserted the opposite — that
 //     resolved_version stayed EMPTY — and justified it with the same false premise the production
 //     comment carried: that "its disqualification runs on the separate U7 go-toolchain comparator path
-//     off the AdvisoryTable". There is no such path. The AdvisoryTable supplies the affected RANGE and
+//     off the advisory table". There is no such path. The advisory supplies the affected RANGE and
 //     never a version, so the assertion was defending a dead axis, and the guard test's
 //     green was part of what kept it dark through two review passes. The emptiness assertion is
 //     retired; what replaces it is that the toolchain fact FLOWS — the element resolves and is

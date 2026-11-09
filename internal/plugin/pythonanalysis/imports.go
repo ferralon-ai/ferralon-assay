@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"context"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -375,6 +376,16 @@ func (d distResolver) providesFirstParty(dist string) bool {
 	return false
 }
 
+// providesFirstParty reports whether dist names the build's own code, per the top-level import
+// names its sources provide.
+func (t treeGraph) providesFirstParty(dist string) bool {
+	firstParty := make(map[string]bool, len(t.FirstParty))
+	for _, top := range t.FirstParty {
+		firstParty[top] = true
+	}
+	return distResolver{curated: NewDistImportMap(CuratedContributions()...), firstParty: firstParty}.providesFirstParty(dist)
+}
+
 // firstPartyTops returns the top-level import names the build's own modules provide: each
 // module path's first segment, plus the segment after a "src" directory (src layout).
 func firstPartyTops(modules []string) map[string]bool {
@@ -401,7 +412,7 @@ func firstPartyTops(modules []string) map[string]bool {
 // read by the coverage check (ManifestCandidates): a name only that file holds is missing, so
 // an import of it reaches no boundary node. read is false when a manifest cannot be read at
 // all.
-func declaredDistributions(buildDir string) (names map[string]bool, complete, read bool) {
+func declaredDistributions(ctx context.Context, buildDir string) (names map[string]bool, complete, read bool) {
 	names, complete, read = map[string]bool{}, true, true
 	add := func(deps []plugin.ResolvedDependency) {
 		for _, d := range deps {
@@ -410,7 +421,7 @@ func declaredDistributions(buildDir string) (names map[string]bool, complete, re
 			}
 		}
 	}
-	manifests, unread, _, _, _, tooling, _, _, _ := versionSurfaces(buildDir)
+	manifests, unread, _, _, _, tooling, _, _, _ := versionSurfacesCached(ctx, buildDir)
 	complete = !unread && buildtree.AllFullyRead(ManifestCandidates(buildDir))
 	for n := range tooling {
 		names[n] = true // the build may hold it as surely as if a manifest declared it

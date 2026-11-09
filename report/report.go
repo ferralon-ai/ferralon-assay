@@ -850,9 +850,16 @@ type CorpusManifestProvenance struct {
 
 // The WorkSetSource vocabulary. It is open — these are the values in use today.
 const (
-	// WorkSetBuiltinLanguageSet is the compiled-in, language-scoped list of advisory ids
-	// (cmd/ferralon-assay/acquire.go). Fixed per language, identical on every repository.
-	WorkSetBuiltinLanguageSet = "builtin_language_set"
+	// WorkSetNone is a pass that chose no advisory ids: one that published a Report without
+	// assessing anything (an analyzer that is not installed).
+	WorkSetNone = "none"
+	// WorkSetHouseCanaries is the first-party house canaries alone, opted in with
+	// -include-house-canaries (cmd/ferralon-assay/acquire.go). Fixed per language, identical on every
+	// repository, and never public advisory intelligence.
+	WorkSetHouseCanaries = "house_canaries"
+	// WorkSetPolicy is the ids of the declared advisory policy whose affected package is one of
+	// the repository's dependencies.
+	WorkSetPolicy = "policy"
 	// WorkSetOSVQuery is an SBOM-driven work set resolved by querying OSV.dev for the
 	// advisories that affect the repository's real dependencies.
 	WorkSetOSVQuery = "osv_query"
@@ -860,12 +867,16 @@ const (
 
 // The FactSource vocabulary. It is open — these are the values in use today.
 const (
-	// FactSourceBuiltinTable is the compiled-in AdvisoryTable alone: no corpus configured.
-	FactSourceBuiltinTable = "builtin_table"
-	// FactSourceCorpusThenBuiltinTable is the chained source — a filesystem advisory
-	// corpus consulted first, the built-in table behind it. The corpus SUPPLEMENTS the
-	// table; facts are never merged across the two.
-	FactSourceCorpusThenBuiltinTable = "corpus_then_builtin_table"
+	// FactSourceNone is a pass with no advisory fact source: no corpus configured and no house
+	// canaries opted in.
+	FactSourceNone = "none"
+	// FactSourceCorpus is a filesystem advisory corpus alone.
+	FactSourceCorpus = "corpus"
+	// FactSourceHouseCanaries is the opted-in house canaries alone: no corpus configured.
+	FactSourceHouseCanaries = "house_canaries"
+	// FactSourceCorpusThenHouseCanaries is the chained source — the corpus consulted first, the
+	// opted-in house canaries behind it. Facts are never merged across the two.
+	FactSourceCorpusThenHouseCanaries = "corpus_then_house_canaries"
 )
 
 // PartialityNote discloses one limit on what this scan pass could establish about
@@ -1036,6 +1047,12 @@ const (
 	// the row says nothing about the codebase. As a scan-level note it names the cause, how many
 	// advisories were not assessed, and how to give the scan more time.
 	ReasonScanCutShort = "scan_cut_short"
+	// ReasonDependencyNotFetched: the advisory was last assessed on a run that read less of the
+	// dependency code its lock pins (the fetch fell back, or a registry failed some packages),
+	// and no run that read it has assessed the advisory since. The verdict that run reached rests
+	// on code it did not read, so it is not kept. As a scan-level note, scoped to the package
+	// ecosystem, it says that rows were withheld for this reason.
+	ReasonDependencyNotFetched = "dependency_not_fetched"
 )
 
 // BaselineRef points at a prior baseline Report this Report inherits from or is
@@ -1097,6 +1114,12 @@ type Report struct {
 	DependencyCode *DependencyCode `json:"dependency_code,omitempty"`
 }
 
+// SetAdvisories replaces the findings of a built Report, ordered as Build orders them.
+func (r *Report) SetAdvisories(adv []AdvisoryFinding) {
+	r.Advisories = append([]AdvisoryFinding(nil), adv...)
+	sortFindings(r.Advisories)
+}
+
 // AddPartiality records notes on a built Report, classified, de-duplicated and sorted as
 // Builder.AddPartiality and Build would have them.
 func (r *Report) AddPartiality(notes ...PartialityNote) {
@@ -1117,9 +1140,15 @@ const (
 )
 
 // PartialReasonDependencyCodeUnavailable is the scan-level reason a JS scan carries when a fetch
-// failed and it read no dependency code. It is plugin.PartialReasonToolFailure narrowed the way
+// failed and it read no dependency code. A scan whose registry served some packages and failed
+// others reads what it fetched and does not carry it; each package it could not fetch is withheld
+// on its own. It is plugin.PartialReasonToolFailure narrowed the way
 // the JVM lane narrows it to build_graph_absent: the step that did not run is the dependency
 // code read, whatever stopped it (the registry, a credential, the deadline).
+//
+// The note is stored with the Report, and a cve-watch earnest run carries it into its own Report
+// with the rest of the stored partiality: it re-assesses only some rows, so the rest are still the
+// verdicts the run that fell back reached. Only a baseline, which rebuilds every row, drops it.
 const PartialReasonDependencyCodeUnavailable = plugin.PartialReasonToolFailure + ":dependency_code_unavailable"
 
 // DependencyCode is the provenance of the dependency code a JS scan read.
@@ -1142,6 +1171,18 @@ type DependencyCodeCause struct {
 	// Detail names that package and, where there is one, the policy or fetch-failure code or the
 	// npm configuration file and line. It never carries a URL, a host or a credential.
 	Detail string `json:"detail,omitempty"`
+}
+
+// Describe is the cause as one string, "kind" or "kind: detail": the Detail of the
+// dependency_code_unavailable note a run that fell back carries.
+func (c *DependencyCodeCause) Describe() string {
+	if c == nil {
+		return ""
+	}
+	if c.Detail == "" {
+		return c.Kind
+	}
+	return c.Kind + ": " + c.Detail
 }
 
 // Build graph sources.

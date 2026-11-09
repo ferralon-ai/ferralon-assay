@@ -76,6 +76,10 @@ type RepoResult struct {
 	// TopUndetermined is the most frequent undetermined_reason codes, at most topReasons of them.
 	TopUndetermined []ReasonCount `json:"top_undetermined_reasons"`
 	ScanTruncated   bool          `json:"scan_truncated"`
+	// Qualified is the qualified findings (reachable_candidate, malicious_package_present), one per
+	// alias set: a finding filed under several ids (PYSEC, CVE, GHSA) counts once. Each entry is
+	// the set's ids, sorted, joined by " / ".
+	Qualified []string `json:"qualified,omitempty"`
 	// Unverifiable names the disqualified findings whose report carries no version or symbol basis
 	// to check. They are counted, never failed: an intake disqualification records that no
 	// comparison was made.
@@ -200,6 +204,7 @@ func assessReport(res *RepoResult, r report.Report) {
 		}
 	}
 	res.TopUndetermined = topReasonCounts(reasons, topReasons)
+	res.Qualified = qualifiedSets(r.Advisories)
 	if len(ungroundedNE) > 0 {
 		res.Failures = append(res.Failures, Failure{
 			Kind:     KindUngroundedNE,

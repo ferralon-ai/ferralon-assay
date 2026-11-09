@@ -65,13 +65,17 @@ type valueRefs struct {
 	// hidden records an f-string substitution that spliceFStrings could not close: the rest
 	// of its literal, and any call there, goes unread, so no site there is listed.
 	hidden bool
+	// hiddenImport records a dynamic import named in an f-string substitution's unread text
+	// (hidden), which neither dynamicImports, moduleLookups nor stringLoaderImports reads.
+	hiddenImport bool
 }
 
 func newValueRefs() valueRefs {
 	return valueRefs{names: map[string]bool{}, chains: map[string]bool{}, stores: map[string]bool{}, exposed: map[string]bool{}}
 }
 
-// computedNameCalls reach names by computed access when used unqualified.
+// computedNameCalls reach names by computed access when used unqualified or through
+// builtins.
 var computedNameCalls = map[string]bool{
 	"getattr": true, "globals": true, "vars": true, "locals": true,
 	"eval": true, "exec": true, "__import__": true,
@@ -121,7 +125,7 @@ func (vr *valueRefs) scanRunes(r []rune, params, allValues bool) {
 			switch {
 			case computedNameAttrs[seg]:
 				vr.computed = true
-			case k == 0 && !attr && computedNameCalls[seg]:
+			case !attr && (k == 0 || k == 1 && segs[0] == "builtins") && computedNameCalls[seg]:
 				vr.computed = true
 				if seg == "eval" || seg == "exec" {
 					vr.evaluated = true
@@ -197,6 +201,36 @@ func assignTarget(r []rune, start, end int) bool {
 	}
 	return false
 }
+
+// namesDynamicImport reports whether expr names a dynamic import: import_module,
+// __import__, a loader dynamicImports reads, or the leaf of a string loader
+// stringLoaderImports reads.
+func namesDynamicImport(expr []rune) bool {
+	for i := 0; i < len(expr); {
+		if !isIdentStartRune(expr[i]) || (i > 0 && isIdentPart(expr[i-1])) {
+			i++
+			continue
+		}
+		w, end := readWordRunes(expr, i)
+		if w == "import_module" || w == "__import__" || dynamicImportLiteralLeafs[w] || dynamicImportOpaqueLeafs[w] || stringLoaderLeafs[w] {
+			return true
+		}
+		i = end
+	}
+	return false
+}
+
+// stringLoaderLeafs are the last names of stringLoaders and stringLoaderMethods.
+var stringLoaderLeafs = func() map[string]bool {
+	out := map[string]bool{}
+	for name := range stringLoaders {
+		out[name[strings.LastIndexByte(name, '.')+1:]] = true
+	}
+	for name := range stringLoaderMethods {
+		out[name[strings.LastIndexByte(name, '.')+1:]] = true
+	}
+	return out
+}()
 
 // fStringPrefix reports whether the literal opening at r[start] carries an f prefix or a
 // t prefix (PEP 750 template strings, whose substitutions are evaluated the same way): f,

@@ -3,8 +3,9 @@
 # Runs the free, deterministic Ferralon Assay scan against the calling repository. For each advisory
 # in scope it resolves the subject's dependency versions, maps the advisory onto vulnerable symbols,
 # builds a call graph, and reports whether that code is reachable from a framework entry point. The
-# scan runs entirely in your runner: it never executes code from the scanned repository and never
-# runs a model.
+# scan runs entirely in your runner and never runs a model. For a Java or Kotlin repository it runs the
+# project's own Maven or Gradle to resolve the dependency graph, which executes the build's scripts and
+# plugins; the rest of the scan reads the repository without running it.
 #
 # WHAT IT NEEDS
 #   - The repository already checked out (run actions/checkout before this action).
@@ -29,9 +30,11 @@
 # How deep the analysis goes for YOUR ecosystem is a property of the release you pin, not of this
 # file — the per-finding verdicts and the scan-level limits in the Report you get are the answer.
 #
-# A scan whose work set resolves to zero advisories FAILS the run rather than publishing a
-# findings-free Report a reader cannot tell apart from an assessed all-clear (see `scanWorkSet` in
-# cmd/ferralon-assay/run.go). That is a deliberate refusal to imply coverage that was not performed.
+# A scan given no input that chooses advisories (an advisory corpus with a policy, or the OSV
+# widening) FAILS the run rather than publishing a findings-free Report a reader cannot tell apart
+# from an assessed all-clear (see `scanWorkSet` in cmd/ferralon-assay/run.go). That is a deliberate
+# refusal to imply coverage that was not performed. A scan given one whose corpus holds nothing for
+# the repository's dependencies publishes its Report and says nothing matched.
 #
 # NO COMMITTED BINARY. This action fetches a versioned scanner release at run time and builds
 # nothing. Nothing is committed into your repository; the footprint is a few lines of reviewable
@@ -56,18 +59,19 @@
 # does not — so we do not ship a default. Every release publishes its tarball sha256 as a `.sha256`
 # companion asset, for anyone who chooses to pin.
 #
-# ADVISORY CORPUS (optional, OFF by default). With `advisory-corpus-repo` set, the run fetches a
-# PUBLIC advisory corpus — unauthenticated, shallow, sparse — before the scan and points the scanner
-# at it; `advisory-corpus` instead takes a directory the workflow checked out itself. Both are empty
-# by default, in which case the scan resolves advisory facts from the scanner's built-in table.
-# Setting either DECLARES the run requires a corpus, and that declaration is computed from these
-# inputs alone rather than from whether the fetch step succeeded — so a broken fetch fails the run
-# instead of silently degrading to built-in intel. Both inputs require a scanner release carrying
-# the `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below. On its own a corpus
-# supplies advisory FACTS; it does not change which advisories the scan evaluates.
+# ADVISORY CORPUS (OFF by default). The scanner carries no advisories of its own, so a scan has
+# nothing to assess until a corpus supplies them; a run given no corpus policy, no OSV widening and
+# no house canaries fails with an error naming these inputs. With `advisory-corpus-repo` set, the run fetches a PUBLIC
+# advisory corpus — unauthenticated, shallow, sparse — before the scan and points the scanner at it;
+# `advisory-corpus` instead takes a directory the workflow checked out itself. Both are empty by
+# default. Setting either DECLARES the run requires a corpus, and that declaration is computed from
+# these inputs alone rather than from whether the fetch step succeeded — so a broken fetch fails the
+# run instead of silently scanning without it. Both inputs require a scanner release carrying the
+# `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below. On its own a corpus supplies
+# advisory FACTS; `advisory-corpus-policy` is what chooses the advisories the scan evaluates.
 #
-# With `advisory-corpus-policy` also set, the policy defines the scan's work set: the built-in floor
-# plus every advisory in the policy whose affected package is one of the repository's own
+# With `advisory-corpus-policy` also set, the policy defines the scan's work set: any opted-in house
+# canaries plus every advisory in the policy whose affected package is one of the repository's own
 # dependencies. The repo fetch downloads that policy's prebuilt bundle
 # (`<policy>.jsonl.gz`) from a `corpus-*` release instead of git-fetching the record tree, and
 # verifies it before the scan. First the release's bundles.json is verified with cosign (v3.1.3,
@@ -263,7 +267,13 @@ inputs:
       leaves the choice to the scanner release's own default. Fetched packages land under the
       runner's temp directory, which is emptied after the job; persist-dependency-cache decides
       which of them persist between runs. If the fetch fails, the scan reports what it would with 'off' and names
-      the cause on the Report. The scanned branch's .npmrc chooses which registry host receives
+      the cause on the Report; the job summary names the registry and the fix when a token is
+      missing or refused, or the cursor is held or stalled. A refused token fails the run. A
+      cve-watch run that read less than the lockfile pins reports each disqualified or
+      not_exploitable verdict it reached on an advisory affecting a package it could not fetch, or
+      one it cannot tie to the packages it fetched, as undetermined (dependency_not_fetched), and the
+      next cve-watch run assesses those advisories again, along with any it left undetermined; a run
+      with 'off' stops that. The scanned branch's .npmrc chooses which registry host receives
       NODE_AUTH_TOKEN/NPM_TOKEN, as with npm ci; don't export them on pull-request jobs, or set
       'off'. VERSION REQUIREMENT: a scanner release that reads ASSAY_DEPENDENCY_CODE; one that predates it ignores the variable.
     required: false
@@ -307,7 +317,7 @@ inputs:
     description: "Set to 'false' to disable the scanner's own SARIF code-scanning surface. Default enabled."
     required: false
     default: "true"
-  # --- advisory corpus (optional; default OFF = the built-in advisory table) --------------------
+  # --- advisory corpus (default OFF; a scan given no corpus and no house canaries fails) ---------
   # Two ways to supply one, and a REQUIREMENT that is declared from configuration alone. Both carry
   # the same version requirement — a scanner release that carries the -advisory-corpus flag. Read
   # the note on advisory-corpus-repo before wiring either.
@@ -320,7 +330,7 @@ inputs:
       supplies advisory facts; it does not change which advisories the scan evaluates. Findings are
       ranked by EPSS/KEV from the signals.json at the directory's root when it has one (and carry
       no priority when it has none); nothing is fetched or verified for it. Empty (default) = no
-      corpus, and the scan resolves advisory facts from the built-in table.
+      corpus.
     required: false
     default: ""
   advisory-corpus-repo:
@@ -331,7 +341,7 @@ inputs:
       only). Empty (default) = no fetch. Setting this OR advisory-corpus DECLARES that this run
       requires a corpus, which is forwarded to the scanner out of band
       (ASSAY_ADVISORY_CORPUS_REQUIRED) so that a corpus which is missing or carries zero records
-      FAILS the run rather than quietly falling back to the built-in table. VERSION REQUIREMENT: a
+      FAILS the run rather than quietly scanning without one. VERSION REQUIREMENT: a
       scanner release carrying the -advisory-corpus flag — confirm the release named by the
       scanner-version default carries it before you opt in. A release that lacks it fails the scan
       loudly ("flag provided but not defined: -advisory-corpus") rather than ignoring either corpus
@@ -356,8 +366,8 @@ inputs:
     description: >-
       Policy of advisory-corpus-repo that defines what the scan evaluates (e.g. published-7d,
       full), in place of the whole corpus. Every advisory in the policy whose affected package is
-      one of this repository's own dependencies joins the scan's work set, alongside the scanner's
-      built-in floor; an advisory that names no affected package cannot be matched; it is disclosed
+      one of this repository's own dependencies joins the scan's work set, alongside any opted-in
+      house canaries; an advisory that names no affected package cannot be matched; it is disclosed
       as an analysis limit (count and ids) without qualifying the report headline. When the corpus release named by advisory-corpus-ref publishes a bundle for the
       policy, the run downloads that one file instead of git-fetching the record tree, and verifies
       it first (sha256 against the release's bundles.json; members against the policy manifest at
@@ -593,7 +603,7 @@ runs:
     # here and in the run step below. It is deliberately NOT passed between the steps as a step
     # output: a step output only exists when the step ran and succeeded, so consuming one would make
     # "the corpus was requested" indistinguishable from "the fetch worked" — and a failed fetch would
-    # then present as an unconfigured run and silently downgrade to built-in intel. The duplication
+    # then present as an unconfigured run and silently scan without the corpus. The duplication
     # is the point; keep the two literals in sync.
     #
     # The bundle route writes to a second fixed path, $RUNNER_TEMP/ferralon-assay-corpus-bundle/
@@ -661,7 +671,7 @@ runs:
         # Sparse BEFORE any checkout, so excluded paths are never materialized. Non-cone
         # (gitignore-style) patterns: records are filed as <YYYY>/<MM>/<ID>.json plus
         # unknown/<ID>.json and are resolved through the root manifest. LICENSE and NOTICE carry the
-        # corpus's CC-BY attribution terms and travel with the data they cover.
+        # corpus's license and attribution terms and travel with the data they cover.
         sparse=(
           '/manifest.json'
           '/LICENSE'
@@ -832,13 +842,12 @@ runs:
         # reads no step output, and consults no step status, so it says "this workflow was
         # configured to scan against a corpus", never "a fetch worked". That distinction is the
         # whole mechanism: if the requirement were derived from the fetch's success, a failed fetch
-        # would be byte-identical to an unconfigured run and the scan would silently degrade to
-        # built-in intel with nothing to show for it. Under a declared requirement the scanner fails
+        # would be byte-identical to an unconfigured run and the scan would silently run without
+        # the corpus with nothing to show for it. Under a declared requirement the scanner fails
         # the run when no corpus resolves, and equally when one resolves with zero records.
         # '1'/'0' rather than '1'/'': the scanner parses this as a boolean and REFUSES to guess on an
         # unparseable value, so the falsey branch has to be a real boolean literal, not an empty
-        # string. '0' is exactly equivalent to leaving it unset, which keeps the built-in-intel path
-        # — a supported, unchanged configuration — working for every consumer who sets no corpus.
+        # string. '0' is exactly equivalent to leaving it unset.
         ASSAY_ADVISORY_CORPUS_REQUIRED: ${{ (inputs.advisory-corpus != '' || inputs.advisory-corpus-repo != '') && '1' || '0' }}
         # THE POLICY DECLARATION. Declaring the policy is what makes the scanner build its work set
         # from the corpus; without it the corpus is a fact source only. It is set only for the
@@ -956,35 +965,80 @@ runs:
           args+=(-advisory-signals "$IN_ADVISORY_SIGNALS")
         fi
 
-        # The marker dates the launch, so the outputs below name only files this run wrote.
-        scan_marker="$(mktemp "$RUNNER_TEMP/scan-start.XXXXXX")"
+        # The outputs below name only files this run wrote: one this run wrote has a different mtime
+        # from the one it had before the launch, kept here on a reference file. Compared for a
+        # change, not for order, as a clock stepped back during the scan dates a new file earlier.
+        scan_refs="$(mktemp -d "$RUNNER_TEMP/scan-refs.XXXXXX")"
+        for f in report.json report.sarif.json; do
+          if [ -f "$IN_OUT/$f" ]; then
+            touch -r "$IN_OUT/$f" "$scan_refs/$f"
+          fi
+        done
 
         # On a job timeout or cancellation the runner signals this shell, not the scanner, and
         # bash runs a trap only once its foreground child exits. So the scanner runs in the
         # background and the trap forwards TERM (a background job ignores INT); the scanner then
         # stops analysis and publishes what it has. Only the first signal is forwarded: the runner
-        # follows SIGINT with SIGTERM, and a second signal makes the scanner exit unpublished. A
-        # trap interrupts wait, so wait again until the scanner itself has exited.
-        "$BIN" "${args[@]}" &
-        scan_pid=$!
-        signalled=0
+        # follows SIGINT with SIGTERM, and a second signal makes the scanner exit unpublished.
+        #
+        # The scanner's exit status is taken by a waiter subshell that has no trap and is never
+        # signalled, not by this shell: a trap that interrupts bash's wait can discard the status of
+        # a child that exits at that moment, and wait then returns -1 (exit 255). Nor does this
+        # shell decide from wait's return whether a trap fired, which bash does not order reliably:
+        # it waits again for as long as the waiter is alive. The trap is set before anything here
+        # starts, and a stop that lands before the scanner's pid is known is forwarded once it is.
+        #
+        # Bash 3.2, the bash on macOS runners, constrains the rest. A trap set off by a second
+        # signal as wait is entered can crash it, so the trap's first act is to ignore both
+        # signals; the waiter restores TERM so the scanner can still be stopped. Its SIGINT trap can
+        # be lost while a foreground command runs, so the wait for the pid spins on builtins rather
+        # than polling with sleep. And a signal that lands as wait blocks may be held until wait
+        # ends, so this shell blocks in wait while the scanner is still starting, not once it runs.
+        scan_pid=
+        stop=0
         forwarded=0
-        trap 'signalled=1; if [ "$forwarded" = 0 ]; then forwarded=1; kill -TERM "$scan_pid" 2>/dev/null || true; fi' INT TERM
-        while :; do
-          signalled=0
-          rc=0
-          wait "$scan_pid" || rc=$?
-          [ "$signalled" = 1 ] || break
+        forward() {
+          if [ "$stop" = 1 ] && [ "$forwarded" = 0 ] && [ -n "$scan_pid" ]; then
+            forwarded=1
+            kill -TERM "$scan_pid" 2>/dev/null || true
+          fi
+        }
+        trap 'trap "" INT TERM; stop=1; forward' INT TERM
+        scan_pid_file="$(mktemp "$RUNNER_TEMP/scan-pid.XXXXXX")"
+        scan_status_file="$(mktemp "$RUNNER_TEMP/scan-status.XXXXXX")"
+        (
+          trap - TERM
+          "$BIN" "${args[@]}" &
+          echo "$!" > "$scan_pid_file"
+          st=0
+          wait "$!" || st=$?
+          echo "$st" > "$scan_status_file"
+        ) &
+        waiter_pid=$!
+        until [ -s "$scan_pid_file" ] || ! kill -0 "$waiter_pid" 2>/dev/null; do :; done
+        read -r scan_pid < "$scan_pid_file" || true
+        forward
+        while kill -0 "$waiter_pid" 2>/dev/null; do
+          wait "$waiter_pid" || true
         done
+        rc=1
+        if [ -s "$scan_status_file" ]; then
+          read -r rc < "$scan_status_file"
+        fi
+        rm -f "$scan_pid_file" "$scan_status_file"
 
         # Set on every exit, stopped or failed, but only for files this run wrote, so an always()
         # step never gets a path to a missing file or to one an earlier run left in `out`.
         OUT_ABS="$(cd "$IN_OUT" && pwd)"
-        if [ -f "$OUT_ABS/report.json" ] && [ ! "$OUT_ABS/report.json" -ot "$scan_marker" ]; then
+        wrote() {
+          [ -f "$OUT_ABS/$1" ] && { [ ! -e "$scan_refs/$1" ] || [ "$OUT_ABS/$1" -nt "$scan_refs/$1" ] || [ "$OUT_ABS/$1" -ot "$scan_refs/$1" ]; }
+        }
+        if wrote report.json; then
           echo "out-dir=$OUT_ABS" >> "$GITHUB_OUTPUT"
         fi
-        if [ -f "$OUT_ABS/report.sarif.json" ] && [ ! "$OUT_ABS/report.sarif.json" -ot "$scan_marker" ]; then
+        if wrote report.sarif.json; then
           echo "sarif-file=$OUT_ABS/report.sarif.json" >> "$GITHUB_OUTPUT"
         fi
-        rm -f "$scan_marker"
+        rm -f "$scan_refs/report.json" "$scan_refs/report.sarif.json"
+        rmdir "$scan_refs"
         exit "$rc"

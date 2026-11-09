@@ -55,14 +55,24 @@ type program struct {
 	// per attribute, the attributes whose modules read it.
 	modVals map[modKey][]string
 	modDeps map[modKey][]modKey
-	// launchers are the entry points the build's manifests declare (launchers.go);
-	// launchersUnread records a manifest whose entry points could not be read in full, so
-	// ingress discovery may miss a script; launchersUnsupported one that declares entry
-	// points in a form the readers do not model.
+	// launchers are the entry points the build's manifests declare (launchers.go) and the
+	// ones its launch files declare (entrypoints.go); launchersUnread records a manifest
+	// whose entry points could not be read in full, so ingress discovery may miss a script;
+	// launchersUnsupported one that declares entry points in a form the readers do not
+	// model.
 	launchers            []launchTarget
 	launchersUnread      bool
 	launchersUnsupported bool
 	attrMemo             map[attrKey][]string
+	// entryModules holds the modules a declared entrypoint runs (entrypoints.go), which
+	// are production code whatever their name.
+	entryModules map[string]bool
+}
+
+// testCode reports whether a module is test code: named as a test (isTestModule) and run
+// by no declared entrypoint.
+func (prog *program) testCode(module string) bool {
+	return isTestModule(module) && !prog.entryModules[module]
 }
 
 // resolveCallee picks the SCIP id of the single declaration among decls that a call with
@@ -104,6 +114,14 @@ func (p *program) declsNamed(leaves []string) []funcDecl {
 		}
 	}
 	return out
+}
+
+// siteCallee resolves a call site to the one declaration its edge ends at, if any, and
+// returns the leaf names the escape scan uses for it (siteLeaves).
+func (p *program) siteCallee(f *fileParse, cs callSite) (callee string, ok bool, escape []string) {
+	edge, escape := p.siteLeaves(f, cs)
+	callee, ok = resolveCallee(p.siteDecls(f, cs, edge), cs.calleeArity, cs.calleeStar)
+	return callee, ok, escape
 }
 
 // siteLeaves is the leaf names a call site may stand for. A name stands for the
@@ -303,14 +321,32 @@ func (f *fileParse) topDefs(scope, name string) []funcDecl {
 // first-party imports and star imports bind f to, followed in turn. A path through a
 // module's attribute ("pkg/x/f", pkg binding x) follows what the module binds x to the same
 // way. Each path is visited once, so an import cycle ends, and a re-export through the cycle
-// is still followed to its def. decided is false when a module on the way binds f, the
-// attribute by anything but defs at module level,
+// is still followed to its def. A path that meets a module's binding the walk is following,
+// with a longer path left after the attribute, is not followed: the path only lengthens
+// through an import whose module part names no parsed module (from pkg.hooks.after import
+// after, with no pkg/hooks/after), read as an attribute path that leads back to the binding
+// itself. decided is false then, and when a module on the way binds f, the attribute by
+// anything but defs at module level,
 // first-party imports and star imports (bindsOtherwise), or a package on the way rebinds its
 // submodule's name (rebound): what it holds there is not a declaration the walk can name.
 // open is true when the path leaves the modules the lane reads: a module no file is, or a
 // class's member; the name then decides the candidates, beside any the walk found.
 func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 	visited := map[string]bool{}
+	// follows holds, for each (module, attribute) binding being followed, the length of the
+	// path left after the attribute at its outermost follow.
+	follows := map[string]int{}
+	following := func(mod, attr, rest string) (ok bool, done func()) {
+		key, left := mod+"|"+attr, strings.Count(rest, "/")
+		if rest != "" {
+			left++
+		}
+		if n, on := follows[key]; on {
+			return left <= n, func() {}
+		}
+		follows[key] = left
+		return true, func() { delete(follows, key) }
+	}
 	var out []funcDecl
 	decided = true
 	var walk func(string)
@@ -338,6 +374,12 @@ func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 				return
 			}
 			attr, rest := segs[k], strings.Join(segs[k+1:], "/")
+			ok, done := following(strings.Join(segs[:k], "/"), attr, rest)
+			defer done()
+			if !ok {
+				decided = false
+				return
+			}
 			for _, i := range p.byModule[strings.Join(segs[:k], "/")] {
 				g := &p.files[i]
 				switch {
@@ -357,6 +399,12 @@ func (p *program) declsAt(path string) (decls []funcDecl, decided, open bool) {
 			return
 		}
 		if p.rebound(strings.Split(mod, "/")) {
+			decided = false
+			return
+		}
+		ok, done := following(mod, leaf, "")
+		defer done()
+		if !ok {
 			decided = false
 			return
 		}
@@ -956,6 +1004,11 @@ func sym(s string) plugin.Symbol { return plugin.Symbol{SCIP: s, DisplayName: s}
 // the (name, arity) → SCIP resolution index. A missing/empty build dir is a hard error
 // (inv.4), matching IndexSymbols; read failures and skipped constructs degrade partiality.
 func loadProgram(buildDir string) (*program, error) {
+	return loadProgramCtx(context.Background(), buildDir)
+}
+
+// loadProgramCtx is loadProgram reading the tree's manifests through the run cache in ctx.
+func loadProgramCtx(ctx context.Context, buildDir string) (*program, error) {
 	info, err := os.Stat(buildDir)
 	if err != nil {
 		return nil, fmt.Errorf("pythonanalysis: stat build dir %q: %w", buildDir, err)
@@ -975,6 +1028,10 @@ func loadProgram(buildDir string) (*program, error) {
 	var rawBindings [][]scopedBinding
 	var relBindings [][]scopedBinding
 	var modRefs [][]string
+	eps, epsUnread := declaredEntrypoints(buildDir)
+	if epsUnread {
+		prog.readFailed = true
+	}
 	for _, p := range paths {
 		src, readErr := readPythonSource(p)
 		if readErr != nil {
@@ -993,12 +1050,13 @@ func loadProgram(buildDir string) (*program, error) {
 			scan.refs.scanRunes([]rune(text), false, true)
 			// The literal's text after an unclosed substitution goes unread, whatever it holds.
 			scan.refs.hidden = true
+			scan.refs.hiddenImport = scan.refs.hiddenImport || namesDynamicImport([]rune(text))
 		}
 		roots, opaque := dynamicImports(clean, lits)
 		lookupRoots, lookups, lookupPackages, moduleVals, lookupOpaque, lookupComputed, own := moduleLookups(clean, lits, scan.bindings)
 		loaderRoots, loaderOpaque := stringLoaderImports(clean, lits, scan.bindings, moduleVals)
 		roots = sortedDedup(append(append(roots, lookupRoots...), loaderRoots...))
-		opaque = opaque || lookupOpaque || loaderOpaque
+		opaque = opaque || lookupOpaque || loaderOpaque || scan.refs.hiddenImport
 
 		var fds []funcDecl
 		topNames := map[string]bool{}
@@ -1055,7 +1113,7 @@ func loadProgram(buildDir string) (*program, error) {
 			scan.wrapped[i].module = module
 		}
 		bindings := indexBindings(scan.bindings)
-		if filepath.Base(p) == "setup.py" {
+		if filepath.Base(p) == "setup.py" && !inTestDir(module) {
 			ts, supported := setupPyLaunchers(clean, lits)
 			prog.launchers = append(prog.launchers, ts...)
 			prog.launchersUnsupported = prog.launchersUnsupported || !supported
@@ -1083,7 +1141,7 @@ func loadProgram(buildDir string) (*program, error) {
 			defs:          scan.defs,
 			computed:      scan.refs.computed || opaque || lookupComputed || slices.Contains(lookups, strings.ReplaceAll(module, "/", ".")),
 			own:           own,
-			settings:      settingsLaunchers(clean, lits),
+			settings:      append(settingsLaunchers(clean, lits), settingTargets(clean, lits)...),
 			urlViews:      djangoURLViews(clean, lits, bindings),
 			classes:       classes,
 			importOpaque:  opaque,
@@ -1100,7 +1158,7 @@ func loadProgram(buildDir string) (*program, error) {
 	for _, f := range prog.files {
 		modules = append(modules, f.module)
 	}
-	declared, declaredComplete, read := declaredDistributions(buildDir)
+	declared, declaredComplete, read := declaredDistributions(ctx, buildDir)
 	if !read {
 		prog.readFailed = true
 	}
@@ -1119,6 +1177,7 @@ func loadProgram(buildDir string) (*program, error) {
 	for i := range prog.files {
 		prog.bindFirstParty(i, rawBindings[i], relBindings[i], modRefs[i])
 	}
+	prog.resolveEntrypoints(eps)
 	return prog, nil
 }
 
@@ -1319,12 +1378,39 @@ func (f fileParse) callerSCIP(cs callSite) string {
 // Python plugin therefore never claims a Complete call graph. Read failures add
 // tool_failure; skipped constructs add unsupported_phase1; a dynamic import whose module
 // the scanner cannot name adds dynamic_import.
-func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
-	prog, err := loadProgram(req.BuildDir)
+//
+// The result depends on the tree at req.BuildDir alone, so with a run cache (WithRunCacheDir)
+// it is computed once per scan.
+func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
+	tg, err := treeGraphOf(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.CallGraphResult{}, err
 	}
-	return callGraphOf(prog), nil
+	return tg.Graph, nil
+}
+
+// treeGraph is what one load of a tree yields that more than one op reads: its call graph and
+// the top-level import names its own sources provide. It is the run cache's "callgraph" entry,
+// so the graph ops and symbol resolution share one load per tree per scan.
+type treeGraph struct {
+	Graph      plugin.CallGraphResult `json:"graph"`
+	FirstParty []string               `json:"first_party"`
+}
+
+// treeGraphOf loads the tree at buildDir and builds its call graph, through the run cache.
+// A failed load is an error and is never stored; a graph that is partial carries its
+// partiality inside Graph, into every replay.
+func treeGraphOf(ctx context.Context, buildDir string) (treeGraph, error) {
+	return cachedResult(ctx, "callgraph", []string{buildDir}, func() (treeGraph, error) {
+		prog, err := loadProgramCtx(ctx, buildDir)
+		if err != nil {
+			return treeGraph{}, err
+		}
+		return treeGraph{
+			Graph:      callGraphOf(prog),
+			FirstParty: slices.Sorted(maps.Keys(prog.dists.firstParty)),
+		}, nil
+	})
 }
 
 // callGraphOf builds the call graph of an already-loaded program.
@@ -1378,13 +1464,12 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			for _, dist := range provides {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
-			edgeLeaves, escapeLeaves := prog.siteLeaves(f, cs)
-			callee, ok := resolveCallee(prog.siteDecls(f, cs, edgeLeaves), cs.calleeArity, cs.calleeStar)
-			if !isTestModule(f.module) && len(escapeLeaves) > 0 {
+			callee, ok, escapeLeaves := prog.siteCallee(f, cs)
+			if !prog.testCode(f.module) && len(escapeLeaves) > 0 {
 				if k := strings.Join(escapeLeaves, ",") + "|" + callee; !landed[k] {
 					landed[k] = true
 					for _, fd := range prog.declsNamed(escapeLeaves) {
-						if s := fd.scip(); s != callee && !isTestModule(fd.module) {
+						if s := fd.scip(); s != callee && !prog.testCode(fd.module) {
 							escapedSet[s] = true
 						}
 					}
@@ -1411,9 +1496,17 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 				calls[fi] = append(calls[fi], declFile[callee])
 			}
 		}
-		// Framework ingress handler functions are call-graph roots (static-reachability
-		// entry points), so a reverse BFS can terminate at them even when no caller in the
-		// source invokes them.
+	}
+
+	// Framework ingress handler functions are call-graph roots (static-reachability entry
+	// points), so a reverse BFS can terminate at them even when no caller in the source
+	// invokes them. A handler in test code production never runs (productionReached) is
+	// registered by no production app, so it is no entry point.
+	reached := prog.productionReached(calls)
+	for fi, f := range prog.files {
+		if !reached[fi] {
+			continue
+		}
 		for _, in := range f.ingresses {
 			rootsSet[funcSCIP(f.module, in.enclosing, in.name, in.arity)] = true
 		}
@@ -1442,7 +1535,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 	})
 
 	return plugin.CallGraphResult{
-		Partiality: callGraphPartiality(prog, prog.productionReached(calls)),
+		Partiality: callGraphPartiality(prog, reached),
 		Algorithm:  "source-lexical",
 		Edges:      edges,
 		Roots:      sortedSymbols(rootsSet),
@@ -1452,12 +1545,13 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 }
 
 // escapeFrames adds to out the frames code the lane does not see may call (escape.go):
-// every runtime module's top-level frame and every escaping function outside test code.
+// every runtime module's top-level frame, every escaping function outside test code, and
+// every callable a declared entrypoint names.
 // The call sites' own contribution (a declaration a site names without an edge to it) is
 // added by callGraphOf.
 func (prog *program) escapeFrames(out map[string]bool) {
 	escape := func(fd funcDecl) {
-		if !isTestModule(fd.module) {
+		if !prog.testCode(fd.module) {
 			out[fd.scip()] = true
 		}
 	}
@@ -1499,7 +1593,7 @@ func (prog *program) escapeFrames(out map[string]bool) {
 	}
 	for fi := range prog.files {
 		f := &prog.files[fi]
-		if isTestModule(f.module) {
+		if prog.testCode(f.module) {
 			continue
 		}
 		out[moduleInitSCIP(f.module)] = true
@@ -1534,7 +1628,7 @@ func (prog *program) escapeFrames(out map[string]bool) {
 		for _, fd := range decls {
 			escape(fd)
 		}
-		if module != "" && (whole || missing) {
+		if module != "" && (whole || missing) && !t.loadOnly {
 			escapeModule(module)
 		}
 	}
@@ -1663,14 +1757,17 @@ func (prog *program) sitesUnlisted(reached []bool) bool {
 }
 
 // productionReached reports, per file, whether production code may run it: every file
-// outside test code (isTestModule), and every file a reached file imports (importPaths,
-// matched like any import path through byModule) or has an edge into (calls, per caller
-// file). A star import or an __import__ fromlist may load any submodule of its package
-// (packagePaths), so it reaches every file under that package, and a file with an import
-// statement importedModules could not read reaches every file. Test code runs in
-// production only that way: no escape names a test function, so a test module only test
-// modules import or call stays unreached, and its dynamic imports and evaluated code
-// withhold nothing.
+// outside test code (testCode), every file a manifest launcher names (production by
+// construction: the file declaring the function it names, or the module's own file when it
+// names the module whole or a function the lane does not find), the same for each launch
+// target a reached file names (its settings and URL views; an unreached test urlconf seeds
+// nothing), and every file a reached file imports (importPaths, matched like any import
+// path through byModule) or has an edge into (calls, per caller file). A star import or an
+// __import__ fromlist may load any submodule of its package (packagePaths), so it reaches
+// every file under that package, and a file with an import statement importedModules could
+// not read reaches every file. Test code runs in production only that way: no escape names
+// a test function, so a test module only test modules import or call stays unreached, and
+// its dynamic imports and evaluated code withhold nothing.
 func (prog *program) productionReached(calls [][]int) []bool {
 	reached := make([]bool, len(prog.files))
 	var work []int
@@ -1681,14 +1778,41 @@ func (prog *program) productionReached(calls [][]int) []bool {
 		}
 	}
 	for i, f := range prog.files {
-		if !isTestModule(f.module) {
+		if !prog.testCode(f.module) {
 			reach(i)
 		}
+	}
+	declFile := map[string]int{}
+	for fi, f := range prog.files {
+		for _, fd := range f.decls {
+			declFile[fd.scip()] = fi
+		}
+	}
+	launch := func(t launchTarget) {
+		decls, module, whole, missing := prog.launchDecls(t)
+		for _, fd := range decls {
+			if fi, ok := declFile[fd.scip()]; ok {
+				reach(fi)
+			}
+		}
+		if module != "" && (whole || missing) {
+			for _, j := range prog.byModule[module] {
+				if !t.exact || prog.files[j].module == module {
+					reach(j)
+				}
+			}
+		}
+	}
+	for _, t := range prog.launchers {
+		launch(t)
 	}
 	for len(work) > 0 {
 		i := work[len(work)-1]
 		work = work[:len(work)-1]
 		f := prog.files[i]
+		for _, t := range prog.fileLaunchTargets(&f) {
+			launch(t)
+		}
 		for _, path := range f.importPaths {
 			for _, j := range prog.byModule[path] {
 				reach(j)
@@ -1710,15 +1834,38 @@ func (prog *program) productionReached(calls [][]int) []bool {
 	return reached
 }
 
+// resolvedCallFiles lists, per caller file, the files declaring the function each call site
+// with an edge resolves to (siteCallee): the calls argument productionReached takes, for a
+// caller that does not build the graph. callGraphOf collects the same lists as it adds the
+// edges.
+func (prog *program) resolvedCallFiles() [][]int {
+	declFile := map[string]int{}
+	for fi, f := range prog.files {
+		for _, fd := range f.decls {
+			declFile[fd.scip()] = fi
+		}
+	}
+	calls := make([][]int, len(prog.files))
+	for fi := range prog.files {
+		f := &prog.files[fi]
+		for _, cs := range f.calls {
+			if callee, ok, _ := prog.siteCallee(f, cs); ok {
+				calls[fi] = append(calls[fi], declFile[callee])
+			}
+		}
+	}
+	return calls
+}
+
 // isTestModule reports whether a module path names test code: a test_*.py, *_test.py or
 // conftest.py file, or any module under a tests/ or test/ directory.
 func isTestModule(module string) bool {
-	segs := strings.Split(module, "/")
-	for _, s := range segs {
-		if s == "tests" || s == "test" {
-			return true
-		}
-	}
-	leaf := segs[len(segs)-1]
-	return strings.HasPrefix(leaf, "test_") || strings.HasSuffix(leaf, "_test") || leaf == "conftest"
+	leaf := module[strings.LastIndexByte(module, '/')+1:]
+	return inTestDir(module) || strings.HasPrefix(leaf, "test_") || strings.HasSuffix(leaf, "_test") || leaf == "conftest"
+}
+
+// inTestDir reports whether a slash path names, or lies under, a tests/ or test/
+// directory.
+func inTestDir(p string) bool {
+	return slices.ContainsFunc(strings.Split(p, "/"), func(s string) bool { return s == "tests" || s == "test" })
 }

@@ -95,13 +95,13 @@ func TestClassifyLaneCount(t *testing.T) {
 	fixtures := loadCorpus(t)
 	bound := bindFixtures(fixtures)
 	run := spreadRunner(fixtures)
-	outcomes := ClassifyLane(context.Background(), "go", pipeline.AdvisoryTable, bound, run.run)
+	outcomes := ClassifyLane(context.Background(), "go", advisoryFixtures, bound, run.run)
 
 	inScopeLanes := len(measuredLanes) // this cycle: {go}
-	want := len(pipeline.AdvisoryTable) * inScopeLanes
+	want := len(advisoryFixtures) * inScopeLanes
 	if len(outcomes) != want {
 		t.Fatalf("outcome count = %d, want records(%d) × in-scope lanes(%d) = %d",
-			len(outcomes), len(pipeline.AdvisoryTable), inScopeLanes, want)
+			len(outcomes), len(advisoryFixtures), inScopeLanes, want)
 	}
 	// Every outcome is well-formed, and every record id appears exactly once (none absent).
 	seen := map[string]int{}
@@ -111,7 +111,7 @@ func TestClassifyLaneCount(t *testing.T) {
 		}
 		seen[o.RecordID]++
 	}
-	for id := range pipeline.AdvisoryTable {
+	for id := range advisoryFixtures {
 		if seen[id] != 1 {
 			t.Errorf("record %s appears %d times, want exactly 1", id, seen[id])
 		}
@@ -132,7 +132,7 @@ func TestReasonDistributionNoCatchAll(t *testing.T) {
 	fixtures := loadCorpus(t)
 	bound := bindFixtures(fixtures)
 	run := spreadRunner(fixtures)
-	outcomes := ClassifyLane(context.Background(), "go", pipeline.AdvisoryTable, bound, run.run)
+	outcomes := ClassifyLane(context.Background(), "go", advisoryFixtures, bound, run.run)
 
 	step5 := map[string]bool{}
 	for _, id := range boundGoBearingIDs(fixtures) {

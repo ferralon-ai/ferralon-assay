@@ -39,7 +39,7 @@ import (
 // recognized manifest, or one whose manifest cannot be parsed, degrades the graph-level
 // Partiality (no_manifest / tool_failure) rather than fabricating an empty-but-complete graph
 // (which reads downstream as "this build has no dependencies", §3.1).
-func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
+func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
 		return plugin.DependencyInventory{}, fmt.Errorf("pythonanalysis: stat build dir %q: %w", req.BuildDir, err)
@@ -49,7 +49,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 	}
 
 	manifests, read := manifestFiles(req.BuildDir)
-	uninstalled := inventoryUninstalled(req.BuildDir)
+	uninstalled := inventoryUninstalled(ctx, req.BuildDir)
 
 	var (
 		nodes       []plugin.DependencyNode
@@ -259,8 +259,8 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 // them leaves every package installed. What tooling names, the distributions an interpreter
 // seeds and those an allowed pip self-upgrade or ensurepip installs, is never left out, nor is
 // what a seeded distribution requires (seededRequirements).
-func inventoryUninstalled(buildDir string) func(path string) map[string]bool {
-	_, _, scriptWithheld, installs, poetry, tooling, unrecognised, _, _ := versionSurfaces(buildDir)
+func inventoryUninstalled(ctx context.Context, buildDir string) func(path string) map[string]bool {
+	_, _, scriptWithheld, installs, poetry, tooling, unrecognised, _, _ := versionSurfacesCached(ctx, buildDir)
 	if scriptWithheld || unrecognised != "" || len(installs) > 0 {
 		return func(string) map[string]bool { return nil }
 	}

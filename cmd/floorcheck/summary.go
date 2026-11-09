@@ -12,14 +12,16 @@ const SummarySchema = "ferralon.floor-summary.v1"
 
 // Summary is floor-summary.json: one floor run over every target.
 type Summary struct {
-	Schema      string           `json:"schema"`
-	Pass        bool             `json:"pass"`
-	AssayCommit string           `json:"assay_commit,omitempty"`
-	Policy      string           `json:"policy"`
-	RunURL      string           `json:"run_url,omitempty"`
-	Languages   []LanguageResult `json:"languages"`
-	Repos       []RepoResult     `json:"repos"`
-	Excluded    []Excluded       `json:"excluded,omitempty"`
+	Schema      string `json:"schema"`
+	Pass        bool   `json:"pass"`
+	AssayCommit string `json:"assay_commit,omitempty"`
+	Policy      string `json:"policy"`
+	// PinnedPolicy is the pinned lane's policy; empty when there is no pinned lane.
+	PinnedPolicy string           `json:"pinned_policy,omitempty"`
+	RunURL       string           `json:"run_url,omitempty"`
+	Languages    []LanguageResult `json:"languages"`
+	Repos        []RepoResult     `json:"repos"`
+	Excluded     []Excluded       `json:"excluded,omitempty"`
 	// Caveats is the per-language caveat roll-up (caveats.go), one entry per language with a target.
 	Caveats []LanguageCaveats `json:"caveats"`
 	// CaveatMappingError is why floor/caveats.json could not be read, when it could not.
@@ -33,6 +35,10 @@ type LanguageResult struct {
 	Targets  int    `json:"targets"`
 	Passed   int    `json:"passed"`
 	Failed   int    `json:"failed"`
+	// Qualified counts the demo targets' qualified findings, one per alias set per repository.
+	Qualified int `json:"qualified"`
+	// PinnedQualified counts the same on the pinned lane's real repositories.
+	PinnedQualified int `json:"pinned_qualified"`
 }
 
 // summarize evaluates every target against the scan results and builds the run's summary.
@@ -43,16 +49,27 @@ func summarize(t Targets, results map[string]*scanResult, assayCommit, runURL st
 	for _, l := range languages {
 		byLang[l] = &LanguageResult{Language: l}
 	}
-	for _, tg := range t.Targets {
-		res := evaluate(tg, t.Policy, results[tg.Repo])
-		s.Repos = append(s.Repos, res)
-		lr := byLang[tg.Language]
-		lr.Targets++
-		if res.Pass {
-			lr.Passed++
-		} else {
-			lr.Failed++
-			s.Pass = false
+	if t.Pinned != nil {
+		s.PinnedPolicy = t.Pinned.Policy
+	}
+	for i, l := range t.lanes() {
+		pinned := i > 0
+		for _, tg := range l.targets {
+			res := evaluate(tg, l.policy, results[tg.Repo])
+			s.Repos = append(s.Repos, res)
+			lr := byLang[tg.Language]
+			lr.Targets++
+			if pinned {
+				lr.PinnedQualified += len(res.Qualified)
+			} else {
+				lr.Qualified += len(res.Qualified)
+			}
+			if res.Pass {
+				lr.Passed++
+			} else {
+				lr.Failed++
+				s.Pass = false
+			}
 		}
 	}
 	for _, l := range languages {
@@ -108,6 +125,16 @@ func formatVerdicts(v map[report.Verdict]int) string {
 	return strings.Join(parts, " · ")
 }
 
+func formatQualified(r RepoResult) string {
+	if r.Verdicts == nil {
+		return "—"
+	}
+	if len(r.Qualified) == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%d: %s", len(r.Qualified), strings.Join(r.Qualified, ", "))
+}
+
 func formatReasons(rs []ReasonCount) string {
 	if len(rs) == 0 {
 		return "—"
@@ -135,23 +162,40 @@ func (s Summary) markdown() string {
 	} else {
 		fmt.Fprintf(&b, "## Floor run: FAIL — %d of %d repos failed\n\n", len(failed), len(s.Repos))
 	}
-	fmt.Fprintf(&b, "Assay `%s`, corpus policy `%s`.", shortSHA(s.AssayCommit), s.Policy)
+	fmt.Fprintf(&b, "Assay `%s`, corpus policy `%s`", shortSHA(s.AssayCommit), s.Policy)
+	if s.PinnedPolicy != "" {
+		fmt.Fprintf(&b, "; pinned real repos on `%s`", s.PinnedPolicy)
+	}
+	b.WriteString(".")
 	if s.RunURL != "" {
 		fmt.Fprintf(&b, " [Run](%s).", s.RunURL)
 	}
-	b.WriteString("\n\n### By language\n\n| Language | Targets | Passed | Failed |\n|---|---|---|---|\n")
+	b.WriteString("\n\n### By language\n\nQualified counts `reachable_candidate` and `malicious_package_present` findings, one per alias set per repo.\n\n")
+	if s.PinnedPolicy != "" {
+		fmt.Fprintf(&b, "| Language | Targets | Passed | Failed | Qualified (demo) | Qualified (pinned, `%s`) |\n|---|---|---|---|---|---|\n", s.PinnedPolicy)
+	} else {
+		b.WriteString("| Language | Targets | Passed | Failed | Qualified |\n|---|---|---|---|---|\n")
+	}
 	for _, l := range s.Languages {
 		if l.Targets == 0 {
-			fmt.Fprintf(&b, "| %s | **no target** | — | — |\n", l.Language)
+			fmt.Fprintf(&b, "| %s | **no target** | — | — | —", l.Language)
+			if s.PinnedPolicy != "" {
+				b.WriteString(" | —")
+			}
+			b.WriteString(" |\n")
 			continue
 		}
-		fmt.Fprintf(&b, "| %s | %d | %d | %d |\n", l.Language, l.Targets, l.Passed, l.Failed)
+		fmt.Fprintf(&b, "| %s | %d | %d | %d | %d", l.Language, l.Targets, l.Passed, l.Failed, l.Qualified)
+		if s.PinnedPolicy != "" {
+			fmt.Fprintf(&b, " | %d", l.PinnedQualified)
+		}
+		b.WriteString(" |\n")
 	}
-	b.WriteString("\n### By repo\n\n| Repo | Language | Assay commit | Policy | Verdicts | Top undetermined reasons | Truncated | Duration | Result |\n|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("\n### By repo\n\n| Repo | Language | Assay commit | Policy | Verdicts | Qualified (alias sets) | Top undetermined reasons | Truncated | Duration | Result |\n|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, r := range s.Repos {
 		name := repoName(r.Repo)
 		if r.Ref != "" {
-			name += "@" + r.Ref
+			name += "@" + shortSHA(r.Ref)
 		}
 		result := "pass"
 		if !r.Pass {
@@ -161,9 +205,10 @@ func (s Summary) markdown() string {
 		if r.ScanTruncated {
 			truncated = "**yes**"
 		}
-		fmt.Fprintf(&b, "| %s | %s | `%s` | %s | %s | %s | %s | %s | %s |\n",
+		fmt.Fprintf(&b, "| %s | %s | `%s` | %s | %s | %s | %s | %s | %s | %s |\n",
 			cell(name), r.Language, shortSHA(r.AssayCommit), cell(r.Policy), formatVerdicts(r.Verdicts),
-			cell(formatReasons(r.TopUndetermined)), truncated, formatDuration(r.DurationSeconds), result)
+			cell(formatQualified(r)), cell(formatReasons(r.TopUndetermined)), truncated,
+			formatDuration(r.DurationSeconds), result)
 	}
 	if len(failed) > 0 {
 		b.WriteString("\n### Failures\n\n")

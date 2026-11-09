@@ -1,8 +1,8 @@
 // advisory_corpus_chain_test.go
 //
-// The entrypoint half of I-17(a) and I-03: that a configured corpus SUPPLEMENTS the built-in
-// advisory table rather than replacing it, that a missing-but-EXPECTED corpus fails the run, and
-// that what the run resolved is recorded on the Report.
+// The entrypoint half of I-17(a) and I-03: that the opted-in house canaries chain behind a
+// configured corpus, that a missing-but-EXPECTED corpus fails the run, and that what the run
+// resolved is recorded on the Report.
 package main
 
 import (
@@ -29,42 +29,58 @@ func sourceFrom(t *testing.T, opt pipeline.AssessOption) pipeline.AdvisorySource
 	return cfg.Source
 }
 
-// TestAdvisoryCorpus_ChainsBehindTheBuiltinTable is the regression guard for the measured outage:
-// installing a corpus must not cost a work-set id its facts. The fixture corpus carries none of the
-// scan work set, which is the realistic case — the published corpus carries 5 of 16.
-func TestAdvisoryCorpus_ChainsBehindTheBuiltinTable(t *testing.T) {
+// TestAdvisoryCorpus_ChainsCanariesBehindTheCorpus pins the fact source a corpus run resolves
+// through: the corpus alone, with the house canaries behind it only when the run opted them in.
+// Nothing else answers, so an id neither holds resolves nothing.
+func TestAdvisoryCorpus_ChainsCanariesBehindTheCorpus(t *testing.T) {
 	validRoot := filepath.Join("..", "..", "pipeline", "testdata", "advisory_source")
-	f := runFlagsFor(t, "-advisory-corpus", validRoot)
-	t.Setenv(envAdvisoryCorpusDir, "")
-
-	opt, err := f.advisoryCorpusOption()
-	if err != nil {
-		t.Fatalf("advisoryCorpusOption err = %v, want nil", err)
-	}
-	src := sourceFrom(t, opt)
-
-	// Every id the built-in table backs must still resolve through the configured source.
-	for _, id := range []string{
-		"GO-2021-0113", "GO-2022-0322", "GO-2021-0264", "CVE-2024-55947", "CVE-2025-8110",
-		"CVE-2024-45337", "CVE-2026-46595", "CVE-2026-39831", "CVE-2026-39821", "CVE-2020-36569",
+	canaries := []string{
+		"FERRALON-APP-DOS-0001",
 		"FERRALON-JAVA-SSRF-0001", "FERRALON-JAVA-SPRING-SSRF-0001", "FERRALON-JAVA-DEP-0001",
 		"FERRALON-JS-SSRF-0001", "FERRALON-JS-DEP-0001",
-		"FERRALON-PY-AIRFLOW-EXPAPI-0001", "FERRALON-PY-DEP-0001",
-	} {
-		if _, ok := src.Lookup(id); !ok {
-			t.Errorf("%s lost its facts when a corpus was configured — the corpus must supplement the table, not replace it", id)
-		}
+		"FERRALON-PY-AIRFLOW-EXPAPI-0001", "FERRALON-PY-DEP-0001", "FERRALON-NET-DEP-0001",
 	}
+	for _, tc := range []struct {
+		name        string
+		args        []string
+		wantCanary  bool
+		wantSourced string
+	}{
+		{"canaries off", []string{"-advisory-corpus", validRoot}, false, report.FactSourceCorpus},
+		{"canaries on", []string{"-advisory-corpus", validRoot, "-include-house-canaries"}, true, report.FactSourceCorpusThenHouseCanaries},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := runFlagsFor(t, tc.args...)
+			t.Setenv(envAdvisoryCorpusDir, "")
 
-	// And the corpus half is live: an id only the corpus carries resolves.
-	if _, ok := src.Lookup("FERRALON-TEST-0001"); !ok {
-		t.Error("a corpus-only id did not resolve — the corpus is not being consulted")
+			opt, err := f.advisoryCorpusOption()
+			if err != nil {
+				t.Fatalf("advisoryCorpusOption err = %v, want nil", err)
+			}
+			src := sourceFrom(t, opt)
+			if f.resolvedFacts != tc.wantSourced {
+				t.Errorf("FactSource = %q, want %q", f.resolvedFacts, tc.wantSourced)
+			}
+			if _, ok := src.Lookup("FERRALON-TEST-0001"); !ok {
+				t.Error("a corpus-only id did not resolve — the corpus is not being consulted")
+			}
+			for _, id := range canaries {
+				if _, ok := src.Lookup(id); ok != tc.wantCanary {
+					t.Errorf("Lookup(%s) ok = %v, want %v", id, ok, tc.wantCanary)
+				}
+			}
+			for _, id := range []string{"GO-2021-0113", "CVE-2024-45337", "CVE-2023-39325"} {
+				if _, ok := src.Lookup(id); ok {
+					t.Errorf("Lookup(%s) resolved facts neither the corpus nor the canaries hold", id)
+				}
+			}
+		})
 	}
 }
 
 // TestAdvisoryCorpus_RequiredButAbsentFailsTheRun covers I-03's sharp case: a corpus fetch that
 // failed leaves an EMPTY corpus path, byte-identical to "no corpus configured". A run that declares
-// it expects a corpus must fail rather than degrade to built-in intel and render as a clean scan.
+// it expects a corpus must fail rather than run without the facts it declared.
 func TestAdvisoryCorpus_RequiredButAbsentFailsTheRun(t *testing.T) {
 	t.Run("required via flag", func(t *testing.T) {
 		f := runFlagsFor(t, "-require-advisory-corpus")
@@ -103,23 +119,27 @@ func TestAdvisoryCorpus_RequiredButAbsentFailsTheRun(t *testing.T) {
 	})
 }
 
-// TestAdvisoryCorpus_UnconfiguredRunStillWorks is the counterweight: the legitimate zero-config
-// case — a user scanning with no corpus at all — must keep working, silently and with the built-in
-// table.
-func TestAdvisoryCorpus_UnconfiguredRunStillWorks(t *testing.T) {
+// TestAdvisoryCorpus_UnconfiguredRunHasNoFactSource pins the zero-config resolution: no corpus and
+// no canaries is not itself an error here, but it installs no fact source at all, so the run halts
+// later as given no work (or, in cve-watch, on errNoFactSource) rather than reading facts from
+// anywhere else.
+func TestAdvisoryCorpus_UnconfiguredRunHasNoFactSource(t *testing.T) {
 	f := runFlagsFor(t)
 	t.Setenv(envAdvisoryCorpusDir, "")
 	t.Setenv(envAdvisoryCorpusRequired, "")
 
 	opt, err := f.advisoryCorpusOption()
 	if err != nil {
-		t.Fatalf("advisoryCorpusOption err = %v, want nil — an unconfigured run is legitimate", err)
+		t.Fatalf("advisoryCorpusOption err = %v, want nil", err)
 	}
 	if opt != nil {
-		t.Fatal("expected nil option (built-in table default) when nothing is configured")
+		t.Fatal("expected no source-injecting option when nothing is configured")
 	}
-	if got := f.intelProvenance(floorWorkSet(make([]assessment.VulnRef, 16))); got.FactSource != report.FactSourceBuiltinTable {
-		t.Errorf("FactSource = %q, want %q", got.FactSource, report.FactSourceBuiltinTable)
+	if f.resolvedSource != nil {
+		t.Fatalf("resolvedSource = %T, want nil: an unconfigured run has no fact source", f.resolvedSource)
+	}
+	if got := f.intelProvenance(floorWorkSet(nil)); got.FactSource != report.FactSourceNone || got.WorkSetSource != report.WorkSetNone {
+		t.Errorf("provenance = %q/%q, want %q/%q", got.FactSource, got.WorkSetSource, report.FactSourceNone, report.WorkSetNone)
 	}
 }
 
@@ -149,11 +169,11 @@ func TestAdvisoryCorpus_IntelProvenanceRecorded(t *testing.T) {
 	}
 	got := f.intelProvenance(floorWorkSet(make([]assessment.VulnRef, 16)))
 
-	if got.FactSource != report.FactSourceCorpusThenBuiltinTable {
-		t.Errorf("FactSource = %q, want %q", got.FactSource, report.FactSourceCorpusThenBuiltinTable)
+	if got.FactSource != report.FactSourceCorpus {
+		t.Errorf("FactSource = %q, want %q", got.FactSource, report.FactSourceCorpus)
 	}
-	if got.WorkSetSource != report.WorkSetBuiltinLanguageSet {
-		t.Errorf("WorkSetSource = %q, want %q", got.WorkSetSource, report.WorkSetBuiltinLanguageSet)
+	if got.WorkSetSource != report.WorkSetHouseCanaries {
+		t.Errorf("WorkSetSource = %q, want %q", got.WorkSetSource, report.WorkSetHouseCanaries)
 	}
 	if got.WorkSetSize != 16 {
 		t.Errorf("WorkSetSize = %d, want 16", got.WorkSetSize)

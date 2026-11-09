@@ -7,6 +7,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/internal/advisorytest"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -149,6 +150,8 @@ func TestDiff_PartialVsComplete(t *testing.T) {
 // JSON keys the real advisory_intake stage emits — so a future S1 rename breaks this test
 // rather than silently zeroing the eval.
 func TestSeededAdvisoryShapeMatchesRealS1(t *testing.T) {
+	pipeline.SetDefaultAdvisorySource(advisorytest.Source[pipeline.AdvisoryFacts](advisoryFixtures))
+	t.Cleanup(func() { pipeline.SetDefaultAdvisorySource(nil) })
 	assessments := assessment.NewMemStore()
 	store := artifact.NewMemStore()
 	a, err := assessments.Create(assessment.Request{

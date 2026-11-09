@@ -6,17 +6,44 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 )
 
-// Targets is floor/targets.json: the demo repositories the nightly floor run scans, the corpus
-// policy every scan uses, and the repositories deliberately left out, each with its reason.
+// Targets is floor/targets.json: the demo repositories the nightly floor run scans and the corpus
+// policy they use, the pinned lane of real repositories, and the repositories deliberately left out,
+// each with its reason.
 type Targets struct {
-	// Policy is the advisory-corpus policy every scan reads. It is the policy the demo repositories'
-	// own ferralon-assay.yml workflows use, and never `full`: the run must stay bounded.
+	// Policy is the advisory-corpus policy the demo targets read. It is the policy the demo
+	// repositories' own ferralon-assay.yml workflows use, and never `full`: a demo repository's
+	// default branch moves, so the lane stays bounded by its policy.
 	Policy   string     `json:"policy"`
 	Targets  []Target   `json:"targets"`
+	Pinned   *Lane      `json:"pinned,omitempty"`
 	Excluded []Excluded `json:"excluded,omitempty"`
+}
+
+// Lane is the pinned lane: real public repositories, each at a full commit, scanned under their own
+// policy. Every target is a fixed commit, so the lane is bounded by its targets and may read `full`;
+// it measures what Assay finds on real code under the whole corpus.
+type Lane struct {
+	Policy  string   `json:"policy"`
+	Targets []Target `json:"targets"`
+}
+
+// lane is one policy and the targets scanned under it.
+type lane struct {
+	policy  string
+	targets []Target
+}
+
+// lanes is every lane in run order: the demo targets, then the pinned lane when there is one.
+func (t Targets) lanes() []lane {
+	out := []lane{{t.Policy, t.Targets}}
+	if t.Pinned != nil {
+		out = append(out, lane{t.Pinned.Policy, t.Pinned.Targets})
+	}
+	return out
 }
 
 // Target is one repository the floor run scans.
@@ -54,9 +81,11 @@ var (
 	// refPattern admits branch, tag and commit names and nothing a shell or git would read as an
 	// option: the ref reaches actions/checkout as data, but a leading '-' is refused anyway.
 	refPattern = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_./-]*$`)
+	// commitPattern is a full commit id, the only ref a pinned target may name.
+	commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
-// unboundedPolicy is the corpus policy the floor run must never use.
+// unboundedPolicy is the corpus policy only the pinned lane may use.
 const unboundedPolicy = "full"
 
 // parseTargets decodes and validates a targets file. Unknown fields are refused, so a misspelt key
@@ -95,20 +124,25 @@ func (t Targets) validate() error {
 	}
 	seen := map[string]string{}
 	for _, tg := range t.Targets {
-		if !repoPattern.MatchString(tg.Repo) {
-			return fmt.Errorf("repo %q is not owner/name", tg.Repo)
+		if err := checkTarget(tg, seen); err != nil {
+			return err
 		}
-		if !knownLanguage(tg.Language) {
-			return fmt.Errorf("%s: language %q is not one of %s", tg.Repo, tg.Language, strings.Join(languages, ", "))
+	}
+	if p := t.Pinned; p != nil {
+		switch {
+		case !policyPattern.MatchString(p.Policy):
+			return fmt.Errorf("pinned: policy %q is not a policy id (lowercase letters, digits, '-')", p.Policy)
+		case len(p.Targets) == 0:
+			return fmt.Errorf("pinned: no targets")
 		}
-		if tg.Ref != "" && !refPattern.MatchString(tg.Ref) {
-			return fmt.Errorf("%s: ref %q is not a branch, tag or commit name", tg.Repo, tg.Ref)
+		for _, tg := range p.Targets {
+			if !commitPattern.MatchString(tg.Ref) {
+				return fmt.Errorf("pinned: %s: ref %q is not a full commit id, so the lane would not be bounded", tg.Repo, tg.Ref)
+			}
+			if err := checkTarget(tg, seen); err != nil {
+				return fmt.Errorf("pinned: %w", err)
+			}
 		}
-		key := strings.ToLower(tg.Name())
-		if prev, ok := seen[key]; ok {
-			return fmt.Errorf("%s and %s share the name %q, which names the scan job", prev, tg.Repo, tg.Name())
-		}
-		seen[key] = tg.Repo
 	}
 	for _, ex := range t.Excluded {
 		if !repoPattern.MatchString(ex.Repo) || ex.Reason == "" {
@@ -118,6 +152,26 @@ func (t Targets) validate() error {
 			return fmt.Errorf("%s is both a target and excluded", ex.Repo)
 		}
 	}
+	return nil
+}
+
+// checkTarget validates one target and records its name in seen, which spans every lane: the name
+// names the scan job and its artifact.
+func checkTarget(tg Target, seen map[string]string) error {
+	if !repoPattern.MatchString(tg.Repo) {
+		return fmt.Errorf("repo %q is not owner/name", tg.Repo)
+	}
+	if !knownLanguage(tg.Language) {
+		return fmt.Errorf("%s: language %q is not one of %s", tg.Repo, tg.Language, strings.Join(languages, ", "))
+	}
+	if tg.Ref != "" && !refPattern.MatchString(tg.Ref) {
+		return fmt.Errorf("%s: ref %q is not a branch, tag or commit name", tg.Repo, tg.Ref)
+	}
+	key := strings.ToLower(tg.Name())
+	if prev, ok := seen[key]; ok {
+		return fmt.Errorf("%s and %s share the name %q, which names the scan job", prev, tg.Repo, tg.Name())
+	}
+	seen[key] = tg.Repo
 	return nil
 }
 
@@ -143,23 +197,31 @@ type matrixEntry struct {
 	Language             string `json:"language"`
 	Ref                  string `json:"ref"`
 	IncludeHouseCanaries bool   `json:"include_house_canaries"`
+	Policy               string `json:"policy"`
 }
 
 // matrixOutput renders the GitHub Actions step outputs the workflow's build job publishes: the scan
-// matrix (one entry per target) and the policy every scan uses.
+// matrix (one entry per target, carrying its lane's policy) and the policies whose corpus bundles
+// the build job fetches, space-separated.
 func matrixOutput(t Targets) (string, error) {
 	m := struct {
 		Include []matrixEntry `json:"include"`
 	}{}
-	for _, tg := range t.Targets {
-		m.Include = append(m.Include, matrixEntry{
-			Repo: tg.Repo, Name: tg.Name(), Language: tg.Language, Ref: tg.Ref,
-			IncludeHouseCanaries: tg.IncludeHouseCanaries,
-		})
+	var policies []string
+	for _, l := range t.lanes() {
+		if !slices.Contains(policies, l.policy) {
+			policies = append(policies, l.policy)
+		}
+		for _, tg := range l.targets {
+			m.Include = append(m.Include, matrixEntry{
+				Repo: tg.Repo, Name: tg.Name(), Language: tg.Language, Ref: tg.Ref,
+				IncludeHouseCanaries: tg.IncludeHouseCanaries, Policy: l.policy,
+			})
+		}
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("matrix=%s\npolicy=%s\n", b, t.Policy), nil
+	return fmt.Sprintf("matrix=%s\npolicies=%s\n", b, strings.Join(policies, " ")), nil
 }

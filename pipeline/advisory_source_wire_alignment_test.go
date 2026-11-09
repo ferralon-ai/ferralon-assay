@@ -1,7 +1,7 @@
 // advisory_source_wire_alignment_test.go
 //
 // Pins the wire shapes the reader must accept for the three fields that have DRIFTED BETWEEN
-// PRODUCERS — the built-in AdvisoryTable and the upstream enrichment records on one side, the
+// PRODUCERS — the upstream enrichment records on one side, the
 // published corpus on the other. The first two drifts share a failure mode
 // and a cost: a type mismatch fails json.Unmarshal on the WHOLE document, so one unreadable field
 // silently empties an entire corpus.
@@ -10,7 +10,7 @@
 //     emits a BARE BOOL, and its own field reference declares it so. Both must decode.
 //  2. the advisory narrative — enrichment emits `root_cause`; the published corpus emits `summary` on
 //     every record and `root_cause` on none. Both must decode, `root_cause` preferred.
-//  3. the Go module path — the built-in table spells it `module`; the published corpus spells it
+//  3. the Go module path — the enrichment records spell it `module`; the published corpus spells it
 //     `coordinate` and omits `module`. Costs no decode, but silently costs the Go version axis.
 //
 // HISTORY — this file previously asserted the OPPOSITE for both fields (object-only, root_cause-only),
@@ -184,7 +184,7 @@ func TestWire_NarrativeDecodesFromEitherKey(t *testing.T) {
 }
 
 // TestWire_GoModulePathProjectsCoordinate proves the third producer divergence is reconciled: the
-// built-in table spells the Go module path `module`, the published corpus spells it `coordinate` and
+// enrichment records spell the Go module path `module`, the published corpus spells it `coordinate` and
 // omits `module`. The engine's whole Go version axis is keyed on Module, so without the projection a
 // corpus-carried advisory loses its version axis and falls through to reachability — a weaker ground
 // for the same non-finding. Scoped to gomod: other ecosystems' coordinates are not module paths.
@@ -197,7 +197,7 @@ func TestWire_GoModulePathProjectsCoordinate(t *testing.T) {
 		want       string
 	}{
 		{"gomod, coordinate only (published corpus)", "", "golang.org/x/crypto", "gomod", "golang.org/x/crypto"},
-		{"gomod, module only (built-in table)", "golang.org/x/crypto", "", "gomod", "golang.org/x/crypto"},
+		{"gomod, module only (enrichment record)", "golang.org/x/crypto", "", "gomod", "golang.org/x/crypto"},
 		{"gomod, both → module wins", "golang.org/x/crypto", "something/else", "gomod", "golang.org/x/crypto"},
 		{"maven coordinate is NOT a module path", "", "com.example:widget", "maven", ""},
 		{"npm coordinate is NOT a module path", "", "lodash", "npm", ""},

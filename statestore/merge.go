@@ -2,6 +2,7 @@ package statestore
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -30,6 +31,8 @@ import (
 //   - VEXLog: append-union — base's log followed by any of mine's entries not
 //     already present (dedup by exact bytes), preserving the winner's history and
 //     adding mine's new statements.
+//   - DepFetch: per registry the larger held count, the earliest first-held time and
+//     either side's has-served; reassess lists unioned (mergeDepFetch).
 //
 // The returned State carries base.CommitSHA as its CAS token so the caller retries
 // the CAS against the winner's commit.
@@ -54,7 +57,21 @@ func Merge(base, mine *State) *State {
 	if mine.RevokeCount > out.RevokeCount {
 		out.RevokeCount = mine.RevokeCount
 	}
+	out.DepFetch = mergeDepFetch(base.DepFetch, mine.DepFetch)
 	return out
+}
+
+// mergeForRetry is the State a store retries after a lost CAS: mine Merged onto the winner, with
+// mine's Remerge hook carried over and applied to the result.
+func mergeForRetry(winner, mine *State) (*State, error) {
+	out := Merge(winner, mine)
+	out.Remerge = mine.Remerge
+	if out.Remerge != nil {
+		if err := out.Remerge(out); err != nil {
+			return nil, fmt.Errorf("statestore: re-deriving the merged state: %w", err)
+		}
+	}
+	return out, nil
 }
 
 func reportOf(s *State) *report.Report {

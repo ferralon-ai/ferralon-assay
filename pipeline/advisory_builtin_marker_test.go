@@ -9,21 +9,21 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 )
 
-// TestAdvisoryIntake_BuiltInMarkedByOrigin: S1 marks a record built_in only when the built-in table
+// TestAdvisoryIntake_BuiltInMarkedByOrigin: S1 marks a record built_in only when a house canary
 // answered it. A corpus record that declares itself first-party, and even writes built_in into its
-// own document, stays unmarked; the same chain answering a table id marks it.
+// own document, stays unmarked; the same chain answering a canary id marks it.
 func TestAdvisoryIntake_BuiltInMarkedByOrigin(t *testing.T) {
 	root := writeCorpus(t, map[string]string{
 		"CVE-TEST-SELF-CLAIM": `{"schema_version":"ferralon.normalized_advisory.v3","vuln_id":"CVE-TEST-SELF-CLAIM","version_scheme":"gomod","module":"example.com/claim","symbols":["Claim"],"built_in":true,"provenance":{"source":"curated","trust_tier":"first_party"}}`,
 	})
-	chain := NewChainSource(NewArtifactSource(root), NewTableSource())
+	chain := NewChainSource(NewArtifactSource(root), NewHouseCanarySource())
 	tests := []struct {
 		id        string
 		wantTrust string
 		want      bool
 	}{
 		{"CVE-TEST-SELF-CLAIM", string(TrustFirstParty), false},
-		{"FERRALON-JAVA-SSRF-0002", string(TrustFirstParty), true},
+		{"FERRALON-JAVA-SSRF-0001", string(TrustFirstParty), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.id, func(t *testing.T) {

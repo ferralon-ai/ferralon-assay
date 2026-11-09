@@ -25,10 +25,27 @@ import (
 // symbol that happens to share the name is never the advisory's symbol. The symbol
 // resolves only onto a dependency boundary node the call graph actually contains for that
 // distribution, matched on the full dotted import path (see resolveBoundary).
+//
+// The result is a function of req.BuildDir, req.PURL and req.AdvisorySymbols and of nothing
+// else in the request, so with a run cache (WithRunCacheDir) it is computed once per distinct
+// triple per scan. The tree's program and call graph, which the boundary nodes come from, are
+// not part of that work: they depend on the tree alone and come from the same cached entry
+// CallGraph uses.
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
+	return cachedResult(ctx, "resolve", []string{req.BuildDir, req.PURL, symbolsKey(req.AdvisorySymbols)}, func() (plugin.SymbolResolutionResult, error) {
+		return resolveDependencySymbols(ctx, req)
+	})
+}
+
+func resolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
 	index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: req.BuildDir})
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
+	}
+
+	// No wanted symbol means no branch below can resolve one.
+	if !slices.ContainsFunc(req.AdvisorySymbols, func(s string) bool { return strings.TrimSpace(s) != "" }) {
+		return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
 	}
 
 	wanted := make(map[string]bool, len(req.AdvisorySymbols))
@@ -47,15 +64,15 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	if dist == "" {
 		return plugin.SymbolResolutionResult{Partiality: index.Partiality, Resolved: firstParty}, nil
 	}
-	prog, err := loadProgram(req.BuildDir)
+	tg, err := treeGraphOf(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
 	}
-	if prog.dists.providesFirstParty(dist) {
+	if tg.providesFirstParty(dist) {
 		return plugin.SymbolResolutionResult{Partiality: index.Partiality, Resolved: firstParty}, nil
 	}
 
-	res := resolveBoundary(callGraphOf(prog), dist, req.AdvisorySymbols)
+	res := resolveBoundary(tg.Graph, dist, req.AdvisorySymbols)
 	res.Partiality = index.Partiality
 	return res, nil
 }

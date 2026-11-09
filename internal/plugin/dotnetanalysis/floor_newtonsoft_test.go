@@ -1,18 +1,18 @@
 package dotnetanalysis
 
-// floor_newtonsoft_test.go — the built-in CVE-2024-21907 (Newtonsoft.Json MaxDepth) floor
+// floor_newtonsoft_test.go — the CVE-2024-21907 (Newtonsoft.Json MaxDepth) floor
 // symbols, resolved against a synthesized Newtonsoft.Json and searched by Reachability. A
 // route into the unbounded JsonReader.Push that none of the public entries names must still
 // keep the advisory out of not_exploitable.
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/advisorytest"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -55,39 +55,35 @@ var floorNewtonsoftSymbols = []string{
 	"Newtonsoft.Json.Linq.JProperty.LoadAsync",
 }
 
-// TestFloorNewtonsoft_SymbolSet pins the built-in entry and the regenerated on-disk advisory.
-// Dropping JsonReader.Push reopens the BsonReader, ReadAs* and custom-reader routes; dropping
-// a public entry hides the common routes from the path.
-func TestFloorNewtonsoft_SymbolSet(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "corpus", "testdata", "advisories", floorNewtonsoftCVE+".json"))
+// floorNewtonsoftFacts reads the CVE-2024-21907 advisory from the fixture corpus.
+func floorNewtonsoftFacts(t *testing.T) pipeline.AdvisoryFacts {
+	t.Helper()
+	facts, err := advisorytest.Load[pipeline.AdvisoryFacts]()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var onDisk struct{ Symbols, TargetConditionalSymbols []string }
-	if err := json.Unmarshal(raw, &onDisk); err != nil {
-		t.Fatal(err)
+	f, ok := facts[floorNewtonsoftCVE]
+	if !ok {
+		t.Fatalf("fixture corpus has no %s", floorNewtonsoftCVE)
 	}
-	table := pipeline.AdvisoryTable[floorNewtonsoftCVE]
-	for _, tt := range []struct {
-		source           string
-		got, conditional []string
+	return f
+}
+
+// TestFloorNewtonsoft_SymbolSet pins the fixture advisory's symbol sets. Dropping JsonReader.Push
+// reopens the BsonReader, ReadAs* and custom-reader routes; dropping a public entry hides the
+// common routes from the path.
+func TestFloorNewtonsoft_SymbolSet(t *testing.T) {
+	facts := floorNewtonsoftFacts(t)
+	for _, c := range []struct {
+		name      string
+		got, want []string
 	}{
-		{"pipeline.AdvisoryTable", table.Symbols, table.TargetConditionalSymbols},
-		{"corpus/testdata/advisories", onDisk.Symbols, onDisk.TargetConditionalSymbols},
+		{"symbols", facts.Symbols, floorNewtonsoftSymbols},
+		{"target-conditional symbols", facts.TargetConditionalSymbols, floorNewtonsoftConditional},
 	} {
-		t.Run(tt.source, func(t *testing.T) {
-			for _, c := range []struct {
-				name      string
-				got, want []string
-			}{
-				{"symbols", tt.got, floorNewtonsoftSymbols},
-				{"target-conditional symbols", tt.conditional, floorNewtonsoftConditional},
-			} {
-				if got, want := slices.Sorted(slices.Values(c.got)), slices.Sorted(slices.Values(c.want)); !slices.Equal(got, want) {
-					t.Errorf("%s %s %s = %v\nwant %v", tt.source, floorNewtonsoftCVE, c.name, got, want)
-				}
-			}
-		})
+		if got, want := slices.Sorted(slices.Values(c.got)), slices.Sorted(slices.Values(c.want)); !slices.Equal(got, want) {
+			t.Errorf("%s %s = %v\nwant %v", floorNewtonsoftCVE, c.name, got, want)
+		}
 	}
 }
 
@@ -112,7 +108,7 @@ var floorNewtonsoftConditional = []string{
 // accepts for a target-conditional absence: every other symbol matched and searched, exactly
 // the conditional ones unmatched, and advisory_symbol_unresolved as the only limit.
 func TestFloorNewtonsoft_TargetWithoutConditionalSymbols(t *testing.T) {
-	symbols := pipeline.AdvisoryTable[floorNewtonsoftCVE].Symbols
+	symbols := floorNewtonsoftFacts(t).Symbols
 	defined := slices.DeleteFunc(slices.Clone(symbols), func(s string) bool { return slices.Contains(floorNewtonsoftConditional, s) })
 	f := newDepFixture(t,
 		`"Newtonsoft.Json/12.0.3":{"type":"package","runtime":{"lib/net20/Newtonsoft.Json.dll":{}}}`,
@@ -315,7 +311,7 @@ func TestFloorNewtonsoft_UnnamedReaderRoutesAreNotCleared(t *testing.T) {
 			return b.bytesNamed("App")
 		}, false},
 	}
-	symbols := pipeline.AdvisoryTable[floorNewtonsoftCVE].Symbols
+	symbols := floorNewtonsoftFacts(t).Symbols
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newDepFixture(t,

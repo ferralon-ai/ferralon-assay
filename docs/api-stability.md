@@ -74,7 +74,6 @@ rather than left to be discovered.
 
 | Symbol | Where | Why it bites |
 |---|---|---|
-| `pipeline.AdvisoryTable` | `pipeline/stages.go` | An exported `map[string]AdvisoryFacts`. Maps are reference types, so a consumer can mutate the analyzer's advisory facts at runtime, from any goroutine, with no synchronization. |
 | `pipeline.SetDefaultAdvisorySource` | `pipeline/advisory_source.go` | An unguarded process-wide setter. Its contract is set-before-spawn; it is not `-race`-safe. |
 | `trigger.AnalyzerVersion` | `trigger/assess.go` | An exported `var`. It is writable, and its value lands in emitted reports. |
 | `github.PRCommentMarker` | `resultsink/github/tier1_pr_comment.go` | The marker used to find and overwrite an existing PR comment. Changing it at runtime orphans previously-posted comments. |

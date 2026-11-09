@@ -10,20 +10,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/advisorytest"
 )
 
-// corpusKnownIDs loads the real corpus manifest and returns its advisory id set — the §0 integrity
-// oracle (an attribution key must resolve to one of these). Uses the manifest on disk, not
-// AdvisoryTable, so the test is faithful to "resolves to a corpusManifest.advisories record".
+// corpusKnownIDs loads the fixture corpus manifest and returns its advisory id set — the §0
+// integrity oracle (an attribution key must resolve to one of these).
 func corpusKnownIDs(t *testing.T) map[string]bool {
 	t.Helper()
-	mb, err := os.ReadFile(filepath.Join(advisoryCorpusDir, advisoryCorpusManifestFile))
+	man, err := advisorytest.ReadManifest()
 	if err != nil {
 		t.Fatalf("read corpus manifest: %v", err)
-	}
-	var man corpusManifest
-	if err := json.Unmarshal(mb, &man); err != nil {
-		t.Fatalf("decode corpus manifest: %v", err)
 	}
 	known := make(map[string]bool, len(man.Advisories))
 	for id := range man.Advisories {
@@ -38,7 +35,7 @@ func mustReviewedAt() string { return "2026-08-12T00:00:00Z" }
 
 func TestLoadAttributionStore(t *testing.T) {
 	// The shipped store is the honest zero: `{}` → empty store → every record unreviewed.
-	store, err := loadAttributionStore(advisoryCorpusDir)
+	store, err := loadAttributionStore(advisorytest.Dir())
 	if err != nil {
 		t.Fatalf("load real attribution.json: %v", err)
 	}
@@ -77,7 +74,7 @@ func TestLoadAttributionStore(t *testing.T) {
 // TestAttributionStore_Integrity is the always-on hermetic enforcement: the shipped store has no
 // orphan and no invalid entry against the real corpus.
 func TestAttributionStore_Integrity(t *testing.T) {
-	store, err := loadAttributionStore(advisoryCorpusDir)
+	store, err := loadAttributionStore(advisorytest.Dir())
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}

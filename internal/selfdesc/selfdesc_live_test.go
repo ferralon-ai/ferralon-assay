@@ -6,7 +6,8 @@
 // internal/plugin/goanalysis/reach_toolchain_live_test.go, because it compiles the CLI and runs a
 // real scan — seconds, not milliseconds. It is excluded from the default `go test ./...`, which
 // must stay hermetic and fast. It needs NO network: the scan target is a two-file module written
-// into a temp dir, -osv-work-set defaults off, and the advisory facts come from the built-in table.
+// into a temp dir, -osv-work-set defaults off, and the work set comes from the wire-format test
+// corpus under pipeline/testdata with a declared policy, which holds nothing for that module.
 //
 // Run it by hand:
 //
@@ -188,8 +189,8 @@ func TestSelfDesc_HelpTextNamesTheRefTheToolWrites(t *testing.T) {
 }
 
 // scanArtifacts runs one real baseline scan and returns the output directory. The subject is a
-// minimal module written into a temp dir: enough for the pipeline to produce a Report and its
-// projections, with nothing to fetch and no plugin required.
+// minimal module written into a temp dir and the corpus holds nothing for it: enough for the
+// pipeline to produce a Report and its projections, with nothing to fetch and no plugin required.
 func scanArtifacts(t *testing.T) string {
 	t.Helper()
 	subject := t.TempDir()
@@ -197,7 +198,12 @@ func scanArtifacts(t *testing.T) string {
 	write(t, filepath.Join(subject, "selfdesc.go"), "package selfdesc\n")
 
 	out := filepath.Join(t.TempDir(), "out")
-	cmd := exec.Command(binary(t), "baseline", "-target", subject, "-out", out)
+	corpus, err := filepath.Abs(filepath.Join("..", "..", "pipeline", "testdata", "advisory_source"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(binary(t), "baseline", "-target", subject, "-out", out,
+		"-advisory-corpus", corpus, "-advisory-corpus-policy", "full")
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("baseline scan of a trivial module must succeed: %v\n%s", err, b)
 	}

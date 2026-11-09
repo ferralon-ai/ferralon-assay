@@ -633,7 +633,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 //
 // NOT SWITCHING IT ON IS NOT A PARTIALITY. A run that never asked to widen is a supported
 // configuration — the default one — and its Report says so plainly (WorkSetSource stays
-// house_canaries, or the run halts on an empty work set). A widening that was asked for and FAILED is different and does emit a
+// house_canaries, or the run was given no work and halts). A widening that was asked for and FAILED is different and does emit a
 // note; the distinction is intent, exactly as with the corpus require gate. What is disclosed is
 // the gap between what was asked for and what happened.
 func (f *runFlags) osvWorkSetEnabled() (bool, error) {
@@ -667,9 +667,17 @@ func (f *runFlags) osvWorkSetEnabled() (bool, error) {
 // cve-watch deliberately does NOT call this. That mode already drives its analysis from an OSV query
 // (against the stored SBOM, diffed against a cursor) and its behaviour is unchanged here.
 //
-// A RESOLVED WORK SET OF ZERO HALTS THE RUN. This is the one place that judgement is made, and it is
-// made HERE rather than at acquisition because the canaries are not the set the pass evaluates: the
-// widening above takes the acquired target as input and can populate a set that started empty.
+// A RUN GIVEN NO WORK HALTS. This is the one place that judgement is made, and it is made HERE
+// rather than at acquisition because the canaries are not the set the pass evaluates: the widening
+// above takes the acquired target as input and can populate a set that started empty.
+//
+// "No work" means no input that chooses advisories was supplied: no corpus with a declared policy,
+// no OSV widening, and no house canary for the detected language. A corpus configured without a
+// policy is a fact source only and chooses nothing. When a work-set input WAS supplied and resolved
+// to zero advisories — the policy or OSV holds nothing for this repository's dependencies — that is
+// an assessed answer, and the run publishes its Report: the intel block records the source and a
+// work set of zero, and any degraded selection (an unenumerable policy, an OSV query that failed)
+// carries its partiality note.
 //
 // It is a HARD error, not a warning, on the precedent this CLI already sets for a degraded advisory
 // input: advisoryCorpusOption hard-fails a wholly-unusable -advisory-corpus rather than silently
@@ -678,12 +686,11 @@ func (f *runFlags) osvWorkSetEnabled() (bool, error) {
 // the inputs cannot support. (A detected language whose analyzer is not installed never gets here:
 // acquireTarget stops first. Outside the release's languages the run publishes a Report that says
 // nothing was assessed — publishAnalyzerMissing; for a release language it fails as an install
-// fault.) An empty work set is the worst-consequence member of that family: the run succeeds, exits
-// 0, and publishes a findings-free Report a reader cannot distinguish from an assessed all-clear.
+// fault.) A run given no work is the worst-consequence member of that family: it would succeed, exit
+// 0, and publish a findings-free Report a reader cannot distinguish from an assessed all-clear.
 //
-// The condition is strictly THE SET IS EMPTY — never a language, never a source. An ecosystem that
-// resolves nothing today stops failing the moment anything populates its work set, with no code
-// change and nothing to remove.
+// The condition is never a language. An ecosystem that resolves nothing today stops failing the
+// moment an input populates its work set, with no code change and nothing to remove.
 func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, error) {
 	enabled, err := f.osvWorkSetEnabled()
 	if err != nil {
@@ -697,31 +704,40 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 		}
 		ws = cutWorkSet(ws, context.Cause(ctx))
 	}
-	if len(ws.advisories) == 0 {
+	if len(ws.advisories) == 0 && !f.choosesWork(enabled) {
 		return workSet{}, errEmptyWorkSet(acq.language)
 	}
 	return ws, nil
 }
 
-// errEmptyWorkSet is the run-halting error for a work set that resolved to no advisories.
+// choosesWork reports whether the run supplied an input that chooses advisories beyond the house
+// canaries: an advisory corpus together with a declared policy or the OSV widening (osvEnabled).
+// The widening admits only what the corpus holds facts for, so without a corpus it chooses nothing.
+func (f *runFlags) choosesWork(osvEnabled bool) bool {
+	return f.corpusReader != nil && (f.resolvedPolicy != "" || osvEnabled)
+}
+
+// errEmptyWorkSet is the run-halting error for a run given no input that chooses advisories, whose
+// work set is therefore empty.
 //
 // The message states the fact and names every input that populates a work set, flatly, on both
 // surfaces a run is configured from (the command line and the GitHub Action). It does NOT branch on
 // which input was supplied: the inputs combine, and a remedy decision tree would have to be unpicked
 // each time one changes.
 func errEmptyWorkSet(language string) error {
-	return fmt.Errorf("work set is empty: 0 advisories resolved for the detected %s ecosystem — the scan would emit a findings-free Report without having assessed anything, which reads as an all-clear it did not establish. "+
+	return fmt.Errorf("no work: the run was given no input that chooses advisories for the detected %s ecosystem, so the scan would emit a findings-free Report without having assessed anything, which reads as an all-clear it did not establish. "+
 		"The scanner carries no advisories of its own; a work set comes from an advisory corpus: -advisory-corpus with -advisory-corpus-policy (or %s and %s; in the GitHub Action, the advisory-corpus or advisory-corpus-repo input with advisory-corpus-policy), "+
 		"or -osv-work-set (%s) to choose advisories from OSV.dev, which admits only those the corpus holds facts for. -include-house-canaries adds the first-party demo canaries",
 		language, envAdvisoryCorpusDir, envAdvisoryCorpusPolicy, envOSVWorkSet)
 }
 
-// errNoFactSource is the run-halting error for a cve-watch run with no advisory fact source: every
+// errNoFactSource is the run-halting error for a cve-watch run with no advisory corpus: every
 // advisory OSV.dev reports against the stored SBOM would be assessed with no facts, so the run
-// would publish findings it could not ground.
+// would publish findings it could not ground. The house canaries do not count: they answer only
+// for their own demo ids, never for what OSV reports.
 func errNoFactSource() error {
 	return fmt.Errorf("no advisory fact source: the scanner carries no advisories of its own, and cve-watch assesses the advisories OSV.dev reports against facts from an advisory corpus. "+
-		"Set -advisory-corpus (or %s; in the GitHub Action, the advisory-corpus or advisory-corpus-repo input). -include-house-canaries supplies facts for the first-party demo canaries only",
+		"Set -advisory-corpus (or %s; in the GitHub Action, the advisory-corpus or advisory-corpus-repo input). -include-house-canaries does not stand in for one: the canaries answer only for their own demo ids",
 		envAdvisoryCorpusDir)
 }
 
@@ -733,7 +749,7 @@ func errNoFactSource() error {
 // The fact source is the corpus, with the house canaries behind it when the run opted them in
 // (pipeline.NewChainSource; first hit wins, no merging across sources). With no corpus it is the
 // canaries alone, and with neither there is no fact source: it returns (nil, nil), leaves
-// f.resolvedSource nil, and the run halts on its empty work set.
+// f.resolvedSource nil, and the run, given no work, halts.
 //
 // The resolved path is either a corpus directory or a corpus bundle file (corpusSourceFor); both
 // readers carry the same Validate/Describe contract, so everything below is shape-agnostic.
@@ -908,8 +924,7 @@ func (f *runFlags) advisoryCorpusPolicy() (string, error) {
 //
 // THE PROBLEM IT SOLVES. "No corpus was configured" and "the corpus fetch failed, so no corpus was
 // configured" are byte-identical at this seam: both are an empty path. The first is a legitimate
-// zero-config local scan (which halts on its empty work set unless it opted in the house
-// canaries); the second is analysis that did not happen, and scanning the canaries alone without
+// zero-config local scan (which halts as given no work unless it opted in the house canaries); the second is analysis that did not happen, and scanning the canaries alone without
 // saying so renders a failed scan as a clean one. Distinguishing them needs a signal that does
 // NOT come from the corpus path, because the corpus path is the thing that went missing.
 //
@@ -1195,10 +1210,12 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		return nil, err
 	}
 
-	// Resolved AFTER advisoryCorpusOption, which is what decides the fact source the widener
-	// consults when admitting an OSV-reported id.
+	// Resolved AFTER runAssessOptions, which configures the corpus. A cve-watch run (widen false)
+	// assesses whatever OSV reports against the stored SBOM, so its facts must come from a corpus;
+	// the house canaries answer only for their own ids and do not count. The scan path's widener
+	// consults the same fact source when admitting an OSV-reported id.
 	ws := floorWorkSet(acq.advisories)
-	if !widen && f.resolvedSource == nil {
+	if !widen && f.corpusReader == nil {
 		acq.cleanup()
 		return nil, errNoFactSource()
 	}

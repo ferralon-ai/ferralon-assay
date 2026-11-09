@@ -121,7 +121,7 @@ func TestAdvisoryCorpus_RequiredButAbsentFailsTheRun(t *testing.T) {
 
 // TestAdvisoryCorpus_UnconfiguredRunHasNoFactSource pins the zero-config resolution: no corpus and
 // no canaries is not itself an error here, but it installs no fact source at all, so the run halts
-// later on its empty work set (or, in cve-watch, on errNoFactSource) rather than reading facts from
+// later as given no work (or, in cve-watch, on errNoFactSource) rather than reading facts from
 // anywhere else.
 func TestAdvisoryCorpus_UnconfiguredRunHasNoFactSource(t *testing.T) {
 	f := runFlagsFor(t)

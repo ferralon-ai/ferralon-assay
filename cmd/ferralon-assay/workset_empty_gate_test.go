@@ -1,11 +1,12 @@
 // workset_empty_gate_test.go
 //
-// The halt-on-empty gate, and above all its ORDERING against the OSV work-set widening.
+// The no-work gate, and above all its ORDERING against the OSV work-set widening.
 //
 // The scanner carries no advisories of its own: a scan's work set is the opted-in house canaries
 // plus whatever a corpus policy or the OSV widening chooses against the repository's dependencies.
-// With none of those the set is empty, and the run must halt with an error naming every input that
-// populates it, rather than publish a findings-free Report that reads as an assessed all-clear.
+// A run given none of those inputs must halt with an error naming every one of them, rather than
+// publish a findings-free Report that reads as an assessed all-clear. A run that WAS given one, and
+// whose input chose nothing for this repository, has an assessed answer and publishes it.
 //
 // The gate sits after the widening (scanWorkSet), never at acquisition: -osv-work-set widens the set
 // in resolveWorkSet, taking the acquired target as INPUT. TestEmptyWorkSet_WideningRunsBeforeTheGate
@@ -25,6 +26,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
+	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
 // treeFor writes a one-file source tree of the given language and acquires it, so these tests run
@@ -110,35 +112,121 @@ func TestEmptyWorkSet_DefaultScanHalts(t *testing.T) {
 
 // TestCVEWatch_NoFactSourceHalts: a cve-watch heartbeat with no advisory corpus has nothing to
 // resolve OSV-reported advisories against, so it halts naming the corpus inputs before reading the
-// stored state or querying OSV.
+// stored state or querying OSV. The house canaries are a fact source only for their own demo ids,
+// so opting them in does not let the heartbeat assess OSV's ids with no facts.
 func TestCVEWatch_NoFactSourceHalts(t *testing.T) {
-	trapEgress(t)
-	target := t.TempDir()
-	if err := os.WriteFile(filepath.Join(target, "go.mod"), []byte(fixtureGoMod), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stateDir := t.TempDir()
-	if err := gitInitBare(stateDir); err != nil {
-		t.Fatal(err)
-	}
-	err := runCVEWatch([]string{"-target", target, "-plugin-go", "/fake/bin", "-build-graph", "off", "-git-dir", stateDir})
-	if err == nil {
-		t.Fatal("cve-watch with no advisory corpus did not halt")
-	}
-	for _, want := range []string{"-advisory-corpus", envAdvisoryCorpusDir, "advisory-corpus-repo"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error does not name %q: %v", want, err)
-		}
+	for _, tc := range []struct {
+		name  string
+		extra []string
+	}{
+		{"no corpus", nil},
+		{"house canaries, no corpus", []string{"-include-house-canaries"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			trap := trapEgress(t)
+			target := t.TempDir()
+			if err := os.WriteFile(filepath.Join(target, "go.mod"), []byte(fixtureGoMod), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stateDir := t.TempDir()
+			if err := gitInitBare(stateDir); err != nil {
+				t.Fatal(err)
+			}
+			args := append([]string{"-target", target, "-plugin-go", "/fake/bin", "-build-graph", "off", "-git-dir", stateDir}, tc.extra...)
+			err := runCVEWatch(args)
+			if err == nil {
+				t.Fatal("cve-watch with no advisory corpus did not halt")
+			}
+			for _, want := range []string{"no advisory fact source", "-advisory-corpus", envAdvisoryCorpusDir, "advisory-corpus-repo"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not name %q: %v", want, err)
+				}
+			}
+			if len(trap.hosts) != 0 {
+				t.Errorf("cve-watch queried %v before halting", trap.hosts)
+			}
+		})
 	}
 }
 
-// TestEmptyWorkSet_HaltsTheRun is the firing half: a work set that resolves to nothing must fail the
-// run loudly, naming every input that would populate it, rather than publish a findings-free Report
-// that reads as an assessed all-clear. Nothing falls back to fixture advisories.
+// TestEmptyWorkSet_SuppliedInputMatchingNothingPublishes is the other side of the gate: a run given
+// a work-set input that chose nothing for this repository was given real work, and its empty set is
+// an assessed answer the run publishes, not an error. A corpus with no policy chooses nothing and
+// still halts.
+func TestEmptyWorkSet_SuppliedInputMatchingNothingPublishes(t *testing.T) {
+	wireCorpus := filepath.Join("..", "..", "pipeline", "testdata", "advisory_source")
+	policyBundle := writePolicyBundle(t, []corpusEntry{{doc: goRecord("TEST-NOT-A-DEPENDENCY", "example.com/not-a-dependency")}})
+
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		java       bool // a Java tree with a one-coordinate inventory, for the OSV widening to query
+		osv        []string
+		wantSource string
+		wantHalt   bool
+		wantNote   bool
+	}{
+		{name: "policy matches no dependency", args: []string{"-advisory-corpus", policyBundle, "-advisory-corpus-policy", "full"},
+			wantSource: report.WorkSetPolicy},
+		// The reported id has no facts in the corpus, which the run discloses rather than assesses.
+		{name: "OSV reports nothing the corpus holds", args: []string{"-osv-work-set=true", "-advisory-corpus", wireCorpus},
+			java: true, osv: []string{"GHSA-not-in-the-corpus"}, wantSource: report.WorkSetOSVQuery, wantNote: true},
+		{name: "OSV unreachable", args: []string{"-osv-work-set=true", "-advisory-corpus", wireCorpus},
+			java: true, wantSource: report.WorkSetNone, wantNote: true},
+		{name: "corpus without a policy", args: []string{"-advisory-corpus", wireCorpus}, wantHalt: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(envAdvisoryCorpusDir, "")
+			t.Setenv(envAdvisoryCorpusRequired, "")
+			t.Setenv(envAdvisoryCorpusPolicy, "")
+			t.Setenv(envOSVWorkSet, "")
+			if tc.osv != nil {
+				stubOSV(t, tc.osv...)
+			} else {
+				trapEgress(t)
+			}
+			f := runFlagsFor(t, tc.args...)
+			if _, err := f.advisoryCorpusOption(); err != nil {
+				t.Fatalf("advisoryCorpusOption: %v", err)
+			}
+			var acq *acquired
+			if tc.java {
+				acq = treeFor(t, checkout.LangJava, false)
+				acq.plugin = mavenInventoryPlugin{}
+			} else {
+				acq = goFixture(t, fixtureGoMod)
+				acq.advisories = nil
+			}
+
+			ws, err := f.scanWorkSet(context.Background(), acq)
+			if tc.wantHalt {
+				if err == nil || !strings.Contains(err.Error(), "no work") {
+					t.Fatalf("a corpus with no policy chooses nothing; want the no-work halt, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("a supplied work-set input that matched nothing halted the run: %v", err)
+			}
+			if len(ws.advisories) != 0 {
+				t.Fatalf("work set = %v, want empty", ids(ws.advisories))
+			}
+			if ws.source != tc.wantSource {
+				t.Errorf("work set source = %q, want %q", ws.source, tc.wantSource)
+			}
+			if got := len(ws.partiality) != 0; got != tc.wantNote {
+				t.Errorf("partiality = %+v, want a degraded-selection note: %v", ws.partiality, tc.wantNote)
+			}
+		})
+	}
+}
+
+// TestEmptyWorkSet_HaltsTheRun is the firing half: a run given no input that chooses advisories must
+// fail loudly, naming every input that would populate its work set, rather than publish a
+// findings-free Report that reads as an assessed all-clear. Nothing falls back to fixture advisories.
 //
-// Every supported language is covered in BOTH flag directions, which is what proves the condition is
-// the resolved set and not the flag: -include-house-canaries is set on half these cases and exempts
-// none of them.
+// Every supported language is covered in BOTH flag directions: -include-house-canaries is set on
+// half these cases, and canaries that name nothing in the ecosystem exempt none of them.
 func TestEmptyWorkSet_HaltsTheRun(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -167,7 +255,7 @@ func TestEmptyWorkSet_HaltsTheRun(t *testing.T) {
 			if err == nil {
 				t.Fatalf("an empty resolved work set did not halt the run; it resolved %v", ids(ws.advisories))
 			}
-			for _, want := range append([]string{tc.language, "0 advisories"}, emptyWorkSetInputs...) {
+			for _, want := range append([]string{tc.language, "no work"}, emptyWorkSetInputs...) {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("error %q does not name %q", err, want)
 				}
@@ -235,9 +323,9 @@ func TestEmptyWorkSet_DormantOnANonEmptySet(t *testing.T) {
 // A Java run with -osv-work-set set and the house canaries off has an EMPTY floor. It must acquire,
 // query OSV, and only then be judged on what the work set resolved to.
 //
-// The egress trap refuses the request, so this run does still halt — the widening it asked for could
-// not run, and nothing else populated the set. What the test pins is that the OSV query HAPPENED
-// first: that outbound request is the observable proof the gate no longer pre-empts the widening.
+// No corpus is configured, so the widening has no facts to admit an OSV-reported id against and the
+// run was given no work: it halts. What the test pins is that the OSV query HAPPENED first: that
+// outbound request is the observable proof the gate does not pre-empt the widening.
 func TestEmptyWorkSet_WideningRunsBeforeTheGate(t *testing.T) {
 	trap := trapEgress(t)
 	f := runFlagsFor(t, "-osv-work-set=true")
@@ -260,9 +348,8 @@ func TestEmptyWorkSet_WideningRunsBeforeTheGate(t *testing.T) {
 			t.Errorf("the widening contacted %q, want api.osv.dev only", h)
 		}
 	}
-	// The widening was refused by the trap, so the set is still empty and the gate is right to fire.
 	if err == nil {
-		t.Fatal("the work set resolved empty after an unreachable OSV and the run did not halt")
+		t.Fatal("an -osv-work-set run with no corpus was given no work and did not halt")
 	}
 }
 

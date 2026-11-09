@@ -69,7 +69,7 @@ func analyzerMissingReport(e *analyzerMissingError, revision, commit string) (*r
 // the workflow run, and returns nil: the run exits 0. The host lacks a plugin; the scan did not fail,
 // and a red check would read as a fault in the repository.
 //
-// Nothing reaches the work set, so the empty-work-set gate never runs, and no SBOM or baseline is
+// Nothing reaches the work set, so the no-work gate never runs, and no SBOM or baseline is
 // written to the StateStore: a later run with the plugin installed starts clean. The scan-truncated
 // output is set false, as on every path that published a Report, and the self-cleanup revoke check
 // runs as it does after every scan (analyzerMissingRevokeCheck).

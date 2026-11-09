@@ -14,6 +14,13 @@
     { "repo": "ferralon-demo/pyload-js2py-rce", "language": "python", "ref": "baseline" },
     { "repo": "ferralon-demo/whoogle-search-ssrf-path-traversal", "language": "python", "ref": "baseline" }
   ],
+  "pinned": {
+    "policy": "full",
+    "targets": [
+      { "repo": "bikeanjo/bikeanjo", "language": "python", "ref": "a7c42a5aa6dd684a41f362315eeb235005b83272" },
+      { "repo": "smari/wasa2il", "language": "python", "ref": "1ed4544587aeafb54bc515a217c867bfe4b7aede" }
+    ]
+  },
   "excluded": [
     {
       "repo": "ferralon-demo/gogs-symlink-chain",

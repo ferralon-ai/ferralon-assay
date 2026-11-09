@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -176,6 +177,14 @@ func TestParseTargets(t *testing.T) {
 		{"duplicate name", `{"policy":"published-24h","targets":[{"repo":"o/a","language":"go"},{"repo":"p/a","language":"go"}]}`, "share the name"},
 		{"misspelt key", `{"policy":"published-24h","targets":[{"repo":"o/a","langauge":"go"}]}`, "unknown field"},
 		{"excluded and targeted", `{"policy":"published-24h","targets":[{"repo":"o/a","language":"go"}],"excluded":[{"repo":"o/a","reason":"x"}]}`, "both"},
+		{"pinned full", `{"policy":"published-24h","targets":[{"repo":"o/a","language":"go"}],"pinned":{"policy":"full","targets":[{"repo":"o/b","language":"python","ref":"0123456789abcdef0123456789abcdef01234567"}]}}`, ""},
+		{"pinned branch ref refused", `{"policy":"published-24h","targets":[{"repo":"o/a","language":"go"}],"pinned":{"policy":"full","targets":[{"repo":"o/b","language":"python","ref":"main"}]}}`, "full commit id"},
+		{"pinned short sha refused", `{"policy":"published-24h","targets":[{"repo":"o/a","language":"go"}],"pinned":{"policy":"full","targets":[{"repo":"o/b","language":"python","ref":"0123456"}]}}`, "full commit id"},
+		{"pinned no ref refused", `{"policy":"published-24h","targets":[{"repo":"o/a","language":"go"}],"pinned":{"policy":"full","targets":[{"repo":"o/b","language":"python"}]}}`, "full commit id"},
+		{"pinned no policy", `{"policy":"published-24h","targets":[{"repo":"o/a","language":"go"}],"pinned":{"targets":[{"repo":"o/b","language":"python","ref":"0123456789abcdef0123456789abcdef01234567"}]}}`, "pinned: policy"},
+		{"pinned no targets", `{"policy":"published-24h","targets":[{"repo":"o/a","language":"go"}],"pinned":{"policy":"full","targets":[]}}`, "pinned: no targets"},
+		{"pinned name collides with demo", `{"policy":"published-24h","targets":[{"repo":"o/a","language":"go"}],"pinned":{"policy":"full","targets":[{"repo":"p/a","language":"python","ref":"0123456789abcdef0123456789abcdef01234567"}]}}`, "share the name"},
+		{"pinned bad language", `{"policy":"published-24h","targets":[{"repo":"o/a","language":"go"}],"pinned":{"policy":"full","targets":[{"repo":"o/b","language":"cobol","ref":"0123456789abcdef0123456789abcdef01234567"}]}}`, "language"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parseTargets([]byte(tc.json))
@@ -190,17 +199,73 @@ func TestParseTargets(t *testing.T) {
 }
 
 func TestMatrixOutput(t *testing.T) {
-	tg, err := parseTargets([]byte(`{"policy":"published-24h","targets":[{"repo":"o/a","language":"python","ref":"baseline","include_house_canaries":true}]}`))
-	if err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name, json, want string
+	}{
+		{
+			"demo lane only",
+			`{"policy":"published-24h","targets":[{"repo":"o/a","language":"python","ref":"baseline","include_house_canaries":true}]}`,
+			`matrix={"include":[{"repo":"o/a","name":"a","language":"python","ref":"baseline","include_house_canaries":true,"policy":"published-24h"}]}` + "\npolicies=published-24h\n",
+		},
+		{
+			"pinned lane carries its policy",
+			`{"policy":"published-24h","targets":[{"repo":"o/a","language":"python","ref":"baseline"}],"pinned":{"policy":"full","targets":[{"repo":"o/b","language":"python","ref":"0123456789abcdef0123456789abcdef01234567"}]}}`,
+			`matrix={"include":[{"repo":"o/a","name":"a","language":"python","ref":"baseline","include_house_canaries":false,"policy":"published-24h"},{"repo":"o/b","name":"b","language":"python","ref":"0123456789abcdef0123456789abcdef01234567","include_house_canaries":false,"policy":"full"}]}` + "\npolicies=published-24h full\n",
+		},
+		{
+			"shared policy fetched once",
+			`{"policy":"published-7d","targets":[{"repo":"o/a","language":"go"}],"pinned":{"policy":"published-7d","targets":[{"repo":"o/b","language":"go","ref":"0123456789abcdef0123456789abcdef01234567"}]}}`,
+			`matrix={"include":[{"repo":"o/a","name":"a","language":"go","ref":"","include_house_canaries":false,"policy":"published-7d"},{"repo":"o/b","name":"b","language":"go","ref":"0123456789abcdef0123456789abcdef01234567","include_house_canaries":false,"policy":"published-7d"}]}` + "\npolicies=published-7d\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tg, err := parseTargets([]byte(tc.json))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := matrixOutput(tg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q\nwant %q", got, tc.want)
+			}
+		})
 	}
-	got, err := matrixOutput(tg)
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestQualifiedSets(t *testing.T) {
+	adv := func(v report.Verdict, id string, aliases ...string) report.AdvisoryFinding {
+		return report.AdvisoryFinding{Advisory: report.Advisory{ID: id, Aliases: aliases}, Verdict: v}
 	}
-	want := `matrix={"include":[{"repo":"o/a","name":"a","language":"python","ref":"baseline","include_house_canaries":true}]}` + "\npolicy=published-24h\n"
-	if got != want {
-		t.Errorf("got %q\nwant %q", got, want)
+	rc, mal, ne, und := report.VerdictReachableCandidate, report.VerdictMaliciousPresent, report.VerdictNotExploitable, report.VerdictUndetermined
+	for _, tc := range []struct {
+		name string
+		in   []report.AdvisoryFinding
+		want []string
+	}{
+		{"none", nil, []string{}},
+		{"an empty alias joins nothing", []report.AdvisoryFinding{adv(rc, "PYSEC-1", ""), adv(rc, "PYSEC-2", "")},
+			[]string{"PYSEC-1", "PYSEC-2"}},
+		{"one row, its aliases form one set", []report.AdvisoryFinding{adv(rc, "PYSEC-2016-15", "CVE-2016-2512", "GHSA-pw27-w7w4-9qc7")},
+			[]string{"CVE-2016-2512 / GHSA-pw27-w7w4-9qc7 / PYSEC-2016-15"}},
+		{"three rows of one advisory count once", []report.AdvisoryFinding{
+			adv(rc, "PYSEC-2016-15", "CVE-2016-2512"), adv(rc, "CVE-2016-2512"), adv(rc, "GHSA-pw27-w7w4-9qc7", "CVE-2016-2512")},
+			[]string{"CVE-2016-2512 / GHSA-pw27-w7w4-9qc7 / PYSEC-2016-15"}},
+		{"linked through a chain", []report.AdvisoryFinding{adv(rc, "A", "B"), adv(rc, "C", "D"), adv(rc, "B", "C")},
+			[]string{"A / B / C / D"}},
+		{"distinct advisories stay apart", []report.AdvisoryFinding{adv(rc, "CVE-1"), adv(mal, "MAL-1")},
+			[]string{"CVE-1", "MAL-1"}},
+		{"refuted and open verdicts are not qualified", []report.AdvisoryFinding{adv(ne, "CVE-1"), adv(und, "CVE-2"), adv(report.VerdictDisqualified, "CVE-3")},
+			[]string{}},
+		{"an unqualified alias row does not join a set", []report.AdvisoryFinding{adv(rc, "CVE-1"), adv(ne, "GHSA-1", "CVE-1", "CVE-9")},
+			[]string{"CVE-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := qualifiedSets(tc.in); !slices.Equal(got, tc.want) {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -272,7 +337,7 @@ func TestCheckSmoke(t *testing.T) {
 	}
 	for name, want := range map[string][]string{
 		"s.json": {`"schema": "ferralon.floor-summary.v1"`, `"pass": false`, `"ungrounded_not_exploitable"`, `"no_result"`, `"unverifiable"`},
-		"s.md": {"FAIL — 2 of 3 repos failed", "| dotnet | **no target** |", "| good | go | `0123456789ab` | published-24h | not_exploitable 1 · disqualified 1 · undetermined 1 | `advisory_symbol_absent` 1 | no | 1m15s | pass |",
+		"s.md": {"FAIL — 2 of 3 repos failed", "| dotnet | **no target** |", "| good | go | `0123456789ab` | published-24h | not_exploitable 1 · disqualified 1 · undetermined 1 | 0 | `advisory_symbol_absent` 1 | no | 1m15s | pass |",
 			"**bad** — `ungrounded_not_exploitable`: 1 not_exploitable without grounds: GO-2", "o/skip: no build files"},
 		"a.txt": {"failed on 2 of 3 demo repos", "• Run: https://example.test/run/9"},
 	} {
@@ -317,5 +382,51 @@ func TestShippedTargets(t *testing.T) {
 	}
 	if tg.Policy == unboundedPolicy {
 		t.Fatalf("shipped policy is %q", tg.Policy)
+	}
+	if tg.Pinned == nil || tg.Pinned.Policy != unboundedPolicy {
+		t.Fatalf("shipped pinned lane = %+v, want one on %q", tg.Pinned, unboundedPolicy)
+	}
+}
+
+func TestSummarizeLanes(t *testing.T) {
+	const pin = "0123456789abcdef0123456789abcdef01234567"
+	tg, err := parseTargets([]byte(`{"policy":"published-24h","targets":[{"repo":"o/demo","language":"python"}],
+"pinned":{"policy":"full","targets":[{"repo":"o/real","language":"python","ref":"` + pin + `"}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rcDemo := `{"advisory":{"id":"CVE-2024-22195","source":"osv"},"verdict":"reachable_candidate","evidence":{}}`
+	rcReal := `{"advisory":{"id":"PYSEC-2016-15","source":"osv","aliases":["CVE-2016-2512","GHSA-pw27-w7w4-9qc7"]},"verdict":"reachable_candidate","evidence":{}}`
+	rcRealDup := `{"advisory":{"id":"GHSA-pw27-w7w4-9qc7","source":"osv","aliases":["CVE-2016-2512"]},"verdict":"reachable_candidate","evidence":{}}`
+	results := map[string]*scanResult{
+		"o/demo": {meta: Meta{Repo: "o/demo", Outcome: "success", ExitCode: intp(0)}, report: []byte(reportJSON(rcDemo, "")), hasReport: true},
+		"o/real": {meta: Meta{Repo: "o/real", Outcome: "success", ExitCode: intp(0)}, report: []byte(reportJSON(rcReal+","+rcRealDup, "")), hasReport: true},
+	}
+	s := summarize(tg, results, "abc", "")
+	if !s.Pass || s.PinnedPolicy != "full" {
+		t.Fatalf("pass=%v pinned_policy=%q, want a passing run with pinned policy full", s.Pass, s.PinnedPolicy)
+	}
+	var py LanguageResult
+	for _, l := range s.Languages {
+		if l.Language == "python" {
+			py = l
+		}
+	}
+	if py.Targets != 2 || py.Qualified != 1 || py.PinnedQualified != 1 {
+		t.Errorf("python = %+v, want 2 targets, 1 demo and 1 pinned qualified alias set", py)
+	}
+	if got := s.Repos[1].Policy; got != "full" {
+		t.Errorf("pinned repo evaluated under %q, want full", got)
+	}
+	md := s.markdown()
+	for _, want := range []string{
+		"pinned real repos on `full`",
+		"| python | 2 | 2 | 0 | 1 | 1 |",
+		"| real@0123456789ab | python |",
+		"| 1: CVE-2016-2512 / GHSA-pw27-w7w4-9qc7 / PYSEC-2016-15 |",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown lacks %q:\n%s", want, md)
+		}
 	}
 }

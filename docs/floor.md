@@ -51,10 +51,11 @@ the summary counts it and lists its most common `undetermined_reason` codes.
    is scanned and the run is not marked failed.
 2. **Build the scanner.** One job builds the scanner, its analyzers and `floorcheck` from the
    triggering commit. It validates `floor/targets.json` (`floorcheck matrix`), then fetches the
-   corpus bundle for the policy, verifying its signature and digest with the same scripts
+   corpus bundle for each policy from one corpus release, verifying its signature and digest with the same scripts
    `action.yml` uses. Everything goes into one artifact that the scan jobs share.
 3. **Scan.** One job per target, in parallel, each with `timeout-minutes: 30`. Each job checks out
-   the repository with `FLOOR_DEMO_TOKEN`, sets up the toolchain that repository's own workflow
+   the repository (a demo repository with `FLOOR_DEMO_TOKEN`, a public one with the workflow's own
+   token), sets up the toolchain that repository's own workflow
    uses (Go from its `go.mod`, Java 11), and runs `floor/scan.sh`. The scanner's own limit is 22
    minutes, so it stops itself and publishes what it assessed. Each job records `meta.json`
    (scan outcome, exit code, duration, Assay commit) whatever happens.
@@ -65,9 +66,12 @@ the summary counts it and lists its most common `undetermined_reason` codes.
 5. **Alert.** If the build, a scan or the check failed and `FLOOR_SLACK_WEBHOOK` is set, the run
    posts at most four short bullets to Slack, ending with the run link.
 
-Every scan uses the corpus policy in `floor/targets.json`. Today that is `published-24h`, the
-policy each demo repository's own `ferralon-assay.yml` uses. `floorcheck` refuses `full`, so the
-run stays bounded. The scanner's GitHub surfaces (Issue, PR comment, code scanning) and the
+The demo targets use the corpus policy in `floor/targets.json`. Today that is `published-24h`, the
+policy each demo repository's own `ferralon-assay.yml` uses. `floorcheck` refuses `full` there,
+because a demo repository's default branch moves. The `pinned` lane holds real public repositories,
+each at a full commit id, under its own policy, today `full`. A fixed commit bounds the scan, so the
+lane measures what Assay finds on real code under the whole corpus; `floorcheck` refuses a pinned
+target whose ref is not a 40-hex commit. The same floor checks apply to both lanes. The scanner's GitHub surfaces (Issue, PR comment, code scanning) and the
 console link stay off: the job runs in this repository, not in the scanned one.
 
 ## Adding a target
@@ -107,11 +111,13 @@ The run uses no other secret. The workflow's own `GITHUB_TOKEN` is read-only
 
 The job summary (and `floor-summary.md` in the artifact) starts with **PASS** or **FAIL**, then:
 
-- **By language**: the number of targets per language and how many passed. A language marked
+- **By language**: the number of targets per language, how many passed, and the qualified findings
+  (`reachable_candidate`, `malicious_package_present`) on each lane, counted once per alias set per
+  repository, so a finding filed under PYSEC, CVE and GHSA ids counts once. A language marked
   **no target** has no demo repository yet. Today that is `kotlin`, `dotnet`, `cfamily` and `rust`.
   There is no .NET, Kotlin or Rust target today.
 - **By repo**: one row per target. The columns are the Assay commit the scanner was built from, the
-  corpus policy, verdict counts, the three most common `undetermined_reason` codes, whether the
+  corpus policy, verdict counts, the qualified alias sets, the three most common `undetermined_reason` codes, whether the
   scan was truncated, how long the scan took, and the result.
 - **Failures**: each failure kind with its details and the offending finding ids (advisory id and
   package).

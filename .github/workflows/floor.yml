@@ -1,7 +1,7 @@
 name: Floor run
 
-# The nightly floor run: scan every demo repository in floor/targets.json with the scanner built from
-# this commit, and fail on any not_exploitable finding without grounds, a disqualified finding on a
+# The nightly floor run: scan every repository in floor/targets.json (the demo repositories, and the
+# pinned lane of real repositories at fixed commits) with the scanner built from this commit, and fail on any not_exploitable finding without grounds, a disqualified finding on a
 # basis that cannot ground it, or a scan that failed, timed out or was cut short. The summary shows,
 # per language, what Assay returned on each repository. docs/floor.md is the reference: what the run
 # checks and why, how to add a target, the secrets and their scopes, and how to read the summary.
@@ -26,7 +26,8 @@ concurrency:
 
 env:
   # The corpus the demo repositories' own workflows read, and the signer its consumer documentation
-  # names (CONSUMING.md in the corpus repository). The policy comes from floor/targets.json.
+  # names (CONSUMING.md in the corpus repository). The policies come from floor/targets.json: the demo
+  # targets' policy, and the pinned lane's.
   CORPUS_REPO: ferralon-ai/vulnerability-corpus
   CORPUS_REF: main
   CORPUS_SIGNER_IDENTITY: ferralon-intel-publisher@ferralon.iam.gserviceaccount.com
@@ -70,7 +71,6 @@ jobs:
     timeout-minutes: 20
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
-      policy: ${{ steps.targets.outputs.policy }}
     steps:
       - uses: actions/checkout@v4
 
@@ -100,22 +100,28 @@ jobs:
           set -euo pipefail
           "$RUNNER_TEMP/floor-bin/floorcheck" matrix -targets floor/targets.json | tee -a "$GITHUB_OUTPUT"
 
-      # Fetched once so every repository is scanned against the same corpus release. The bundle is
+      # Fetched once, one bundle per policy, so every repository is scanned against the same corpus
+      # release: the first fetch resolves the release and the rest name its tag. Each bundle is
       # signature-checked and digest-pinned by the same scripts action.yml runs.
-      - name: Fetch the advisory corpus bundle
+      - name: Fetch the advisory corpus bundles
         env:
-          CORPUS_POLICY: ${{ steps.targets.outputs.policy }}
+          POLICIES: ${{ steps.targets.outputs.policies }}
         run: |
           set -euo pipefail
           dest="$RUNNER_TEMP/floor-bin/corpus"
           cosign_dir="$RUNNER_TEMP/floor-cosign"
           DEST="$cosign_dir" bash scripts/install-cosign.sh
-          PATH="$cosign_dir:$PATH" DEST="$dest" GITHUB_OUTPUT="$RUNNER_TEMP/corpus.out" \
-            bash scripts/fetch-corpus-bundle.sh
-          if [ ! -f "$dest/$CORPUS_POLICY.jsonl.gz" ] || [ ! -f "$dest/signals.json.gz" ]; then
-            echo "::error::The corpus release carries no verified $CORPUS_POLICY bundle and signals; the floor run reads only a verified bundle."
-            exit 1
-          fi
+          ref="$CORPUS_REF"
+          for policy in $POLICIES; do
+            out="$RUNNER_TEMP/corpus-$policy.out"
+            PATH="$cosign_dir:$PATH" DEST="$dest" CORPUS_REF="$ref" CORPUS_POLICY="$policy" GITHUB_OUTPUT="$out" \
+              bash scripts/fetch-corpus-bundle.sh
+            if [ ! -f "$dest/$policy.jsonl.gz" ] || [ ! -f "$dest/signals.json.gz" ]; then
+              echo "::error::The corpus release carries no verified $policy bundle and signals; the floor run reads only a verified bundle."
+              exit 1
+            fi
+            ref="$(sed -n 's/^git-ref=//p' "$out" | tail -n 1)"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -149,7 +155,8 @@ jobs:
         with:
           repository: ${{ matrix.repo }}
           ref: ${{ matrix.ref }}
-          token: ${{ secrets.FLOOR_DEMO_TOKEN }}
+          # The demo token reads the private demo repositories; the pinned lane's are public.
+          token: ${{ startsWith(matrix.repo, 'ferralon-demo/') && secrets.FLOOR_DEMO_TOKEN || github.token }}
           path: target
           persist-credentials: false
 
@@ -176,7 +183,7 @@ jobs:
           BIN_DIR: ${{ runner.temp }}/floor-bin
           TARGET_DIR: ${{ github.workspace }}/target
           OUT_DIR: ${{ runner.temp }}/floor-out
-          POLICY: ${{ needs.build.outputs.policy }}
+          POLICY: ${{ matrix.policy }}
           SUBJECT_REPO: ${{ matrix.repo }}
           REVISION: ${{ matrix.ref }}
           HOUSE_CANARIES: ${{ matrix.include_house_canaries }}
@@ -189,7 +196,7 @@ jobs:
         env:
           OUT_DIR: ${{ runner.temp }}/floor-out
           REPO: ${{ matrix.repo }}
-          POLICY: ${{ needs.build.outputs.policy }}
+          POLICY: ${{ matrix.policy }}
           OUTCOME: ${{ steps.scan.outcome }}
         run: |
           mkdir -p "$OUT_DIR"

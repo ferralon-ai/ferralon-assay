@@ -704,8 +704,15 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 		}
 		ws = cutWorkSet(ws, context.Cause(ctx))
 	}
-	if len(ws.advisories) == 0 && !f.choosesWork(enabled) {
-		return workSet{}, errEmptyWorkSet(acq.language)
+	if len(ws.advisories) == 0 {
+		if !f.choosesWork(enabled) {
+			return workSet{}, errEmptyWorkSet(acq.language)
+		}
+		// A corpus input chooses by dependency ecosystem; for a language with none, nothing could
+		// have matched, so an empty set is no work rather than a clean match.
+		if ecosystemForLanguage(acq.language) == "" {
+			return workSet{}, errNoAdvisoryEcosystem(acq.language)
+		}
 	}
 	return ws, nil
 }
@@ -729,6 +736,14 @@ func errEmptyWorkSet(language string) error {
 		"The scanner carries no advisories of its own; a work set comes from an advisory corpus: -advisory-corpus with -advisory-corpus-policy (or %s and %s; in the GitHub Action, the advisory-corpus or advisory-corpus-repo input with advisory-corpus-policy), "+
 		"or -osv-work-set (%s) to choose advisories from OSV.dev, which admits only those the corpus holds facts for. -include-house-canaries adds the first-party demo canaries",
 		language, envAdvisoryCorpusDir, envAdvisoryCorpusPolicy, envOSVWorkSet)
+}
+
+// errNoAdvisoryEcosystem is the run-halting error for a run whose corpus input could choose nothing
+// because the detected language has no advisory ecosystem to match its dependencies in.
+func errNoAdvisoryEcosystem(language string) error {
+	return fmt.Errorf("no work: the advisory corpus has no advisory ecosystem for this repository's language (%s), so no advisory could match its dependencies and the scan would emit a findings-free Report without having assessed anything. "+
+		"Corpus advisories are chosen by dependency ecosystem (Go, Maven, npm, PyPI, NuGet); -include-house-canaries adds the first-party demo canaries for languages that have them",
+		language)
 }
 
 // errNoFactSource is the run-halting error for a cve-watch run with no advisory corpus: every

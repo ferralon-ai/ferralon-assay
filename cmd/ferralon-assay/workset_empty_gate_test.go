@@ -65,6 +65,8 @@ func languageFixture(t *testing.T, language string) (file, content string) {
 		return "app.py", "x = 1\n"
 	case checkout.LangDotNet:
 		return "App.cs", "class App {}\n"
+	case checkout.LangCFamily:
+		return "main.c", "int main(void) { return 0; }\n"
 	}
 	t.Fatalf("no fixture for language %q", language)
 	return "", ""
@@ -161,9 +163,10 @@ func TestEmptyWorkSet_SuppliedInputMatchingNothingPublishes(t *testing.T) {
 		name       string
 		args       []string
 		java       bool // a Java tree with a one-coordinate inventory, for the OSV widening to query
+		cfamily    bool // a C-family tree, whose language has no advisory ecosystem
 		osv        []string
 		wantSource string
-		wantHalt   bool
+		wantHalt   string // the halt message's distinguishing text, or "" when the run publishes
 		wantNote   bool
 	}{
 		{name: "policy matches no dependency", args: []string{"-advisory-corpus", policyBundle, "-advisory-corpus-policy", "full"},
@@ -173,7 +176,12 @@ func TestEmptyWorkSet_SuppliedInputMatchingNothingPublishes(t *testing.T) {
 			java: true, osv: []string{"GHSA-not-in-the-corpus"}, wantSource: report.WorkSetOSVQuery, wantNote: true},
 		{name: "OSV unreachable", args: []string{"-osv-work-set=true", "-advisory-corpus", wireCorpus},
 			java: true, wantSource: report.WorkSetNone, wantNote: true},
-		{name: "corpus without a policy", args: []string{"-advisory-corpus", wireCorpus}, wantHalt: true},
+		{name: "corpus without a policy", args: []string{"-advisory-corpus", wireCorpus}, wantHalt: "no work"},
+		// Nothing could match a language with no advisory ecosystem, so the input is no work.
+		{name: "policy on a language with no advisory ecosystem", args: []string{"-advisory-corpus", policyBundle, "-advisory-corpus-policy", "full"},
+			cfamily: true, wantHalt: "no advisory ecosystem"},
+		{name: "OSV on a language with no advisory ecosystem", args: []string{"-osv-work-set=true", "-advisory-corpus", wireCorpus},
+			cfamily: true, wantHalt: "no advisory ecosystem"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(envAdvisoryCorpusDir, "")
@@ -190,18 +198,21 @@ func TestEmptyWorkSet_SuppliedInputMatchingNothingPublishes(t *testing.T) {
 				t.Fatalf("advisoryCorpusOption: %v", err)
 			}
 			var acq *acquired
-			if tc.java {
+			switch {
+			case tc.java:
 				acq = treeFor(t, checkout.LangJava, false)
 				acq.plugin = mavenInventoryPlugin{}
-			} else {
+			case tc.cfamily:
+				acq = treeFor(t, checkout.LangCFamily, false)
+			default:
 				acq = goFixture(t, fixtureGoMod)
 				acq.advisories = nil
 			}
 
 			ws, err := f.scanWorkSet(context.Background(), acq)
-			if tc.wantHalt {
-				if err == nil || !strings.Contains(err.Error(), "no work") {
-					t.Fatalf("a corpus with no policy chooses nothing; want the no-work halt, got %v", err)
+			if tc.wantHalt != "" {
+				if err == nil || !strings.Contains(err.Error(), "no work") || !strings.Contains(err.Error(), tc.wantHalt) {
+					t.Fatalf("the input chooses nothing; want the %q halt, got %v", tc.wantHalt, err)
 				}
 				return
 			}

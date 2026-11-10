@@ -1704,9 +1704,10 @@ func (s *launchScan) containerKeys(rel string, data []byte) {
 
 // keyedFile reports whether a non-Dockerfile sets a container's args, command or entrypoint: a
 // YAML, JSON or Jsonnet key, quoted or not, in any case and set with : or +:, at the start of a
-// line or a flow collection's entry; the same key set with = in an HCL, TOML or Starlark file; a
-// keyword argument set to a list in a Python file (Pulumi, CDK); a JSON patch path ending in
-// /args or /command, in a file with an op key; or a withArgs or withCommand call. An =
+// line or a flow collection's entry; the same key set with = in an HCL, TOML or Starlark file,
+// including as a call's first argument; in a Python file (Pulumi, CDK), a keyword argument set to
+// a list, or written key=value with no spaces as PEP 8 does; a JSON patch path ending in /args or
+// /command, in a file with an op key; or a withArgs or withCommand call, or its Mixin form. An =
 // assignment elsewhere (a Gradle bootRun block, a script's args variable) is not a container
 // key. appendable and containerKeys both read it, so they agree on what a key is.
 func keyedFile(rel string, data []byte) (args, command, entrypoint bool) {
@@ -1761,16 +1762,16 @@ var (
 	dockerEntrypoint           = regexp.MustCompile(`(?i)^\s*entrypoint\s`)
 	dockerEntrypointAny        = regexp.MustCompile(`(?im)^\s*entrypoint\s`)
 	dockerCmd                  = regexp.MustCompile(`(?im)^\s*cmd\s`)
-	containerArgs              = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?args["']?\s*\+?\s*:|\bwithArgs\s*\(`)
-	containerCommand           = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?command["']?\s*\+?\s*:|\bwithCommand\s*\(`)
+	containerArgs              = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?args["']?\s*\+?\s*:|\bwithArgs(?:Mixin)?\s*\(`)
+	containerCommand           = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?command["']?\s*\+?\s*:|\bwithCommand(?:Mixin)?\s*\(`)
 	containerEntrypoint        = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?entrypoint["']?\s*\+?\s*:`)
-	containerArgsAssign        = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?args["']?\s*\+?\s*=`)
-	containerCommandAssign     = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?command["']?\s*\+?\s*=`)
-	containerEntrypointAssign  = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?entrypoint["']?\s*\+?\s*=`)
+	containerArgsAssign        = regexp.MustCompile(`(?im)(?:^|[{,\[(])\s*["']?args["']?\s*\+?\s*=`)
+	containerCommandAssign     = regexp.MustCompile(`(?im)(?:^|[{,\[(])\s*["']?command["']?\s*\+?\s*=`)
+	containerEntrypointAssign  = regexp.MustCompile(`(?im)(?:^|[{,\[(])\s*["']?entrypoint["']?\s*\+?\s*=`)
 	containerArgsPath          = regexp.MustCompile(`(?i)path["']?\s*:\s*["']?/\S*/args\b`)
-	containerArgsKeyword       = regexp.MustCompile(`(?i)\bargs\s*=\s*\[`)
-	containerCommandKeyword    = regexp.MustCompile(`(?i)\bcommand\s*=\s*\[`)
-	containerEntrypointKeyword = regexp.MustCompile(`(?i)\bentry_?point\s*=\s*\[`)
+	containerArgsKeyword       = regexp.MustCompile(`(?im)\bargs\s*=\s*\[|(?:^|[,(])\s*args=[^=]`)
+	containerCommandKeyword    = regexp.MustCompile(`(?im)\bcommand\s*=\s*\[|(?:^|[,(])\s*command=[^=]`)
+	containerEntrypointKeyword = regexp.MustCompile(`(?im)\bentry_?point\s*=\s*\[|(?:^|[,(])\s*entry_?point=[^=]`)
 	containerCommandPath       = regexp.MustCompile(`(?i)path["']?\s*:\s*["']?/\S*/command\b`)
 	jsonPatchOp                = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?op["']?\s*:`)
 )

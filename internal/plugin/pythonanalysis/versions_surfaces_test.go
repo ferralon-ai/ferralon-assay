@@ -392,6 +392,14 @@ func TestResolveVersions_ScriptSurfaceNarrowed(t *testing.T) {
 		{"control: python3.11 then python3.12", tree(map[string]string{"Dockerfile": docker + "python3.11 -m pip install black && python3.12 -m pip install -r requirements.txt\n"}), nil, append(all, "black")},
 		{"control: pip then pip3", tree(map[string]string{"Dockerfile": docker + "pip install black && pip3 install -r requirements.txt\n"}), nil, append(all, "black")},
 		{"control: pip then python -m pip", tree(map[string]string{"Dockerfile": docker + "pip install black && python -m pip install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: a venv pip then PATH pip", tree(map[string]string{"Dockerfile": docker + "/opt/venv/bin/pip install black && pip install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: a venv python -m pip then PATH python", tree(map[string]string{"Dockerfile": docker + "/opt/venv/bin/python -m pip install black && python -m pip install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: an absolute pip3 then PATH pip3", tree(map[string]string{"Dockerfile": docker + "/usr/bin/pip3 install black && pip3 install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: two absolute pip3 paths", tree(map[string]string{"Dockerfile": docker + "/usr/local/bin/pip3 install black && /usr/bin/pip3 install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: --user on the tool only", tree(map[string]string{"Dockerfile": docker + "pip install --user black && pip install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: --user on the requirements only", tree(map[string]string{"Dockerfile": docker + "pip install black && pip install --user -r requirements.txt\n"}), nil, append(all, "black")},
+		{"one installer through one absolute path", tree(map[string]string{"Dockerfile": docker + "/opt/venv/bin/pip install black && /opt/venv/bin/pip install -r requirements.txt\n"}), []string{"jinja2"}, []string{"flask", "pip", "black"}},
+		{"one installer through --user", tree(map[string]string{"Dockerfile": docker + "pip install --user black && pip install --user -r requirements.txt\n"}), []string{"jinja2"}, []string{"flask", "pip", "black"}},
 		{"control: a pip config named", tree(map[string]string{"Dockerfile": "FROM python:3.12\n# pip reads /etc/pip.conf\n" + chain[len("FROM python:3.12\n"):]}), nil, all},
 	}
 	for _, tt := range tests {

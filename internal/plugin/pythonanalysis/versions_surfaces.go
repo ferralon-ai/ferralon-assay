@@ -277,21 +277,30 @@ type toolStep struct {
 	installer string
 }
 
-// pipInstaller returns the words before install in a pip install, the program named by
-// scriptsurface.CommandName: pip3, or python3.11 -m pip. Two installs share an environment only
-// when it can show they do, so pip, pip3 and python -m pip are each their own installer. It is
+// pipInstaller returns the program as written before install in a pip install, with --user
+// when the install carries it: pip3, /opt/venv/bin/pip, python3.11 -m pip. Two installs share an
+// environment only when it can show they do, so pip, pip3, python -m pip, and two paths to one
+// base name are each their own installer, and --user on one install only is another. It is
 // empty when words is no pip install it reads.
 func pipInstaller(words []string) string {
 	head, ok := scriptsurface.CommandName(words[0])
+	var id string
 	switch {
 	case !ok:
 		return ""
 	case pipHeadRE.MatchString(head) && len(words) >= 2 && words[1] == "install":
-		return head
+		id = words[0]
 	case pythonHeadRE.MatchString(head) && len(words) >= 4 && words[1] == "-m" && pipHeadRE.MatchString(words[2]) && words[3] == "install":
-		return head + " -m " + words[2]
+		id = words[0] + " -m " + words[2]
+	default:
+		return ""
 	}
-	return ""
+	for _, w := range words {
+		if w == "--user" {
+			return id + " --user"
+		}
+	}
+	return id
 }
 
 // allowed notes a command the rule allows.

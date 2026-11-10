@@ -29,11 +29,19 @@ def assayOut = System.getProperty('assay.out')
 // read inside the closure instead.
 def rootOf = { cfg ->
     def rr = cfg.incoming.resolutionResult
-    rr.metaClass.respondsTo(rr, 'getRootComponent') ? { -> rr.rootComponent.get() } : { -> rr.root }
+    if (rr.metaClass.respondsTo(rr, 'getRootComponent')) {
+        def root = rr.rootComponent
+        return { -> root.get() }
+    }
+    return { -> rr.root }
 }
 def artifactsOf = { cfg ->
     def view = cfg.incoming.artifactView { lenient(false) }.artifacts
-    view.metaClass.respondsTo(view, 'getResolvedArtifacts') ? { -> view.resolvedArtifacts.get() } : { -> view.artifacts }
+    if (view.metaClass.respondsTo(view, 'getResolvedArtifacts')) {
+        def artifacts = view.resolvedArtifacts
+        return { -> artifacts.get() }
+    }
+    return { -> view.artifacts }
 }
 def gradleVersion = gradle.gradleVersion
 def javaVersion = System.getProperty('java.version')

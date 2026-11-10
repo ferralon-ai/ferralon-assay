@@ -110,7 +110,7 @@ func TestClosureStoreForKey(t *testing.T) {
 		reasons []string
 		linked  bool
 	}
-	base := in{key: "k", classes: []classfile.Class{{Name: "com/acme/App"}}, graph: `{"a":1}`, mains: []string{"com/acme/App"}, linked: true}
+	base := in{key: "k", classes: []classfile.Class{{Name: "com/acme/App\xed\xa0\xbd\xed\xb8\x80"}}, graph: `{"a":1}`, mains: []string{"com/acme/App"}, linked: true}
 	keyOf := func(v in) string {
 		t.Helper()
 		writeFileT(t, graph, v.graph)
@@ -129,7 +129,8 @@ func TestClosureStoreForKey(t *testing.T) {
 		mod  func(*in)
 	}{
 		{"engine inputs", func(v *in) { v.key = "k2" }},
-		{"first-party class", func(v *in) { v.classes = []classfile.Class{{Name: "com/acme/App", Abstract: true}} }},
+		{"first-party class", func(v *in) { v.classes = []classfile.Class{{Name: v.classes[0].Name, Abstract: true}} }},
+		{"class name in modified UTF-8", func(v *in) { v.classes = []classfile.Class{{Name: "com/acme/App\xed\xa0\xbd\xed\xb8\x81"}} }},
 		{"build graph", func(v *in) { v.graph = `{"a":2}` }},
 		{"launch mains", func(v *in) { v.mains = []string{"com/acme/Other"} }},
 		{"launch reasons", func(v *in) { v.reasons = []string{"r"} }},
@@ -340,6 +341,7 @@ func TestFirstPartyFingerprint(t *testing.T) {
 			c[0].Methods[0].StaticFieldRefs = []classfile.FieldRef{{Owner: "com/acme/Cfg", Name: "x", Descriptor: "I"}}
 		}},
 		{"bootstrap target", func(c []classfile.Class) { c[0].Methods[0].Edges[0].Bootstrap.Args[0].Handle.Ref.Name = "other" }},
+		{"bootstrap present", func(c []classfile.Class) { c[0].Methods[0].Edges[0].Bootstrap = nil }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -349,5 +351,52 @@ func TestFirstPartyFingerprint(t *testing.T) {
 				t.Errorf("changing the %s keeps the fingerprint", tc.name)
 			}
 		})
+	}
+	// Class files hold modified UTF-8: a supplementary character is a surrogate pair, which a
+	// text encoding rewrites to U+FFFD, so two such names would otherwise fingerprint alike.
+	t.Run("names apart only in modified UTF-8", func(t *testing.T) {
+		named := func(name string) string {
+			c := classes()
+			c[0].Methods[1].Ref.Name = name
+			return firstPartyFingerprint(c)
+		}
+		if named("lambda\xed\xa0\xbd\xed\xb8\x80") == named("lambda\xed\xa0\xbd\xed\xb8\x81") {
+			t.Error("two names apart only in their surrogate bytes fingerprint alike")
+		}
+	})
+}
+
+func TestExactEncoding(t *testing.T) {
+	type pair struct{ A, B string }
+	type opt struct {
+		P *pair
+		S []string
+	}
+	tests := []struct {
+		name string
+		a, b any
+	}{
+		{"string boundary", pair{"ab", "c"}, pair{"a", "bc"}},
+		{"raw bytes", pair{A: "\xc0\x80"}, pair{A: "\xc0\x81"}},
+		{"nil and empty slice", opt{S: nil}, opt{S: []string{}}},
+		{"nil and zero pointer", opt{P: nil}, opt{P: &pair{}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a, errA := exactEncoding(tc.a)
+			b, errB := exactEncoding(tc.b)
+			if errA != nil || errB != nil {
+				t.Fatalf("encode: %v %v", errA, errB)
+			}
+			if bytes.Equal(a, b) {
+				t.Errorf("%+v and %+v encode alike", tc.a, tc.b)
+			}
+			if again, _ := exactEncoding(tc.a); !bytes.Equal(again, a) {
+				t.Error("encoding is not stable")
+			}
+		})
+	}
+	if _, err := exactEncoding(struct{ M map[string]int }{}); err == nil {
+		t.Error("a map encoded; its order is not fixed")
 	}
 }

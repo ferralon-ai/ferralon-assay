@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -319,7 +318,7 @@ func mergeReleases(built *reachClosure, all []classfile.Class, gavs []gav, versi
 func firstPartyFingerprint(classes []classfile.Class) string {
 	lines := make([]string, 0, len(classes))
 	for _, c := range classes {
-		b, err := json.Marshal(c)
+		b, err := exactEncoding(c)
 		if err != nil {
 			nonce := make([]byte, 16)
 			_, _ = rand.Read(nonce)
@@ -328,8 +327,11 @@ func firstPartyFingerprint(classes []classfile.Class) string {
 		lines = append(lines, string(b))
 	}
 	sort.Strings(lines)
-	h := sha256.Sum256([]byte(strings.Join(lines, "\n")))
-	return hex.EncodeToString(h[:])
+	h := sha256.New()
+	for _, l := range lines {
+		fmt.Fprintf(h, "%d:%s", len(l), l)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // concrete reports whether the closure holds a body for ref: declared in loaded code and

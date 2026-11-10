@@ -64,7 +64,7 @@ func closureStoreFor(ctx context.Context, rc *reachClosure, fp *firstPartyByteco
 	if dir, _ := ctx.Value(runCacheDirKey{}).(string); dir == "" {
 		return nil
 	}
-	classes, err := json.Marshal(fp.classes)
+	classes, err := exactEncoding(fp.classes)
 	if err != nil {
 		return nil
 	}

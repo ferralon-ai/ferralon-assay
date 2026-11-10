@@ -1,6 +1,7 @@
 package buildgraph
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -211,10 +212,29 @@ func TestUnion(t *testing.T) {
 	gradle.Subject.Outputs = []string{"build"}
 	addCopy(gradle, "g:root", ".", "g:root:jar:1")
 
-	if got := Union(maven); got != maven {
+	if got, err := Union(maven); err != nil || got != maven {
 		t.Error("Union of one graph is not that graph")
 	}
-	u := Union(maven, gradle)
+	if _, err := Union(); err == nil {
+		t.Error("Union of no graphs succeeded")
+	}
+	if _, err := Union(maven, validGraph()); err == nil {
+		t.Error("Union of two maven graphs succeeded")
+	}
+	u, err := Union(maven, gradle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err := Union(gradle, maven); err != nil || r.Complete {
+		t.Errorf("Union(incomplete, complete).Complete = %v (err %v), want false", r != nil && r.Complete, err)
+	}
+	if b, err := json.Marshal(u.Modules[0]); err != nil || strings.Contains(string(b), `"tool"`) {
+		t.Errorf("a union module encodes its tool: %s", b)
+	}
+	var decoded Module
+	if err := json.Unmarshal([]byte(`{"id":"m","tool":"gradle"}`), &decoded); err != nil || decoded.Tool != "" {
+		t.Errorf("a graph file set Module.Tool to %q", decoded.Tool)
+	}
 	var ids, copyOf []string
 	for _, m := range u.Modules {
 		ids = append(ids, m.ID)

@@ -8,6 +8,7 @@ package buildgraph
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -122,8 +123,9 @@ type Module struct {
 	// archives name or a publication's own artifactId.
 	Aliases []string `json:"aliases,omitempty"`
 	// Tool is the build tool that resolved the module, set only in a Union of graphs from
-	// different tools; empty, it is the graph's Tool.
-	Tool string `json:"tool,omitempty"`
+	// different tools; empty, it is the graph's Tool. It is never read from or written to a
+	// graph file, so a file cannot claim a second tool's build is covered.
+	Tool string `json:"-"`
 }
 
 // ClasspathCopyID is the ID of project's copy for classpath.
@@ -303,10 +305,21 @@ func (g *Graph) Validate() string {
 // listing both builds. Each module's ID and CopyOf gain its tool as a prefix and its Tool is set,
 // so the builds' modules stay distinct; the subject's inputs and outputs are the union; Complete
 // holds only when every graph is complete. The result is for reading in memory, not for writing
-// or validating: its Tool is the first graph's. A single graph is returned as it is.
-func Union(gs ...*Graph) *Graph {
+// or validating: its Tool is the first graph's. A single graph is returned as it is. It fails on
+// no graphs, or on two graphs from one tool, whose modules would collide.
+func Union(gs ...*Graph) (*Graph, error) {
+	if len(gs) == 0 {
+		return nil, errors.New("buildgraph: union of no graphs")
+	}
 	if len(gs) == 1 {
-		return gs[0]
+		return gs[0], nil
+	}
+	tools := map[string]bool{}
+	for _, g := range gs {
+		if tools[g.Tool.Name] {
+			return nil, fmt.Errorf("buildgraph: union of two %s graphs", g.Tool.Name)
+		}
+		tools[g.Tool.Name] = true
 	}
 	u := *gs[0]
 	u.Modules, u.Commands, u.Sidecars, u.Incomplete = nil, nil, nil, nil
@@ -345,7 +358,7 @@ func Union(gs ...*Graph) *Graph {
 	u.Subject.UnbindableIncludedBuilds = sortedUnique(u.Subject.UnbindableIncludedBuilds)
 	u.Normalize()
 	u.Subject.InputsDigest = InputsDigest(u.Subject.Inputs)
-	return &u
+	return &u, nil
 }
 
 // Tools are the build tools that resolved g's modules, in order: a Union's tools, else g's own.

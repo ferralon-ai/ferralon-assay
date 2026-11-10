@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -351,6 +352,22 @@ func TestAcquireBuildGraph_Dual(t *testing.T) {
 			}
 			if len(files) != tc.wantFiles || partial != tc.wantPartial || cause != tc.wantCause || (g.err() != nil) != (tc.wantCause != "") {
 				t.Fatalf("files %v partial %q cause %q err %v; want %d files, partial %q, cause %q", files, partial, cause, g.err(), tc.wantFiles, tc.wantPartial, tc.wantCause)
+			}
+		})
+	}
+	// A stated tool is the only one resolved, though the root holds both builds.
+	for _, stated := range []string{buildgraph.ToolMaven, buildgraph.ToolGradle} {
+		t.Run("stated "+stated, func(t *testing.T) {
+			var tools []string
+			resolveTool = func(_ context.Context, r buildgraph.Request) (*buildgraph.Graph, error) {
+				tools = append(tools, r.Tool)
+				return graphOf(r.Tool), nil
+			}
+			t.Cleanup(func() { resolveTool = buildgraph.Resolve })
+			g, cleanup := acquireBuildGraph(context.Background(), dir, graphRequest{mode: buildGraphAuto, tool: stated})
+			defer cleanup()
+			if !reflect.DeepEqual(tools, []string{stated}) || strings.ContainsRune(g.file, os.PathListSeparator) || g.partial != nil {
+				t.Fatalf("resolved with %v, file %q, partial %v; want %s alone", tools, g.file, g.partial, stated)
 			}
 		})
 	}

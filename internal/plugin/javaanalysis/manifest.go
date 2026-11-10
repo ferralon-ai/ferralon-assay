@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -77,26 +78,30 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 		return res, nil
 	}
 
-	for _, tool := range g.Tools() {
-		switch tool {
-		case "maven":
-			res.Resolvers = append(res.Resolvers, plugin.ResolverSpec{Name: "maven", Command: "mvn -o -DskipTests package", Source: plugin.RuntimeSourceAmbient})
-		case "gradle":
-			res.Resolvers = append(res.Resolvers, plugin.ResolverSpec{Name: "gradle", Command: "gradle --offline assemble", Source: plugin.RuntimeSourceAmbient})
-		}
+	// With both builds at the root, Maven's is listed first and names the project, as a scan of
+	// the POM alone would.
+	tools := g.Tools()
+	if slices.Contains(tools, "maven") {
+		res.Resolvers = append(res.Resolvers, plugin.ResolverSpec{Name: "maven", Command: "mvn -o -DskipTests package", Source: plugin.RuntimeSourceAmbient})
+	}
+	if slices.Contains(tools, "gradle") {
+		res.Resolvers = append(res.Resolvers, plugin.ResolverSpec{Name: "gradle", Command: "gradle --offline assemble", Source: plugin.RuntimeSourceAmbient})
 	}
 	var members []string
 	seen := map[string]bool{}
 	for _, m := range g.Modules {
-		if _, isCopy := m.Project(); isCopy || seen[m.Path] {
+		if _, isCopy := m.Project(); isCopy {
+			continue
+		}
+		if m.Path == "." && (res.ProjectRoot == "." || m.Tool == "maven") {
+			// A Union prefixes the module ID with its tool; the root is named as its build names it.
+			res.ProjectRoot = strings.TrimPrefix(m.ID, m.Tool+"/")
+		}
+		if seen[m.Path] {
 			continue
 		}
 		seen[m.Path] = true
 		members = append(members, m.Path)
-		if m.Path == "." {
-			// A Union prefixes the module ID with its tool; the root is named as its build names it.
-			res.ProjectRoot = strings.TrimPrefix(m.ID, m.Tool+"/")
-		}
 	}
 	sort.Strings(members)
 

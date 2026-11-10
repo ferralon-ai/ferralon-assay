@@ -98,7 +98,11 @@ func TestOtherToolBuild_Union(t *testing.T) {
 	if !OtherToolBuild(maven, dir) || !OtherToolBuild(gradle, dir) {
 		t.Fatal("a single tool's graph covers the other tool's build")
 	}
-	if OtherToolBuild(buildgraph.Union(maven, gradle), dir) {
+	u, err := buildgraph.Union(maven, gradle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if OtherToolBuild(u, dir) {
 		t.Error("OtherToolBuild = true for the union of both tools' graphs")
 	}
 }
@@ -115,9 +119,12 @@ func TestUnionReads(t *testing.T) {
 	gson := func(jar string) graphDep {
 		return graphDep{group: "com.google.code.gson", artifact: "gson", version: "2.10.1", jar: jar}
 	}
+	// Gradle names the root project ":"; Maven names it by its coordinate.
+	groot := testModule(t, ".", "app", gson(gcache))
+	groot.ID = ":"
 	opt := unionOption(t, map[string][]buildgraph.Module{
 		"maven":  {testModule(t, ".", "app", gson(m2))},
-		"gradle": {testModule(t, ".", "app", gson(gcache))},
+		"gradle": {groot},
 	})
 	g := BuildGraph(opt)
 	if g == nil {
@@ -151,8 +158,8 @@ func TestUnionReads(t *testing.T) {
 	for _, r := range res.Resolvers {
 		resolvers = append(resolvers, r.Name)
 	}
-	if !reflect.DeepEqual(resolvers, []string{"gradle", "maven"}) || res.ProjectRoot != "com.example:app" {
-		t.Errorf("resolvers %v, project root %q; want both tools and the root module's own ID", resolvers, res.ProjectRoot)
+	if !reflect.DeepEqual(resolvers, []string{"maven", "gradle"}) || res.ProjectRoot != "com.example:app" {
+		t.Errorf("resolvers %v, project root %q; want Maven first and Maven's root module ID", resolvers, res.ProjectRoot)
 	}
 }
 

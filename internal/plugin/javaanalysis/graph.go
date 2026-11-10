@@ -175,7 +175,7 @@ func decodeGraphs(file string) (*buildgraph.Graph, error) {
 		}
 		gs = append(gs, g)
 	}
-	return buildgraph.Union(gs...), nil
+	return buildgraph.Union(gs...)
 }
 
 // moduleRoots returns the root node id of every module: the reactor's own projects, which a

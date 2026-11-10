@@ -112,8 +112,9 @@ type launchScan struct {
 	// directory a -jar glob matches in (jarCopyHazards), so the glob can match a JAR the build
 	// does not produce.
 	copyInto map[string]bool
-	// finalNames are the literal <finalName> values in the tree's POMs.
-	finalNames []string
+	// finalNames are the literal <finalName> values in the tree's POMs, keyed by the POM's
+	// directory.
+	finalNames map[string][]string
 }
 
 // ownJarRef is a -jar operand ownJarOperand took for the build's own artifact. tool is the tool
@@ -1568,7 +1569,7 @@ func (f *launchFile) ownJarOperand(t launchToken) bool {
 	if f.pom {
 		rest = xmlTag.ReplaceAllString(rest, " ")
 	} else if end := strings.TrimRight(rest, " \t\r"); strings.HasSuffix(end, "\\") || strings.HasSuffix(end, "^") ||
-		strings.ContainsRune(rest, '`') || f.dockerCmdAppends(t) {
+		strings.ContainsRune(rest, '`') || f.dockerCmdAppends(t) || f.yamlArgsAppend() {
 		return false
 	}
 	words := strings.FieldsFunc(rest, ownJarDelim)
@@ -1623,9 +1624,23 @@ func (f *launchFile) dockerCmdAppends(t launchToken) bool {
 	return dockerEntrypoint.MatchString(f.line(f.lineOf(t.start))) && dockerCmd.Match(f.data)
 }
 
+// yamlArgsAppend reports whether f is a YAML file that can pass a launch arguments it does not
+// show on the launch's line: a Kubernetes container's args, which follow its command, or a
+// Compose service with both an entrypoint and a command, which follows the entrypoint.
+func (f *launchFile) yamlArgsAppend() bool {
+	base := strings.ToLower(path.Base(f.rel))
+	if !strings.HasSuffix(base, ".yml") && !strings.HasSuffix(base, ".yaml") {
+		return false
+	}
+	return yamlArgs.Match(f.data) || yamlEntrypoint.Match(f.data) && yamlCommand.Match(f.data)
+}
+
 var (
 	dockerEntrypoint = regexp.MustCompile(`(?i)^\s*entrypoint\s`)
 	dockerCmd        = regexp.MustCompile(`(?im)^\s*cmd\s`)
+	yamlArgs         = regexp.MustCompile(`(?m)^[\s-]*args\s*:`)
+	yamlEntrypoint   = regexp.MustCompile(`(?m)^[\s-]*entrypoint\s*:`)
+	yamlCommand      = regexp.MustCompile(`(?m)^[\s-]*command\s*:`)
 )
 
 // ownJarDir is the module directory, "." or a relative slash path, that segs name.
@@ -1688,14 +1703,16 @@ func (s *launchScan) jarHazards(rel string, data []byte) {
 }
 
 var (
-	// jarPomOutput is a POM plugin's output directory; jarPomFinalName a literal artifact name.
-	jarPomOutput    = regexp.MustCompile(`<outputDirectory>\s*([^<]*?)\s*</outputDirectory>`)
+	// jarPomOutput is a POM plugin's output directory, or an Ant copy's target directory;
+	// jarPomFinalName a literal artifact name.
+	jarPomOutput    = regexp.MustCompile(`(?i)<outputDirectory>\s*([^<]*?)\s*</outputDirectory>|\btodir\s*=\s*["']([^"']*)["']`)
 	jarPomFinalName = regexp.MustCompile(`<finalName>\s*([A-Za-z0-9._+-]+)\s*</finalName>`)
 	// jarPomSubdir is an output directory below target/ or of no build output at all, which a
-	// target/*.jar glob does not match in.
+	// target/*.jar glob does not match in, unless it is target itself (pomCopiesIntoTarget).
 	jarPomSubdir = regexp.MustCompile(`^(?:\$\{(?:project\.build\.directory|project\.basedir|basedir)\}/|target/)?[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/?$`)
-	// jarGradleIntoLibs is a Gradle copy into a libs directory.
-	jarGradleIntoLibs = regexp.MustCompile(`\binto\b[^\n]*\blibs\b`)
+	// jarGradleIntoLibs is a Gradle copy into a libs directory: libs, libsDir, libsDirectory,
+	// its argument on the line or the next.
+	jarGradleIntoLibs = regexp.MustCompile(`(?i)\binto\b\s*\(?\s*[^\n]*libs`)
 )
 
 // jarCopyHazards records the tools whose build files copy into the directory a -jar glob of the
@@ -1708,18 +1725,35 @@ func (s *launchScan) jarCopyHazards(rel string, data []byte) {
 	switch {
 	case base == "pom.xml":
 		for _, m := range jarPomOutput.FindAllSubmatch(data, -1) {
-			if d := string(m[1]); !jarPomSubdir.MatchString(d) || strings.Contains(d, "..") || d == "target" || d == "target/" {
+			if pomCopiesIntoTarget(string(m[1]) + string(m[2])) {
 				s.copyInto["maven"] = true
 			}
 		}
+		if s.finalNames == nil {
+			s.finalNames = map[string][]string{}
+		}
+		dir := path.Dir(rel)
 		for _, m := range jarPomFinalName.FindAllSubmatch(data, -1) {
-			s.finalNames = append(s.finalNames, string(m[1]))
+			s.finalNames[dir] = append(s.finalNames[dir], string(m[1]))
 		}
 	case strings.HasSuffix(base, ".gradle") || strings.HasSuffix(base, ".gradle.kts"):
 		if jarGradleIntoLibs.Match(data) {
 			s.copyInto["gradle"] = true
 		}
 	}
+}
+
+// pomCopiesIntoTarget reports whether a POM output directory d can be the directory a
+// target/*.jar glob matches in: anything but a plain subdirectory below target/ or the project
+// directory.
+func pomCopiesIntoTarget(d string) bool {
+	if !jarPomSubdir.MatchString(d) || strings.Contains(d, "..") {
+		return true
+	}
+	for _, p := range []string{"${project.basedir}/", "${basedir}/", "./"} {
+		d = strings.TrimPrefix(d, p)
+	}
+	return strings.TrimSuffix(d, "/") == "target"
 }
 
 // settleOwnJars withholds Searched for the -jar launches ownJarOperand accepted when the build can
@@ -1758,7 +1792,7 @@ func (s *launchScan) ownJarProduced(g *buildgraph.Graph, r ownJarRef) bool {
 			return true
 		case strings.Contains(r.name, "*"):
 			return !s.copyInto[r.tool]
-		case ownArtifactName(r.name, s.artifactStems(m, tool)):
+		case ownArtifactName(r.name, s.artifactStems(m, tool, r.tool != "")):
 			return true
 		}
 	}
@@ -1767,8 +1801,9 @@ func (s *launchScan) ownJarProduced(g *buildgraph.Graph, r ownJarRef) bool {
 
 // artifactStems are the file names, without .jar, a module's tool gives its artifact:
 // artifactId-version, under each Gradle alias too, an unversioned name for a Gradle project
-// without a version, and the POMs' literal finalNames.
-func (s *launchScan) artifactStems(m buildgraph.Module, tool string) []string {
+// without a version when the launch names its output directory (inOutput), and the literal
+// finalNames of the module's own POM.
+func (s *launchScan) artifactStems(m buildgraph.Module, tool string, inOutput bool) []string {
 	var stems []string
 	for _, nd := range m.Nodes {
 		if nd.ID != m.Root || nd.Artifact == "" {
@@ -1784,13 +1819,13 @@ func (s *launchScan) artifactStems(m buildgraph.Module, tool string) []string {
 			switch {
 			case nd.Version != "" && nd.Version != "unspecified":
 				stems = append(stems, a+"-"+nd.Version)
-			case tool == "gradle":
+			case tool == "gradle" && inOutput:
 				stems = append(stems, a)
 			}
 		}
 	}
 	if tool == "maven" {
-		stems = append(stems, s.finalNames...)
+		stems = append(stems, s.finalNames[m.Path]...)
 	}
 	return stems
 }

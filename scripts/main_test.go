@@ -8,8 +8,13 @@ import (
 )
 
 // TestMain drops the repository-locating git variables a hook or `git rebase --exec` leaves in
-// the environment, so code under test that execs git cannot reach the enclosing repository.
+// the environment, so code under test that execs git cannot reach the enclosing repository. It
+// removes the shared pr-ready-check template repository after the run.
 func TestMain(m *testing.M) {
 	gittest.ScrubProcess()
-	os.Exit(m.Run())
+	code := m.Run()
+	if prReadyTpl != "" {
+		os.RemoveAll(prReadyTpl)
+	}
+	os.Exit(code)
 }

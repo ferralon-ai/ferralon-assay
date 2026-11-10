@@ -150,6 +150,26 @@ func TestReachability_RoutesIntoMissingPackage(t *testing.T) {
 			return [][]byte{ilNewobjOp(mtok(xMethodDef, fm[0])), ilCallvirt(mtok(xMethodDef, rm[0]))}
 		}
 	}
+	// bridgedDIM: App.IRun.Run, called through the interface on Foo, which declares only
+	// Gone.W.IThing (IDisposable when framework); the missing interface can extend IRun
+	// and supply its default Run. Foo declares Run itself only when fills.
+	bridgedDIM := func(fills, framework bool) func(c *mrCtx) [][]byte {
+		return func(c *mrCtx) [][]byte {
+			a := c.a
+			_, rm := a.addType(0xA1, "IRun", "App", 0, []mspec{{name: "Run", flags: 0x5C6, sig: sigInstVoid}})
+			ms := []mspec{{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()}}
+			if fills {
+				ms = append(ms, mspec{name: "Run", flags: fIfaceImpl, sig: sigInstVoid, il: body()})
+			}
+			foo, fm := a.addType(0, "Foo", "App", a.obj, ms)
+			if framework {
+				a.implements(foo, "System", "IDisposable")
+			} else {
+				a.row(xInterfaceImpl, foo, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
+			}
+			return [][]byte{ilNewobjOp(mtok(xMethodDef, fm[0])), ilCallvirt(mtok(xMethodDef, rm[0]))}
+		}
+	}
 	staticGoneS := func(c *mrCtx) uint32 {
 		return mtok(xField, c.a.row(xField, 0x16, c.a.str("s"), c.a.blob(append([]byte{0x06}, mrValue(c.gstruct)...))))
 	}
@@ -336,6 +356,17 @@ func TestReachability_RoutesIntoMissingPackage(t *testing.T) {
 		{"in-set interface slot, missing interface reached through an in-set one", inSetIfaceDIM(false, true, false), false},
 		{"in-set interface slot the type fills itself: searched", inSetIfaceDIM(true, false, false), true},
 		{"in-set interface slot paired only with a framework interface: searched", inSetIfaceDIM(false, false, true), true},
+		{"in-set interface slot reached only through a missing interface", bridgedDIM(false, false), false},
+		{"in-set interface slot reached only through a missing interface, type fills it: searched", bridgedDIM(true, false), true},
+		{"class with only a framework interface, called through an in-set interface: searched", bridgedDIM(false, true), true},
+		{"in-set class slot reached only through a missing base class", func(c *mrCtx) [][]byte {
+			a := c.a
+			_, bm := a.addType(0x81, "Base", "App", a.obj, []mspec{{name: "Run", flags: 0x1C6, sig: sigInstVoid}})
+			gbase := a.extTypeRefScoped(c.gone, "W", "Base")
+			ctor := body([]byte{0x02}, ilCall(a.memberRef(gbase, ".ctor", sigInstVoid)))
+			_, fm := a.addType(0, "Foo", "App", cTypeDefOrRef(xTypeRef, gbase), []mspec{{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: ctor}})
+			return [][]byte{ilNewobjOp(mtok(xMethodDef, fm[0])), ilCallvirt(mtok(xMethodDef, bm[0]))}
+		}, false},
 		{"box a framework struct: searched", func(c *mrCtx) [][]byte {
 			return [][]byte{mrOp([]byte{0x8C}, mtok(xTypeRef, c.a.extTypeRef("System", "Int32"))), ilCallvirt(c.a.fwRef("System", "Object", "GetHashCode", getHashCode)), mrPop}
 		}, true},

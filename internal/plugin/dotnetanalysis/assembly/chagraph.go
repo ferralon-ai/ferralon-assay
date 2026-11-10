@@ -27,7 +27,10 @@ package assembly
 // a declared DispatchBoundary — it hides a real call in the obfuscation threat model,
 // so it is never a dropped edge; compilers rarely emit it.)
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // DispatchState is one of the three C3 outcomes.
 type DispatchState int
@@ -110,6 +113,45 @@ type CHA struct {
 	asms        []*Assembly
 	byKey       map[string][]*typeNode
 	methodOwner map[*MethodDef]*typeNode
+
+	// bridges reports whether an out-of-set interface can link an in-set class to an
+	// in-set interface it does not declare; nil means any can.
+	bridges  func(*Assembly, TypeRef) bool
+	bridged  []*typeNode // computed on first use; nil until then
+	bridgeOK bool
+}
+
+// SetBridgeFilter narrows which out-of-set interfaces can link an in-set class to an
+// in-set interface (an out-of-set interface can extend one, so the class implements it
+// without declaring it). Framework code cannot name an in-set type, so a caller that
+// knows the framework passes a filter excluding it.
+func (c *CHA) SetBridgeFilter(f func(*Assembly, TypeRef) bool) {
+	c.bridges, c.bridged, c.bridgeOK = f, nil, false
+}
+
+// bridgedClasses returns the in-set classes declaring an out-of-set interface the bridge
+// filter admits, directly or through an in-set interface, sorted by key. Subclasses are
+// not listed: the dispatch BFS reaches them through derived edges.
+func (c *CHA) bridgedClasses() []*typeNode {
+	if c.bridgeOK {
+		return c.bridged
+	}
+	for _, nodes := range c.byKey {
+		for _, n := range nodes {
+			if n.isInterface() {
+				continue
+			}
+			for _, b := range c.outOfSetIfaces(n, nil) {
+				if c.bridges == nil || c.bridges(b.Asm, b.Ref) {
+					c.bridged = append(c.bridged, n)
+					break
+				}
+			}
+		}
+	}
+	slices.SortFunc(c.bridged, func(a, b *typeNode) int { return strings.Compare(a.key, b.key) })
+	c.bridgeOK = true
+	return c.bridged
 }
 
 func typeKey(namespace, name string) string {
@@ -421,9 +463,19 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig [
 		}
 	}
 
-	// BFS the reverse edges: owner + all transitive subclasses/implementers.
+	// BFS the reverse edges: owner + all transitive subclasses/implementers. A class can
+	// also implement an in-set interface through an out-of-set one that extends it, an
+	// edge no loaded metadata records; such classes join the search as implementers.
 	queue := []*typeNode{owner}
 	visited := map[*typeNode]bool{owner: true}
+	if ownerIsIface {
+		for _, b := range c.bridgedClasses() {
+			if !visited[b] {
+				visited[b] = true
+				queue = append(queue, b)
+			}
+		}
+	}
 	for len(queue) > 0 {
 		t := queue[0]
 		queue = queue[1:]

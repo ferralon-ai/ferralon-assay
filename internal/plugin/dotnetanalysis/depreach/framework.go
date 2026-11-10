@@ -116,6 +116,7 @@ func (o oosFacts) any() bool { return o.base || o.iface }
 func (e *Engine) SetFramework(names map[string]bool) {
 	if len(names) == 0 {
 		e.fw = fwModel{}
+		e.cha.SetBridgeFilter(nil)
 		return
 	}
 	lower := make(map[string]bool, len(names))
@@ -136,6 +137,13 @@ func (e *Engine) SetFramework(names map[string]bool) {
 		phaseB:     map[string]searchOut{},
 	}
 	e.fw.allCtx = e.newCtx(nil, nil)
+	e.cha.SetBridgeFilter(e.bridges)
+}
+
+// bridges reports whether out-of-set interface tr (read in asm) can extend an in-set
+// interface: framework code cannot name one.
+func (e *Engine) bridges(asm *assembly.Assembly, tr assembly.TypeRef) bool {
+	return !e.isFrameworkType(asm, tr)
 }
 
 // FrameworkActive reports whether SetFramework turned the model on.

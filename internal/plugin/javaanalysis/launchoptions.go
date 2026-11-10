@@ -1542,14 +1542,18 @@ func wordIs(rest, lit string) bool {
 }
 
 // templateWrapperJar reports whether the Maven wrapper batch script sets WRAPPER_JAR only as its
-// template does: every line that assigns it, in any form cmd accepts (set /p, @set, a set after
-// if, call, for or &, a quoted or caret-escaped name), is the template's own line, and there is
-// one.
+// template does. It reads the script as cmd does, a line ending in a caret joined to the next, and
+// then every command that assigns WRAPPER_JAR, in any form cmd accepts (set /p, @set, a set after
+// if, call, for or &, a quoted or caret-escaped name), is the template's own, and there is one. A
+// set whose name is expanded from a variable can assign anything, so it is never the template's.
 func (f *launchFile) templateWrapperJar() bool {
 	const template = `set wrapper_jar=%maven_projectbasedir%\.mvn\wrapper\maven-wrapper.jar`
 	found := false
-	for _, line := range strings.Split(string(f.data), "\n") {
+	for _, line := range cmdLogicalLines(string(f.data)) {
 		norm := strings.ToLower(strings.NewReplacer("^", "", `"`, "").Replace(line))
+		if expandedSetName.MatchString(norm) {
+			return false
+		}
 		if !strings.Contains(norm, "wrapper_jar=") {
 			continue
 		}
@@ -1559,6 +1563,30 @@ func (f *launchFile) templateWrapperJar() bool {
 		found = true
 	}
 	return found
+}
+
+// expandedSetName matches a set command whose variable name holds a %- or !-expansion.
+var expandedSetName = regexp.MustCompile(`(?:^|[^a-z0-9_])set\s+(?:/[ap]\s*)?[^=\s]*[%!][^=]*=`)
+
+// cmdLogicalLines splits a batch script into the lines cmd runs: one ending in a caret continues
+// on the next.
+func cmdLogicalLines(data string) []string {
+	var out []string
+	var cur strings.Builder
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if rest, ok := strings.CutSuffix(line, "^"); ok {
+			cur.WriteString(rest)
+			continue
+		}
+		cur.WriteString(line)
+		out = append(out, cur.String())
+		cur.Reset()
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 // name classifies one occurrence of a launch name. An option variable is accounted for when it

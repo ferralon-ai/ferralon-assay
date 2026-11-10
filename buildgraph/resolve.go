@@ -103,16 +103,7 @@ func selectTool(dir, stated string) (string, error) {
 	default:
 		return "", &Failure{Kind: KindToolFailed, Detail: "select", Log: "unknown tool " + stated}
 	}
-	exists := func(names ...string) bool {
-		for _, n := range names {
-			if fi, err := os.Stat(filepath.Join(dir, n)); err == nil && fi.Mode().IsRegular() {
-				return true
-			}
-		}
-		return false
-	}
-	maven := exists("pom.xml")
-	gradle := exists("settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts")
+	maven, gradle := DetectTools(dir)
 	switch {
 	case maven && gradle:
 		return "", &Failure{Kind: KindToolFailed, Detail: "select", Log: "both pom.xml and Gradle build files at the root; state the tool"}
@@ -122,4 +113,18 @@ func selectTool(dir, stated string) (string, error) {
 		return ToolGradle, nil
 	}
 	return "", &Failure{Kind: KindToolFailed, Detail: "select", Log: "no pom.xml or Gradle build file at the root"}
+}
+
+// DetectTools reports which build tools' root build files dir holds: a pom.xml for Maven, a
+// settings or build script for Gradle.
+func DetectTools(dir string) (maven, gradle bool) {
+	exists := func(names ...string) bool {
+		for _, n := range names {
+			if fi, err := os.Stat(filepath.Join(dir, n)); err == nil && fi.Mode().IsRegular() {
+				return true
+			}
+		}
+		return false
+	}
+	return exists("pom.xml"), exists("settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts")
 }

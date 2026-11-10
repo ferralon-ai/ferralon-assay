@@ -29,11 +29,14 @@ type graphRequest struct {
 }
 
 // jvmGraph is the build graph a JVM scan acquired: the accepted file, or the typed reason there
-// is none.
+// is none. When the root holds both a POM and a Gradle build and no tool is stated, file is both
+// tools' graphs joined by os.PathListSeparator, which the plugins read as their union; partial is
+// the failure of a tool whose graph is missing from it while the other's was had.
 type jvmGraph struct {
 	file    string
 	source  string
 	failure *buildgraph.Failure
+	partial *buildgraph.Failure
 }
 
 // record is the Report's build_graph field.
@@ -105,25 +108,67 @@ func acquireBuildGraph(ctx context.Context, dir string, req graphRequest) (*jvmG
 		return g, noop
 	}
 	cleanup := func() { _ = os.RemoveAll(work) }
-	out := filepath.Join(work, "out")
-	graph, err := buildgraph.Resolve(ctx, buildgraph.Request{
+	if maven, gradle := buildgraph.DetectTools(dir); tool == buildgraph.ToolAuto && maven && gradle {
+		// Both builds can install what the program runs; neither is guessed. Each tool resolves
+		// its own build, and a version is out of range only when it is under both.
+		var files []string
+		var failures []error
+		for _, t := range []string{buildgraph.ToolMaven, buildgraph.ToolGradle} {
+			file, err := resolveGraph(ctx, dir, t, req.conditions, filepath.Join(work, t))
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			files = append(files, file)
+		}
+		switch len(files) {
+		case 0:
+			g.failure = asFailure(failures[0])
+			fmt.Fprintf(os.Stderr, "%s: gradle graph: %s\n", brand.Name, asFailure(failures[1]).Cause())
+		case 1:
+			g.file = files[0]
+			g.partial = asFailure(failures[0])
+			fmt.Fprintf(os.Stderr, "%s: build graph lists one of the root's two builds: %s\n", brand.Name, g.partial.Cause())
+		default:
+			g.file = strings.Join(files, string(os.PathListSeparator))
+		}
+		return g, cleanup
+	}
+	file, err := resolveGraph(ctx, dir, tool, req.conditions, work)
+	if err != nil {
+		g.failure = asFailure(err)
+		return g, cleanup
+	}
+	g.file = file
+	return g, cleanup
+}
+
+// resolveTool runs a build tool for its graph; a test stands in for it.
+var resolveTool = buildgraph.Resolve
+
+// resolveGraph resolves dir's graph with tool into work, writes it there and loads it back.
+func resolveGraph(ctx context.Context, dir, tool string, c buildgraph.Conditions, work string) (string, error) {
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		return "", &buildgraph.Failure{Kind: buildgraph.KindToolFailed, Detail: "select", Log: err.Error()}
+	}
+	graph, err := resolveTool(ctx, buildgraph.Request{
 		Dir:        dir,
 		Tool:       tool,
-		Conditions: req.conditions,
-		WorkDir:    out,
+		Conditions: c,
+		WorkDir:    filepath.Join(work, "out"),
 		Producer:   buildgraph.Producer{Name: brand.Name, Version: version},
 	})
-	if err == nil {
-		file := filepath.Join(work, graphFileName)
-		if err = writeGraph(file, graph); err == nil {
-			if err = loadResolved(file, dir, req.conditions); err == nil {
-				g.file = file
-				return g, cleanup
-			}
-		}
+	if err != nil {
+		return "", err
 	}
-	g.failure = asFailure(err)
-	return g, cleanup
+	file := filepath.Join(work, graphFileName)
+	if err := writeGraph(file, graph); err != nil {
+		return "", err
+	}
+	if err := loadResolved(file, dir, c); err != nil {
+		return "", err
+	}
+	return file, nil
 }
 
 // loadResolved loads a graph this run resolved: fresh, so it accepts included builds outside the

@@ -2,6 +2,7 @@ package buildgraph
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -194,5 +195,56 @@ func TestRuntimeJDK(t *testing.T) {
 	g := Graph{Conditions: Conditions{JDK: "21.0.4"}, Modules: []Module{{JDKToolchainsKnown: true}, {}}}
 	if got := g.RuntimeJDK(); got != 0 {
 		t.Errorf("unread toolchains: RuntimeJDK() = %d, want 0", got)
+	}
+}
+
+// A union keeps each tool's modules apart and attributed, holds the builds' inputs and outputs
+// once each, and is complete only when every graph is.
+func TestUnion(t *testing.T) {
+	maven := validGraph()
+	maven.Complete = true
+	maven.Subject.Outputs = []string{"target"}
+	gradle := validGraph()
+	gradle.Tool = Tool{Name: "gradle", Version: "8.10"}
+	gradle.Incomplete = []string{"unresolved configuration"}
+	gradle.Subject.Inputs = append(gradle.Subject.Inputs, Input{Path: "build.gradle", SHA256: "bb"})
+	gradle.Subject.Outputs = []string{"build"}
+	addCopy(gradle, "g:root", ".", "g:root:jar:1")
+
+	if got := Union(maven); got != maven {
+		t.Error("Union of one graph is not that graph")
+	}
+	u := Union(maven, gradle)
+	var ids, copyOf []string
+	for _, m := range u.Modules {
+		ids = append(ids, m.ID)
+		copyOf = append(copyOf, m.CopyOf)
+		if want := strings.SplitN(m.ID, "/", 2)[0]; u.ModuleTool(m) != want {
+			t.Errorf("ModuleTool(%s) = %q, want %q", m.ID, u.ModuleTool(m), want)
+		}
+	}
+	if want := []string{"gradle/g:root", "gradle/g:root#testRuntimeClasspath", "maven/g:root"}; !reflect.DeepEqual(ids, want) {
+		t.Errorf("module IDs = %v, want %v", ids, want)
+	}
+	if want := []string{"", "gradle/g:root", ""}; !reflect.DeepEqual(copyOf, want) {
+		t.Errorf("CopyOf = %v, want %v", copyOf, want)
+	}
+	if want := []string{"gradle", "maven"}; !reflect.DeepEqual(u.Tools(), want) {
+		t.Errorf("Tools = %v, want %v", u.Tools(), want)
+	}
+	if want := []string{"maven"}; !reflect.DeepEqual(maven.Tools(), want) {
+		t.Errorf("one graph's Tools = %v, want %v", maven.Tools(), want)
+	}
+	if u.Complete || !reflect.DeepEqual(u.Incomplete, []string{"gradle: unresolved configuration"}) {
+		t.Errorf("Complete %v, Incomplete %v; want incomplete, attributed to gradle", u.Complete, u.Incomplete)
+	}
+	if len(u.Subject.Inputs) != 2 || u.Subject.InputsDigest != InputsDigest(u.Subject.Inputs) {
+		t.Errorf("inputs %v digest %q; want pom.xml and build.gradle once each", u.Subject.Inputs, u.Subject.InputsDigest)
+	}
+	if !reflect.DeepEqual(u.Subject.Outputs, []string{"build", "target"}) {
+		t.Errorf("outputs = %v, want both builds'", u.Subject.Outputs)
+	}
+	if maven.Modules[0].ID != "g:root" || gradle.Modules[0].Tool != "" {
+		t.Error("Union changed an input graph")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -120,6 +121,9 @@ type Module struct {
 	// Aliases are other group:artifact coordinates the module publishes under: a Gradle project's
 	// archives name or a publication's own artifactId.
 	Aliases []string `json:"aliases,omitempty"`
+	// Tool is the build tool that resolved the module, set only in a Union of graphs from
+	// different tools; empty, it is the graph's Tool.
+	Tool string `json:"tool,omitempty"`
 }
 
 // ClasspathCopyID is the ID of project's copy for classpath.
@@ -293,4 +297,78 @@ func (g *Graph) Validate() string {
 		}
 	}
 	return ""
+}
+
+// Union joins graphs that different build tools resolved from the same checkout into one graph
+// listing both builds. Each module's ID and CopyOf gain its tool as a prefix and its Tool is set,
+// so the builds' modules stay distinct; the subject's inputs and outputs are the union; Complete
+// holds only when every graph is complete. The result is for reading in memory, not for writing
+// or validating: its Tool is the first graph's. A single graph is returned as it is.
+func Union(gs ...*Graph) *Graph {
+	if len(gs) == 1 {
+		return gs[0]
+	}
+	u := *gs[0]
+	u.Modules, u.Commands, u.Sidecars, u.Incomplete = nil, nil, nil, nil
+	u.Subject.Inputs, u.Subject.Outputs, u.Subject.IncludedBuilds, u.Subject.UnbindableIncludedBuilds = nil, nil, nil, nil
+	u.Complete = true
+	inputs := map[string]Input{}
+	for _, g := range gs {
+		tool := g.Tool.Name
+		for _, m := range g.Modules {
+			m.ID = tool + "/" + m.ID
+			if m.CopyOf != "" {
+				m.CopyOf = tool + "/" + m.CopyOf
+			}
+			m.Tool = tool
+			// Normalize sorts these in place; the input graphs keep their own.
+			m.Nodes, m.Edges = slices.Clone(m.Nodes), slices.Clone(m.Edges)
+			u.Modules = append(u.Modules, m)
+		}
+		u.Commands = append(u.Commands, g.Commands...)
+		u.Sidecars = append(u.Sidecars, g.Sidecars...)
+		for _, in := range g.Incomplete {
+			u.Incomplete = append(u.Incomplete, tool+": "+in)
+		}
+		u.Complete = u.Complete && g.Complete
+		for _, in := range g.Subject.Inputs {
+			inputs[in.Path] = in
+		}
+		u.Subject.Outputs = append(u.Subject.Outputs, g.Subject.Outputs...)
+		u.Subject.IncludedBuilds = append(u.Subject.IncludedBuilds, g.Subject.IncludedBuilds...)
+		u.Subject.UnbindableIncludedBuilds = append(u.Subject.UnbindableIncludedBuilds, g.Subject.UnbindableIncludedBuilds...)
+	}
+	for _, in := range inputs {
+		u.Subject.Inputs = append(u.Subject.Inputs, in)
+	}
+	u.Subject.IncludedBuilds = sortedUnique(u.Subject.IncludedBuilds)
+	u.Subject.UnbindableIncludedBuilds = sortedUnique(u.Subject.UnbindableIncludedBuilds)
+	u.Normalize()
+	u.Subject.InputsDigest = InputsDigest(u.Subject.Inputs)
+	return &u
+}
+
+// Tools are the build tools that resolved g's modules, in order: a Union's tools, else g's own.
+func (g *Graph) Tools() []string {
+	seen := map[string]bool{}
+	var tools []string
+	for _, m := range g.Modules {
+		if m.Tool != "" && !seen[m.Tool] {
+			seen[m.Tool] = true
+			tools = append(tools, m.Tool)
+		}
+	}
+	if len(tools) == 0 {
+		return []string{g.Tool.Name}
+	}
+	sort.Strings(tools)
+	return tools
+}
+
+// ModuleTool is the build tool that resolved m in g.
+func (g *Graph) ModuleTool(m Module) string {
+	if m.Tool != "" {
+		return m.Tool
+	}
+	return g.Tool.Name
 }

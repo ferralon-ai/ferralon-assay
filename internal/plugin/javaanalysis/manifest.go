@@ -77,20 +77,25 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 		return res, nil
 	}
 
-	switch g.Tool.Name {
-	case "maven":
-		res.Resolvers = []plugin.ResolverSpec{{Name: "maven", Command: "mvn -o -DskipTests package", Source: plugin.RuntimeSourceAmbient}}
-	case "gradle":
-		res.Resolvers = []plugin.ResolverSpec{{Name: "gradle", Command: "gradle --offline assemble", Source: plugin.RuntimeSourceAmbient}}
+	for _, tool := range g.Tools() {
+		switch tool {
+		case "maven":
+			res.Resolvers = append(res.Resolvers, plugin.ResolverSpec{Name: "maven", Command: "mvn -o -DskipTests package", Source: plugin.RuntimeSourceAmbient})
+		case "gradle":
+			res.Resolvers = append(res.Resolvers, plugin.ResolverSpec{Name: "gradle", Command: "gradle --offline assemble", Source: plugin.RuntimeSourceAmbient})
+		}
 	}
 	var members []string
+	seen := map[string]bool{}
 	for _, m := range g.Modules {
-		if _, isCopy := m.Project(); isCopy {
+		if _, isCopy := m.Project(); isCopy || seen[m.Path] {
 			continue
 		}
+		seen[m.Path] = true
 		members = append(members, m.Path)
 		if m.Path == "." {
-			res.ProjectRoot = m.ID
+			// A Union prefixes the module ID with its tool; the root is named as its build names it.
+			res.ProjectRoot = strings.TrimPrefix(m.ID, m.Tool+"/")
 		}
 	}
 	sort.Strings(members)

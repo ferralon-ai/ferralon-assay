@@ -28,14 +28,18 @@ const (
 // subdirectory such as target/ or src/) makes it Go unconditionally (the module-root marker
 // the Go vendoring / govulncheck setup keys on, and the reason checkout historically required
 // go.mod) — Go is a module-root fact, not a file count, so this short-circuit is preserved
-// exactly; only WHERE it looks for the root has widened. Otherwise, detection is
-// dominance-based: a single walk tallies source files per language across kotlin / java /
+// exactly; only WHERE it looks for the root has widened. Next, a .NET build manifest at the
+// root (.sln, .csproj, .fsproj) makes it .NET: the root's build decides the lane, so a .NET
+// application that serves thousands of bundled client-library .js files is not routed to JS.
+// Otherwise, detection is dominance-based: a single walk tallies source files per language across kotlin / java /
 // js / python / dotnet / cfamily (applying the same skipSourceDir prune and the same extension rules as
 // the historical per-language probes, including the .d.ts exclusion for JS and the
 // .csproj/.sln/.fsproj/.vbproj markers for .NET), and the language with the MOST source
 // files wins. This classifies a polyglot tree by its dominant language: a repo that is
 // thousands of .py files plus a few hundred frontend .js files (e.g. Apache Airflow)
-// detects as Python, not JS.
+// detects as Python, not JS. Vendored client-library code (wwwroot/lib, node_modules,
+// bower_components, vendor, *.min.js — the linguist-vendored convention) is left out of the
+// count.
 //
 // Kotlin+Java interop rule: a Kotlin project routinely carries .java sources too (both
 // compile to the same JVM bytecode the Kotlin lane's analyzer reads via javaanalysis), so
@@ -57,6 +61,9 @@ const (
 func DetectLanguage(dir string) string {
 	if _, ok := FindGoModuleRoot(dir); ok {
 		return LangGo
+	}
+	if rootDotNetManifest(dir) {
+		return LangDotNet
 	}
 	counts := countSources(dir)
 	// Precedence order is also the tie-break order: iterate high→low precedence and keep a
@@ -81,6 +88,24 @@ func DetectLanguage(dir string) string {
 		}
 	}
 	return best
+}
+
+// rootDotNetManifest reports whether dir itself holds a .NET solution or project file.
+func rootDotNetManifest(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch filepath.Ext(e.Name()) {
+		case ".sln", ".csproj", ".fsproj":
+			return true
+		}
+	}
+	return false
 }
 
 // goModuleSearchMaxDepth bounds how far below dir FindGoModuleRoot descends looking for a go.mod
@@ -154,7 +179,7 @@ func countSources(dir string) sourceCounts {
 			return nil //nolint:nilerr // an unreadable subtree contributes no counts; keep walking siblings.
 		}
 		if d.IsDir() {
-			if path != dir && skipSourceDir(d.Name()) {
+			if path != dir && (skipSourceDir(d.Name()) || d.Name() == "lib" && filepath.Base(filepath.Dir(path)) == "wwwroot") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -167,6 +192,8 @@ func countSources(dir string) sourceCounts {
 			c.kotlin++
 		case strings.HasSuffix(name, ".py"):
 			c.python++
+		case strings.HasSuffix(name, ".min.js"):
+			// Minified bundle: vendored client-library code, not first-party source.
 		case strings.HasSuffix(name, ".d.ts"):
 			// TypeScript declaration file: declares no bodies — not a JS source (excluded).
 		default:
@@ -191,11 +218,12 @@ func countSources(dir string) sourceCounts {
 
 // skipSourceDir reports whether a directory is build output / tooling state rather than
 // source, so it is excluded from the language-source probes. It matches
-// javaanalysis.skipDir / jsanalysis.skipDir (plus obj, .NET's intermediate-build dir).
+// javaanalysis.skipDir / jsanalysis.skipDir, plus obj (.NET's intermediate-build dir) and the
+// vendored client-library dirs bower_components and vendor.
 func skipSourceDir(name string) bool {
 	switch name {
 	case "target", "build", "out", "bin", "obj", ".git", ".gradle", "node_modules", "dist", ".next",
-		"__pycache__", ".venv", "venv", ".tox", "site-packages", ".eggs":
+		"__pycache__", ".venv", "venv", ".tox", "site-packages", ".eggs", "bower_components", "vendor":
 		return true
 	default:
 		return false

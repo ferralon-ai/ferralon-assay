@@ -191,6 +191,71 @@ func TestDetectLanguageDominance(t *testing.T) {
 			},
 			want: LangCFamily,
 		},
+		{
+			// The GoNorth shape: a root .csproj decides the lane over a larger first-party JS count.
+			name: "root csproj with js-dominant counts -> dotnet",
+			files: []string{
+				"App.csproj", "Program.cs", "Startup.cs",
+				"Scripts/a.js", "Scripts/b.js", "Scripts/c.js", "Scripts/d.js",
+			},
+			want: LangDotNet,
+		},
+		{
+			name: "root sln with js-dominant counts -> dotnet",
+			files: []string{
+				"App.sln", "src/App/Program.cs",
+				"web/a.ts", "web/b.ts", "web/c.ts",
+			},
+			want: LangDotNet,
+		},
+		{
+			name: "root fsproj -> dotnet",
+			files: []string{
+				"App.fsproj", "web/a.js", "web/b.js",
+			},
+			want: LangDotNet,
+		},
+		{
+			// Only a ROOT manifest decides; a nested one is one more .NET count.
+			name: "nested csproj under a js-dominant root -> js",
+			files: []string{
+				"package.json", "src/a.js", "src/b.js", "src/c.js",
+				"tools/Gen/Gen.csproj", "tools/Gen/Gen.cs",
+			},
+			want: LangJS,
+		},
+		{
+			name:  "go.mod root with a root sln -> go",
+			files: []string{"go.mod", "main.go", "App.sln"},
+			want:  LangGo,
+		},
+		{
+			name: "wwwroot/lib client libraries pruned from counts",
+			files: []string{
+				"src/App/App.cs", "src/App/Model.cs",
+				"src/App/wwwroot/lib/jquery/jquery.js", "src/App/wwwroot/lib/bootstrap/bootstrap.js",
+				"src/App/wwwroot/lib/knockout/knockout.js",
+			},
+			want: LangDotNet,
+		},
+		{
+			// lib outside wwwroot is first-party code.
+			name: "lib outside wwwroot counted",
+			files: []string{
+				"src/App/App.cs", "src/App/Model.cs",
+				"lib/a.js", "lib/b.js", "lib/c.js",
+			},
+			want: LangJS,
+		},
+		{
+			name: "bower_components, vendor and minified bundles pruned from counts",
+			files: []string{
+				"app.py", "worker.py",
+				"bower_components/jquery/jquery.js", "vendor/chart/chart.js",
+				"static/app.min.js", "static/vue.min.js", "static/d3.min.js",
+			},
+			want: LangPython,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

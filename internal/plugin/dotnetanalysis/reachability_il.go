@@ -33,12 +33,12 @@ const tblMemberRefTable = 0x0A
 
 // ilReachability runs the whole-program IL engine when the first-party compiled assembly is
 // present in req.BuildDir's build output. handled is false to signal DEGRADE (no first-party
-// IL, or a reader parse-hazard): the caller falls back to the lexical tier + tool_failure and
-// NEVER an empty IL graph, NEVER a false not_exploitable.
-func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, bool) {
+// IL, or a reader parse-hazard): the caller falls back to the lexical tier, declaring absent
+// (why the IL tier did not run), and NEVER an empty IL graph, NEVER a false not_exploitable.
+func ilReachability(req plugin.ReachabilityRequest) (res plugin.ReachabilityResult, handled bool, absent plugin.ScopedReason) {
 	build := locateFirstPartyBuild(req.BuildDir)
 	if build.fp == nil {
-		return plugin.ReachabilityResult{}, false // degrade to lexical + tool_failure
+		return plugin.ReachabilityResult{}, false, build.ilAbsent(req.BuildDir) // degrade to lexical
 	}
 	fp := build.fp
 	var (
@@ -224,7 +224,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		Partiality: ilPartiality(reasons, missScopes(misses, graph)),
 		Paths:      paths,
 		Searched:   searched,
-	}, true
+	}, true, plugin.ScopedReason{}
 }
 
 // ingressOutcome is what the ASP.NET Core entry points settled for one sink: a candidate

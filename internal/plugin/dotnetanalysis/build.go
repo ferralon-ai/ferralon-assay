@@ -11,6 +11,8 @@ package dotnetanalysis
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/dotnetanalysis/assembly"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // partialReasonMultipleProjects: the build holds more than one project or entry assembly, and
@@ -46,10 +49,50 @@ const partialReasonRuntimeTargetAbsent = "reachability_undetermined:runtime_targ
 // the ones the next restore installs.
 const partialReasonRestoreUntrusted = "reachability_undetermined:restore_output_untrusted"
 
+// Why the IL tier did not run. Each is a first-party limit with no Targets: the lexical tier that
+// runs instead cannot see the dispatch the IL resolves, so the gap counts against every advisory.
+const (
+	partialReasonFirstPartyILAbsent     = plugin.PartialReasonToolFailure + ":first_party_il_absent"
+	partialReasonFirstPartyILUnreadable = plugin.PartialReasonToolFailure + ":first_party_il_unreadable"
+)
+
+// ilAbsent names why b has no first-party assembly for the IL tier, with where it looked.
+func (b firstPartyBuild) ilAbsent(buildDir string) plugin.ScopedReason {
+	if b.project == "" {
+		return plugin.ScopedReason{Reason: partialReasonFirstPartyILAbsent, Path: "no project file under the build dir"}
+	}
+	if len(b.unreadable) > 0 {
+		return plugin.ScopedReason{Reason: partialReasonFirstPartyILUnreadable, Path: relSlash(buildDir, b.unreadable[0])}
+	}
+	name := strings.TrimSuffix(filepath.Base(b.project), filepath.Ext(b.project))
+	if len(b.refOnly) > 0 {
+		return plugin.ScopedReason{
+			Reason: partialReasonFirstPartyILAbsent,
+			Path:   "only a reference assembly " + relSlash(buildDir, b.refOnly[0]) + " for " + relSlash(buildDir, b.project),
+		}
+	}
+	return plugin.ScopedReason{
+		Reason: partialReasonFirstPartyILAbsent,
+		Path:   "no built " + name + ".dll under bin/ or publish/ for " + relSlash(buildDir, b.project),
+	}
+}
+
+// relSlash is path relative to base with forward slashes, or its base name when it is not below
+// base, so a local absolute path never reaches the Report.
+func relSlash(base, path string) string {
+	rel, err := filepath.Rel(base, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.Base(path)
+	}
+	return filepath.ToSlash(rel)
+}
+
 // firstPartyBuild is the first-party program a run analyzes.
 type firstPartyBuild struct {
 	project    string             // project file; "" when the build has none
 	fp         *assembly.Assembly // the built assembly; nil when not located or unreadable
+	unreadable []string           // built copies of the assembly, or directories under bin/ or publish/, that could not be read
+	refOnly    []string           // reference-assembly copies of the project's assembly, skipped as stubs
 	assets     []byte             // project.assets.json; nil when absent
 	assetsPath string             // where assets was read from
 	target     string             // the assets targets key fp binds to; "" when unbound or no assets
@@ -74,13 +117,20 @@ func locateFirstPartyBuild(buildDir string) firstPartyBuild {
 	entries := map[string]bool{}
 	ridOf := map[string]string{} // path -> RID, for each readable program copy
 	tfmOf := map[string]string{}
-	for _, path := range builtAssemblies(buildDir, name) {
+	built, unreadableDirs := builtAssemblies(buildDir, name)
+	b.unreadable = unreadableDirs
+	for _, dir := range unreadableDirs {
+		entries["unreadable:"+dir] = true // it may hold another build, as an unreadable copy may
+	}
+	for _, path := range built {
 		a, ok := assembly.ReadAssembly(path)
 		if !ok || a == nil || a.Failed {
 			entries["unreadable:"+path] = true
+			b.unreadable = append(b.unreadable, path)
 			continue
 		}
 		if a.IsReferenceAssembly() {
+			b.refOnly = append(b.refOnly, path)
 			continue // a ref/ copy of the build: a stub surface, not a program
 		}
 		tfm := assemblyTFM(a, path)
@@ -150,16 +200,20 @@ func findProjectFiles(buildDir string) []string {
 }
 
 // builtAssemblies returns every "<name>.dll" under buildDir/bin then buildDir/publish, each
-// tree in lexical order: one per configuration, target framework and publish copy.
-func builtAssemblies(buildDir, name string) []string {
+// tree in lexical order: one per configuration, target framework and publish copy. It also
+// returns the directories under those trees it could not read, which may hold a copy.
+func builtAssemblies(buildDir, name string) (out, unreadable []string) {
 	if name == "" || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
-		return nil
+		return nil, nil
 	}
 	want := name + ".dll"
-	var out []string
 	for _, sub := range []string{"bin", "publish"} {
-		_ = filepath.WalkDir(filepath.Join(buildDir, sub), func(path string, d os.DirEntry, err error) error {
+		root := filepath.Join(buildDir, sub)
+		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
+				if !(path == root && errors.Is(err, fs.ErrNotExist)) {
+					unreadable = append(unreadable, path)
+				}
 				return nil //nolint:nilerr // an unreadable subtree yields no match; keep walking.
 			}
 			if !d.IsDir() && d.Name() == want {
@@ -168,7 +222,7 @@ func builtAssemblies(buildDir, name string) []string {
 			return nil
 		})
 	}
-	return out
+	return out, unreadable
 }
 
 // builtRID is the runtime identifier a program copy was built for, from the <name>.deps.json

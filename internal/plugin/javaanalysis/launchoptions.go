@@ -22,6 +22,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -101,9 +102,11 @@ type launchScan struct {
 	// repos are the real paths of the build's local repositories inside the walked root.
 	repos []string
 	// ownJar: a -jar launch named this build's own artifact (ownJarOperand). ownJarNames are
-	// the artifact file names among them that settleOwnJars checks against the build's modules.
+	// the artifact file names among them, and ownJarDirs the module directories their paths
+	// name, that settleOwnJars checks against the build's modules.
 	ownJar      bool
 	ownJarNames []string
+	ownJarDirs  []string
 	// jarHazard: the build can give its JAR a manifest or loader that changes what a -jar
 	// launch runs (jarManifestHazard, jarLoaderHazard).
 	jarHazard bool
@@ -939,6 +942,7 @@ type launchSpan struct {
 // launchFile is one text file under scan, with the reader context its occurrences need.
 type launchFile struct {
 	s           *launchScan
+	rel         string
 	data        []byte
 	lines       []int // start offset of each line
 	gradlew     bool
@@ -962,7 +966,7 @@ func (s *launchScan) text(rel string, inDist bool, data []byte) {
 		return
 	}
 	base := strings.ToLower(rel[strings.LastIndex(rel, "/")+1:])
-	f := &launchFile{s: s, data: data, gradlew: isGradleWrapper(rel, inDist, data), mavenw: isMavenWrapper(rel, inDist, data),
+	f := &launchFile{s: s, rel: rel, data: data, gradlew: isGradleWrapper(rel, inDist, data), mavenw: isMavenWrapper(rel, inDist, data),
 		startScript: isStartScript(rel, inDist), pom: base == "pom.xml", yamlLines: map[int]bool{}, template: map[int]bool{}}
 	f.lines = append(f.lines, 0)
 	for i, b := range data {
@@ -1539,19 +1543,28 @@ func (f *launchFile) templateClasspath(t launchToken) bool {
 // records it: a path ending in target/<name>.jar or build/libs/<name>.jar inside the checkout
 // (the Maven and Gradle output directories), a POM's ${project.build.finalName}.jar or
 // ${project.artifactId}-${project.version}.jar, or a file named <artifactId>-<version>.jar that
-// settleOwnJars finds among the build's modules. The operand is the first word after the token
-// that is not an option, on the same line; options between them are tokens of their own and
-// classify themselves. Anything else, a variable or a word on a continuation line included,
-// names a JAR the build does not produce.
+// settleOwnJars finds among the build's modules. settleOwnJars also requires the directory before
+// target/ or build/libs/, or the POM's own directory, to be one of the modules. The operand is the
+// first word after the token that is not an option, on the same line; options between them are
+// tokens of their own and classify themselves. Anything else, a variable or a word on a
+// continuation line included, names a JAR the build does not produce. The words after the operand
+// are the program's arguments: an option among them other than ownJarArg, or a variable, can
+// name code the JAR loads, so the operand counts as foreign.
 func (f *launchFile) ownJarOperand(t launchToken) bool {
 	rest := f.restOfLine(t.end)
 	if f.pom {
 		rest = xmlTag.ReplaceAllString(rest, " ")
 	}
+	words := strings.FieldsFunc(rest, ownJarDelim)
 	var op string
-	for _, w := range strings.FieldsFunc(rest, ownJarDelim) {
+	for i, w := range words {
 		if !strings.HasPrefix(w, "-") {
 			op = w
+			for _, a := range words[i+1:] {
+				if strings.HasPrefix(a, "-") && !ownJarArg.MatchString(a) || !strings.HasPrefix(a, "-") && strings.ContainsAny(a, "$%") {
+					return false
+				}
+			}
 			break
 		}
 	}
@@ -1560,20 +1573,20 @@ func (f *launchFile) ownJarOperand(t launchToken) bool {
 	name := segs[n-1]
 	if f.pom && (name == "${project.build.finalName}.jar" || name == "${project.artifactId}-${project.version}.jar") &&
 		!strings.ContainsAny(strings.Join(segs[:n-1], "/"), "$%`\\") {
+		f.s.ownJarDirs = append(f.s.ownJarDirs, path.Dir(f.rel))
 		f.s.ownJar = true
 		return true
 	}
 	if !ownJarWord.MatchString(op) || !strings.HasSuffix(name, ".jar") || len(name) == len(".jar") {
 		return false
 	}
-	for i, seg := range segs {
-		if seg == "." || seg == ".." || i > 0 && seg == "" || i < n-1 && strings.Contains(seg, "*") {
-			return false
-		}
-	}
-	relative := segs[0] != ""
+	// The directory before target/ or build/libs/ must be a module's clean relative path, which
+	// rules out absolute paths, ./.. segments and globs there.
 	switch {
-	case relative && n >= 2 && segs[n-2] == "target", relative && n >= 3 && segs[n-3] == "build" && segs[n-2] == "libs":
+	case n >= 2 && segs[n-2] == "target":
+		f.s.ownJarDirs = append(f.s.ownJarDirs, ownJarDir(segs[:n-2]))
+	case n >= 3 && segs[n-3] == "build" && segs[n-2] == "libs":
+		f.s.ownJarDirs = append(f.s.ownJarDirs, ownJarDir(segs[:n-3]))
 	case !strings.Contains(name, "*"):
 		f.s.ownJarNames = append(f.s.ownJarNames, name)
 	default:
@@ -1582,6 +1595,18 @@ func (f *launchFile) ownJarOperand(t launchToken) bool {
 	f.s.ownJar = true
 	return true
 }
+
+// ownJarDir is the module directory, "." or a relative slash path, that segs name.
+func ownJarDir(segs []string) string {
+	if len(segs) == 0 {
+		return "."
+	}
+	return strings.Join(segs, "/")
+}
+
+// ownJarArg is a program argument that sets the server's port or its profiles, which select among
+// the JAR's own code and add none.
+var ownJarArg = regexp.MustCompile(`^--(?:server\.port|spring\.profiles\.active)=[A-Za-z0-9.,_-]*$`)
 
 // ownJarDelim separates the words of a command line, a JSON or YAML list, or an XML element's text.
 // A backslash and a brace stay in the word: a Windows path or a property reference.
@@ -1594,10 +1619,19 @@ var ownJarWord = regexp.MustCompile(`^[A-Za-z0-9._+/*-]+$`)
 
 var (
 	// jarManifestHazard, in a build file, is a manifest attribute that adds code or access to a
-	// -jar launch, or a Spring Boot ZIP or DIR layout, which launches with PropertiesLauncher.
-	jarManifestHazard = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:add-opens|add-exports|class-path|launcher-agent-class)\b|addclasspath|<layout>\s*(?:zip|dir)\s*</layout>|\blayout\s*=\s*['"](?:zip|dir)['"]`)
-	// jarLoaderHazard, anywhere, is Spring Boot's PropertiesLauncher or the loader path it reads.
-	jarLoaderHazard = regexp.MustCompile(`(?i)propertieslauncher|loader[._]path`)
+	// -jar launch, or a Spring Boot ZIP or DIR layout, which launches with PropertiesLauncher, or
+	// a layout factory, which can launch with anything.
+	jarManifestHazard = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:add-opens|add-exports|class-path|launcher-agent-class)\b|addclasspath|layoutfactory|\blayout\s*=\s*['"](?:zip|dir)['"]`)
+	// jarPomLayout is a Spring Boot repackage layout in a POM; one not in jarSafeLayouts, a
+	// property reference included, may be ZIP or DIR.
+	jarPomLayout   = regexp.MustCompile(`(?i)<layout>\s*([^<]*?)\s*</layout>`)
+	jarSafeLayouts = map[string]bool{"jar": true, "war": true, "none": true}
+	// jarLoaderHazard, anywhere, is Spring Boot's PropertiesLauncher, the loader path it reads, or
+	// the repackage layout set as a property.
+	jarLoaderHazard = regexp.MustCompile(`(?i)propertieslauncher|loader[._]path|spring-boot\.repackage\.layout`)
+	// jarHeaderHazard, anywhere, is an Add-Opens or Add-Exports manifest header: a manifest line,
+	// or the quoted attribute name a build script or a bnd file passes on.
+	jarHeaderHazard = regexp.MustCompile(`(?im)^[ \t]*add-(?:opens|exports)[ \t]*:|["']add-(?:opens|exports)["']`)
 )
 
 // jarHazards records whether a file can change what a -jar launch of the build's artifact runs.
@@ -1607,13 +1641,22 @@ func (s *launchScan) jarHazards(rel string, data []byte) {
 	}
 	base := strings.ToLower(rel[strings.LastIndex(rel, "/")+1:])
 	build := base == "pom.xml" || base == "manifest.mf" || strings.HasSuffix(base, ".gradle") || strings.HasSuffix(base, ".gradle.kts")
-	if build && jarManifestHazard.Match(data) || jarLoaderHazard.Match(data) {
+	if build && jarManifestHazard.Match(data) || jarLoaderHazard.Match(data) || jarHeaderHazard.Match(data) {
 		s.jarHazard = true
+		return
+	}
+	if base == "pom.xml" {
+		for _, m := range jarPomLayout.FindAllSubmatch(data, -1) {
+			if !jarSafeLayouts[strings.ToLower(string(m[1]))] {
+				s.jarHazard = true
+				return
+			}
+		}
 	}
 }
 
 // settleOwnJars withholds Searched for the -jar launches ownJarOperand accepted when the build can
-// change what its JAR runs, or when a named artifact is not one of g's modules.
+// change what its JAR runs, or when a named artifact or output directory is not one of g's modules.
 func (s *launchScan) settleOwnJars(g *buildgraph.Graph) {
 	if !s.ownJar {
 		return
@@ -1622,9 +1665,10 @@ func (s *launchScan) settleOwnJars(g *buildgraph.Graph) {
 		s.unreadable()
 		return
 	}
-	own := map[string]bool{}
+	own, dirs := map[string]bool{}, map[string]bool{}
 	if g != nil {
 		for _, m := range g.Modules {
+			dirs[m.Path] = true
 			for _, nd := range m.Nodes {
 				if nd.ID == m.Root && nd.Artifact != "" && nd.Version != "" {
 					own[nd.Artifact+"-"+nd.Version+".jar"] = true
@@ -1634,6 +1678,12 @@ func (s *launchScan) settleOwnJars(g *buildgraph.Graph) {
 	}
 	for _, name := range s.ownJarNames {
 		if !own[name] {
+			s.unreadable()
+			return
+		}
+	}
+	for _, dir := range s.ownJarDirs {
+		if !dirs[dir] {
 			s.unreadable()
 			return
 		}

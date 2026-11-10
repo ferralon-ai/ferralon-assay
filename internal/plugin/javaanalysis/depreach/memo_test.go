@@ -1,6 +1,7 @@
 package depreach
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -113,5 +114,31 @@ func TestReach_ClosureMemoHazardKindsOwned(t *testing.T) {
 	first.HazardKinds[0] = "edited"
 	if again := e.Reach(in, mref("com/evil/netkit/UrlFetcher", "fetch", decoyDesc)); again.HazardKinds[0] == "edited" {
 		t.Fatalf("closure hazard kinds shared with a caller: %v", again.HazardKinds)
+	}
+}
+
+// A dispatch resolved inside a lambda resolution may stop at an implementation already
+// met, so the engine must not keep it for later searches: every (ingress, sink) pair on
+// one engine answers as a fresh engine does over the lambda cycle fixtures.
+func TestReach_DispatchMemoUnderLambdaCycles(t *testing.T) {
+	callApply := edge(classfile.EdgeInterface, transformer, "apply", applyDesc)
+	selfRef := handleArg(classfile.RefInvokeInterface, transformer, "apply", applyDesc)
+	viaRelay := handleArg(classfile.RefInvokeInterface, relay, "apply", applyDesc)
+	relayIface := iface(relay, abstractMeth(relay, "apply", applyDesc))
+	for _, tc := range []struct {
+		name    string
+		classes []classfile.Class
+	}{
+		{"method reference beside a lambda reaching the sink", lambdaSvc(callApply, transformerSite(selfRef), siteOf("com/acme/Other", transformer, staticImpl))},
+		{"two lambdas calling each other's interfaces, one more reaching the sink",
+			lambdaSvc(callApply, transformerSite(viaRelay), relayIface, siteOf("com/acme/Other", relay, selfRef), siteOf("com/acme/Third", relay, staticImpl))},
+		{"shared handle met first under the hazard", sharedHandleClasses(true)},
+		{"shared handle met first beside the hazard", sharedHandleClasses(false)},
+	} {
+		for _, linked := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/linked=%v", tc.name, linked), func(t *testing.T) {
+				assertMemoMatchesFresh(t, append(tc.classes, urlFetcherDep()), Classpath{}, linked)
+			})
+		}
 	}
 }

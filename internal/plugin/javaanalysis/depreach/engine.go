@@ -39,6 +39,9 @@ type Engine struct {
 	resolving   map[string]bool                  // lambda implementations met in the outermost lambdaImpl
 	closures    map[classfile.MethodRef]*closure // Reach's whole search per ingress, under the current linked bit
 	methodIDs   map[classfile.MethodRef]int      // bit index of each method a closure enqueued
+	dispatched  map[dispatchKey]dispatch         // virtual/interface resolveTargets answers, under the current linked bit
+	below       map[string][]string              // loaded subtypes of a type (closureFrom with no seeds)
+	closed      map[string][]string              // subtypeClosure cache, under the current linked bit
 }
 
 // closure is one ingress's search run to exhaustion: every method it enqueued, and the result
@@ -167,6 +170,9 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 		resolving:   map[string]bool{},
 		closures:    map[classfile.MethodRef]*closure{},
 		methodIDs:   map[classfile.MethodRef]int{},
+		dispatched:  map[dispatchKey]dispatch{},
+		below:       map[string][]string{},
+		closed:      map[string][]string{},
 		defined:     map[string]bool{},
 		unlisted:    cp.Unlisted,
 		methodsHold: cp.JDK == platformMethodsJDK,
@@ -207,8 +213,41 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 // for deterministic target ordering. It also holds every type below an unopened
 // dependency type (hiddenSubtypes): that type's own supertypes are unknown, so it may
 // extend owner.
+// The slice is shared: callers must not write into it.
 func (e *Engine) subtypeClosure(owner string) []string {
-	return e.closureFrom(owner, e.hiddenSubtypes())
+	if out, ok := e.closed[owner]; ok {
+		return out
+	}
+	out := e.closureFrom(owner, e.hiddenSubtypes())
+	out = out[:len(out):len(out)]
+	e.closed[owner] = out
+	return out
+}
+
+// loadedSubtypes returns owner and every loaded subtype of it, sorted. The slice is
+// shared: callers must not write into it.
+func (e *Engine) loadedSubtypes(owner string) []string {
+	if out, ok := e.below[owner]; ok {
+		return out
+	}
+	out := e.closureFrom(owner, nil)
+	out = out[:len(out):len(out)]
+	e.below[owner] = out
+	return out
+}
+
+// dispatchKey names a virtual or interface call: its answer depends on nothing else.
+type dispatchKey struct {
+	to   classfile.MethodRef
+	kind classfile.EdgeKind
+}
+
+// dispatch is one virtual or interface resolveTargets answer. targets is shared by every
+// caller, so it is held at cap==len: an append copies rather than writing into it.
+type dispatch struct {
+	targets []*classfile.Method
+	hazard  bool
+	why     string
 }
 
 // closureFrom returns owner, the seeds, and every loaded subtype of them.
@@ -638,125 +677,145 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 		}
 		return nil, false, ""
 	case classfile.EdgeVirtual, classfile.EdgeInterface:
-		if _, known := e.classes[edge.To.Owner]; !known {
-			switch {
-			case strings.HasPrefix(edge.To.Owner, "["):
-				// An array's methods are Object's plus clone; none calls back.
-				return nil, false, ""
-			case valueReceiverMethods[edge.To.Owner+"."+edge.To.Name+edge.To.Descriptor] != valueUnlisted:
-				// The receiver is exactly this final class, and this body reads
-				// only it, value arguments and JDK-internal state.
-				return nil, false, ""
-			}
-			// Any other platform receiver can be a JDK object holding application
-			// objects (an ArrayList whose hashCode calls each element's hashCode),
-			// which no rule here can bound without a model of the JDK's bodies.
-			return nil, true, "virtual/interface call on out-of-classpath receiver " + edge.To.Owner
+		// Inside a lambda resolution a dispatch may stop at an implementation already
+		// met (lambdaImpl), so only one begun outside any is whole and kept.
+		if len(e.resolving) > 0 {
+			return e.dispatchVirtual(edge)
 		}
-		// CHA: every class in the receiver's subtype closure dispatches to the method
-		// it RESOLVES to — its own declaration or an inherited one — not only to
-		// declarations in the closure. A class that inherits the body from outside the
-		// loaded set dispatches into code the graph cannot see.
-		seen := map[*classfile.Method]bool{}
-		var outside, abstractOutside, platformExits []string
-		var lambdaWhy string
-		// Only a type known to be a subtype witnesses a loaded implementor; one that
-		// is merely below an unopened dependency type may not be a receiver at all.
-		known := map[string]bool{}
-		for _, c := range e.closureFrom(edge.To.Owner, nil) {
-			known[c] = true
+		key := dispatchKey{edge.To, edge.Kind}
+		if d, ok := e.dispatched[key]; ok {
+			return d.targets, d.hazard, d.why
 		}
-		implemented := false
-		for _, c := range e.subtypeClosure(edge.To.Owner) {
-			if known[c] && (e.isConcrete(c) || len(e.lambdas[c]) > 0) {
-				implemented = true
-			}
-			// A lambda object implementing c answers the call with its
-			// implementation, or runs what it inherits, wherever the object was
-			// created.
-			for _, site := range e.lambdas[c] {
-				var ts []*classfile.Method
-				var h bool
-				var w string
-				if site.answers(edge.To.Name, edge.To.Descriptor) {
-					ts, h, w = e.lambdaImpl(site.from, site.handle, "invokedynamic (runtime-bound target): lambda implementing "+c)
-				} else {
-					ts, h, w = e.lambdaInherited(site, edge.To)
-				}
-				if h && lambdaWhy == "" {
-					lambdaWhy = w
-				}
-				for _, t := range ts {
-					if !seen[t] {
-						seen[t] = true
-						targets = append(targets, t)
-					}
-				}
-			}
-			m, unloaded := e.resolveMethod(c, edge.To.Name, edge.To.Descriptor)
-			if m == nil {
-				// Only an object whose exact class is c runs what c resolves to. An
-				// abstract class or interface has none: its loaded concrete subtypes
-				// are in the closure, and a lambda implementing it was added above.
-				// Where neither exists, its supertypes still say where the unseen
-				// receiver's code may come from.
-				// An Object body (unloaded is exactly [Object]) never calls an
-				// argument; it still runs on c.
-				if !e.isConcrete(c) {
-					abstractOutside = append(abstractOutside, unloaded...)
-					continue
-				}
-				if !e.isObjectBody(c, edge.To.Name, edge.To.Descriptor) {
-					outside = append(outside, unloaded...)
-				}
-				platformExits = append(platformExits, c)
-				continue
-			}
-			outside = append(outside, unloaded...)
-			if !m.Abstract && !seen[m] {
-				seen[m] = true
-				targets = append(targets, m)
-			}
+		targets, hazard, why = e.dispatchVirtual(edge)
+		targets = targets[:len(targets):len(targets)]
+		e.dispatched[key] = dispatch{targets, hazard, why}
+		return targets, hazard, why
+	}
+	return nil, false, ""
+}
+
+// dispatchVirtual is resolveTargets for a virtual or interface call, by CHA over the loaded
+// classes. It reads only the edge and engine state fixed for the current linked bit, so
+// resolveTargets keeps its answer.
+func (e *Engine) dispatchVirtual(edge classfile.Edge) (targets []*classfile.Method, hazard bool, why string) {
+
+	if _, known := e.classes[edge.To.Owner]; !known {
+		switch {
+		case strings.HasPrefix(edge.To.Owner, "["):
+			// An array's methods are Object's plus clone; none calls back.
+			return nil, false, ""
+		case valueReceiverMethods[edge.To.Owner+"."+edge.To.Name+edge.To.Descriptor] != valueUnlisted:
+			// The receiver is exactly this final class, and this body reads
+			// only it, value arguments and JDK-internal state.
+			return nil, false, ""
 		}
-		if !implemented {
-			// No loaded class or lambda can be the receiver: the object is generated
-			// at runtime (a Proxy, a CGLIB or ByteBuddy subclass, a Spring Data
-			// repository, a Feign client) or comes from outside the classpath, and
-			// runs code the graph cannot see.
-			outside = append(outside, abstractOutside...)
-			if dep, ok := e.unloadedDependency(outside); ok {
-				return targets, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
+		// Any other platform receiver can be a JDK object holding application
+		// objects (an ArrayList whose hashCode calls each element's hashCode),
+		// which no rule here can bound without a model of the JDK's bodies.
+		return nil, true, "virtual/interface call on out-of-classpath receiver " + edge.To.Owner
+	}
+	// CHA: every class in the receiver's subtype closure dispatches to the method
+	// it RESOLVES to — its own declaration or an inherited one — not only to
+	// declarations in the closure. A class that inherits the body from outside the
+	// loaded set dispatches into code the graph cannot see.
+	seen := map[*classfile.Method]bool{}
+	var outside, abstractOutside, platformExits []string
+	var lambdaWhy string
+	// Only a type known to be a subtype witnesses a loaded implementor; one that
+	// is merely below an unopened dependency type may not be a receiver at all.
+	known := map[string]bool{}
+	for _, c := range e.loadedSubtypes(edge.To.Owner) {
+		known[c] = true
+	}
+	implemented := false
+	for _, c := range e.subtypeClosure(edge.To.Owner) {
+		if known[c] && (e.isConcrete(c) || len(e.lambdas[c]) > 0) {
+			implemented = true
+		}
+		// A lambda object implementing c answers the call with its
+		// implementation, or runs what it inherits, wherever the object was
+		// created.
+		for _, site := range e.lambdas[c] {
+			var ts []*classfile.Method
+			var h bool
+			var w string
+			if site.answers(edge.To.Name, edge.To.Descriptor) {
+				ts, h, w = e.lambdaImpl(site.from, site.handle, "invokedynamic (runtime-bound target): lambda implementing "+c)
+			} else {
+				ts, h, w = e.lambdaInherited(site, edge.To)
 			}
-			return targets, true, "no loaded implementor: " + edge.To.String() + " dispatches to a class generated at runtime or outside the classpath"
-		}
-		if dep, ok := e.unloadedDependency(outside); ok {
-			return targets, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
-		}
-		if len(outside) > 0 {
-			// Some receiver inherits the body from an out-of-classpath platform
-			// supertype (e.g. MyList extends ArrayList; forEach(...)). Exactly as the
-			// static/special leaf, an argument can re-enter application code (C8
-			// re-entry seam).
-			if cb, ok := e.reentryCallback(edge.To.Descriptor); ok {
-				return targets, true, "higher-order re-entry via inherited out-of-classpath method: takes " + cb
+			if h && lambdaWhy == "" {
+				lambdaWhy = w
 			}
-		}
-		// The inherited platform body also runs with the receiver as `this`.
-		for _, c := range platformExits {
-			ts, h, w := e.platformBodyOn(edge.To, e.isObjectBody(c, edge.To.Name, edge.To.Descriptor), []string{c})
 			for _, t := range ts {
 				if !seen[t] {
 					seen[t] = true
 					targets = append(targets, t)
 				}
 			}
-			if h {
-				return targets, true, w
+		}
+		m, unloaded := e.resolveMethod(c, edge.To.Name, edge.To.Descriptor)
+		if m == nil {
+			// Only an object whose exact class is c runs what c resolves to. An
+			// abstract class or interface has none: its loaded concrete subtypes
+			// are in the closure, and a lambda implementing it was added above.
+			// Where neither exists, its supertypes still say where the unseen
+			// receiver's code may come from.
+			// An Object body (unloaded is exactly [Object]) never calls an
+			// argument; it still runs on c.
+			if !e.isConcrete(c) {
+				abstractOutside = append(abstractOutside, unloaded...)
+				continue
+			}
+			if !e.isObjectBody(c, edge.To.Name, edge.To.Descriptor) {
+				outside = append(outside, unloaded...)
+			}
+			platformExits = append(platformExits, c)
+			continue
+		}
+		outside = append(outside, unloaded...)
+		if !m.Abstract && !seen[m] {
+			seen[m] = true
+			targets = append(targets, m)
+		}
+	}
+	if !implemented {
+		// No loaded class or lambda can be the receiver: the object is generated
+		// at runtime (a Proxy, a CGLIB or ByteBuddy subclass, a Spring Data
+		// repository, a Feign client) or comes from outside the classpath, and
+		// runs code the graph cannot see.
+		outside = append(outside, abstractOutside...)
+		if dep, ok := e.unloadedDependency(outside); ok {
+			return targets, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
+		}
+		return targets, true, "no loaded implementor: " + edge.To.String() + " dispatches to a class generated at runtime or outside the classpath"
+	}
+	if dep, ok := e.unloadedDependency(outside); ok {
+		return targets, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
+	}
+	if len(outside) > 0 {
+		// Some receiver inherits the body from an out-of-classpath platform
+		// supertype (e.g. MyList extends ArrayList; forEach(...)). Exactly as the
+		// static/special leaf, an argument can re-enter application code (C8
+		// re-entry seam).
+		if cb, ok := e.reentryCallback(edge.To.Descriptor); ok {
+			return targets, true, "higher-order re-entry via inherited out-of-classpath method: takes " + cb
+		}
+	}
+	// The inherited platform body also runs with the receiver as `this`.
+	for _, c := range platformExits {
+		ts, h, w := e.platformBodyOn(edge.To, e.isObjectBody(c, edge.To.Name, edge.To.Descriptor), []string{c})
+		for _, t := range ts {
+			if !seen[t] {
+				seen[t] = true
+				targets = append(targets, t)
 			}
 		}
-		return targets, lambdaWhy != "", lambdaWhy
+		if h {
+			return targets, true, w
+		}
 	}
-	return nil, false, ""
+	return targets, lambdaWhy != "", lambdaWhy
 }
 
 // The bootstrap methods whose call sites the engine resolves (JDK API facts).
@@ -819,8 +878,8 @@ func (e *Engine) resolveDynamic(from string, edge classfile.Edge) ([]*classfile.
 // implementation met again adds nothing: every frame folds its targets and hazards into
 // that outermost result, which already holds them or is collecting them. Keeping each
 // implementation until the outermost one returns, not just while it is on the stack,
-// resolves it once per resolution rather than once per path to it. Nothing caches a
-// result, so no partial one outlives that outermost resolution.
+// resolves it once per resolution rather than once per path to it. resolveTargets keeps
+// no dispatch begun inside a resolution, so no partial one outlives the outermost.
 func (e *Engine) lambdaImpl(from string, h classfile.MethodHandle, opaque string) ([]*classfile.Method, bool, string) {
 	key := fmt.Sprintf("%s %d %s", from, h.Kind, h.Ref.String())
 	if e.resolving[key] {
@@ -1405,6 +1464,8 @@ func (e *Engine) resetLinkage() {
 	e.hidden, e.hiddenDone = nil, false
 	e.held = map[string]heldTypes{}
 	e.closures = map[classfile.MethodRef]*closure{}
+	e.closed = map[string][]string{}
+	e.dispatched = map[dispatchKey]dispatch{}
 }
 
 // unlinkable reports whether loaded class c cannot link on a linked classpath: some
@@ -1522,7 +1583,7 @@ func (e *Engine) heldAs(owner string) heldTypes {
 	}
 	var h heldTypes
 	seen := map[string]bool{}
-	stack := e.subtypeClosure(owner)
+	stack := append([]string(nil), e.subtypeClosure(owner)...)
 	for len(stack) > 0 {
 		cur := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]

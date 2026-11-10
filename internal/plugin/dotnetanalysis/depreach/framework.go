@@ -70,12 +70,13 @@ type fwModel struct {
 	rtaWhy    string // why the instantiated filter is off, when it is
 	nextGen   int
 
-	ancestry  map[*assembly.TypeDef][]typeEntry
-	oos       map[*assembly.TypeDef]oosFacts
-	overrides map[ovKey][]*methodNode
-	dims      map[ovKey]string
-	reentry   map[int][]*methodNode
-	phaseB    map[string]searchOut
+	ancestry   map[*assembly.TypeDef][]typeEntry
+	oos        map[*assembly.TypeDef]oosFacts
+	overrides  map[ovKey][]*methodNode
+	reentry    map[int][]*methodNode
+	reentryDIM map[int]string
+	fields     map[*assembly.TypeDef]string
+	phaseB     map[string]searchOut
 }
 
 func (f *fwModel) active() bool { return f.names != nil }
@@ -123,13 +124,14 @@ func (e *Engine) SetFramework(names map[string]bool) {
 		}
 	}
 	e.fw = fwModel{
-		names:     lower,
-		ancestry:  map[*assembly.TypeDef][]typeEntry{},
-		oos:       map[*assembly.TypeDef]oosFacts{},
-		overrides: map[ovKey][]*methodNode{},
-		dims:      map[ovKey]string{},
-		reentry:   map[int][]*methodNode{},
-		phaseB:    map[string]searchOut{},
+		names:      lower,
+		ancestry:   map[*assembly.TypeDef][]typeEntry{},
+		oos:        map[*assembly.TypeDef]oosFacts{},
+		overrides:  map[ovKey][]*methodNode{},
+		reentry:    map[int][]*methodNode{},
+		reentryDIM: map[int]string{},
+		fields:     map[*assembly.TypeDef]string{},
+		phaseB:     map[string]searchOut{},
 	}
 	e.fw.allCtx = e.newCtx(nil, nil)
 }
@@ -409,9 +411,6 @@ func (e *Engine) frameworkEdge(edge assembly.Edge, fromAsm *assembly.Assembly, c
 	}
 	if edge.Kind == assembly.EdgeCallvirt || edge.Kind == assembly.EdgeLdvirtftn {
 		out.targets = append(out.targets, e.frameworkOverrides(ctx, fromAsm, tok, owner, name, mr.SigBlob)...)
-		if t := e.fw.dims[ovKey{asm: fromAsm, tok: tok, gen: ctx.gen}]; t != "" {
-			out.flag("default interface method from " + t + " (not in the loaded set) can fill " + owner + "::" + name)
-		}
 	}
 	return out, true
 }
@@ -433,7 +432,6 @@ func (e *Engine) frameworkOverrides(ctx *searchCtx, fromAsm *assembly.Assembly, 
 	}
 	objectSlot := owner == "System.Object" || owner == "System.ValueType" || owner == "System.Enum"
 	var out []*methodNode
-	var dim string
 	seen := map[*methodNode]bool{}
 	add := func(m *assembly.MethodDef) {
 		if n := e.nodes[m]; n != nil && !seen[n] {
@@ -448,7 +446,6 @@ func (e *Engine) frameworkOverrides(ctx *searchCtx, fromAsm *assembly.Assembly, 
 		if !objectSlot && !e.outOfSet(te).any() {
 			continue
 		}
-		before := len(out)
 		for _, a := range e.ancestryOf(te) {
 			for _, m := range a.td.Methods {
 				if m.Name == name && m.Flags&maVirtual != 0 && m.RVA != 0 && assembly.SigCompatible(fromAsm, sig, a.asm, m.SigBlob) {
@@ -463,35 +460,9 @@ func (e *Engine) frameworkOverrides(ctx *searchCtx, fromAsm *assembly.Assembly, 
 				}
 			}
 		}
-		if !objectSlot && len(out) == before && dim == "" {
-			dim = e.unloadedDIMSource(te, owner)
-		}
 	}
 	e.fw.overrides[key] = out
-	e.fw.dims[key] = dim
 	return out
-}
-
-// unloadedDIMSource names an interface outside the loaded set (and not framework) on an
-// instantiated type that lists the framework interface owner but has no in-set body for
-// the slot: the runtime can bind the slot to a default method on that interface, whose
-// body the search cannot read. Empty when there is none.
-func (e *Engine) unloadedDIMSource(te typeEntry, owner string) string {
-	lists, unloaded := false, ""
-	for _, a := range e.ancestryOf(te) {
-		for _, ir := range a.td.Interfaces {
-			if ir.Qualified() == owner {
-				lists = true
-			}
-			if _, ok := e.lookupTypeRef(a.asm, ir); !ok && unloaded == "" && !e.isFrameworkType(a.asm, ir) {
-				unloaded = typeRefDisplay(ir)
-			}
-		}
-	}
-	if !lists {
-		return ""
-	}
-	return unloaded
 }
 
 // reentryRoots are the methods framework code can call on application objects it holds:
@@ -507,6 +478,7 @@ func (e *Engine) reentryRoots(ctx *searchCtx) []*methodNode {
 		return r
 	}
 	var out []*methodNode
+	var dim string
 	seen := map[*methodNode]bool{}
 	add := func(m *assembly.MethodDef) {
 		if n := e.nodes[m]; n != nil && !seen[n] {
@@ -520,6 +492,9 @@ func (e *Engine) reentryRoots(ctx *searchCtx) []*methodNode {
 		}
 		oos := e.outOfSet(te)
 		if ctx.counts(te.td) {
+			if dim == "" && oos.iface {
+				dim = e.unloadedDIMReentry(te)
+			}
 			for _, a := range e.ancestryOf(te) {
 				for _, m := range a.td.Methods {
 					if m.RVA != 0 && a.asm.PropertyAccessor(m.RID) {
@@ -565,7 +540,37 @@ func (e *Engine) reentryRoots(ctx *searchCtx) []*methodNode {
 		}
 	}
 	e.fw.reentry[ctx.gen] = out
+	e.fw.reentryDIM[ctx.gen] = dim
 	return out
+}
+
+// unloadedDIMReentry names an instantiated type that implements both a framework interface
+// and one outside the loaded set (and not framework). Code holding the object can call any
+// of the framework interface's slots, and the runtime can bind one to a default method on
+// the unloaded interface, whose body the search cannot read. The framework interface's
+// members are not in the loaded set, so which slots lack an in-set body cannot be told;
+// any such pairing counts. A direct call through a framework slot hands control to
+// framework code too, so the re-entry search covers it. Empty when there is none.
+func (e *Engine) unloadedDIMReentry(te typeEntry) string {
+	fw, unloaded := "", ""
+	for _, a := range e.ancestryOf(te) {
+		for _, ir := range a.td.Interfaces {
+			if _, ok := e.lookupTypeRef(a.asm, ir); ok {
+				continue
+			}
+			if e.isFrameworkType(a.asm, ir) {
+				if fw == "" {
+					fw = ir.Qualified()
+				}
+			} else if unloaded == "" {
+				unloaded = typeRefDisplay(ir)
+			}
+		}
+	}
+	if fw == "" || unloaded == "" {
+		return ""
+	}
+	return "default interface method from " + unloaded + " (not in the loaded set) can fill " + fw + " on " + te.td.Namespace + "." + te.td.Name
 }
 
 // reentrySearch searches from the re-entry roots, cached per instantiated view and sink set.
@@ -581,6 +586,9 @@ func (e *Engine) reentrySearch(sinks []MethodKey, sinkSet map[*methodNode]bool, 
 		return r
 	}
 	r := e.search(e.reentryRoots(ctx), sinkSet, ctx)
+	if why := e.fw.reentryDIM[ctx.gen]; why != "" && !r.hazard {
+		r.hazard, r.why = true, why
+	}
 	e.fw.phaseB[key] = r
 	return r
 }
@@ -707,7 +715,7 @@ func (e *Engine) unloadedInstantiation(asm *assembly.Assembly, tok assembly.Toke
 		return "", false
 	}
 	check := func(blob []byte, methodSpec bool) (string, bool) {
-		_, unloaded, ok := e.typesInSig(asm, blob, methodSpec)
+		unloaded, ok := e.unloadedInSig(asm, blob, methodSpec)
 		if !ok {
 			return "an undecodable instantiation", true
 		}
@@ -745,16 +753,78 @@ func (e *Engine) unloadedTypeUse(asm *assembly.Assembly, tok assembly.Token) (st
 	}
 	tr := asm.TypeRefFor(tok)
 	if tr.IsSpec {
-		_, unloaded, ok := e.typesInSig(asm, tr.SpecBlob, false)
+		unloaded, ok := e.unloadedInSig(asm, tr.SpecBlob, false)
 		if !ok {
 			return "an undecodable type specification", true
 		}
 		return unloaded, unloaded != ""
 	}
-	if _, ok := e.lookupTypeRef(asm, tr); ok || e.isFrameworkType(asm, tr) {
+	if te, ok := e.lookupTypeRef(asm, tr); ok {
+		name := e.unloadedField(te)
+		return name, name != ""
+	}
+	if e.isFrameworkType(asm, tr) {
 		return "", false
 	}
 	return typeRefDisplay(tr), true
+}
+
+// unloadedInSig is typesInSig's unloaded name, extended to a type outside the loaded set
+// that an in-set value type named in the blob holds in a field (unloadedField).
+func (e *Engine) unloadedInSig(asm *assembly.Assembly, blob []byte, methodSpec bool) (string, bool) {
+	tes, unloaded, ok := e.typesInSig(asm, blob, methodSpec)
+	for _, te := range tes {
+		if unloaded != "" {
+			break
+		}
+		unloaded = e.unloadedField(te)
+	}
+	return unloaded, ok
+}
+
+// unloadedField names a type outside the loaded set (and not framework) that an in-set
+// value type holds in an instance field, directly or through a nested in-set value type.
+// ValueType.Equals and GetHashCode read a struct's fields by reflection and call their
+// overrides, so boxing the struct, or handing it to generic framework code (a Dictionary
+// key), runs that type's code with no box of it in application IL. Empty when there is
+// none, and for reference types.
+func (e *Engine) unloadedField(te typeEntry) string {
+	if r, ok := e.fw.fields[te.td]; ok {
+		return r
+	}
+	if !e.fw.active() {
+		return ""
+	}
+	if !isValueTypeEntry(te) {
+		e.fw.fields[te.td] = ""
+		return ""
+	}
+	e.fw.fields[te.td] = "" // a struct cannot contain itself; this only stops a malformed cycle
+	name := te.td.Namespace + "." + te.td.Name
+	r := ""
+	sigs, ok := te.asm.InstanceFieldSigs(te.td)
+	if !ok {
+		r = "an unreadable field list on " + name
+	}
+	for _, s := range sigs {
+		rd := &sigReader{b: s}
+		if b, ok := rd.byte(); !ok || b != 0x06 {
+			r = "an undecodable field signature on " + name
+			break
+		}
+		rd.skipPrefixes()
+		unloaded, ok := e.unloadedInSig(te.asm, s[rd.pos:], false)
+		if !ok {
+			r = "an undecodable field signature on " + name
+			break
+		}
+		if unloaded != "" {
+			r = unloaded + " (a field of " + name + ")"
+			break
+		}
+	}
+	e.fw.fields[te.td] = r
+	return r
 }
 
 func methodTokName(asm *assembly.Assembly, tok assembly.Token) string {

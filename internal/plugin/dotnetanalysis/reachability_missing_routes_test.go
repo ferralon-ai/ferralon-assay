@@ -18,6 +18,9 @@ type mrCtx struct {
 	gone    uint32 // AssemblyRef Gone
 	worker  uint32 // TypeRef Gone.W.Worker (class)
 	gstruct uint32 // TypeRef Gone.W.S (value type)
+
+	lastStruct uint32 // TypeDef RID of the last mrStruct, whose field range ends at fieldEnd
+	fieldEnd   uint32
 }
 
 func mrApp(route func(c *mrCtx) [][]byte) []byte {
@@ -37,8 +40,46 @@ func mrApp(route func(c *mrCtx) [][]byte) []byte {
 	instrs := [][]byte{ilNewobjOp(mtok(xMethodDef, im[1])), ilCall(set)}
 	instrs = append(instrs, route(c)...)
 	instrs = append(instrs, a.console())
-	return a.main(instrs...)
+	_, m := a.addType(0, "Program", "App", a.obj, []mspec{{name: "Main", flags: fStatic, sig: sigStaticVoid, il: body(instrs...)}})
+	a.entry = mtok(xMethodDef, m[0])
+	if c.lastStruct != 0 {
+		// FieldList starts a range: every type after the last struct starts past its fields.
+		for _, row := range a.tables[xTypeDef][c.lastStruct:] {
+			row[4] = c.fieldEnd
+		}
+	}
+	return a.bytesNamed("App")
 }
+
+// mrStruct adds a sealed value type App.<name> with one instance field of each given type.
+func mrStruct(c *mrCtx, name string, fieldTypes ...[]byte) uint32 {
+	a := c.a
+	first := uint32(len(a.tables[xField])) + 1
+	for _, ft := range fieldTypes {
+		a.row(xField, 0x06, a.str("f"), a.blob(append([]byte{0x06}, ft...)))
+	}
+	td, _ := a.addType(0x109, name, "App", cTypeDefOrRef(xTypeRef, a.extTypeRef("System", "ValueType")), nil)
+	a.tables[xTypeDef][td-1][4] = first
+	c.lastStruct, c.fieldEnd = td, uint32(len(a.tables[xField]))+1
+	return td
+}
+
+// mrDIMFoo adds App.Foo : <framework iface>, Gone.W.IThing with no body for the framework
+// interface's slots, and returns its constructor.
+func mrDIMFoo(c *mrCtx, iface ...[]byte) (foo, ctor uint32) {
+	a := c.a
+	foo, fm := a.addType(0, "Foo", "App", a.obj, []mspec{{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()}})
+	if iface == nil {
+		a.implements(foo, "System", "IDisposable")
+	} else {
+		a.row(xInterfaceImpl, foo, a.row(xTypeSpec, a.blob(iface[0]))<<2|2)
+	}
+	a.row(xInterfaceImpl, foo, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
+	return foo, mtok(xMethodDef, fm[0])
+}
+
+func mrDef(td uint32) []byte  { return []byte{0x12, byte(cTypeDefOrRef(xTypeDef, td))} }
+func mrDefV(td uint32) []byte { return []byte{0x11, byte(cTypeDefOrRef(xTypeDef, td))} }
 
 func mrOp(op []byte, t uint32) []byte { return append(append([]byte{}, op...), tok4(t)...) }
 
@@ -77,6 +118,14 @@ func mrGenericWithCctor(a *fwApp, arg []byte) [][]byte {
 
 func TestReachability_RoutesIntoMissingPackage(t *testing.T) {
 	arrayEmpty := []byte{0x10, 0x01, 0x00, 0x1D, 0x1E, 0x00}
+	keepAlive := []byte{0x00, 0x01, 0x01, 0x1C}
+	getHashCode := []byte{0x20, 0x00, 0x08}
+	boxHash := func(c *mrCtx, td uint32) [][]byte {
+		return [][]byte{mrOp([]byte{0x8C}, mtok(xTypeDef, td)), ilCallvirt(c.a.fwRef("System", "Object", "GetHashCode", getHashCode)), mrPop}
+	}
+	staticGoneS := func(c *mrCtx) uint32 {
+		return mtok(xField, c.a.row(xField, 0x16, c.a.str("s"), c.a.blob(append([]byte{0x06}, mrValue(c.gstruct)...))))
+	}
 	for _, r := range []struct {
 		name         string
 		route        func(c *mrCtx) [][]byte
@@ -150,7 +199,103 @@ func TestReachability_RoutesIntoMissingPackage(t *testing.T) {
 			a.row(xInterfaceImpl, foo, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
 			return [][]byte{ilNewobjOp(mtok(xMethodDef, fm[0])), ilCallvirt(a.fwRef("System", "IDisposable", "Dispose", sigInstVoid))}
 		}, false},
-		{"framework slot the type fills itself: searched", func(c *mrCtx) [][]byte {
+		{"default method slot, generic framework interface: IComparable<Foo>::CompareTo", func(c *mrCtx) [][]byte {
+			a := c.a
+			icmp := a.extTypeRef("System", "IComparable`1")
+			foo, _ := c.a.addType(0, "Pre", "App", a.obj, nil)
+			_ = foo
+			cmp := mrGenInst(mrClass(icmp), mrDef(foo+1))
+			_, ctor := mrDIMFoo(c, cmp)
+			ct := a.specRef(cmp, "CompareTo", []byte{0x20, 0x01, 0x08, 0x13, 0x00})
+			return [][]byte{ilNewobjOp(ctor), ilNewobjOp(ctor), ilCallvirt(ct), mrPop}
+		}, false},
+		{"default method slot, interfaces listed on an in-set base class", func(c *mrCtx) [][]byte {
+			a := c.a
+			base, _ := a.addType(0, "Base", "App", a.obj, []mspec{{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()}})
+			a.implements(base, "System", "IDisposable")
+			a.row(xInterfaceImpl, base, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
+			_, fm := a.addType(0, "Foo", "App", cTypeDefOrRef(xTypeDef, base), []mspec{{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()}})
+			return [][]byte{ilNewobjOp(mtok(xMethodDef, fm[0])), ilCallvirt(a.fwRef("System", "IDisposable", "Dispose", sigInstVoid))}
+		}, false},
+		{"default method slot through ldvirtftn", func(c *mrCtx) [][]byte {
+			_, ctor := mrDIMFoo(c)
+			return [][]byte{ilNewobjOp(ctor), mrOp([]byte{0xFE, 0x07}, c.a.fwRef("System", "IDisposable", "Dispose", sigInstVoid)), mrPop}
+		}, false},
+		{"default method slot the framework calls: GC.KeepAlive(Foo)", func(c *mrCtx) [][]byte {
+			_, ctor := mrDIMFoo(c)
+			return [][]byte{ilNewobjOp(ctor), ilCall(c.a.fwRef("System", "GC", "KeepAlive", keepAlive))}
+		}, false},
+		{"default method slot the framework calls: List<Foo>.Sort()", func(c *mrCtx) [][]byte {
+			a := c.a
+			icmp := a.extTypeRef("System", "IComparable`1")
+			pre, _ := a.addType(0, "Pre", "App", a.obj, nil)
+			fooSig := mrDef(pre + 1)
+			_, ctor := mrDIMFoo(c, mrGenInst(mrClass(icmp), fooSig))
+			lsFoo := mrGenInst(mrClass(a.extTypeRef("System.Collections.Generic", "List`1")), fooSig)
+			return [][]byte{ilNewobjOp(ctor), mrPop, ilNewobjOp(a.specRef(lsFoo, ".ctor", sigInstVoid)), ilCallvirt(a.specRef(lsFoo, "Sort", sigInstVoid))}
+		}, false},
+		{"only a missing interface, handed to the framework: searched", func(c *mrCtx) [][]byte {
+			a := c.a
+			foo, fm := a.addType(0, "Foo", "App", a.obj, []mspec{{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()}})
+			a.row(xInterfaceImpl, foo, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
+			return [][]byte{ilNewobjOp(mtok(xMethodDef, fm[0])), ilCall(a.fwRef("System", "GC", "KeepAlive", keepAlive))}
+		}, true},
+		{"constrained. over Nullable<Gone.S>", func(c *mrCtx) [][]byte {
+			a := c.a
+			f := staticGoneS(c)
+			sp := a.row(xTypeSpec, a.blob(mrGenInst(mrValue(a.extTypeRef("System", "Nullable`1")), mrValue(c.gstruct))))
+			return [][]byte{mrOp([]byte{0x7F}, f), mrOp([]byte{0xFE, 0x16}, mtok(xTypeSpec, sp)), ilCallvirt(a.fwRef("System", "Object", "ToString", sigToString)), mrPop}
+		}, false},
+		{"box a missing struct inside an in-set type initializer", func(c *mrCtx) [][]byte {
+			a := c.a
+			f := staticGoneS(c)
+			cctor := body(mrOp([]byte{0x7E}, f), mrOp([]byte{0x8C}, mtok(xTypeRef, c.gstruct)), ilCallvirt(a.fwRef("System", "Object", "ToString", sigToString)), mrPop)
+			_, m := a.addType(0, "Init", "App", a.obj, []mspec{
+				{name: "M", flags: fStatic, sig: sigStaticVoid, il: body()},
+				{name: ".cctor", flags: 0x1811, sig: sigStaticVoid, il: cctor},
+			})
+			return [][]byte{ilCall(mtok(xMethodDef, m[0]))}
+		}, false},
+		{"constrained. call on a missing struct (static abstract member)", func(c *mrCtx) [][]byte {
+			return [][]byte{mrOp([]byte{0xFE, 0x16}, mtok(xTypeRef, c.gstruct)), ilCall(c.a.fwRef("System", "ISpanParsable", "M", sigStaticVoid))}
+		}, false},
+		{"array of a missing struct sorted by the framework", func(c *mrCtx) [][]byte {
+			a := c.a
+			arr := a.extTypeRef("System", "Array")
+			sort := a.fwRef("System", "Array", "Sort", []byte{0x00, 0x01, 0x01, 0x12, byte(cTypeDefOrRef(xTypeRef, arr))})
+			return [][]byte{{0x17}, mrOp([]byte{0x8D}, mtok(xTypeRef, c.gstruct)), ilCall(sort)}
+		}, false},
+		{"array of an in-set struct: searched", func(c *mrCtx) [][]byte {
+			a := c.a
+			key := mrStruct(c, "Key", []byte{0x08})
+			arr := a.extTypeRef("System", "Array")
+			sort := a.fwRef("System", "Array", "Sort", []byte{0x00, 0x01, 0x01, 0x12, byte(cTypeDefOrRef(xTypeRef, arr))})
+			return [][]byte{{0x17}, mrOp([]byte{0x8D}, mtok(xTypeDef, key)), ilCall(sort)}
+		}, true},
+		{"box an in-set struct holding a missing struct", func(c *mrCtx) [][]byte {
+			return boxHash(c, mrStruct(c, "Key", []byte{0x08}, mrValue(c.gstruct)))
+		}, false},
+		{"box an in-set struct holding one that holds a missing struct", func(c *mrCtx) [][]byte {
+			inner := mrStruct(c, "Inner", mrValue(c.gstruct))
+			return boxHash(c, mrStruct(c, "Key", mrDefV(inner)))
+		}, false},
+		{"in-set struct holding a missing struct as a Dictionary key", func(c *mrCtx) [][]byte {
+			a := c.a
+			key := mrStruct(c, "Key", mrValue(c.gstruct))
+			dict := mrGenInst(mrClass(a.extTypeRef("System.Collections.Generic", "Dictionary`2")), mrDefV(key), []byte{0x08})
+			return [][]byte{ilNewobjOp(a.specRef(dict, ".ctor", sigInstVoid)), mrPop}
+		}, false},
+		{"box an in-set struct holding a static missing struct and an int: searched", func(c *mrCtx) [][]byte {
+			a := c.a
+			key := mrStruct(c, "Key", []byte{0x08})
+			// A static field of the missing type sits in Key's range but is not instance state.
+			a.row(xField, 0x16, a.str("s"), a.blob(append([]byte{0x06}, mrValue(c.gstruct)...)))
+			c.fieldEnd++
+			return boxHash(c, key)
+		}, true},
+		// Precision cost: Foo fills Dispose itself, but the slots a framework interface carries
+		// cannot be enumerated, so pairing it with a missing interface counts anyway.
+		{"framework slot the type fills itself, paired with a missing interface: not searched", func(c *mrCtx) [][]byte {
 			a := c.a
 			foo, fm := a.addType(0, "Foo", "App", a.obj, []mspec{
 				{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()},
@@ -159,7 +304,7 @@ func TestReachability_RoutesIntoMissingPackage(t *testing.T) {
 			a.implements(foo, "System", "IDisposable")
 			a.row(xInterfaceImpl, foo, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
 			return [][]byte{ilNewobjOp(mtok(xMethodDef, fm[0])), ilCallvirt(a.fwRef("System", "IDisposable", "Dispose", sigInstVoid))}
-		}, true},
+		}, false},
 	} {
 		t.Run(r.name, func(t *testing.T) {
 			t.Setenv("NUGET_PACKAGES", t.TempDir())

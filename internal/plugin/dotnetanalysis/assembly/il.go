@@ -87,7 +87,7 @@ type MethodBody struct {
 	Method       *MethodDef
 	Edges        []Edge
 	InitTriggers []InitTrigger
-	// TypeUses are the type tokens of box and constrained. sites: a value of that type
+	// TypeUses are the type tokens of box, newarr and constrained. sites: a value of that type
 	// reaches Object's virtuals (ToString, Equals, GetHashCode), whose override lives in
 	// the type's own body.
 	TypeUses []Token
@@ -298,7 +298,8 @@ func (a *Assembly) walkILUses(code []byte) (edges []Edge, triggers []InitTrigger
 			triggers = append(triggers, InitTrigger{Kind: InitStaticField, Token: tok(code, pc+1), Offset: pc})
 			pc += 5
 			clear()
-		case 0x8C: // box — 4-byte type token; the boxed value can reach Object's virtuals
+		case 0x8C, 0x8D: // box, newarr — 4-byte type token; the boxed value (or, through
+			// Array.Sort and similar, an element) can reach Object's and interface virtuals
 			if !need("box", pc+1, 4) {
 				return nil, nil, nil, err
 			}

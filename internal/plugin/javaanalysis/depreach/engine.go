@@ -39,7 +39,7 @@ type Engine struct {
 	resolving   map[string]bool                  // lambda implementations met in the outermost lambdaImpl
 	closures    map[classfile.MethodRef]*closure // Reach's whole search per ingress, under the current linked bit
 	methodIDs   map[classfile.MethodRef]int      // bit index of each method a closure enqueued
-	tableSize   int                              // methodIDs below it are the loaded methods, by class name then declaration
+	tableSize   int                              // methodIDs below it are the declared methods (numberMethods)
 	dispatched  map[dispatchKey]dispatch         // virtual/interface resolveTargets answers, under the current linked bit
 	below       map[string][]string              // loaded subtypes of a type (closureFrom with no seeds)
 	closed      map[string][]string              // subtypeClosure cache, under the current linked bit
@@ -215,8 +215,9 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 }
 
 // numberMethods gives every loaded method its closure bit, ordered by class name and then
-// declaration, so two engines over the same classes number them alike and a closure one
-// exports (Closure) means the same in the other (SetClosure).
+// declaration, then the methods a duplicated class name left only declared, so two engines
+// over the same classes number them alike and a closure one exports (Closure) means the same in
+// the other (SetClosure).
 func (e *Engine) numberMethods() {
 	names := make([]string, 0, len(e.classes))
 	for n := range e.classes {
@@ -229,6 +230,18 @@ func (e *Engine) numberMethods() {
 				e.methodIDs[m.Ref] = len(e.methodIDs)
 			}
 		}
+	}
+	// A binary name loaded twice keeps its later class above, but a method only the earlier
+	// declares is still a search target; it is numbered after them, by its ref.
+	var shadowed []string
+	for ref, m := range e.declared {
+		if _, ok := e.methodIDs[m.Ref]; !ok {
+			shadowed = append(shadowed, ref)
+		}
+	}
+	sort.Strings(shadowed)
+	for _, ref := range shadowed {
+		e.methodIDs[e.declared[ref].Ref] = len(e.methodIDs)
 	}
 	e.tableSize = len(e.methodIDs)
 }

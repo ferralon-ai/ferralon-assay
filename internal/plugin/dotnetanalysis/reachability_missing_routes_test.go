@@ -365,6 +365,8 @@ func TestReachability_RoutesIntoMissingPackage(t *testing.T) {
 			a.row(xInterfaceImpl, bar, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
 			return inSetIfaceDIM(true, false, true)(c)
 		}, true},
+		// The fixture treats Microsoft.Extensions.DependencyInjection as framework, so the
+		// container is opaque and only the generic arguments say what it builds.
 		{"class carrying a missing interface, built by DI through a constructor with parameters", func(c *mrCtx) [][]byte {
 			a := c.a
 			irun, rm := a.addType(0xA1, "IRun", "App", 0, []mspec{{name: "Run", flags: 0x5C6, sig: sigInstVoid}})

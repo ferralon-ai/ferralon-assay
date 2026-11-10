@@ -470,11 +470,10 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig [
 		}
 		// With no class body for an interface slot the runtime binds a default method,
 		// which an out-of-set interface on the chain can supply when t is the receiver.
-		if !acc.found {
-			for _, b := range acc.ifaces {
-				b.Via = t.def
-				bases = append(bases, b)
-			}
+		// A found body leaves acc.ifaces empty.
+		for _, b := range acc.ifaces {
+			b.Via = t.def
+			bases = append(bases, b)
 		}
 	}
 

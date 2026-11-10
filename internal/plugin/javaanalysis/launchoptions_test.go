@@ -729,6 +729,25 @@ func TestLaunchOptionReasons_OwnJarName(t *testing.T) {
 		{"glob, Ant tofile below the build directory", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<copy file=\"lib/a.jar\" tofile=\"${project.build.directory}/lib/a.jar\"/>\n"}, g, []string{}},
 		{"glob, dependency copy renamed up a directory", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<artifactItem><outputDirectory>${project.build.directory}/lib</outputDirectory><destFileName>../y.jar</destFileName></artifactItem>\n"}, g, optionOnly},
 		{"glob, dependency copy renamed in place", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<artifactItem><outputDirectory>${project.build.directory}/lib</outputDirectory><destFileName>y.jar</destFileName></artifactItem>\n"}, g, []string{}},
+		{"glob, Gradle copies a tree into build", map[string]string{"README.md": "java -jar build/libs/*.jar\n", "build.gradle": "task d(type: Copy) { from('dist'); into('build') }\n"}, g, optionOnly},
+		{"glob, Gradle copies a tree into the project directory", map[string]string{"README.md": "java -jar build/libs/*.jar\n", "build.gradle": "task d(type: Copy) { from('dist'); into('.') }\n"}, g, optionOnly},
+		{"glob, Gradle copies a tree into buildDir", map[string]string{"README.md": "java -jar build/libs/*.jar\n", "build.gradle": "task d(type: Copy) { from('dist'); into(\"$buildDir\") }\n"}, g, optionOnly},
+		{"glob, POM copies into the module directory", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<outputDirectory>.</outputDirectory>\n"}, g, optionOnly},
+		{"glob, POM output in CDATA", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<outputDirectory><![CDATA[target]]></outputDirectory>\n"}, g, optionOnly},
+		{"glob, POM output tag with an attribute", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<outputDirectory combine.self=\"override\">target</outputDirectory>\n"}, g, optionOnly},
+		{"glob, POM output wrapped over lines below the build directory", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<outputDirectory>\n  ${project.build.directory}/lib\n</outputDirectory>\n"}, g, []string{}},
+		{"glob, Gradle ant.copy into libs", map[string]string{"README.md": "java -jar build/libs/*.jar\n", "build.gradle": "ant.copy(todir: \"$buildDir/libs\") { fileset(dir: 'vendor') }\n"}, g, optionOnly},
+		{"glob, Gradle ant.copy elsewhere", map[string]string{"README.md": "java -jar build/libs/*.jar\n", "build.gradle": "ant.copy(todir: \"$buildDir/dist\") { fileset(dir: 'vendor') }\n"}, g, []string{}},
+
+		// A JAR task's inputs: the module's sources and resolved configurations are the graph's
+		// code; files from the checkout are not.
+		{"second Gradle JAR from resolved configurations", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle": "task fat(type: Jar) {\n  from sourceSets.main.output\n  from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }\n}\n"}, g, []string{}},
+		{"Gradle JAR from a checked-in JAR", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle": "task fat(type: Jar) {\n  from zipTree('lib/vendor.jar')\n}\n"}, g, optionOnly},
+		{"Gradle JAR from a vendor tree", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle.kts": "tasks.register<Jar>(\"fat\") {\n  from(fileTree(\"vendor\"))\n}\n"}, g, optionOnly},
+		{"Gradle JAR from a checked-in directory", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle": "jar {\n  from('prebuilt')\n}\n"}, g, optionOnly},
+		{"Gradle JAR from the project directory", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle.kts": "tasks.named<Jar>(\"jar\") {\n  from(layout.projectDirectory.dir(\"classes\"))\n}\n"}, g, optionOnly},
+		{"Gradle JAR adds license and text files", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle": "jar {\n  from('LICENSE')\n  from(\"NOTICE.txt\")\n  manifest { from('src/main/resources/META-INF/MANIFEST.MF') }\n}\n"}, g, []string{}},
+		{"Copy task from a checked-in tree is not a JAR input", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle": "task docs(type: Copy) {\n  from fileTree('docs')\n  into \"$buildDir/docs\"\n}\n"}, g, []string{}},
 
 		// Words the line does not show can follow the operand.
 		{"continued after the operand", map[string]string{"run.sh": "exec java -jar target/mall-common-1.jar \\\n  --spring.main.sources=com.x.Extra\n"}, g, optionOnly},
@@ -753,6 +772,17 @@ func TestLaunchOptionReasons_OwnJarName(t *testing.T) {
 		{"templated manifest", map[string]string{"deploy.yaml.tmpl": "containers:\n  - command: [java, -jar, /app/mall-common-1.jar]\n    args: [--spring.main.sources=x]\n"}, g, optionOnly},
 		{"README launch beside a Compose command", map[string]string{"README.md": "Run this command: java -jar target/mall-common-1.jar\n", "docker-compose.yml": "services:\n  db:\n    command: --default-authentication-plugin=mysql_native_password\n"}, g, []string{}},
 		{"Dockerfile entrypoint beside a prose command", map[string]string{"Dockerfile": "ENTRYPOINT [\"java\", \"-jar\", \"/app/mall-common-1.jar\"]\n", "README.md": "Build it with this command: docker build .\n"}, g, []string{}},
+		{"Dockerfile entrypoint over lines, CMD after", map[string]string{"Dockerfile": "ENTRYPOINT [\"java\", \"-Xss1m\", \\\n  \"-jar\", \"/app/mall-common-1.jar\"]\nCMD [\"--spring.main.sources=x\"]\n"}, g, optionOnly},
+		{"Dockerfile entrypoint over lines, Kubernetes args", map[string]string{"Dockerfile": "ENTRYPOINT [\"java\", \"-Xss1m\", \\\n  \"-jar\", \"/app/mall-common-1.jar\"]\n", "k8s/d.yaml": "containers:\n  - args: [\"--spring.main.sources=x\"]\n"}, g, optionOnly},
+		{"Dockerfile entrypoint over lines alone", map[string]string{"Dockerfile": "ENTRYPOINT [\"java\", \"-Xss1m\", \\\n  \"-jar\", \"/app/mall-common-1.jar\"]\n"}, g, []string{}},
+		{"Kustomize JSON patch args", map[string]string{"base/deploy.yaml": "containers:\n  - name: app\n    command: [java, -jar, /app/mall-common-1.jar]\n", "overlays/prod/patch.yaml": "- op: add\n  path: /spec/template/spec/containers/0/args\n  value: [--spring.main.sources=x]\n"}, g, optionOnly},
+		{"Jsonnet args+ for the Dockerfile's entrypoint", map[string]string{"Dockerfile": "ENTRYPOINT [\"java\", \"-jar\", \"/app/mall-common-1.jar\"]\n", "app.jsonnet": "{ container+: { args+: ['--spring.main.sources=x'] } }\n"}, g, optionOnly},
+		{"k8s-libsonnet withArgs", map[string]string{"Dockerfile": "ENTRYPOINT [\"java\", \"-jar\", \"/app/mall-common-1.jar\"]\n", "app.libsonnet": "container.new('app', 'img') + container.withArgs(['--spring.main.sources=x'])\n"}, g, optionOnly},
+		{"Terraform ECS command", map[string]string{"Dockerfile": "ENTRYPOINT [\"java\", \"-jar\", \"/app/mall-common-1.jar\"]\n", "main.tf": "container_definitions = jsonencode([{\n  name = \"app\"\n  command = [\"--spring.main.sources=x\"]\n}])\n"}, g, optionOnly},
+		{"Nomad args", map[string]string{"Dockerfile": "ENTRYPOINT [\"java\", \"-jar\", \"/app/mall-common-1.jar\"]\n", "job.nomad": "config {\n  image = \"app\"\n  args = [\"--spring.main.sources=x\"]\n}\n"}, g, optionOnly},
+		{"Helm values launch spliced with args", map[string]string{"charts/app/values.yaml": "jvmCmd: java -jar /app/mall-common-1.jar\nappArgs: --spring.main.sources=x\n", "charts/app/templates/deploy.yaml": "containers:\n  - args: [\"{{ .Values.jvmCmd }} {{ .Values.appArgs }}\"]\n"}, g, optionOnly},
+		{"env file launch spliced into a Compose command", map[string]string{".env": "JAVA_CMD=java -jar /app/mall-common-1.jar\n", "docker-compose.yml": "services:\n  app:\n    command: sh -c \"$$JAVA_CMD --spring.main.sources=x\"\n"}, g, optionOnly},
+		{"Helm values launch with nothing to splice it", map[string]string{"charts/app/values.yaml": "jvmCmd: java -jar /app/mall-common-1.jar\n"}, g, []string{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

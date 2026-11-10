@@ -1633,15 +1633,36 @@ func (f *launchFile) ownJarOperand(t launchToken) bool {
 }
 
 // appendable reports whether a container can pass the launch at t arguments its line does not
-// show: t sits in a Dockerfile ENTRYPOINT, or in a file that sets a container command or
-// entrypoint (Kubernetes passes a container's args after its command, Compose a service's
-// command after its entrypoint). Whether some file sets such arguments is known only once the
-// whole tree is read (containerKeys, argsAppended).
+// show: t sits in a Dockerfile ENTRYPOINT, in a file that sets a container command or entrypoint
+// (Kubernetes passes a container's args after its command, Compose a service's command after its
+// entrypoint), or in a file whose values another file splices into a command (spliceFile).
+// Whether some file sets such arguments is known only once the whole tree is read
+// (containerKeys, argsAppended).
 func (f *launchFile) appendable(t launchToken) bool {
 	if isDockerfile(f.rel) {
-		return dockerEntrypoint.MatchString(f.line(f.lineOf(t.start)))
+		i := f.lineOf(t.start)
+		for i > 0 && dockerContinued(f.line(i-1)) {
+			i--
+		}
+		return dockerEntrypoint.MatchString(f.line(i))
 	}
-	return containerCommand.Match(f.data) || containerEntrypoint.Match(f.data)
+	return spliceFile(f.rel) || containerCommand.Match(f.data) || containerEntrypoint.Match(f.data)
+}
+
+// dockerContinued reports whether a Dockerfile line continues onto the next: it ends in the
+// default escape character.
+func dockerContinued(line string) bool {
+	return strings.HasSuffix(strings.TrimRight(line, " \t\r"), "\\")
+}
+
+// spliceFile reports whether rel holds values another file splices into a command: an env file,
+// which Compose and shells interpolate, or a Helm values file, which templates render.
+func spliceFile(rel string) bool {
+	base := strings.ToLower(path.Base(rel))
+	if base == ".env" || strings.HasPrefix(base, ".env.") || strings.HasSuffix(base, ".env") {
+		return true
+	}
+	return strings.HasPrefix(base, "values") && (strings.HasSuffix(base, ".yaml") || strings.HasSuffix(base, ".yml"))
 }
 
 func isDockerfile(rel string) bool {
@@ -1649,9 +1670,10 @@ func isDockerfile(rel string) bool {
 	return strings.HasPrefix(base, "dockerfile") || strings.HasPrefix(base, "containerfile") || strings.HasSuffix(base, ".dockerfile")
 }
 
-// containerKeys records whether a file sets a container's args, command or entrypoint: a YAML or
-// JSON key, quoted or not and in any case, at the start of a line or a flow collection's entry,
-// or a Dockerfile ENTRYPOINT or CMD instruction.
+// containerKeys records whether a file sets a container's args, command or entrypoint: a YAML,
+// JSON, Jsonnet or HCL key, quoted or not, in any case and set with :, +: or =, at the start of
+// a line or a flow collection's entry; a JSON patch path ending in one; a Jsonnet withArgs or
+// withCommand call; or a Dockerfile ENTRYPOINT or CMD instruction.
 func (s *launchScan) containerKeys(rel string, data []byte) {
 	var k uint8
 	if isDockerfile(rel) {
@@ -1703,9 +1725,9 @@ var (
 	dockerEntrypoint    = regexp.MustCompile(`(?i)^\s*entrypoint\s`)
 	dockerEntrypointAny = regexp.MustCompile(`(?im)^\s*entrypoint\s`)
 	dockerCmd           = regexp.MustCompile(`(?im)^\s*cmd\s`)
-	containerArgs       = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?args["']?\s*:`)
-	containerCommand    = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?command["']?\s*:`)
-	containerEntrypoint = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?entrypoint["']?\s*:`)
+	containerArgs       = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?args["']?\s*\+?\s*[:=]|path["']?\s*:\s*["']?/\S*/args\b|\bwithArgs\s*\(`)
+	containerCommand    = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?command["']?\s*\+?\s*[:=]|path["']?\s*:\s*["']?/\S*/command\b|\bwithCommand\s*\(`)
+	containerEntrypoint = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?entrypoint["']?\s*\+?\s*[:=]`)
 )
 
 // ownJarDir is the module directory, "." or a relative slash path, that segs name.
@@ -1746,14 +1768,85 @@ var (
 	jarHeaderHazard = regexp.MustCompile(`(?im)^[ \t]*add-(?:opens|exports)[ \t]*:|["']add-(?:opens|exports)["']`)
 )
 
+var (
+	// gradleJarHeader is a line opening a block that configures a JAR task: jar, bootJar,
+	// shadowJar, a task of type Jar, register<Jar>, withType(Jar) and the like.
+	gradleJarHeader = regexp.MustCompile(`(?im)^[^\n{]*\b\w*jar\b[^\n{]*\{`)
+	// gradleCheckedInTree is a file collection built from paths in the checkout.
+	gradleCheckedInTree = regexp.MustCompile(`(?i)\b(?:fileTree|files|zipTree|tarTree)\s*\(\s*(?:["']|file\s*\(|dir\s*[:=]|project\.file|rootProject\.file|layout\.projectDirectory)|\bprojectDirectory\b`)
+	// gradleFromLiteral is a from() of a path literal.
+	gradleFromLiteral = regexp.MustCompile(`\bfrom\b\s*\(?\s*(?:file\s*\(\s*)?["']([^"']*)["']`)
+	// gradleTextFiles are checked-in files a JAR commonly carries that hold no code.
+	gradleTextFiles = map[string]bool{"license": true, "notice": true, "copying": true, "readme": true}
+)
+
+// gradleJarTakesCheckedIn reports whether a Gradle build file's JAR task puts files from the
+// checkout into its JAR: a from() of a path literal or a file collection over checked-in paths
+// (fileTree("vendor"), files("lib/x.jar"), zipTree("lib/x.jar")). Those can carry code no module
+// of the graph builds. The module's sources and resolved configurations (from
+// sourceSets.main.output, from { configurations.runtimeClasspath... zipTree(it) }) are the
+// graph's own code. A text file with a non-code extension, or a license or notice, adds none.
+// A from() of a variable is not resolved.
+func gradleJarTakesCheckedIn(data []byte) bool {
+	for _, loc := range gradleJarHeader.FindAllIndex(data, -1) {
+		body := gradleBlock(data, loc[1]-1)
+		if gradleCheckedInTree.Match(body) {
+			return true
+		}
+		for _, m := range gradleFromLiteral.FindAllSubmatch(body, -1) {
+			if !gradleTextFile(string(m[1])) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// gradleBlock is the text of the brace block opening at data[open], to its matching brace or the
+// end of the file.
+func gradleBlock(data []byte, open int) []byte {
+	depth := 0
+	for i := open; i < len(data); i++ {
+		switch data[i] {
+		case '{':
+			depth++
+		case '}':
+			if depth--; depth == 0 {
+				return data[open : i+1]
+			}
+		}
+	}
+	return data[open:]
+}
+
+// gradleTextFile reports whether a from() path names a single text file: a license, notice,
+// copying or readme file, or a file whose extension is not that of an archive or class.
+func gradleTextFile(p string) bool {
+	base := strings.ToLower(path.Base(p))
+	stem, ext, dotted := strings.Cut(base, ".")
+	if gradleTextFiles[stem] {
+		return true
+	}
+	if !dotted || strings.ContainsAny(base, "*$") {
+		return false
+	}
+	switch path.Ext(base) {
+	case ".jar", ".zip", ".war", ".ear", ".class", ".tar", ".gz", ".tgz":
+		return false
+	}
+	return ext != ""
+}
+
 // jarHazards records whether a file can change what a -jar launch of the build's artifact runs.
 func (s *launchScan) jarHazards(rel string, data []byte) {
 	if s.jarHazard {
 		return
 	}
 	base := strings.ToLower(rel[strings.LastIndex(rel, "/")+1:])
-	build := base == "pom.xml" || base == "manifest.mf" || strings.HasSuffix(base, ".gradle") || strings.HasSuffix(base, ".gradle.kts")
-	if build && jarManifestHazard.Match(data) || jarLoaderHazard.Match(data) || jarHeaderHazard.Match(data) {
+	gradle := strings.HasSuffix(base, ".gradle") || strings.HasSuffix(base, ".gradle.kts")
+	build := base == "pom.xml" || base == "manifest.mf" || gradle
+	if build && jarManifestHazard.Match(data) || jarLoaderHazard.Match(data) || jarHeaderHazard.Match(data) ||
+		gradle && gradleJarTakesCheckedIn(data) {
 		s.jarHazard = true
 		return
 	}
@@ -1771,7 +1864,7 @@ var (
 	// jarPomOutput is a POM plugin's output directory, or the directory or file an Ant task
 	// writes (todir, tofile, destfile, dest); jarPomFinalName a literal artifact name;
 	// jarPomDestFileName the file name a dependency copy gives its artifact.
-	jarPomOutput       = regexp.MustCompile(`(?i)<outputDirectory>\s*([^<]*?)\s*</outputDirectory>|\b(todir|tofile|destfile|dest)\s*=\s*["']([^"']*)["']`)
+	jarPomOutput       = regexp.MustCompile(`(?is)<outputDirectory\b[^>]*>(.*?)</outputDirectory>|\b(todir|tofile|destfile|dest)\s*=\s*["']([^"']*)["']`)
 	jarPomDestFileName = regexp.MustCompile(`(?i)<destFileName>\s*([^<]*?)\s*</destFileName>`)
 	jarPomFinalName    = regexp.MustCompile(`<finalName>\s*([A-Za-z0-9._+-]+)\s*</finalName>`)
 	// jarPomSubdir is an output directory below target/ or of no build output at all, which a
@@ -1781,6 +1874,8 @@ var (
 	// destination given as a plain string literal, $buildDir aside (gradleCopiesIntoLibs).
 	jarGradleDest        = regexp.MustCompile(`\b(?:into|destinationDir(?:ectory)?)\b`)
 	jarGradleLiteralDest = regexp.MustCompile(`^\s*(?:\(\s*|=\s*|\.set\(\s*)?(?:file\(\s*)?["']((?:\$\{?buildDir\}?/)?[^"'$\n]*)["']`)
+	// jarGradleAnt is an Ant task's destination in a Gradle build (ant.copy(todir: ...)).
+	jarGradleAnt = regexp.MustCompile(`(?i)\b(todir|tofile|destfile|dest)\s*[:=]\s*["']([^"']*)["']`)
 )
 
 // jarCopyHazards records the tools whose build files copy into the directory a -jar glob of the
@@ -1797,7 +1892,7 @@ func (s *launchScan) jarCopyHazards(rel string, data []byte) {
 			var dirs []string
 			switch strings.ToLower(string(m[2])) {
 			case "":
-				dirs = []string{string(m[1])}
+				dirs = []string{strings.TrimSpace(string(m[1]))}
 			case "todir":
 				dirs = []string{v}
 			case "dest": // a directory for unzip, a file or a directory for get
@@ -1827,6 +1922,21 @@ func (s *launchScan) jarCopyHazards(rel string, data []byte) {
 		if gradleCopiesIntoLibs(data) {
 			s.copyInto["gradle"] = true
 		}
+		for _, m := range jarGradleAnt.FindAllSubmatch(data, -1) {
+			v := string(m[2])
+			dirs := []string{path.Dir(v)}
+			switch strings.ToLower(string(m[1])) {
+			case "todir":
+				dirs = []string{v}
+			case "dest":
+				dirs = []string{v, path.Dir(v)}
+			}
+			for _, d := range dirs {
+				if gradleDestHitsLibs(d) {
+					s.copyInto["gradle"] = true
+				}
+			}
+		}
 	}
 }
 
@@ -1844,7 +1954,9 @@ func pomCopiesIntoTarget(d string) bool {
 	for _, p := range []string{"${project.basedir}/", "${basedir}/"} {
 		d = strings.TrimPrefix(d, p)
 	}
-	return path.Base(path.Clean(d)) == "target"
+	// The module directory itself holds target/, so a copy of a tree into it can write there.
+	c := path.Clean(d)
+	return c == "." || path.Base(c) == "target"
 }
 
 // gradleCopiesIntoLibs reports whether a Gradle build file can copy or write into a libs
@@ -1854,11 +1966,29 @@ func pomCopiesIntoTarget(d string) bool {
 func gradleCopiesIntoLibs(data []byte) bool {
 	for _, loc := range jarGradleDest.FindAllIndex(data, -1) {
 		m := jarGradleLiteralDest.FindSubmatch(data[loc[1]:])
-		if m == nil || strings.Contains(strings.ToLower(string(m[1])), "libs") {
+		if m == nil || gradleDestHitsLibs(string(m[1])) {
 			return true
 		}
 	}
 	return false
+}
+
+// gradleDestHitsLibs reports whether a Gradle destination can be build/libs or a directory above
+// it, where a copied tree can land in it: one naming libs, one using a variable other than a
+// leading $buildDir, or build, the project directory or a parent of it.
+func gradleDestHitsLibs(v string) bool {
+	v = strings.ToLower(v)
+	for _, p := range []string{"${builddir}", "$builddir"} {
+		if rest, ok := strings.CutPrefix(v, p); ok {
+			v = "build" + rest
+			break
+		}
+	}
+	if strings.Contains(v, "libs") || strings.ContainsAny(v, "$`\\") {
+		return true
+	}
+	c := path.Clean(v)
+	return c == "." || c == "build" || c == ".." || strings.HasPrefix(c, "../")
 }
 
 // settleOwnJars withholds Searched for the -jar launches ownJarOperand accepted when the build can

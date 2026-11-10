@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -35,6 +37,25 @@ func TestDecodeClosure(t *testing.T) {
 	other.Name = "run"
 	foreignRoot, _ := encodeClosure(key, other, bits, miss)
 	foreignKey, _ := encodeClosure(closureKey([]string{"j"}), testRoot, bits, miss)
+	// forge writes an entry whose checksum is valid but whose header or words say otherwise,
+	// so only the header checks can refuse it.
+	forge := func(mod func(*closureHeader), words []uint64) []byte {
+		hdr := closureHeader{Format: closureFormat, Key: hex.EncodeToString(key), Root: testRoot.String(), Words: len(bits), Miss: miss}
+		mod(&hdr)
+		j, err := json.Marshal(hdr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		buf.Write(j)
+		buf.WriteByte('\n')
+		if err := binary.Write(&buf, binary.LittleEndian, words); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(buf.Bytes())
+		return append(buf.Bytes(), sum[:]...)
+	}
+	same := func(*closureHeader) {}
 	tests := []struct {
 		name string
 		b    []byte
@@ -49,6 +70,9 @@ func TestDecodeClosure(t *testing.T) {
 		{"checksum altered", flip(len(good) - 1), false},
 		{"another root's entry", foreignRoot, false},
 		{"another key's entry", foreignKey, false},
+		{"forged whole entry", forge(same, bits), true},
+		{"another format's entry", forge(func(h *closureHeader) { h.Format = "assay-java-closure-v0" }, bits), false},
+		{"more words than the header counts", forge(same, append(bits, 0)), false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

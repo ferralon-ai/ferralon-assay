@@ -334,7 +334,7 @@ func TestDisqualify_AlsoPresentToolchainFloor(t *testing.T) {
 			})
 			rngs := []affectedRange{{UpperExclusive: "v0.38.0", Scheme: "gomod"}}
 			axis := versionAxis{Versions: []string{"v0.40.0"}, Complete: true}
-			got, reason := disqualifyEvery(rngs, true, axis, true, extractAlsoPresent(store, caseID), "", false, TrustFirstParty)
+			got, reason := disqualifyEvery(rngs, true, axis, true, extractAlsoPresent(store, caseID), "", false)
 			if got != tc.want {
 				t.Fatalf("disqualified = %v (%s), want %v", got, reason, tc.want)
 			}

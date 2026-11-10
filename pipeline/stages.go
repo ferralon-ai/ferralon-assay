@@ -352,10 +352,8 @@ type AdvisoryFacts struct {
 	// has no JSON form, so no corpus document can claim it. It is what vouches for an untagged symbol
 	// set: the canaries' symbols are written in this module.
 	BuiltIn bool `json:"-"`
-	// Provenance records where this fact was read from and how far it may be trusted.
-	// TrustTier gates refute eligibility: low-trust facts (byo/third_party) MAY narrow
-	// toward candidate but MAY NEVER refute — no laundering a false negative through an
-	// untrusted source. Zero value ⇒ untrusted ⇒ never refutes.
+	// Provenance records where this fact was read from. A refute names it (RefuteSource); it never
+	// decides whether a refute may fire.
 	Provenance Provenance
 	// Lineage names the deterministic known-vulnerable predecessor (IncompleteFixOf)
 	// and the completing fix (RefixedBy) for incomplete-patch advisories. Advisory-only
@@ -623,33 +621,31 @@ type Range struct {
 	Type         string `json:",omitempty"` // OSV range type (SEMVER | ECOSYSTEM | GIT); "" when the source states none
 }
 
-// TrustTier gates refute eligibility for a fact. Only first_party facts may drive a
-// KnownFalse (refute) branch; byo/third_party may narrow toward candidate but never
-// refute. The zero value ("") is untrusted and never refutes (fail open).
+// TrustTier is the tier a corpus record declares for its source. It is descriptive: any configured
+// source, a customer's own (byo) feed included, may drive a refute, and the zero value ("") means
+// the record declared none.
 type TrustTier string
 
 const (
-	// TrustByO marks a fact sourced from the codebase's own bring-your-own advisory
-	// input. It may narrow toward candidate but never refute.
+	// TrustByO marks a fact sourced from the customer's own bring-your-own advisory input.
 	TrustByO TrustTier = "byo"
-	// TrustThirdParty marks a fact sourced from an external, non-authoritative feed.
-	// It may narrow toward candidate but never refute.
+	// TrustThirdParty marks a fact sourced from an external feed.
 	TrustThirdParty TrustTier = "third_party"
-	// TrustFirstParty marks a fact sourced from an authoritative first-party corpus.
-	// It is the only tier that may drive a KnownFalse (refute) branch.
+	// TrustFirstParty marks a fact sourced from a first-party corpus.
 	TrustFirstParty TrustTier = "first_party"
 )
 
-// Provenance records the source and trust of one advisory fact. Trusted-or-nulled: a
-// fact whose provenance is unknown carries the zero TrustTier and can never refute.
+// Provenance records the source of one advisory fact. Source, InputDigest and TrustTier are what
+// the record itself declares (zero when it declares none); Corpus and Record are stamped by the
+// reader that served it, so a fact read from a configured corpus always names where it came from.
 //
 // §4.4.4 (source provenance AND confidence) is discharged by this triple, NOT by a separate
 // synthesized per-fact confidence score — and that absence is deliberate, not a gap:
 //
 //   - Provenance = Source + InputDigest + TrustTier. Source names where the fact was read from,
 //     InputDigest pins the exact bytes, and TrustTier is the CONFIDENCE-IN-SOURCE axis (byo /
-//     third_party / first_party) that gates refute eligibility. Together they answer "how far may
-//     this fact be trusted," which is the confidence half of §4.4.4.
+//     third_party / first_party) the record declares. Together they answer "how far may this fact
+//     be trusted," which is the confidence half of §4.4.4.
 //   - There is NO per-fact `Confidence` field, on purpose. Upstream advisories do not carry a
 //     confidence number, so any value here would be SYNTHESIZED by this reader — and a manufactured
 //     confidence score is a verdict-like judgment (a graded assertion about how true the fact is),
@@ -662,7 +658,9 @@ const (
 type Provenance struct {
 	Source      string    // corpus feed id
 	InputDigest string    // digest of the corpus artifact this fact was read from
-	TrustTier   TrustTier // gates refute eligibility; the confidence-in-source axis (§4.4.4)
+	TrustTier   TrustTier // the confidence-in-source axis (§4.4.4); descriptive, never a refute gate
+	Corpus      string    `json:"-"` // identity of the configured corpus that served the fact (its CorpusInfo.Digest)
+	Record      string    `json:"-"` // the per-record digest pin the fact's bytes were verified against
 }
 
 // Lineage names the incomplete-patch predecessor/successor CVEs for the two-trace PoNE
@@ -834,7 +832,10 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		AdvisoryGuards   []string                  `json:"advisory_guards,omitempty"`
 		CWEs             []string                  `json:"cwes,omitempty"`
 		VulnClass        string                    `json:"vuln_class,omitempty"`        // "" ⇒ class not assessed (honest)
-		TrustTier        string                    `json:"trust_tier,omitempty"`        // gates refute eligibility (inv.5); "" ⇒ untrusted
+		TrustTier        string                    `json:"trust_tier,omitempty"`        // the record's declared tier; descriptive, never a refute gate
+		Feed             string                    `json:"feed,omitempty"`              // the record's declared source feed (Provenance.Source)
+		Corpus           string                    `json:"corpus,omitempty"`            // the corpus that served the record (Provenance.Corpus)
+		RecordDigest     string                    `json:"record_digest,omitempty"`     // the record's digest pin (Provenance.Record)
 		BuiltIn          bool                      `json:"built_in,omitempty"`          // a house canary answered (AdvisoryFacts.BuiltIn)
 		Trigger          *advisoryTrigger          `json:"trigger,omitempty"`           // v3 per-CVE reach descriptor (row 1)
 		TriggerCondition string                    `json:"trigger_condition,omitempty"` // B3: advisory-declared exploit precondition, read as candidate-only PoE qualifier context (never admission/refute)
@@ -859,6 +860,9 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		CWEs:             facts.CWEs,
 		VulnClass:        string(vulnClass),
 		TrustTier:        string(facts.Provenance.TrustTier),
+		Feed:             facts.Provenance.Source,
+		Corpus:           facts.Provenance.Corpus,
+		RecordDigest:     facts.Provenance.Record,
 		BuiltIn:          facts.BuiltIn,
 		Trigger:          advTrigger,
 		TriggerCondition: facts.TriggerCondition,
@@ -1669,6 +1673,21 @@ func (disqualificationDiscovery) Status() assessment.Status { return assessment.
 type DisqualResult struct {
 	Disqualified bool   `json:"disqualified"`
 	Reason       string `json:"reason"`
+	// Source names the advisory record a version or symbol refute relied on. Set exactly when
+	// Disqualified is true on ReasonVersionNotInRange or ReasonSymbolAbsent; nil otherwise.
+	Source *RefuteSource `json:"source,omitempty"`
+}
+
+// RefuteSource names the record a refute relied on. Advisory is always set. Corpus and Record are
+// set when the fact was read from a configured corpus; Feed and TrustTier only when the record
+// declares them; BuiltIn when a fact compiled into the scanner answered.
+type RefuteSource struct {
+	Advisory  string `json:"advisory"`
+	Corpus    string `json:"corpus,omitempty"`
+	Record    string `json:"record_digest,omitempty"`
+	Feed      string `json:"feed,omitempty"`
+	TrustTier string `json:"trust_tier,omitempty"`
+	BuiltIn   bool   `json:"built_in,omitempty"`
 }
 
 // Reason codes recorded in the discovery artifact.
@@ -2089,14 +2108,13 @@ func goSumHas(file, module string) (present, ok bool) {
 // uncertainty fails OPEN to analysis. rngs is the advisory's full affected set (one or more
 // disjoint ranges — e.g. a branch-aware backport); the version axis disqualifies only when the
 // resolved version is provably outside EVERY range (versionOutsideRanges), never on a subset.
-func disqualify(rngs []affectedRange, rangeKnown bool, ver string, verKnown bool, symbol string, symbolKnown bool, trust TrustTier) (bool, string) {
-	// inv.5 refute-gate: a not-affected refute may be driven ONLY by a first-party fact. Any other
-	// tier (byo / third_party / zero / unrecognized) suppresses BOTH refute reasons and fails OPEN —
-	// no laundering a false negative through a low-trust advisory source. This gate can only ever
-	// REMOVE refutes: when trust is first_party the behavior below is identical to before.
-	if trust != TrustFirstParty {
-		return false, ReasonInsufficient
-	}
+//
+// Any configured advisory source may drive either refute: a range or symbol set from any record
+// counts, whatever its TrustTier, and only an absent range (rangeKnown false) blocks the version
+// axis. The record a refute relied on is named in DisqualResult.Source. Source precedence (an
+// ecosystem record over an NVD/CNA one) and a public-source deny-list will select WHICH record's
+// ranges reach rngs, upstream of this function, once intel states a range_source (tracker#767).
+func disqualify(rngs []affectedRange, rangeKnown bool, ver string, verKnown bool, symbol string, symbolKnown bool) (bool, string) {
 	if symbolKnown && symbol == "absent" {
 		return true, ReasonSymbolAbsent
 	}
@@ -2110,29 +2128,29 @@ func disqualify(rngs []affectedRange, rangeKnown bool, ver string, verKnown bool
 
 // disqualifyEvery is disqualify over every version the codebase carries. The version axis refutes
 // only when the set is complete and each version, of the selected package and of every other
-// affected package present, is provably outside its own ranges; the symbol axis and the trust gate
-// are disqualify's, unchanged.
-func disqualifyEvery(rngs []affectedRange, rangeKnown bool, axis versionAxis, axisKnown bool, others []presentRanges, symbol string, symbolKnown bool, trust TrustTier) (bool, string) {
-	if disq, reason := disqualify(rngs, rangeKnown, "", false, symbol, symbolKnown, trust); disq || trust != TrustFirstParty {
+// affected package present, is provably outside its own ranges; the symbol axis is disqualify's,
+// unchanged.
+func disqualifyEvery(rngs []affectedRange, rangeKnown bool, axis versionAxis, axisKnown bool, others []presentRanges, symbol string, symbolKnown bool) (bool, string) {
+	if disq, reason := disqualify(rngs, rangeKnown, "", false, symbol, symbolKnown); disq {
 		return disq, reason
 	}
-	if !axisKnown || !everyVersionOutside(axis.Versions, axis.Complete, rngs, rangeKnown, trust) {
+	if !axisKnown || !everyVersionOutside(axis.Versions, axis.Complete, rngs, rangeKnown) {
 		return false, ReasonInsufficient
 	}
 	for _, o := range others {
-		if !everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown, trust) {
+		if !everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown) {
 			return false, ReasonInsufficient
 		}
 	}
 	return true, ReasonVersionNotInRange
 }
 
-func everyVersionOutside(vers []string, complete bool, rngs []affectedRange, rangeKnown bool, trust TrustTier) bool {
+func everyVersionOutside(vers []string, complete bool, rngs []affectedRange, rangeKnown bool) bool {
 	if !complete || len(vers) == 0 {
 		return false
 	}
 	for _, v := range vers {
-		if disq, _ := disqualify(rngs, rangeKnown, v, true, "", false, trust); !disq {
+		if disq, _ := disqualify(rngs, rangeKnown, v, true, "", false); !disq {
 			return false
 		}
 	}
@@ -2597,27 +2615,31 @@ func extractSymbolSignal(store artifact.Store, caseID string) (string, bool) {
 	return adv.VulnerableSymbolPresence, true
 }
 
-// extractAdvisoryTrust reads the advisory's declared TrustTier from the normalized-advisory
-// artifact. It returns (zero, false) on ANY miss/malformed/empty/UNRECOGNIZED value — only the
-// three known enum strings map to their tier. SOUNDNESS (inv.5): an unknown or absent provenance
-// is untrusted and NEVER first_party, so it can never unlock a refute (never defaults trust up).
-func extractAdvisoryTrust(store artifact.Store, caseID string) (TrustTier, bool) {
-	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
+// extractRefuteSource reads the normalized advisory's identity and provenance, which name the
+// record any refute of this assessment relies on. A missing or undecodable artifact yields a source
+// naming only the assessment's vulnerability id.
+func extractRefuteSource(store artifact.Store, c *assessment.Assessment) RefuteSource {
+	src := RefuteSource{Advisory: c.Request.Vulnerability.ID}
+	arts, err := store.Query(c.ID, artifact.TypeNormalizedAdvisory)
 	if err != nil || len(arts) == 0 {
-		return "", false
+		return src
 	}
 	var adv struct {
-		TrustTier string `json:"trust_tier"`
+		VulnID       string `json:"vuln_id"`
+		TrustTier    string `json:"trust_tier"`
+		Feed         string `json:"feed"`
+		Corpus       string `json:"corpus"`
+		RecordDigest string `json:"record_digest"`
+		BuiltIn      bool   `json:"built_in"`
 	}
 	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
-		return "", false
+		return src
 	}
-	switch TrustTier(adv.TrustTier) {
-	case TrustByO, TrustThirdParty, TrustFirstParty:
-		return TrustTier(adv.TrustTier), true
-	default:
-		return "", false
+	if adv.VulnID != "" {
+		src.Advisory = adv.VulnID
 	}
+	src.Corpus, src.Record, src.Feed, src.TrustTier, src.BuiltIn = adv.Corpus, adv.RecordDigest, adv.Feed, adv.TrustTier, adv.BuiltIn
+	return src
 }
 
 func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assessment, store artifact.Store) error {
@@ -2649,10 +2671,13 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	rngs = rangesForFloorVersion(store, c.ID, rngs)
 	axis, axisKnown := extractVersionAxis(store, c.ID)
 	symbol, symbolKnown := extractSymbolSignal(store, c.ID)
-	trust, _ := extractAdvisoryTrust(store, c.ID) // miss/unknown ⇒ zero tier ⇒ refute suppressed (inv.5)
 
-	disqualified, reason := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, extractAlsoPresent(store, c.ID), symbol, symbolKnown, trust)
+	disqualified, reason := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, extractAlsoPresent(store, c.ID), symbol, symbolKnown)
 	res := DisqualResult{Disqualified: disqualified, Reason: reason}
+	if disqualified {
+		src := extractRefuteSource(store, c)
+		res.Source = &src
+	}
 
 	descriptor := "disqualification discovery (proceeds: insufficient evidence)"
 	if disqualified {
@@ -2910,12 +2935,11 @@ func (s reachabilityIngress) entrypointsFor(store artifact.Store, caseID string)
 
 // reachAttribution is what countedReachPaths attributes a Go reach path by: the names of the
 // selected affected package, every other affected package the build carries joined to its ranges,
-// the scanned project's module path, and the advisory's trust tier.
+// and the scanned project's module path.
 type reachAttribution struct {
 	selected []string
 	others   []presentRanges
 	project  string
-	trust    TrustTier
 }
 
 // readReachAttribution reads the reachAttribution for a Go assessment. The selected package is the
@@ -2947,7 +2971,6 @@ func readReachAttribution(store artifact.Store, caseID string) (reachAttribution
 			a.selected = append(a.selected, n)
 		}
 	}
-	a.trust, _ = extractAdvisoryTrust(store, caseID)
 	return a, true
 }
 
@@ -2969,7 +2992,7 @@ func countedReachPaths(paths []plugin.ReachPath, a reachAttribution) []plugin.Re
 			own = append(own, p)
 		case owner == ownerNone:
 			unattributed = append(unattributed, p)
-		case everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown, a.trust):
+		case everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown):
 		default:
 			other = append(other, p)
 		}

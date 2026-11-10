@@ -84,9 +84,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// The one new signal: an AFFIRMATIVE, decisive OSS "affected". A known-malicious package
 		// resolved to a version the advisory enumerates as affected. Ordered FIRST so it wins over a
 		// co-present reachability candidate or disqualification — presence is deterministic proof the
-		// bad artifact is installed, not a reachability lean. Affirmatives are never trust-gated
-		// (inv.5), and the whole design keeps disqualify's trust gate untouched by never minting a
-		// not-affected here.
+		// bad artifact is installed, not a reachability lean. It never mints a not-affected.
 		res, _ := maliciousPresenceResult(store, assessmentID)
 		f = report.AdvisoryFinding{
 			Advisory: adv,
@@ -97,14 +95,14 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			},
 		}
 	case disqualified(store, assessmentID):
-		_, reason := disqualResult(store, assessmentID)
+		res := disqualRecord(store, assessmentID)
 		f = report.AdvisoryFinding{
 			Advisory: adv,
 			Package:  pkg,
 			Verdict:  report.VerdictDisqualified,
 			Evidence: report.EvidenceSummary{
-				Basis:  disqualBasis(reason),
-				Detail: disqualDetail(reason),
+				Basis:  disqualBasis(res.Reason),
+				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source),
 			},
 		}
 	case hasCandidate(store, assessmentID):
@@ -926,15 +924,56 @@ func reachPaths(store artifact.Store, assessmentID string) []plugin.ReachPath {
 
 // disqualResult reads the disqualification_discovery artifact (TypeDiscovery).
 func disqualResult(store artifact.Store, assessmentID string) (disqualified bool, reason string) {
+	res := disqualRecord(store, assessmentID)
+	return res.Disqualified, res.Reason
+}
+
+// disqualRecord decodes the disqualification_discovery artifact; a missing or undecodable one
+// reads as the zero (not disqualified) result.
+func disqualRecord(store artifact.Store, assessmentID string) pipeline.DisqualResult {
 	arts, err := store.Query(assessmentID, artifact.TypeDiscovery)
 	if err != nil || len(arts) == 0 {
-		return false, ""
+		return pipeline.DisqualResult{}
 	}
 	var res pipeline.DisqualResult
 	if err := json.Unmarshal(arts[0].Payload, &res); err != nil {
-		return false, ""
+		return pipeline.DisqualResult{}
 	}
-	return res.Disqualified, res.Reason
+	return res
+}
+
+// refuteAttribution names, in the customer-visible detail, the advisory record a version or symbol
+// refute relied on: the advisory id, then the record's digest pin and the corpus that served it
+// (each a 12-hex prefix of the sha256 the report's provenance carries in full), then the feed the
+// record declares. A refute decoded without a source names nothing, which only an artifact written
+// before attribution existed can produce.
+func refuteAttribution(src *pipeline.RefuteSource) string {
+	if src == nil || src.Advisory == "" {
+		return ""
+	}
+	parts := []string{"advisory " + src.Advisory}
+	if src.Record != "" {
+		parts = append(parts, "record "+shortDigest(src.Record))
+	}
+	if src.Corpus != "" {
+		parts = append(parts, "corpus "+shortDigest(src.Corpus))
+	}
+	if src.Feed != "" {
+		parts = append(parts, "feed "+src.Feed)
+	}
+	if src.BuiltIn {
+		parts = append(parts, "built into the scanner")
+	}
+	return " (per " + strings.Join(parts, ", ") + ")"
+}
+
+// shortDigest keeps an "<algo>:<hex>" digest's algorithm and the first 12 hex characters.
+func shortDigest(d string) string {
+	algo, hex, ok := strings.Cut(d, ":")
+	if !ok || len(hex) <= 12 {
+		return d
+	}
+	return algo + ":" + hex[:12]
 }
 
 // disqualBasis records the refutation grounds a disqualification stands on. Only the version and

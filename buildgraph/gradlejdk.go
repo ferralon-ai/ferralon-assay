@@ -19,12 +19,16 @@ var gradleJDKRange = []struct {
 	{17, 7, 3}, {18, 7, 5}, {19, 7, 6}, {20, 8, 3}, {21, 8, 5}, {22, 8, 8}, {23, 8, 10}, {24, 8, 14}, {25, 9, 1},
 }
 
-// maxGradleJDK is the newest JDK the Gradle release runs on, or 0 when the release is older than
-// the matrix (whose newest JDK is then 16 or older, and is left to the job).
+// maxGradleJDK is the newest JDK the Gradle release runs on, or 0 when that is not known: the
+// release is older than the matrix (its newest JDK is then 16 or older), or reaches the matrix's
+// newest row (it may run on JDKs newer than the matrix lists). Either way it is left to the job.
 func maxGradleJDK(major, minor int) int {
 	jdk := 0
-	for _, e := range gradleJDKRange {
+	for i, e := range gradleJDKRange {
 		if major > e.major || major == e.major && minor >= e.minor {
+			if i == len(gradleJDKRange)-1 {
+				return 0
+			}
 			jdk = e.jdk
 		}
 	}
@@ -91,8 +95,8 @@ func jobJavaHome(env []string) string {
 	if err != nil {
 		return ""
 	}
-	if real, err := filepath.EvalSymlinks(p); err == nil {
-		p = real
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		p = resolved
 	}
 	return filepath.Dir(filepath.Dir(p))
 }
@@ -103,13 +107,22 @@ var providedJDK = regexp.MustCompile(`^JAVA_HOME_(\d+)_[A-Za-z0-9]+$`)
 // the job's own JDK is newer than that Gradle supports. The JDK is one the job environment
 // provides as JAVA_HOME_<feature>_<arch> (as GitHub-hosted runners and setup-java do), the newest
 // in the Gradle's range. env is returned unchanged when the run conditions state a JDK or a
-// JAVA_HOME (the build then runs on what they state), when the wrapper's Gradle release or the
-// job's JDK cannot be read, when the job's JDK is in range, or when no provided JDK is; the
-// build then runs as the job set it up, and a Gradle that cannot run there fails the step.
+// JAVA_HOME or PATH (the build then runs on what they state), when the build names its own
+// Gradle JVM (org.gradle.java.home), when the wrapper's Gradle release or the job's JDK cannot be
+// read, when the job's JDK is in range, or when no provided JDK is; the build then runs as the
+// job set it up, and a Gradle that cannot run there fails the step.
 //
 // provided names the variable of the JDK chosen, for the graph to record.
 func gradleJDK(dir string, env []string, c Conditions) (out []string, provided string) {
-	if c.JDK != "" || c.Env["JAVA_HOME"] != "" {
+	if c.JDK != "" {
+		return env, ""
+	}
+	for _, k := range []string{"JAVA_HOME", "PATH"} {
+		if _, stated := c.Env[k]; stated {
+			return env, ""
+		}
+	}
+	if gradleJavaHomeSet(dir, env) {
 		return env, ""
 	}
 	major, minor, ok := wrapperGradleVersion(dir)
@@ -129,12 +142,12 @@ func gradleJDK(dir string, env []string, c Conditions) (out []string, provided s
 	for _, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")
 		m := providedJDK.FindStringSubmatch(k)
-		if m == nil || v == "" {
+		if m == nil || !filepath.IsAbs(v) {
 			continue
 		}
 		n, _ := strconv.Atoi(m[1])
 		// The variable's name is a claim; the JDK's own release file decides.
-		if n < lo || n > hi || jdkMajorAt(v) != n {
+		if n < lo || n > hi || jdkMajorAt(v) != n || !isFile(filepath.Join(v, "bin", "java")) {
 			continue
 		}
 		found = append(found, jdk{n, k, v})
@@ -153,6 +166,39 @@ func gradleJDK(dir string, env []string, c Conditions) (out []string, provided s
 		"JAVA_HOME": home,
 		"PATH":      filepath.Join(home, "bin") + string(os.PathListSeparator) + envValue(env, "PATH"),
 	}), found[0].name
+}
+
+// gradleJavaHomeSet reports whether the build names the JVM Gradle runs on itself, as
+// org.gradle.java.home in the checkout's or the Gradle user home's gradle.properties, or in
+// GRADLE_OPTS or JAVA_OPTS. Gradle then runs there whatever JAVA_HOME says.
+func gradleJavaHomeSet(dir string, env []string) bool {
+	const key = "org.gradle.java.home"
+	for _, k := range []string{"GRADLE_OPTS", "JAVA_OPTS"} {
+		if strings.Contains(envValue(env, k), key) {
+			return true
+		}
+	}
+	userHome := envValue(env, "GRADLE_USER_HOME")
+	if userHome == "" {
+		if h := envValue(env, "HOME"); h != "" {
+			userHome = filepath.Join(h, ".gradle")
+		}
+	}
+	for _, d := range []string{dir, userHome} {
+		if d == "" {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(d, "gradle.properties"))
+		if err == nil && strings.Contains(string(b), key) {
+			return true
+		}
+	}
+	return false
+}
+
+func isFile(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
 }
 
 // envValue is the last value env gives key.

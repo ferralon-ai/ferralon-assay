@@ -372,6 +372,7 @@ func TestExactEncoding(t *testing.T) {
 		P *pair
 		S []string
 	}
+	yes := true
 	tests := []struct {
 		name string
 		a, b any
@@ -380,6 +381,7 @@ func TestExactEncoding(t *testing.T) {
 		{"raw bytes", pair{A: "\xc0\x80"}, pair{A: "\xc0\x81"}},
 		{"nil and empty slice", opt{S: nil}, opt{S: []string{}}},
 		{"nil and zero pointer", opt{P: nil}, opt{P: &pair{}}},
+		{"which pointer is nil", struct{ X, Y *bool }{nil, &yes}, struct{ X, Y *bool }{&yes, nil}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

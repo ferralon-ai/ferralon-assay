@@ -73,6 +73,7 @@ type fwModel struct {
 	ancestry  map[*assembly.TypeDef][]typeEntry
 	oos       map[*assembly.TypeDef]oosFacts
 	overrides map[ovKey][]*methodNode
+	dims      map[ovKey]string
 	reentry   map[int][]*methodNode
 	phaseB    map[string]searchOut
 }
@@ -126,6 +127,7 @@ func (e *Engine) SetFramework(names map[string]bool) {
 		ancestry:  map[*assembly.TypeDef][]typeEntry{},
 		oos:       map[*assembly.TypeDef]oosFacts{},
 		overrides: map[ovKey][]*methodNode{},
+		dims:      map[ovKey]string{},
 		reentry:   map[int][]*methodNode{},
 		phaseB:    map[string]searchOut{},
 	}
@@ -407,6 +409,9 @@ func (e *Engine) frameworkEdge(edge assembly.Edge, fromAsm *assembly.Assembly, c
 	}
 	if edge.Kind == assembly.EdgeCallvirt || edge.Kind == assembly.EdgeLdvirtftn {
 		out.targets = append(out.targets, e.frameworkOverrides(ctx, fromAsm, tok, owner, name, mr.SigBlob)...)
+		if t := e.fw.dims[ovKey{asm: fromAsm, tok: tok, gen: ctx.gen}]; t != "" {
+			out.flag("default interface method from " + t + " (not in the loaded set) can fill " + owner + "::" + name)
+		}
 	}
 	return out, true
 }
@@ -428,6 +433,7 @@ func (e *Engine) frameworkOverrides(ctx *searchCtx, fromAsm *assembly.Assembly, 
 	}
 	objectSlot := owner == "System.Object" || owner == "System.ValueType" || owner == "System.Enum"
 	var out []*methodNode
+	var dim string
 	seen := map[*methodNode]bool{}
 	add := func(m *assembly.MethodDef) {
 		if n := e.nodes[m]; n != nil && !seen[n] {
@@ -442,6 +448,7 @@ func (e *Engine) frameworkOverrides(ctx *searchCtx, fromAsm *assembly.Assembly, 
 		if !objectSlot && !e.outOfSet(te).any() {
 			continue
 		}
+		before := len(out)
 		for _, a := range e.ancestryOf(te) {
 			for _, m := range a.td.Methods {
 				if m.Name == name && m.Flags&maVirtual != 0 && m.RVA != 0 && assembly.SigCompatible(fromAsm, sig, a.asm, m.SigBlob) {
@@ -456,9 +463,35 @@ func (e *Engine) frameworkOverrides(ctx *searchCtx, fromAsm *assembly.Assembly, 
 				}
 			}
 		}
+		if !objectSlot && len(out) == before && dim == "" {
+			dim = e.unloadedDIMSource(te, owner)
+		}
 	}
 	e.fw.overrides[key] = out
+	e.fw.dims[key] = dim
 	return out
+}
+
+// unloadedDIMSource names an interface outside the loaded set (and not framework) on an
+// instantiated type that lists the framework interface owner but has no in-set body for
+// the slot: the runtime can bind the slot to a default method on that interface, whose
+// body the search cannot read. Empty when there is none.
+func (e *Engine) unloadedDIMSource(te typeEntry, owner string) string {
+	lists, unloaded := false, ""
+	for _, a := range e.ancestryOf(te) {
+		for _, ir := range a.td.Interfaces {
+			if ir.Qualified() == owner {
+				lists = true
+			}
+			if _, ok := e.lookupTypeRef(a.asm, ir); !ok && unloaded == "" && !e.isFrameworkType(a.asm, ir) {
+				unloaded = typeRefDisplay(ir)
+			}
+		}
+	}
+	if !lists {
+		return ""
+	}
+	return unloaded
 }
 
 // reentryRoots are the methods framework code can call on application objects it holds:
@@ -701,6 +734,27 @@ func (e *Engine) unloadedInstantiation(asm *assembly.Assembly, tok assembly.Toke
 		return check(parent.SpecBlob, false)
 	}
 	return "", false
+}
+
+// unloadedTypeUse names a type outside the loaded set (and not framework) that a box or
+// constrained. site operates on, directly or as a generic argument. Object's virtuals
+// called on that value dispatch into the type's own overrides, which the search cannot read.
+func (e *Engine) unloadedTypeUse(asm *assembly.Assembly, tok assembly.Token) (string, bool) {
+	if !e.fw.active() || tok.IsNull() {
+		return "", false
+	}
+	tr := asm.TypeRefFor(tok)
+	if tr.IsSpec {
+		_, unloaded, ok := e.typesInSig(asm, tr.SpecBlob, false)
+		if !ok {
+			return "an undecodable type specification", true
+		}
+		return unloaded, unloaded != ""
+	}
+	if _, ok := e.lookupTypeRef(asm, tr); ok || e.isFrameworkType(asm, tr) {
+		return "", false
+	}
+	return typeRefDisplay(tr), true
 }
 
 func methodTokName(asm *assembly.Assembly, tok assembly.Token) string {

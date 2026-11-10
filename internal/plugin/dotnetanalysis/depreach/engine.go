@@ -585,6 +585,11 @@ func (e *Engine) walk(starts []*methodNode, sinkSet map[*methodNode]bool, ctx *s
 			}
 		}
 		if found == nil {
+			for _, tok := range body.TypeUses {
+				if t, ok := e.unloadedTypeUse(cur.asm, tok); ok {
+					markHazard("boxed or constrained value of " + t + " (not in the loaded set): its Object overrides are unreadable")
+				}
+			}
 			for _, tr := range body.InitTriggers {
 				e.handleTrigger(cur, tr, enqueue, markHazard, markFramework)
 				if found != nil {
@@ -620,6 +625,12 @@ func (e *Engine) walk(starts []*methodNode, sinkSet map[*methodNode]bool, ctx *s
 func (e *Engine) handleTrigger(cur *methodNode, tr assembly.InitTrigger, enqueue func(from, t *methodNode), markHazard func(string), markFramework func()) {
 	if e.disableInitClosure {
 		return // test seam: prove the whole .cctor channel is load-bearing.
+	}
+	if t, ok := e.unloadedInstantiation(cur.asm, tr.Token); ok {
+		// The declaring type is a generic instantiation over a type outside the loaded set:
+		// its .cctor runs with that argument, which it may construct or call into.
+		markHazard("type-init over a generic instantiation over " + t + " (not in the loaded set)")
+		return
 	}
 	te, inSet, outRef, resolvable := e.triggerType(cur.asm, tr.Token)
 	if !resolvable {

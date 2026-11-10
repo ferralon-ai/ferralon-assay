@@ -87,6 +87,10 @@ type MethodBody struct {
 	Method       *MethodDef
 	Edges        []Edge
 	InitTriggers []InitTrigger
+	// TypeUses are the type tokens of box and constrained. sites: a value of that type
+	// reaches Object's virtuals (ToString, Equals, GetHashCode), whose override lives in
+	// the type's own body.
+	TypeUses []Token
 }
 
 // ilBody decodes a method-body header at the method's RVA and returns the raw IL
@@ -152,11 +156,11 @@ func (a *Assembly) MethodBody(m *MethodDef) (*MethodBody, error) {
 	if err != nil {
 		return nil, err
 	}
-	edges, triggers, err := a.walkIL(code)
+	edges, triggers, uses, err := a.walkILUses(code)
 	if err != nil {
 		return nil, fmt.Errorf("il: method %q: %w", m.Name, err)
 	}
-	return &MethodBody{Method: m, Edges: edges, InitTriggers: triggers}, nil
+	return &MethodBody{Method: m, Edges: edges, InitTriggers: triggers, TypeUses: uses}, nil
 }
 
 // tok reads a 4-byte metadata token operand at position p; the caller has already
@@ -175,6 +179,11 @@ func tok(code []byte, p int) Token { return Token(binary.LittleEndian.Uint32(cod
 // them. Getting `constrained.` onto the callvirt is caveat 3 (value-type static
 // dispatch); dropping it over-approximates or, worse, mis-resolves.
 func (a *Assembly) walkIL(code []byte) (edges []Edge, triggers []InitTrigger, err error) {
+	edges, triggers, _, err = a.walkILUses(code)
+	return edges, triggers, err
+}
+
+func (a *Assembly) walkILUses(code []byte) (edges []Edge, triggers []InitTrigger, uses []Token, err error) {
 	pc := 0
 	var pendingConstrained Token
 	var pendingTail bool
@@ -194,13 +203,13 @@ func (a *Assembly) walkIL(code []byte) (edges []Edge, triggers []InitTrigger, er
 
 		if op == 0xFE { // two-byte opcode
 			if pc+1 >= len(code) {
-				return nil, nil, fmt.Errorf("il: truncated 0xFE two-byte opcode at offset %d", pc)
+				return nil, nil, nil, fmt.Errorf("il: truncated 0xFE two-byte opcode at offset %d", pc)
 			}
 			op2 := code[pc+1]
 			switch op2 {
 			case 0x06, 0x07: // ldftn / ldvirtftn — 4-byte method token (delegate target capture)
 				if !need("ldftn", pc+2, 4) {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 				kind := EdgeLdftn
 				if op2 == 0x07 {
@@ -211,9 +220,10 @@ func (a *Assembly) walkIL(code []byte) (edges []Edge, triggers []InitTrigger, er
 				clear()
 			case 0x16: // constrained. — 4-byte type token PREFIX; carry to the next callvirt
 				if !need("constrained.", pc+2, 4) {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 				pendingConstrained = tok(code, pc+2)
+				uses = append(uses, pendingConstrained)
 				pc += 6
 				// prefix: do NOT clear pending state
 			case 0x14: // tail. PREFIX (no operand)
@@ -223,13 +233,13 @@ func (a *Assembly) walkIL(code []byte) (edges []Edge, triggers []InitTrigger, er
 				pc += 2
 			case 0x12, 0x19: // unaligned. / no. PREFIX — 1-byte operand
 				if !need("prefix", pc+2, 1) {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 				pc += 3
 			default:
 				n := twoByteOperandLen[op2]
 				if !need("0xFE opcode", pc+2, n) {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 				pc += 2 + n
 				clear()
@@ -240,7 +250,7 @@ func (a *Assembly) walkIL(code []byte) (edges []Edge, triggers []InitTrigger, er
 		switch op {
 		case 0x28: // call — direct call
 			if !need("call", pc+1, 4) {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			t := tok(code, pc+1)
 			edges = append(edges, Edge{Kind: EdgeCall, Token: t, Tail: pendingTail, Offset: pc})
@@ -251,14 +261,14 @@ func (a *Assembly) walkIL(code []byte) (edges []Edge, triggers []InitTrigger, er
 			clear()
 		case 0x6F: // callvirt — virtual/interface dispatch
 			if !need("callvirt", pc+1, 4) {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			edges = append(edges, Edge{Kind: EdgeCallvirt, Token: tok(code, pc+1), Constrained: pendingConstrained, Tail: pendingTail, Offset: pc})
 			pc += 5
 			clear()
 		case 0x73: // newobj — exact constructor (also delegate construction)
 			if !need("newobj", pc+1, 4) {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			t := tok(code, pc+1)
 			edges = append(edges, Edge{Kind: EdgeNewobj, Token: t, Offset: pc})
@@ -267,7 +277,7 @@ func (a *Assembly) walkIL(code []byte) (edges []Edge, triggers []InitTrigger, er
 			clear()
 		case 0x29: // calli — indirect call through a StandAloneSig; target unknown
 			if !need("calli", pc+1, 4) {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			edges = append(edges, Edge{Kind: EdgeCalli, Token: tok(code, pc+1), Offset: pc})
 			pc += 5
@@ -276,43 +286,50 @@ func (a *Assembly) walkIL(code []byte) (edges []Edge, triggers []InitTrigger, er
 			// call in the obfuscation threat model). Collected as an EdgeJmp so CHA resolves
 			// it to a declared boundary, never a silently dropped edge (FIX 2).
 			if !need("jmp", pc+1, 4) {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			edges = append(edges, Edge{Kind: EdgeJmp, Token: tok(code, pc+1), Offset: pc})
 			pc += 5
 			clear()
 		case 0x7E, 0x7F, 0x80: // ldsfld / ldsflda / stsfld — static-field access triggers the field's type .cctor
 			if !need("static field", pc+1, 4) {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			triggers = append(triggers, InitTrigger{Kind: InitStaticField, Token: tok(code, pc+1), Offset: pc})
 			pc += 5
 			clear()
+		case 0x8C: // box — 4-byte type token; the boxed value can reach Object's virtuals
+			if !need("box", pc+1, 4) {
+				return nil, nil, nil, err
+			}
+			uses = append(uses, tok(code, pc+1))
+			pc += 5
+			clear()
 		case 0x45: // switch — variable length: uint32 N followed by N int32 targets
 			if !need("switch", pc+1, 4) {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			n := binary.LittleEndian.Uint32(code[pc+1:])
 			// Guard the multiply against overflow before extending the cursor.
 			if uint64(n) > uint64(len(code)) {
-				return nil, nil, fmt.Errorf("il: switch count %d overflows code region (%d bytes) at offset %d", n, len(code), pc)
+				return nil, nil, nil, fmt.Errorf("il: switch count %d overflows code region (%d bytes) at offset %d", n, len(code), pc)
 			}
 			body := 4 + 4*int(n)
 			if !need("switch", pc+1, body) {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			pc += 1 + body
 			clear()
 		default:
 			n := operandLen[op]
 			if !need("opcode", pc+1, n) {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			pc += 1 + n
 			clear()
 		}
 	}
-	return edges, triggers, nil
+	return edges, triggers, uses, nil
 }
 
 // isStaticTarget reports whether a call target is a static method (no `this`), so

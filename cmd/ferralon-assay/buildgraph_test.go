@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -283,5 +284,91 @@ func TestCVEWatchRequestCarriesTheWorkSet(t *testing.T) {
 	ws := []assessment.VulnRef{{ID: "GO-2021-0113", Source: "osv"}, {ID: "GHSA-2099-aaaa-0001", Source: "ghsa"}}
 	if got := cveWatchRequest(&runConfig{advisories: ws}, nil).Advisories; !reflect.DeepEqual(got, ws) {
 		t.Errorf("Advisories = %v, want the work set %v", got, ws)
+	}
+}
+
+// A root with both a POM and a Gradle build resolves both: the graph is their union, or, when
+// one tool fails, the other's graph with the failure noted and the scan not failed.
+func TestAcquireBuildGraph_Dual(t *testing.T) {
+	dir := t.TempDir()
+	inputs := map[string][]buildgraph.Input{}
+	for tool, name := range map[string]string{buildgraph.ToolMaven: "pom.xml", buildgraph.ToolGradle: "build.gradle"} {
+		body := []byte("<project/>")
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(body)
+		inputs[tool] = []buildgraph.Input{{Path: name, SHA256: hex.EncodeToString(sum[:])}}
+	}
+	graphOf := func(tool string) *buildgraph.Graph {
+		root := buildgraph.Node{Group: "com.example", Artifact: "app", Version: "1", Type: "jar"}
+		root.ID = buildgraph.NodeID(root.Group, root.Artifact, root.Type, "", root.Version)
+		return &buildgraph.Graph{
+			Schema:  buildgraph.Schema,
+			Tool:    buildgraph.Tool{Name: tool, Version: "test"},
+			JVM:     buildgraph.JVM{Version: "21.0.4"},
+			Subject: buildgraph.Subject{Inputs: inputs[tool], InputsDigest: buildgraph.InputsDigest(inputs[tool])},
+			Modules: []buildgraph.Module{{ID: "com.example:app", Path: ".", Root: root.ID, Nodes: []buildgraph.Node{root}}},
+		}
+	}
+	absent := &buildgraph.Failure{Kind: buildgraph.KindToolchainAbsent}
+	for _, tc := range []struct {
+		name        string
+		fails       map[string]bool
+		wantFiles   int
+		wantPartial string
+		wantCause   string
+	}{
+		{name: "both resolve", wantFiles: 2},
+		{name: "gradle fails", fails: map[string]bool{buildgraph.ToolGradle: true}, wantFiles: 1, wantPartial: "toolchain_absent"},
+		{name: "maven fails", fails: map[string]bool{buildgraph.ToolMaven: true}, wantFiles: 1, wantPartial: "toolchain_absent"},
+		{name: "both fail", fails: map[string]bool{buildgraph.ToolMaven: true, buildgraph.ToolGradle: true}, wantCause: "toolchain_absent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tools []string
+			resolveTool = func(_ context.Context, r buildgraph.Request) (*buildgraph.Graph, error) {
+				tools = append(tools, r.Tool)
+				if tc.fails[r.Tool] {
+					return nil, absent
+				}
+				return graphOf(r.Tool), nil
+			}
+			t.Cleanup(func() { resolveTool = buildgraph.Resolve })
+			g, cleanup := acquireBuildGraph(context.Background(), dir, graphRequest{mode: buildGraphAuto})
+			defer cleanup()
+			if !reflect.DeepEqual(tools, []string{buildgraph.ToolMaven, buildgraph.ToolGradle}) {
+				t.Fatalf("resolved with %v, want both tools", tools)
+			}
+			var files []string
+			if g.file != "" {
+				files = filepath.SplitList(g.file)
+			}
+			var partial, cause string
+			if g.partial != nil {
+				partial = g.partial.Cause()
+			}
+			if c := g.record().Cause; c != nil {
+				cause = c.Kind
+			}
+			if len(files) != tc.wantFiles || partial != tc.wantPartial || cause != tc.wantCause || (g.err() != nil) != (tc.wantCause != "") {
+				t.Fatalf("files %v partial %q cause %q err %v; want %d files, partial %q, cause %q", files, partial, cause, g.err(), tc.wantFiles, tc.wantPartial, tc.wantCause)
+			}
+		})
+	}
+	// A stated tool is the only one resolved, though the root holds both builds.
+	for _, stated := range []string{buildgraph.ToolMaven, buildgraph.ToolGradle} {
+		t.Run("stated "+stated, func(t *testing.T) {
+			var tools []string
+			resolveTool = func(_ context.Context, r buildgraph.Request) (*buildgraph.Graph, error) {
+				tools = append(tools, r.Tool)
+				return graphOf(r.Tool), nil
+			}
+			t.Cleanup(func() { resolveTool = buildgraph.Resolve })
+			g, cleanup := acquireBuildGraph(context.Background(), dir, graphRequest{mode: buildGraphAuto, tool: stated})
+			defer cleanup()
+			if !reflect.DeepEqual(tools, []string{stated}) || strings.ContainsRune(g.file, os.PathListSeparator) || g.partial != nil {
+				t.Fatalf("resolved with %v, file %q, partial %v; want %s alone", tools, g.file, g.partial, stated)
+			}
+		})
 	}
 }

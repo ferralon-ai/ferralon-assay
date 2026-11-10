@@ -70,6 +70,9 @@ type urlView struct {
 	asView   bool
 	selector string
 	heads    []string
+	// named marks a view a string literal names by its dotted import path (Django before
+	// 2.0), its patterns() prefix joined on; unnamed one whose prefix the lane cannot read.
+	named, unnamed bool
 }
 
 // scriptGroups are the entry-point groups an installer turns into commands.
@@ -366,8 +369,17 @@ func settingsLaunchers(clean string, lits map[int]strLiteral) []launchTarget {
 // urlRegistrars are the Django URL-pattern functions whose second argument is the view.
 var urlRegistrars = map[string]bool{"path": true, "re_path": true, "url": true}
 
+// urlPrefix is the view prefix a Django patterns() call gives the patterns in it: its first
+// argument, known when that is a string literal.
+type urlPrefix struct {
+	prefix string
+	known  bool
+}
+
 // djangoURLViews reads the views a file's URL patterns register. A registrar counts when
-// the file binds it, or the module it is read from, by an import from django.
+// the file binds it, or the module it is read from, by an import from django. A
+// patterns(prefix, ...) call (Django before 1.10) registers each tuple argument's second
+// element as a view and gives its prefix to the string views of the registrar calls in it.
 func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]map[string]scopedBinding) []urlView {
 	fromDjango := func(local string) bool {
 		b, ok := bindings[""][local]
@@ -375,6 +387,7 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 	}
 	r := []rune(clean)
 	var out []urlView
+	prefixes := map[int]urlPrefix{} // a registrar call's start, by the patterns() it is an argument of
 	for i := 0; i < len(r); {
 		if !isIdentStartRune(r[i]) || (i > 0 && (isIdentPart(r[i-1]) || r[i-1] == '.')) {
 			i++
@@ -394,7 +407,7 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 		}
 		open := skipSpaceRunes(r, i)
 		leaf := chain[len(chain)-1]
-		if open >= len(r) || r[open] != '(' || !urlRegistrars[leaf] || precededByDef(r, start) {
+		if open >= len(r) || r[open] != '(' || !urlRegistrars[leaf] && leaf != "patterns" || precededByDef(r, start) {
 			continue
 		}
 		if !fromDjango(chain[0]) {
@@ -404,21 +417,49 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 		if !closed {
 			continue
 		}
-		view, found := "", false
+		if leaf == "patterns" {
+			out = append(out, legacyPatterns(r, args, lits, prefixes, fromDjango)...)
+			continue
+		}
+		var view, own [2]int
+		found, hasOwn := false, false
 		for n, a := range args {
-			s := strings.TrimSpace(string(r[a[0]:a[1]]))
-			if k, val, kw := keywordArg(s); kw {
-				if k == "view" {
-					view, found = val, true
+			s := []rune(string(r[a[0]:a[1]]))
+			if k, _, kw := keywordArg(strings.TrimSpace(string(s))); kw {
+				at := [2]int{a[0] + slices.Index(s, '=') + 1, a[1]}
+				switch k {
+				case "view":
+					view, found = at, true
+				case "prefix":
+					own, hasOwn = at, leaf == "url"
 				}
 			} else if n == 1 {
-				view, found = s, true
+				view, found = a, true
+			} else if n == 4 && leaf == "url" {
+				own, hasOwn = a, true
 			}
 		}
 		if !found {
 			continue
 		}
-		v, ok := viewRef(view)
+		p, in := prefixes[start]
+		if !in {
+			p.known = true
+		}
+		if hasOwn {
+			// url(..., prefix=) joins its own prefix onto a string view; patterns() then
+			// joins its prefix onto that.
+			pre, isLit := literalSpan(r, own, lits)
+			switch {
+			case !isLit:
+				p.known = false
+			case pre != "" && p.prefix != "":
+				p.prefix += "." + pre
+			case pre != "":
+				p.prefix = pre
+			}
+		}
+		v, ok := urlViewArg(r, view, lits, p)
 		if !ok {
 			continue
 		}
@@ -428,6 +469,104 @@ func djangoURLViews(clean string, lits map[int]strLiteral, bindings map[string]m
 		out = append(out, v)
 	}
 	return out
+}
+
+// legacyPatterns reads a patterns(prefix, ...) call's arguments, args: each (route, view, ...)
+// tuple or list's view, and each Django registrar call's start in prefixes, so the call there
+// joins the prefix onto a string view. A parenthesised argument is read as what it wraps. Any
+// other argument (a name, a spread, a call the lane does not know) hides patterns the lane
+// cannot read, so it is an unnamed view.
+func legacyPatterns(r []rune, args [][2]int, lits map[int]strLiteral, prefixes map[int]urlPrefix, fromDjango func(string) bool) []urlView {
+	if len(args) == 0 {
+		return nil
+	}
+	var p urlPrefix
+	p.prefix, p.known = literalSpan(r, args[0], lits)
+	var out []urlView
+	pending := slices.Clone(args[1:])
+	for len(pending) > 0 {
+		a := pending[0]
+		pending = pending[1:]
+		at := skipAllSpace(r, a[0])
+		if at >= a[1] {
+			continue
+		}
+		if (r[at] != '(' && r[at] != '[') || skipSpaceBack(r, a[1]-1) != matchingClose(r, at) {
+			if registrarAt(r, at, a[1], fromDjango) {
+				prefixes[at] = p
+			} else {
+				out = append(out, urlView{unnamed: true})
+			}
+			continue
+		}
+		elems, closed := callArgs(r, at)
+		if !closed || len(elems) == 0 {
+			continue
+		}
+		if len(elems) == 1 && r[at] == '(' {
+			pending = append(pending, elems[0])
+			continue
+		}
+		if len(elems) < 2 {
+			out = append(out, urlView{unnamed: true})
+			continue
+		}
+		v, ok := urlViewArg(r, elems[1], lits, p)
+		if !ok {
+			continue
+		}
+		if route, isLit := literalSpan(r, elems[0], lits); isLit {
+			v.selector = route
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// registrarAt reports whether the span r[at:end] is one call of a Django URL registrar.
+func registrarAt(r []rune, at, end int, fromDjango func(string) bool) bool {
+	if !isIdentStartRune(r[at]) {
+		return false
+	}
+	var chain []string
+	i := at
+	for {
+		w, e := readWordRunes(r, i)
+		chain = append(chain, w)
+		i = e
+		if i+1 < end && r[i] == '.' && isIdentStartRune(r[i+1]) {
+			i++
+			continue
+		}
+		break
+	}
+	open := skipSpaceRunes(r, i)
+	return open < end && r[open] == '(' && skipSpaceBack(r, end-1) == matchingClose(r, open) &&
+		(urlRegistrars[chain[len(chain)-1]] || chain[len(chain)-1] == "patterns") && fromDjango(chain[0])
+}
+
+// urlViewArg reads the view argument at span: a string literal naming the view by its dotted
+// import path, p's prefix joined on, or else as viewRef reads it. A string that names a single
+// name once joined can only lean on a prefix the lane did not read, so it is unnamed.
+func urlViewArg(r []rune, span [2]int, lits map[int]strLiteral, p urlPrefix) (urlView, bool) {
+	name, isLit := literalSpan(r, span, lits)
+	if !isLit {
+		return viewRef(string(r[span[0]:span[1]]))
+	}
+	if !p.known {
+		return urlView{unnamed: true}, true
+	}
+	if p.prefix != "" {
+		name = p.prefix + "." + name
+	}
+	if !isDottedName(name) {
+		return urlView{}, false
+	}
+	segs := dottedSegs(name)
+	if len(segs) < 2 {
+		return urlView{unnamed: true}, true
+	}
+	return urlView{chain: segs, named: true}, true
 }
 
 // viewRef reads a URL pattern's view argument: a dotted name, a dotted name's as_view()
@@ -557,6 +696,22 @@ func (prog *program) launchTargets() []launchTarget {
 func (prog *program) fileLaunchTargets(f *fileParse) []launchTarget {
 	out := slices.Clone(f.settings)
 	for _, v := range f.urlViews {
+		switch {
+		case v.unnamed:
+			out = append(out, launchTarget{kind: "http_route", selector: v.selector, unread: true})
+			continue
+		case v.named:
+			// Django imports all but the last name as a module and reads the last off it. A
+			// path reaching no module the lane reads names a dependency only when a dependency
+			// or the standard library provides its top-level name; else it is first-party code
+			// the lane cannot place.
+			t := launchTarget{segs: v.chain, mod: len(v.chain) - 1, kind: "http_route", selector: v.selector}
+			if _, module, _ := prog.resolvePath(t.segs, t.mod, false); module == "" && !prog.dists.knownTop(strings.Join(v.chain, ".")) {
+				t = launchTarget{kind: "http_route", selector: v.selector, unread: true}
+			}
+			out = append(out, t)
+			continue
+		}
 		if slices.ContainsFunc(v.heads, func(h string) bool {
 			return prog.namesFirstParty(f, h, map[string]bool{})
 		}) {

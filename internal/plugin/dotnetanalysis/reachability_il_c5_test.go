@@ -24,6 +24,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -345,6 +346,11 @@ func composeILBuildDir(t *testing.T, files map[string][]byte) string {
 	return dir
 }
 
+// hasILLimit reports whether p discloses reason at all: run-wide, or scoped to a package.
+func hasILLimit(p plugin.Partiality, reason string) bool {
+	return hasILReason(p, reason) || slices.ContainsFunc(p.Scoped, func(s plugin.ScopedReason) bool { return s.Reason == reason })
+}
+
 func hasILReason(p plugin.Partiality, reason string) bool {
 	for _, r := range p.Reasons {
 		if r == reason {
@@ -521,8 +527,8 @@ func TestC5_Degrade_ToLexical_ToolFailure(t *testing.T) {
 	if res.Partiality.Complete {
 		t.Fatalf("degrade must NOT be a clean confident result")
 	}
-	if !hasILReason(res.Partiality, plugin.PartialReasonToolFailure) {
-		t.Fatalf("degrade must declare tool_failure, got %v", res.Partiality.Reasons)
+	if !hasILReason(res.Partiality, partialReasonFirstPartyILAbsent) {
+		t.Fatalf("degrade must declare %s, got %v", partialReasonFirstPartyILAbsent, res.Partiality.Reasons)
 	}
 }
 
@@ -557,7 +563,7 @@ func TestC5_EmptyGraphMutationControl(t *testing.T) {
 	if without.Partiality.Complete {
 		t.Fatalf("removing first-party IL must NOT yield a clean result (that would be a false NE)")
 	}
-	if !hasILReason(without.Partiality, plugin.PartialReasonToolFailure) {
-		t.Fatalf("mutation must degrade with tool_failure, got %v", without.Partiality.Reasons)
+	if !hasILReason(without.Partiality, partialReasonFirstPartyILAbsent) {
+		t.Fatalf("mutation must degrade with %s, got %v", partialReasonFirstPartyILAbsent, without.Partiality.Reasons)
 	}
 }

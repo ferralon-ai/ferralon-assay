@@ -153,12 +153,29 @@ func (a analyzer) loadGraph() (*buildgraph.Graph, error) {
 	if graphMemo.file == a.graphFile {
 		return graphMemo.g, nil
 	}
-	g, err := buildgraph.Decode(a.graphFile)
+	g, err := decodeGraphs(a.graphFile)
 	if err != nil {
 		return nil, fmt.Errorf("javaanalysis: build graph: %w", err)
 	}
 	graphMemo.file, graphMemo.g = a.graphFile, g
 	return g, nil
+}
+
+// decodeGraphs decodes the graph file, or, when no file is at that path, the os.PathListSeparator
+// list of files the two build tools of one checkout resolved, as their Union.
+func decodeGraphs(file string) (*buildgraph.Graph, error) {
+	if _, err := os.Stat(file); err == nil || !strings.ContainsRune(file, os.PathListSeparator) {
+		return buildgraph.Decode(file)
+	}
+	var gs []*buildgraph.Graph
+	for _, f := range filepath.SplitList(file) {
+		g, err := buildgraph.Decode(f)
+		if err != nil {
+			return nil, err
+		}
+		gs = append(gs, g)
+	}
+	return buildgraph.Union(gs...)
 }
 
 // moduleRoots returns the root node id of every module: the reactor's own projects, which a
@@ -218,7 +235,13 @@ func nodePURL(n buildgraph.Node) string {
 func graphInventory(g *buildgraph.Graph, uncovered bool) plugin.DependencyInventory {
 	var nodes []plugin.DependencyNode
 	var edges []plugin.DependencyEdge
+	// Both builds of one checkout list a module at the same path; the tool keeps their nodes apart.
+	union := len(g.Tools()) > 1
 	for _, m := range g.Modules {
+		prefix := ""
+		if union {
+			prefix = g.ModuleTool(m) + ":"
+		}
 		ids := make(map[string]string, len(m.Nodes))
 		direct := map[string]bool{}
 		for _, e := range m.Edges {
@@ -231,7 +254,7 @@ func graphInventory(g *buildgraph.Graph, uncovered bool) plugin.DependencyInvent
 				continue
 			}
 			purl := nodePURL(n)
-			id := m.Path + "|" + n.Scope + "|" + purl
+			id := prefix + m.Path + "|" + n.Scope + "|" + purl
 			ids[n.ID] = id
 			dn := plugin.DependencyNode{
 				ID:         id,
@@ -240,7 +263,7 @@ func graphInventory(g *buildgraph.Graph, uncovered bool) plugin.DependencyInvent
 				Direct:     direct[n.ID],
 				Membership: plugin.DependencyMembership{Project: m.Path, Target: n.Scope},
 				Artifact:   plugin.DependencyArtifact{Identity: n.ID},
-				Provenance: plugin.DependencyProvenance{Resolver: g.Tool.Name},
+				Provenance: plugin.DependencyProvenance{Resolver: g.ModuleTool(m)},
 				Partiality: plugin.Complete(),
 			}
 			if n.File != nil {
@@ -282,10 +305,10 @@ func graphVersions(g *buildgraph.Graph, coordinate string, uncovered, listed boo
 			if roots[n.ID] {
 				continue
 			}
-			d := plugin.ResolvedDependency{Coordinate: n.Group + ":" + n.Artifact, Version: n.Version, Resolved: true, Source: g.Tool.Name}
+			d := plugin.ResolvedDependency{Coordinate: n.Group + ":" + n.Artifact, Version: n.Version, Resolved: true, Source: g.ModuleTool(m)}
 			// A module can hold a coordinate under several classifiers or types, each mediated on
 			// its own; one copy per version keeps a disagreeing one.
-			if k := m.Path + "|" + d.Coordinate + "|" + d.Version; !seen[k] {
+			if k := d.Source + "|" + m.Path + "|" + d.Coordinate + "|" + d.Version; !seen[k] {
 				seen[k] = true
 				res.All = append(res.All, d)
 				if want != "" && isCoordinate(n, want) {
@@ -409,12 +432,12 @@ func RuntimeSelection(g *buildgraph.Graph) (load []RuntimeJar, miss []RuntimeMis
 			case n.File == nil:
 				// A pom with nothing to load.
 			case !strings.HasSuffix(n.File.Path, ".jar"):
-				if n.Type != "pom" && !files[n.File.Path] {
-					files[n.File.Path] = true
+				if n.Type != "pom" && !files[fileKey(n.File)] {
+					files[fileKey(n.File)] = true
 					miss = append(miss, RuntimeMiss{Coordinate: c, Detail: n.ID + ": " + filepath.Base(n.File.Path) + " is not a JAR"})
 				}
-			case !files[n.File.Path]:
-				files[n.File.Path] = true
+			case !files[fileKey(n.File)]:
+				files[fileKey(n.File)] = true
 				load = append(load, RuntimeJar{Coordinate: c, Version: n.Version, Classifier: n.Classifier, Path: n.File.Path, SHA256: n.File.SHA256})
 			}
 		}
@@ -436,13 +459,13 @@ func CoordinateJars(g *buildgraph.Graph, coordinate, version string) []RuntimeJa
 	var out []RuntimeJar
 	for _, m := range g.Modules {
 		for _, n := range m.Nodes {
-			if roots[n.ID] || !isCoordinate(n, coordinate) || n.File == nil || seen[n.File.Path] {
+			if roots[n.ID] || !isCoordinate(n, coordinate) || n.File == nil || seen[fileKey(n.File)] {
 				continue
 			}
 			if version != "" && n.Version != version || !strings.HasSuffix(n.File.Path, ".jar") {
 				continue
 			}
-			seen[n.File.Path] = true
+			seen[fileKey(n.File)] = true
 			out = append(out, RuntimeJar{Coordinate: coordinate, Version: n.Version, Classifier: n.Classifier, Path: n.File.Path, SHA256: n.File.SHA256})
 		}
 	}
@@ -504,6 +527,15 @@ func BlindSpotTargets(g *buildgraph.Graph, coordinate string) []string {
 	return targets
 }
 
+// fileKey identifies a resolved file by its bytes, so one JAR that the Maven and the Gradle build
+// of a checkout each fetched into its own cache is read once.
+func fileKey(f *buildgraph.File) string {
+	if f.SHA256 != "" {
+		return "sha256:" + f.SHA256
+	}
+	return f.Path
+}
+
 // jarLookup is the outcome of reading a JAR the build graph names.
 type jarLookup int
 
@@ -540,10 +572,12 @@ func readJar(j RuntimeJar) (artifactJar, jarLookup) {
 // module directory with a src directory. why names them, for the partiality path.
 func multipleModules(g *buildgraph.Graph, buildDir string) (multi bool, why string) {
 	var withCode []string
+	seen := map[string]bool{}
 	for _, m := range g.Modules {
-		if _, isCopy := m.Project(); isCopy {
+		if _, isCopy := m.Project(); isCopy || seen[m.Path] {
 			continue
 		}
+		seen[m.Path] = true
 		if info, err := os.Stat(filepath.Join(buildDir, filepath.FromSlash(m.Path), "src")); err == nil && info.IsDir() {
 			withCode = append(withCode, m.Path)
 		}
@@ -562,10 +596,10 @@ func graphJars(g *buildgraph.Graph) []RuntimeJar {
 	var out []RuntimeJar
 	for _, m := range g.Modules {
 		for _, n := range m.Nodes {
-			if roots[n.ID] || n.File == nil || seen[n.File.Path] || !strings.HasSuffix(n.File.Path, ".jar") {
+			if roots[n.ID] || n.File == nil || seen[fileKey(n.File)] || !strings.HasSuffix(n.File.Path, ".jar") {
 				continue
 			}
-			seen[n.File.Path] = true
+			seen[fileKey(n.File)] = true
 			out = append(out, RuntimeJar{Coordinate: n.Group + ":" + n.Artifact, Version: n.Version, Classifier: n.Classifier, Path: n.File.Path, SHA256: n.File.SHA256})
 		}
 	}

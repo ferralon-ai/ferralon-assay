@@ -854,7 +854,7 @@ func TestFramework_Searched(t *testing.T) {
 			if !c.wantSearched && !c.wantPath && res.Partiality.Complete {
 				t.Fatalf("an unsettled sink reported Complete")
 			}
-			if c.reason != "" && hasILReason(res.Partiality, c.reason) != c.wantReason {
+			if c.reason != "" && hasILLimit(res.Partiality, c.reason) != c.wantReason {
 				t.Fatalf("reason %s present = %v, want %v (reasons=%v)", c.reason, !c.wantReason, c.wantReason, res.Partiality.Reasons)
 			}
 		})

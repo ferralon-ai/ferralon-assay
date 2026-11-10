@@ -16,10 +16,13 @@ import (
 	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -48,10 +51,12 @@ const (
 // that g's build resolved its dependencies from (launchScan.repoArtifact); without g, or when
 // none of its artifact files lies inside buildDir, nothing else is. A file or directory that
 // cannot be read, and a symlink that dangles, escapes buildDir, or leads into a skipped
-// directory, withholds Searched.
+// directory, withholds Searched. A -jar of the build's own artifact (ownJarOperand) withholds it
+// only when the build can change what that JAR runs (jarHazards).
 func LaunchOptionReasons(buildDir string, g *buildgraph.Graph) []string {
 	s := &launchScan{reasons: map[string]bool{}}
 	s.walk(buildDir, buildgraph.LocalRepositories(g))
+	s.settleOwnJars(g)
 	out := make([]string, 0, len(s.reasons))
 	for r := range s.reasons {
 		out = append(out, r)
@@ -96,6 +101,43 @@ type launchScan struct {
 	unread  bool // a file or directory could not be read
 	// repos are the real paths of the build's local repositories inside the walked root.
 	repos []string
+	// ownJar: a -jar launch named this build's own artifact (ownJarOperand). ownJars are the
+	// launches settleOwnJars checks against the build's modules.
+	ownJar  bool
+	ownJars []ownJarRef
+	// jarHazard: the build can give its JAR a manifest or loader that changes what a -jar
+	// launch runs (jarManifestHazard, jarLoaderHazard).
+	jarHazard bool
+	// copyInto names the tools ("maven", "gradle") whose build files copy into the output
+	// directory a -jar glob matches in (jarCopyHazards), so the glob can match a JAR the build
+	// does not produce.
+	copyInto map[string]bool
+	// finalNames are the literal <finalName> values in the tree's POMs, keyed by the POM's
+	// directory.
+	finalNames map[string][]string
+	// argsKey: a file in the tree sets a container's args, which a container passes after the
+	// command it runs. cmdFiles holds, per file, whether it sets a container command or
+	// entrypoint (containerKeys); a container passes its command after its entrypoint.
+	argsKey  bool
+	cmdFiles map[string]uint8
+}
+
+const (
+	keyCommand uint8 = 1 << iota
+	keyEntrypoint
+)
+
+// ownJarRef is a -jar operand ownJarOperand took for the build's own artifact. tool is the tool
+// whose output directory the path names, with dir the module directory before it; tool is ""
+// for a bare artifact file name. name is the file name, "" for a POM's own artifact property.
+//
+// file is the file holding the launch; appendable marks a launch a container can pass more
+// arguments to than the line shows: a Dockerfile ENTRYPOINT, or a launch in a file that sets a
+// container command or entrypoint.
+type ownJarRef struct {
+	tool, dir, name string
+	file            string
+	appendable      bool
 }
 
 func (s *launchScan) unreadable() { s.reasons[PartialReasonLaunchOption] = true }
@@ -331,6 +373,9 @@ func (s *launchScan) content(rel string, inDist bool, r io.Reader, size int64) {
 		if s.defines != nil {
 			s.define(chunk)
 		} else {
+			s.jarHazards(rel, chunk)
+			s.jarCopyHazards(rel, chunk)
+			s.containerKeys(rel, chunk)
 			s.tokensOnly(chunk, final)
 		}
 		if final {
@@ -367,7 +412,8 @@ func decodeUTF16(data []byte) []byte {
 
 // manifest reads a JAR's META-INF/MANIFEST.MF: a Launcher-Agent-Class starts an agent when
 // the JAR is launched with -jar, and a Class-Path extends the classpath of every launch that
-// puts the JAR on it.
+// puts the JAR on it. Add-Opens, Add-Exports and Spring Boot's PropertiesLauncher change only
+// what a -jar launch runs, so they count against the build's own artifact (settleOwnJars).
 func (s *launchScan) manifest(zr *zip.Reader) {
 	for _, f := range zr.File {
 		if !strings.EqualFold(f.Name, "META-INF/MANIFEST.MF") {
@@ -397,7 +443,12 @@ func (s *launchScan) manifest(zr *zip.Reader) {
 				if strings.TrimSpace(value) != "" {
 					s.unreadable()
 				}
+			case "add-opens", "add-exports":
+				s.jarHazard = true
 			}
+		}
+		if jarLoaderHazard.MatchString(text) {
+			s.jarHazard = true
 		}
 	}
 }
@@ -533,7 +584,7 @@ var inertJVMFlags = map[string]bool{
 }
 
 var inertFlagPrefixes = []string{"-Xmx", "-Xms", "-Xss", "-Xmn", "-Xlog:", "-verbose:", "-ea:", "-da:",
-	"-enableassertions:", "-disableassertions:"}
+	"-enableassertions:", "-disableassertions:", "-Xdock:"}
 
 // inertXX are -XX options that size or tune the VM and load no code.
 var inertXX = map[string]bool{
@@ -611,8 +662,12 @@ func splitOptionWords(value string) (words []string, unreadable bool) {
 			continue
 		}
 		if strings.Contains(w, "$") || strings.Contains(w, "%") || strings.Contains(w, "`") {
-			if classifyLaunchOption(w) == optionAgent {
-				words = append(words, w) // an agent whatever path it names
+			switch classifyLaunchOption(w) {
+			case optionAgent, optionInert:
+				// An agent whatever path it names; inert whatever value. An unquoted expansion
+				// word-splits, so a value carrying an agent (HEAP="1g -javaagent:x") is caught
+				// where the checkout assigns it; one set only at deploy time is residue, as for -D.
+				words = append(words, w)
 				continue
 			}
 			if prop, ok := strings.CutPrefix(w, "-D"); ok {
@@ -675,9 +730,19 @@ var propertyNameByte = func() (t [256]bool) {
 }()
 
 // launchOptionTokens returns every launch-option token in data. A token is a whole word; one
-// that touches a control byte or is not UTF-8 is binary data, not text, and is skipped.
+// that touches a control byte or is not UTF-8 is binary data, not text, and is skipped. So is
+// one in a binary file (past its script text, for a script with a payload) whose surrounding
+// run of non-space bytes is not UTF-8: delimiters that happen to fall in compressed data. An
+// agent token is never skipped that way.
 func launchOptionTokens(data []byte) []launchToken {
 	var out []launchToken
+	binaryFrom := bytes.IndexByte(data, 0)
+	if binaryFrom >= 0 && !bytes.HasPrefix(data, []byte("#!")) {
+		binaryFrom = -1
+		if n := bytes.Count(data, []byte{0}); binaryMagic(data) || n >= binaryMinNULs && n*binaryNULDensity >= len(data) {
+			binaryFrom = 0
+		}
+	}
 	for pos := 0; pos < len(data); {
 		loc := optionHead.FindIndex(data[pos:])
 		if loc == nil {
@@ -702,7 +767,8 @@ func launchOptionTokens(data []byte) []launchToken {
 			end++
 		}
 		pos = end
-		if binaryAdjacent(data, h, end) {
+		if binaryAdjacent(data, h, end) || binaryFrom >= 0 && h >= binaryFrom && !utf8.Valid(binaryRun(data, h, end)) &&
+			classifyLaunchOption(string(data[h:end])) != optionAgent {
 			continue
 		}
 		word := string(data[h:end])
@@ -780,6 +846,35 @@ func lineContinuation(data []byte, i int) int {
 func binaryAdjacent(data []byte, a, b int) bool {
 	ctl := func(c byte) bool { return c < ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\f' && c != '\v' }
 	return a > 0 && ctl(data[a-1]) || b < len(data) && ctl(data[b])
+}
+
+// A file without a shebang is binary when it opens with a binary format's magic, or its NULs
+// number at least binaryMinNULs and one in binaryNULDensity bytes: compressed data, not a text
+// file with a stray NUL.
+const binaryMinNULs, binaryNULDensity = 4, 512
+
+var binaryMagics = [][]byte{[]byte("wOFF"), []byte("wOF2"), []byte("PK\x03\x04"), []byte("\x89PNG"),
+	[]byte("GIF8"), []byte("\xff\xd8\xff"), []byte("\xca\xfe\xba\xbe"), []byte("\x1f\x8b")}
+
+func binaryMagic(data []byte) bool {
+	for _, m := range binaryMagics {
+		if bytes.HasPrefix(data, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// binaryRun widens data[a:b] to the run of bytes around it that are neither whitespace nor
+// control bytes.
+func binaryRun(data []byte, a, b int) []byte {
+	for a > 0 && data[a-1] > ' ' && data[a-1] != 0x7f {
+		a--
+	}
+	for b < len(data) && data[b] > ' ' && data[b] != 0x7f {
+		b++
+	}
+	return data[a:b]
 }
 
 func validPropertyName(name string) bool {
@@ -877,10 +972,13 @@ type launchSpan struct {
 // launchFile is one text file under scan, with the reader context its occurrences need.
 type launchFile struct {
 	s           *launchScan
+	rel         string
 	data        []byte
 	lines       []int // start offset of each line
 	gradlew     bool
+	mavenw      bool
 	startScript bool
+	pom         bool
 	spans       []launchSpan
 	testScopes  [][2]int     // Surefire/Failsafe plugin elements
 	braces      map[int]int  // a Gradle script's code-level braces: open offset to close offset
@@ -890,6 +988,9 @@ type launchFile struct {
 }
 
 func (s *launchScan) text(rel string, inDist bool, data []byte) {
+	s.jarHazards(rel, data)
+	s.jarCopyHazards(rel, data)
+	s.containerKeys(rel, data)
 	tokens := launchOptionTokens(data)
 	names := launchNames(data)
 	javaCtx := bytes.Contains(data, []byte("java")) && (bytes.Contains(data, []byte("-p")) || bytes.Contains(data, []byte("@")))
@@ -897,8 +998,8 @@ func (s *launchScan) text(rel string, inDist bool, data []byte) {
 		return
 	}
 	base := strings.ToLower(rel[strings.LastIndex(rel, "/")+1:])
-	f := &launchFile{s: s, data: data, gradlew: isGradleWrapper(rel, inDist, data),
-		startScript: isStartScript(rel, inDist), yamlLines: map[int]bool{}, template: map[int]bool{}}
+	f := &launchFile{s: s, rel: rel, data: data, gradlew: isGradleWrapper(rel, inDist, data), mavenw: isMavenWrapper(rel, inDist, data),
+		startScript: isStartScript(rel, inDist), pom: base == "pom.xml", yamlLines: map[int]bool{}, template: map[int]bool{}}
 	f.lines = append(f.lines, 0)
 	for i, b := range data {
 		if b == '\n' && i+1 < len(data) {
@@ -907,7 +1008,7 @@ func (s *launchScan) text(rel string, inDist bool, data []byte) {
 	}
 	f.buildSpans(rel)
 	f.testSpans(base)
-	if f.gradlew || f.startScript {
+	if f.gradlew || f.mavenw || f.startScript {
 		for i := range f.lines {
 			if startScriptCommentLines[strings.Join(strings.Fields(f.line(i)), " ")] {
 				f.template[i] = true
@@ -935,6 +1036,13 @@ func isGradleWrapper(rel string, inDist bool, data []byte) bool {
 		(bytes.Contains(data, []byte("org.gradle.wrapper.GradleWrapperMain")) || bytes.Contains(data, []byte("gradle-wrapper.jar")))
 }
 
+// isMavenWrapper reports whether rel is the checkout's Maven wrapper script: mvnw or mvnw.cmd
+// at the root, carrying the template's wrapper entry point.
+func isMavenWrapper(rel string, inDist bool, data []byte) bool {
+	return !inDist && (rel == "mvnw" || rel == "mvnw.cmd") &&
+		(bytes.Contains(data, []byte("org.apache.maven.wrapper.MavenWrapperMain")) || bytes.Contains(data, []byte("maven-wrapper.jar")))
+}
+
 // isStartScript reports whether rel is a Gradle-generated start script: build/scripts/<name>
 // or build/install/<app>/bin/<name> in any project, or <app>/bin/<name> in a distribution.
 func isStartScript(rel string, inDist bool) bool {
@@ -947,10 +1055,14 @@ func isStartScript(rel string, inDist bool) bool {
 		n >= 5 && parts[n-5] == "build" && parts[n-4] == "install" && parts[n-2] == "bin"
 }
 
-// startScriptCommentLines are the comment lines of Gradle's start-script and wrapper templates
-// that name options.
+// startScriptCommentLines are the lines of Gradle's start-script and wrapper templates and
+// Maven's wrapper template that name options or option variables: the comments, and the Maven
+// wrapper's prepending of .mvn/jvm.config to MAVEN_OPTS (that file is scanned where it lies).
 var startScriptCommentLines = map[string]bool{
 	"# * -classpath": true, "# * -D...appname settings": true, "# * --module-path (only if needed)": true,
+	"# set MAVEN_OPTS=-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8000":    true,
+	"@REM set MAVEN_OPTS=-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8000": true,
+	`MAVEN_OPTS="$(concat_lines "$MAVEN_PROJECTBASEDIR/.mvn/jvm.config") $MAVEN_OPTS"`:          true,
 }
 
 func (f *launchFile) lineOf(off int) int {
@@ -1386,7 +1498,13 @@ func (f *launchFile) option(t launchToken) {
 	if t.word == "-p" || f.inSpan(t.start, spanTest) || f.template[f.lineOf(t.start)] {
 		return
 	}
+	if f.mavenw && f.templateMavenProperty(t) {
+		return
+	}
 	if isClasspathToken(t.word) {
+		if t.word == "-jar" && f.ownJarOperand(t) {
+			return
+		}
 		if !f.templateClasspath(t) {
 			f.s.unreadable()
 		}
@@ -1396,35 +1514,707 @@ func (f *launchFile) option(t launchToken) {
 	case optionAgent:
 		f.s.agent()
 	case optionUnmodeled:
-		if !f.inSpan(t.start, spanBuild) || !buildClaimable(t.word) {
+		// The Maven wrapper is not a build-tool invocation the program runs under: an option on
+		// any of its lines reaches the JVM it starts.
+		if f.mavenw || !f.inSpan(t.start, spanBuild) || !buildClaimable(t.word) {
 			f.s.unreadable()
 		}
 	}
 }
 
+// buildClaimable reports whether an unmodeled option in a build-tool span configures only the
+// build. Jib and Spring Boot properties can set the program's own JVM options, main class or
+// base image, except Jib's push target (jib.to.*) and the Spring profiles spring-boot:run
+// activates, which the analysis already covers (a @Profile never narrows resolution).
 func buildClaimable(w string) bool {
 	if strings.HasPrefix(w, "-XX:") {
 		return true
 	}
 	prop, ok := strings.CutPrefix(w, "-D")
-	return ok && !strings.HasPrefix(prop, "jib.") && !strings.HasPrefix(prop, "spring-boot.")
+	if !ok {
+		return false
+	}
+	name, _, _ := strings.Cut(prop, "=")
+	switch {
+	case strings.HasPrefix(name, "jib.to."), name == "spring-boot.run.profiles":
+		return true
+	}
+	return !strings.HasPrefix(name, "jib.") && !strings.HasPrefix(name, "spring-boot.")
 }
 
-// templateClasspath reports whether a classpath token is the Gradle template's own: a start
-// script's -classpath "$CLASSPATH", or the wrapper script's wrapper JAR.
+// templateClasspath reports whether a classpath token is a template's own: a Gradle start
+// script's -classpath "$CLASSPATH" (Gradle 7 and earlier escape it for eval), the Gradle
+// wrapper script's wrapper JAR, or the Maven wrapper script's wrapper JAR and the downloader
+// it compiles into .mvn/wrapper.
 func (f *launchFile) templateClasspath(t launchToken) bool {
+	rest := strings.TrimLeft(f.restOfLine(t.end), " \t")
+	if f.mavenw {
+		switch t.word {
+		case "-classpath":
+			return wordIs(rest, `"$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.jar"`) ||
+				wordIs(rest, `%WRAPPER_JAR%`) && f.templateWrapperJar()
+		case "-cp":
+			return wordIs(rest, ".mvn/wrapper MavenWrapperDownloader")
+		}
+		return false
+	}
 	if !f.gradlew && !f.startScript {
 		return false
 	}
-	rest := strings.TrimLeft(string(f.data[t.end:min(t.end+64, len(f.data))]), " \t")
 	switch t.word {
 	case "-classpath":
-		return strings.HasPrefix(rest, `"$CLASSPATH"`) || strings.HasPrefix(rest, `"%CLASSPATH%"`)
+		return wordIs(rest, `"$CLASSPATH"`) || wordIs(rest, `"\"$CLASSPATH\""`) || wordIs(rest, `"%CLASSPATH%"`)
 	case "-jar":
-		return f.gradlew && (strings.HasPrefix(rest, `"$APP_HOME/gradle/wrapper/gradle-wrapper.jar"`) ||
-			strings.HasPrefix(rest, `"%APP_HOME%\gradle\wrapper\gradle-wrapper.jar"`))
+		return f.gradlew && (wordIs(rest, `"$APP_HOME/gradle/wrapper/gradle-wrapper.jar"`) ||
+			wordIs(rest, `"%APP_HOME%\gradle\wrapper\gradle-wrapper.jar"`))
 	}
 	return false
+}
+
+// ownJarOperand reports whether the JAR a -jar token launches is this build's own artifact, and
+// records it: a path ending in target/<name>.jar or build/libs/<name>.jar inside the checkout
+// (the Maven and Gradle output directories), a POM's ${project.build.finalName}.jar or
+// ${project.artifactId}-${project.version}.jar, or a file named <artifactId>-<version>.jar that
+// settleOwnJars finds among the build's modules. settleOwnJars also requires the directory before
+// target/ or build/libs/, or the POM's own directory, to be one of the modules. The operand is the
+// first word after the token that is not an option, on the same line; options between them are
+// tokens of their own and classify themselves. Anything else, a variable or a word on a
+// continuation line included, names a JAR the build does not produce. The words after the operand
+// are the program's arguments: an option among them other than ownJarArg, or a variable, can
+// name code the JAR loads, so the operand counts as foreign.
+func (f *launchFile) ownJarOperand(t launchToken) bool {
+	rest := f.restOfLine(t.end)
+	if f.pom {
+		rest = xmlTag.ReplaceAllString(rest, " ")
+	} else if end := strings.TrimRight(rest, " \t\r"); strings.HasSuffix(end, "\\") || strings.HasSuffix(end, "^") ||
+		strings.ContainsRune(rest, '`') {
+		return false
+	}
+	words := strings.FieldsFunc(rest, ownJarDelim)
+	var op string
+	for i, w := range words {
+		if !strings.HasPrefix(w, "-") {
+			op = w
+			for _, a := range words[i+1:] {
+				if strings.HasPrefix(a, "-") && !ownJarArg.MatchString(a) || !strings.HasPrefix(a, "-") && strings.ContainsAny(a, "$%") {
+					return false
+				}
+			}
+			break
+		}
+	}
+	app := f.appendable(t)
+	segs := strings.Split(strings.TrimPrefix(op, "./"), "/")
+	n := len(segs)
+	name := segs[n-1]
+	if f.pom && (name == "${project.build.finalName}.jar" || name == "${project.artifactId}-${project.version}.jar") &&
+		!strings.ContainsAny(strings.Join(segs[:n-1], "/"), "$%`\\") {
+		f.s.ownJars = append(f.s.ownJars, ownJarRef{tool: "maven", dir: path.Dir(f.rel), file: f.rel, appendable: app})
+		f.s.ownJar = true
+		return true
+	}
+	if !ownJarWord.MatchString(op) || !strings.HasSuffix(name, ".jar") || len(name) == len(".jar") {
+		return false
+	}
+	// The directory before target/ or build/libs/ must be a module's clean relative path, which
+	// rules out absolute paths, ./.. segments and globs there.
+	switch {
+	case n >= 2 && segs[n-2] == "target":
+		f.s.ownJars = append(f.s.ownJars, ownJarRef{tool: "maven", dir: ownJarDir(segs[:n-2]), name: name, file: f.rel, appendable: app})
+	case n >= 3 && segs[n-3] == "build" && segs[n-2] == "libs":
+		f.s.ownJars = append(f.s.ownJars, ownJarRef{tool: "gradle", dir: ownJarDir(segs[:n-3]), name: name, file: f.rel, appendable: app})
+	case !strings.Contains(name, "*"):
+		f.s.ownJars = append(f.s.ownJars, ownJarRef{name: name, file: f.rel, appendable: app})
+	default:
+		return false
+	}
+	f.s.ownJar = true
+	return true
+}
+
+// appendable reports whether a container can pass the launch at t arguments its line does not
+// show: t sits in a Dockerfile ENTRYPOINT, in a file that sets a container command or entrypoint
+// (Kubernetes passes a container's args after its command, Compose a service's command after its
+// entrypoint), or in a file whose values another file splices into a command (spliceFile).
+// Whether some file sets such arguments is known only once the whole tree is read
+// (containerKeys, argsAppended).
+func (f *launchFile) appendable(t launchToken) bool {
+	if isDockerfile(f.rel) {
+		i := f.lineOf(t.start)
+		for i > 0 && dockerContinued(f.line(i-1)) {
+			i--
+		}
+		return dockerEntrypoint.MatchString(f.line(i))
+	}
+	_, command, entrypoint := keyedFile(f.rel, f.data)
+	return spliceFile(f.rel) || command || entrypoint
+}
+
+// dockerContinued reports whether a Dockerfile line continues onto the next: it ends in the
+// default escape character.
+func dockerContinued(line string) bool {
+	return strings.HasSuffix(strings.TrimRight(line, " \t\r"), "\\")
+}
+
+// spliceFile reports whether rel holds values another file splices into a command: an env file,
+// which Compose and shells interpolate, or a Helm values file, which templates render.
+func spliceFile(rel string) bool {
+	base := strings.ToLower(path.Base(rel))
+	if base == ".env" || strings.HasPrefix(base, ".env.") || strings.HasSuffix(base, ".env") {
+		return true
+	}
+	return strings.HasPrefix(base, "values") && (strings.HasSuffix(base, ".yaml") || strings.HasSuffix(base, ".yml"))
+}
+
+func isDockerfile(rel string) bool {
+	base := strings.ToLower(path.Base(rel))
+	return strings.HasPrefix(base, "dockerfile") || strings.HasPrefix(base, "containerfile") || strings.HasSuffix(base, ".dockerfile")
+}
+
+// containerKeys records whether a file sets a container's args, command or entrypoint: a
+// Dockerfile ENTRYPOINT or CMD instruction, or a key keyedFile reads.
+func (s *launchScan) containerKeys(rel string, data []byte) {
+	var k uint8
+	if isDockerfile(rel) {
+		if dockerEntrypointAny.Match(data) {
+			k |= keyEntrypoint
+		}
+		if dockerCmd.Match(data) {
+			k |= keyCommand
+		}
+	} else {
+		args, command, entrypoint := keyedFile(rel, data)
+		if args {
+			s.argsKey = true
+		}
+		if command {
+			k |= keyCommand
+		}
+		if entrypoint {
+			k |= keyEntrypoint
+		}
+	}
+	if k != 0 {
+		if s.cmdFiles == nil {
+			s.cmdFiles = map[string]uint8{}
+		}
+		s.cmdFiles[rel] |= k
+	}
+}
+
+// keyedFile reports whether a non-Dockerfile sets a container's args, command or entrypoint: a
+// YAML, JSON or Jsonnet key, quoted or not, in any case and set with : or +:, at the start of a
+// line or a flow collection's entry; the same key set with = in an HCL, TOML or Starlark file,
+// including as a call's first argument; in a Python file (Pulumi, CDK), a keyword argument set to
+// a list, or written key=value with no spaces as PEP 8 does; a JSON patch path ending in /args or
+// /command, in a file with an op key; or a withArgs or withCommand call, or its Mixin form. An =
+// assignment elsewhere (a Gradle bootRun block, a script's args variable) is not a container
+// key. appendable and containerKeys both read it, so they agree on what a key is.
+func keyedFile(rel string, data []byte) (args, command, entrypoint bool) {
+	assign, py := assignKeyFile(rel), strings.EqualFold(path.Ext(rel), ".py")
+	patch := jsonPatchOp.Match(data)
+	set := func(colon, eq, kw, p *regexp.Regexp) bool {
+		return colon.Match(data) || assign && eq.Match(data) || py && kw.Match(data) || patch && p != nil && p.Match(data)
+	}
+	return set(containerArgs, containerArgsAssign, containerArgsKeyword, containerArgsPath),
+		set(containerCommand, containerCommandAssign, containerCommandKeyword, containerCommandPath),
+		set(containerEntrypoint, containerEntrypointAssign, containerEntrypointKeyword, nil)
+}
+
+// assignKeyFile reports whether rel is a file where a container key is set with =: HCL
+// (Terraform, Nomad, including templated names such as job.nomad.tpl), TOML (fly.toml) or
+// Starlark (Bazel BUILD files).
+func assignKeyFile(rel string) bool {
+	base := strings.ToLower(path.Base(rel))
+	if base == "build" || base == "build.bazel" {
+		return true
+	}
+	parts := strings.Split(base, ".")
+	for _, ext := range parts[1:] {
+		switch ext {
+		case "tf", "hcl", "nomad", "toml", "bzl":
+			return true
+		}
+	}
+	return false
+}
+
+// argsAppended reports whether some file can pass the appendable launch r arguments: any file
+// sets a container's args, r's own file sets both an entrypoint and a command, or another file
+// sets a command or an entrypoint (a Compose override, a Kubernetes manifest for the image a
+// Dockerfile builds, a Kustomize patch). Which container a key belongs to is not resolved.
+func (s *launchScan) argsAppended(r ownJarRef) bool {
+	if !r.appendable {
+		return false
+	}
+	if s.argsKey || s.cmdFiles[r.file] == keyCommand|keyEntrypoint {
+		return true
+	}
+	for f, k := range s.cmdFiles {
+		if f != r.file && k != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	dockerEntrypoint           = regexp.MustCompile(`(?i)^\s*entrypoint\s`)
+	dockerEntrypointAny        = regexp.MustCompile(`(?im)^\s*entrypoint\s`)
+	dockerCmd                  = regexp.MustCompile(`(?im)^\s*cmd\s`)
+	containerArgs              = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?args["']?\s*\+?\s*:|\bwithArgs(?:Mixin)?\s*\(`)
+	containerCommand           = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?command["']?\s*\+?\s*:|\bwithCommand(?:Mixin)?\s*\(`)
+	containerEntrypoint        = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?entrypoint["']?\s*\+?\s*:`)
+	containerArgsAssign        = regexp.MustCompile(`(?im)(?:^|[{,\[(])\s*["']?args["']?\s*\+?\s*=`)
+	containerCommandAssign     = regexp.MustCompile(`(?im)(?:^|[{,\[(])\s*["']?command["']?\s*\+?\s*=`)
+	containerEntrypointAssign  = regexp.MustCompile(`(?im)(?:^|[{,\[(])\s*["']?entrypoint["']?\s*\+?\s*=`)
+	containerArgsPath          = regexp.MustCompile(`(?i)path["']?\s*:\s*["']?/\S*/args\b`)
+	containerArgsKeyword       = regexp.MustCompile(`(?im)\bargs\s*=\s*\[|(?:^|[,(])\s*args=[^=]`)
+	containerCommandKeyword    = regexp.MustCompile(`(?im)\bcommand\s*=\s*\[|(?:^|[,(])\s*command=[^=]`)
+	containerEntrypointKeyword = regexp.MustCompile(`(?im)\bentry_?point\s*=\s*\[|(?:^|[,(])\s*entry_?point=[^=]`)
+	containerCommandPath       = regexp.MustCompile(`(?i)path["']?\s*:\s*["']?/\S*/command\b`)
+	jsonPatchOp                = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?op["']?\s*:`)
+)
+
+// ownJarDir is the module directory, "." or a relative slash path, that segs name.
+func ownJarDir(segs []string) string {
+	if len(segs) == 0 {
+		return "."
+	}
+	return strings.Join(segs, "/")
+}
+
+// ownJarArg is a program argument that sets the server's port or its profiles, which select among
+// the JAR's own code and add none.
+var ownJarArg = regexp.MustCompile(`^--(?:server\.port|spring\.profiles\.active)=[A-Za-z0-9.,_-]*$`)
+
+// ownJarDelim separates the words of a command line, a JSON or YAML list, or an XML element's text.
+// A backslash and a brace stay in the word: a Windows path or a property reference.
+func ownJarDelim(r rune) bool {
+	return r <= ' ' || r == 0x7f || strings.ContainsRune("\"'`,[]();|&<>", r)
+}
+
+// ownJarWord is a path the shell and the launcher take literally, but for a * glob.
+var ownJarWord = regexp.MustCompile(`^[A-Za-z0-9._+/*-]+$`)
+
+var (
+	// jarManifestHazard, in a build file, is a manifest attribute that adds code or access to a
+	// -jar launch, or a Spring Boot ZIP or DIR layout, which launches with PropertiesLauncher, or
+	// a layout factory, which can launch with anything.
+	jarManifestHazard = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:add-opens|add-exports|class-path|launcher-agent-class)\b|addclasspath|layoutfactory|\blayout\s*=\s*['"](?:zip|dir)['"]`)
+	// jarPomLayout is a Spring Boot repackage layout in a POM; one not in jarSafeLayouts, a
+	// property reference included, may be ZIP or DIR.
+	jarPomLayout   = regexp.MustCompile(`(?i)<layout>\s*([^<]*?)\s*</layout>`)
+	jarSafeLayouts = map[string]bool{"jar": true, "war": true, "none": true}
+	// jarLoaderHazard, anywhere, is Spring Boot's PropertiesLauncher, the loader path it reads, or
+	// the repackage layout set as a property.
+	jarLoaderHazard = regexp.MustCompile(`(?i)propertieslauncher|loader[._]path|spring-boot\.repackage\.layout`)
+	// jarHeaderHazard, anywhere, is an Add-Opens or Add-Exports manifest header: a manifest line,
+	// or the quoted attribute name a build script or a bnd file passes on.
+	jarHeaderHazard = regexp.MustCompile(`(?im)^[ \t]*add-(?:opens|exports)[ \t]*:|["']add-(?:opens|exports)["']`)
+)
+
+var (
+	// gradleJarHeader is a line opening a block that configures a JAR task: jar, bootJar,
+	// shadowJar, a task of type Jar, register<Jar>, withType(Jar) and the like.
+	gradleJarHeader = regexp.MustCompile(`(?im)^[^\n{]*\b\w*jar\b[^\n{]*\{`)
+	// gradleCheckedInTree is a file collection built from paths in the checkout.
+	gradleCheckedInTree = regexp.MustCompile(`(?i)\b(?:fileTree|files|zipTree|tarTree)\s*\(\s*(?:["']|file\s*\(|dir\s*[:=]|mapOf\s*\(|project\.file|rootProject\.file|layout\.projectDirectory)|\bprojectDirectory\b`)
+	// gradleFromLiteral is a from() of a path literal.
+	gradleFromLiteral = regexp.MustCompile(`\bfrom\b\s*\(?\s*(?:(?:\w+\.)*file\s*\(\s*)?["']([^"']*)["']`)
+	// gradleTextFiles are checked-in files a JAR commonly carries that hold no code.
+	gradleTextFiles = map[string]bool{"license": true, "notice": true, "copying": true, "readme": true}
+)
+
+// gradleJarTakesCheckedIn reports whether a Gradle build file's JAR task puts files from the
+// checkout into its JAR: a from() of a path literal or a file collection over checked-in paths
+// (fileTree("vendor"), files("lib/x.jar"), zipTree("lib/x.jar")). Those can carry code no module
+// of the graph builds. The module's sources and resolved configurations (from
+// sourceSets.main.output, from { configurations.runtimeClasspath... zipTree(it) }) are the
+// graph's own code. A text file with a non-code extension, or a license or notice, adds none.
+// A from() of a variable is not resolved.
+func gradleJarTakesCheckedIn(data []byte) bool {
+	for _, loc := range gradleJarHeader.FindAllIndex(data, -1) {
+		body := gradleBlock(data, loc[1]-1)
+		if gradleCheckedInTree.Match(body) {
+			return true
+		}
+		for _, m := range gradleFromLiteral.FindAllSubmatch(body, -1) {
+			if !gradleTextFile(string(m[1])) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// gradleBlock is the text of the brace block opening at data[open], to its matching brace or the
+// end of the file.
+func gradleBlock(data []byte, open int) []byte {
+	depth := 0
+	for i := open; i < len(data); i++ {
+		switch data[i] {
+		case '{':
+			depth++
+		case '}':
+			if depth--; depth == 0 {
+				return data[open : i+1]
+			}
+		}
+	}
+	return data[open:]
+}
+
+// gradleTextFile reports whether a from() path names a single text file: a license, notice,
+// copying or readme file, or a file whose extension is not that of an archive or class.
+func gradleTextFile(p string) bool {
+	base := strings.ToLower(path.Base(p))
+	stem, ext, dotted := strings.Cut(base, ".")
+	if gradleTextFiles[stem] {
+		return true
+	}
+	if !dotted || strings.ContainsAny(base, "*$") {
+		return false
+	}
+	switch path.Ext(base) {
+	case ".jar", ".zip", ".war", ".ear", ".class", ".tar", ".gz", ".tgz":
+		return false
+	}
+	return ext != ""
+}
+
+// jarHazards records whether a file can change what a -jar launch of the build's artifact runs.
+func (s *launchScan) jarHazards(rel string, data []byte) {
+	if s.jarHazard {
+		return
+	}
+	base := strings.ToLower(rel[strings.LastIndex(rel, "/")+1:])
+	gradle := strings.HasSuffix(base, ".gradle") || strings.HasSuffix(base, ".gradle.kts")
+	build := base == "pom.xml" || base == "manifest.mf" || gradle
+	if build && jarManifestHazard.Match(data) || jarLoaderHazard.Match(data) || jarHeaderHazard.Match(data) ||
+		gradle && gradleJarTakesCheckedIn(data) {
+		s.jarHazard = true
+		return
+	}
+	if base == "pom.xml" {
+		for _, m := range jarPomLayout.FindAllSubmatch(data, -1) {
+			if !jarSafeLayouts[strings.ToLower(string(m[1]))] {
+				s.jarHazard = true
+				return
+			}
+		}
+	}
+}
+
+var (
+	// jarPomOutput is a POM plugin's output directory, or the directory or file an Ant task
+	// writes (todir, tofile, destfile, dest); jarPomFinalName a literal artifact name;
+	// jarPomDestFileName the file name a dependency copy gives its artifact.
+	jarPomOutput       = regexp.MustCompile(`(?is)<outputDirectory\b[^>]*>(.*?)</outputDirectory>|\b(todir|tofile|destfile|dest)\s*=\s*["']([^"']*)["']`)
+	jarPomDestFileName = regexp.MustCompile(`(?i)<destFileName>\s*([^<]*?)\s*</destFileName>`)
+	jarPomFinalName    = regexp.MustCompile(`<finalName>\s*([A-Za-z0-9._+-]+)\s*</finalName>`)
+	// jarPomSubdir is an output directory below target/ or of no build output at all, which a
+	// target/*.jar glob does not match in, unless it is target itself (pomCopiesIntoTarget).
+	jarPomSubdir = regexp.MustCompile(`^(?:\$\{(?:project\.build\.directory|project\.basedir|basedir)\}/|target/)?[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/?$`)
+	// jarGradleDest is a Gradle copy's or archive task's destination; jarGradleLiteralDest a
+	// destination given as a plain string literal, $buildDir aside (gradleCopiesIntoLibs).
+	jarGradleDest        = regexp.MustCompile(`\b(?:into|destinationDir(?:ectory)?)\b`)
+	jarGradleLiteralDest = regexp.MustCompile(`^\s*(?:\(\s*|=\s*|\.set\(\s*)?(?:file\(\s*)?["']((?:\$\{?buildDir\}?/)?[^"'$\n]*)["']`)
+	// jarGradleAnt is an Ant task's destination in a Gradle build (ant.copy(todir: ...)).
+	jarGradleAnt = regexp.MustCompile(`(?i)\b(todir|tofile|destfile|dest)\s*[:=]\s*["']([^"']*)["']`)
+)
+
+// jarCopyHazards records the tools whose build files copy into the directory a -jar glob of the
+// build's output matches in, and the POMs' literal artifact names.
+func (s *launchScan) jarCopyHazards(rel string, data []byte) {
+	if s.copyInto == nil {
+		s.copyInto = map[string]bool{}
+	}
+	base := strings.ToLower(rel[strings.LastIndex(rel, "/")+1:])
+	switch {
+	case base == "pom.xml":
+		for _, m := range jarPomOutput.FindAllSubmatch(data, -1) {
+			v := string(m[3])
+			var dirs []string
+			switch strings.ToLower(string(m[2])) {
+			case "":
+				dirs = []string{strings.TrimSpace(string(m[1]))}
+			case "todir":
+				dirs = []string{v}
+			case "dest": // a directory for unzip, a file or a directory for get
+				dirs = []string{v, path.Dir(v)}
+			default:
+				dirs = []string{path.Dir(v)}
+			}
+			for _, d := range dirs {
+				if pomCopiesIntoTarget(d) {
+					s.copyInto["maven"] = true
+				}
+			}
+		}
+		for _, m := range jarPomDestFileName.FindAllSubmatch(data, -1) {
+			if strings.ContainsAny(string(m[1]), "/\\") {
+				s.copyInto["maven"] = true
+			}
+		}
+		if s.finalNames == nil {
+			s.finalNames = map[string][]string{}
+		}
+		dir := path.Dir(rel)
+		for _, m := range jarPomFinalName.FindAllSubmatch(data, -1) {
+			s.finalNames[dir] = append(s.finalNames[dir], string(m[1]))
+		}
+	case strings.HasSuffix(base, ".gradle") || strings.HasSuffix(base, ".gradle.kts"):
+		if gradleCopiesIntoLibs(data) {
+			s.copyInto["gradle"] = true
+		}
+		for _, m := range jarGradleAnt.FindAllSubmatch(data, -1) {
+			v := string(m[2])
+			dirs := []string{path.Dir(v)}
+			switch strings.ToLower(string(m[1])) {
+			case "todir":
+				dirs = []string{v}
+			case "dest":
+				dirs = []string{v, path.Dir(v)}
+			}
+			for _, d := range dirs {
+				if gradleDestHitsLibs(d) {
+					s.copyInto["gradle"] = true
+				}
+			}
+		}
+	}
+}
+
+// pomCopiesIntoTarget reports whether a POM output directory d can be the directory a
+// target/*.jar glob matches in: anything but a plain directory whose last segment is not target.
+// A directory relative to one POM is taken as relative to every module, since a plugin's
+// configuration is inherited: mall-admin/target in a root POM can be a module's target.
+func pomCopiesIntoTarget(d string) bool {
+	if !jarPomSubdir.MatchString(d) || strings.Contains(d, "..") {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(d, "${project.build.directory}"); ok {
+		d = "target" + rest
+	}
+	for _, p := range []string{"${project.basedir}/", "${basedir}/"} {
+		d = strings.TrimPrefix(d, p)
+	}
+	// The module directory itself holds target/, so a copy of a tree into it can write there.
+	c := path.Clean(d)
+	return c == "." || path.Base(c) == "target"
+}
+
+// gradleCopiesIntoLibs reports whether a Gradle build file can copy or write into a libs
+// directory: some into or destinationDir(ectory) whose argument is not a string literal on its
+// own line, or is one naming libs. A variable, a closure or a provider chain can resolve to
+// build/libs, so only a literal clears it.
+func gradleCopiesIntoLibs(data []byte) bool {
+	for _, loc := range jarGradleDest.FindAllIndex(data, -1) {
+		m := jarGradleLiteralDest.FindSubmatch(data[loc[1]:])
+		if m == nil || gradleDestHitsLibs(string(m[1])) {
+			return true
+		}
+	}
+	return false
+}
+
+// gradleDestHitsLibs reports whether a Gradle destination can be build/libs or a directory above
+// it, where a copied tree can land in it: one naming libs, one using a variable other than a
+// leading $buildDir, or build, the project directory or a parent of it.
+func gradleDestHitsLibs(v string) bool {
+	v = strings.ToLower(v)
+	for _, p := range []string{"${builddir}", "$builddir"} {
+		if rest, ok := strings.CutPrefix(v, p); ok {
+			v = "build" + rest
+			break
+		}
+	}
+	if strings.Contains(v, "libs") || strings.ContainsAny(v, "$`\\") {
+		return true
+	}
+	c := path.Clean(v)
+	return c == "." || c == "build" || c == ".." || strings.HasPrefix(c, "../")
+}
+
+// settleOwnJars withholds Searched for the -jar launches ownJarOperand accepted when the build can
+// change what its JAR runs, or when one names a JAR g's modules do not produce: a file name that is
+// none of their artifacts, an output directory that is not a module of the tool that writes it,
+// a name in it that is not that module's artifact, or a glob there while the build copies other
+// JARs into it.
+func (s *launchScan) settleOwnJars(g *buildgraph.Graph) {
+	if !s.ownJar {
+		return
+	}
+	if s.jarHazard || g == nil {
+		s.unreadable()
+		return
+	}
+	for _, r := range s.ownJars {
+		if !s.ownJarProduced(g, r) || s.argsAppended(r) {
+			s.unreadable()
+			return
+		}
+	}
+}
+
+// ownJarProduced reports whether one of g's modules produces the JAR r names.
+func (s *launchScan) ownJarProduced(g *buildgraph.Graph, r ownJarRef) bool {
+	for _, m := range g.Modules {
+		tool := m.Tool
+		if tool == "" {
+			tool = g.Tool.Name
+		}
+		if r.tool != "" && (m.Path != r.dir || tool != r.tool) {
+			continue
+		}
+		switch {
+		case r.name == "":
+			return true
+		case strings.Contains(r.name, "*"):
+			return !s.copyInto[r.tool]
+		case ownArtifactName(r.name, s.artifactStems(m, tool, r.tool != "")):
+			return true
+		}
+	}
+	return false
+}
+
+// artifactStems are the file names, without .jar, a module's tool gives its artifact:
+// artifactId-version, under each Gradle alias too, an unversioned name for a Gradle project
+// without a version when the launch names its output directory (inOutput), and the literal
+// finalNames of the module's own POM.
+func (s *launchScan) artifactStems(m buildgraph.Module, tool string, inOutput bool) []string {
+	var stems []string
+	for _, nd := range m.Nodes {
+		if nd.ID != m.Root || nd.Artifact == "" {
+			continue
+		}
+		names := []string{nd.Artifact}
+		if tool == "gradle" {
+			for _, a := range m.Aliases {
+				names = append(names, a[strings.LastIndex(a, ":")+1:])
+			}
+		}
+		for _, a := range names {
+			switch {
+			case nd.Version != "" && nd.Version != "unspecified":
+				stems = append(stems, a+"-"+nd.Version)
+			case tool == "gradle" && inOutput:
+				stems = append(stems, a)
+			}
+		}
+	}
+	if tool == "maven" {
+		stems = append(stems, s.finalNames[m.Path]...)
+	}
+	return stems
+}
+
+// ownArtifactName reports whether name is <stem>.jar or <stem>-<classifier>.jar for one of stems.
+func ownArtifactName(name string, stems []string) bool {
+	stem, ok := strings.CutSuffix(name, ".jar")
+	if !ok {
+		return false
+	}
+	for _, st := range stems {
+		if rest, ok := strings.CutPrefix(stem, st); ok && (rest == "" || len(rest) > 1 && rest[0] == '-') {
+			return true
+		}
+	}
+	return false
+}
+
+// templateMavenProperty reports whether t is a property the Maven wrapper template passes
+// Maven's JVM, closed as the template closes it: its home and project directory.
+func (f *launchFile) templateMavenProperty(t launchToken) bool {
+	rest := f.restOfLine(t.end)
+	switch t.word {
+	case "-Dmaven.home=${M2_HOME", "-Dmaven.multiModuleProjectDirectory=${MAVEN_PROJECTBASEDIR":
+		return wordIs(rest, `}"`)
+	case "-Dmaven.multiModuleProjectDirectory=%MAVEN_PROJECTBASEDIR%":
+		return wordIs(rest, `"`)
+	}
+	return false
+}
+
+// restOfLine is the text from i to the end of its line.
+func (f *launchFile) restOfLine(i int) string {
+	rest := f.data[i:]
+	if j := bytes.IndexByte(rest, '\n'); j >= 0 {
+		rest = rest[:j]
+	}
+	return string(rest)
+}
+
+// wordIs reports whether rest, the rest of a line, starts with the words lit, ending there: the
+// shell would join anything else that follows onto the same word.
+func wordIs(rest, lit string) bool {
+	after, ok := strings.CutPrefix(rest, lit)
+	return ok && (after == "" || strings.ContainsRune(" \t\r", rune(after[0])))
+}
+
+// templateWrapperJar reports whether the Maven wrapper batch script is an upstream template,
+// Apache Maven Wrapper 3.1.0 to 3.3.4 or Takari maven-wrapper 0.2.0 to 0.5.6, with at most its
+// comments edited. cmd can assign WRAPPER_JAR in more forms than a reader can enumerate, so the
+// script's code lines must be exactly a template's.
+func (f *launchFile) templateWrapperJar() bool {
+	fp, ok := cmdCodeFingerprint(f.data)
+	return ok && mavenWrapperTemplates[fp]
+}
+
+// cmdCodeFingerprint hashes a batch script's code lines, line endings normalized to LF. A REM line
+// is dropped as inert unless cmd could read it as more: it continues onto the next line or
+// follows one that does (a trailing caret), or it holds a %- or !-expansion, which cmd expands
+// before it sees REM. A script with a control character or a bare CR does not fingerprint.
+func cmdCodeFingerprint(data []byte) (string, bool) {
+	for _, c := range data {
+		if c < 0x20 && c != '\t' && c != '\n' && c != '\r' {
+			return "", false
+		}
+	}
+	s := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if strings.Contains(s, "\r") {
+		return "", false
+	}
+	var code []string
+	prev := ""
+	for _, line := range strings.Split(s, "\n") {
+		inert := cmdRemark.MatchString(line) && !strings.HasSuffix(line, "^") &&
+			!strings.HasSuffix(prev, "^") && !strings.ContainsAny(line, "%!")
+		if !inert {
+			code = append(code, line)
+		}
+		prev = line
+	}
+	sum := sha256.Sum256([]byte(strings.Join(code, "\n")))
+	return hex.EncodeToString(sum[:]), true
+}
+
+var cmdRemark = regexp.MustCompile(`(?i)^[ \t]*@?rem(?:[ \t].*)?$`)
+
+// mavenWrapperTemplates holds cmdCodeFingerprint of each upstream mvnw.cmd that sets WRAPPER_JAR.
+// Apache's bin, script and source distributions of one version share a fingerprint.
+var mavenWrapperTemplates = map[string]bool{
+	"361e8194ff865c389423b366b89af6122b00741b7fc227e7b67fef73449f92bb": true, // Apache 3.1.0
+	"32243652660a21297ee4ef74b08025536cd43de597aaadbbfe20d449647fe461": true, // Apache 3.1.1
+	"62e6ee9ee0de204630df0655b0db4da482390adfe3f754f1c4db80a5f70ce446": true, // Apache 3.2.0
+	"7059f02bbdf291eebf37742187667ef957215e70a4e603105e33de51eae945e0": true, // Apache 3.3.0
+	"0798e541fffc8ff869baf784d4b07f8c94749a64d53d3375c92d19a81ac9c6c7": true, // Apache 3.3.1
+	"af4d20788627bc79ddfe2f12702fae6d8aa9d2feb0c906190a937e5b41fb1f21": true, // Apache 3.3.2
+	"66749d2f050b62555a642b05a794f233d10a1425d177bfeb2f5b93ecc77ef16b": true, // Apache 3.3.3
+	"271a94bbeb24386f1df54627001ba5aec6f47f8b02ff33a7cfa3f42d9319168e": true, // Apache 3.3.4
+	"754dab2ba0d567eb745b9a67dc42813f558703566ea72bec5b80d50a321bd18e": true, // Takari 0.2.0-0.2.3
+	"435e6e62dc1a422f17eaef93a1bda62db7d906cef0d8074e29bb6b3e81164421": true, // Takari 0.3.0
+	"fd1747782fd67e3f7410c3f3e894b5de5d1161dbd73a9094e257d92e0bce4dcf": true, // Takari 0.4.0-0.4.1
+	"368ded28290c11b6446f509aaf919423ed7508d952e3e3b66649fd1ac2e51398": true, // Takari 0.4.2
+	"4a0ccc5ddbd763b3889fc73bd2bf9fffdf367e4dd709dea798e8556b36bd501e": true, // Takari 0.5.0
+	"f8da45155d4b2a00cfbe30da7629ccc181e39de5d6ec20dec0ad964f6ecf8a58": true, // Takari 0.5.1
+	"b512311cfcb31dbd3cf979701f51d0e8a205a9a0350bd737fe35ce5f57fb0d80": true, // Takari 0.5.2
+	"208c88bee29a70badda9f4e9ac140739c520ca12ea6495e098efc87476a5885d": true, // Takari 0.5.3
+	"eaa16c19994ec84d7a3a64dc7e55e3ba010156f2c9b5dcb61ee446420776a567": true, // Takari 0.5.4
+	"216dbbf27259f1694f54f8cc266df42c744c0f16e0e4ff0f23a3c69dce90d40a": true, // Takari 0.5.5
+	"446bf654db5d5da0baa81a1b4e67b9252bec9b7da045d9d218073ddeeb134fd2": true, // Takari 0.5.6
 }
 
 // name classifies one occurrence of a launch name. An option variable is accounted for when it
@@ -1448,7 +2238,7 @@ func (f *launchFile) name(a, b int) {
 	}
 	li := f.lineOf(a)
 	line := f.line(li)
-	if isLaunchCommentLine(line) {
+	if isLaunchCommentLine(line) || f.template[li] {
 		return
 	}
 	if launchDSLNames[n] {
@@ -1457,8 +2247,9 @@ func (f *launchFile) name(a, b int) {
 	}
 	if n == "CLASSPATH" {
 		// java reads CLASSPATH when no -cp is given: it names the launch's code. The Gradle
-		// templates set it for their own -classpath "$CLASSPATH".
-		if !f.gradlew && !f.startScript && strings.TrimSpace(line[:a-f.lines[li]]) != "unset" {
+		// templates set it for their own -classpath "$CLASSPATH"; the Maven wrapper converts
+		// it for Cygwin and passes its own -classpath.
+		if !f.gradlew && !f.mavenw && !f.startScript && strings.TrimSpace(line[:a-f.lines[li]]) != "unset" {
 			f.s.unreadable()
 		}
 		return
@@ -1509,12 +2300,13 @@ func launchExpansion(data []byte, a, b int) bool {
 func isLaunchCommentLine(line string) bool {
 	t := strings.TrimSpace(line)
 	lower := strings.ToLower(t)
-	for _, p := range []string{"#", "//", "/*", "*", "<!--", "::", ";", "@rem"} {
+	for _, p := range []string{"#", "//", "/*", "*", "<!--", "::", ";"} {
 		if strings.HasPrefix(t, p) {
 			return true
 		}
 	}
-	return lower == "rem" || strings.HasPrefix(lower, "rem ")
+	lower = strings.TrimPrefix(lower, "@")
+	return lower == "rem" || strings.HasPrefix(lower, "rem ") || strings.HasPrefix(lower, "rem\t")
 }
 
 var assignOp = regexp.MustCompile(`^\s*(\?=|\+=|::=|:=|=|:)\s*`)

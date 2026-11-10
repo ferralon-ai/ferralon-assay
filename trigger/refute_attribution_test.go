@@ -35,8 +35,13 @@ func TestRefuteAttribution(t *testing.T) {
 		},
 		{
 			"built-in record",
-			&pipeline.RefuteSource{Advisory: "GO-2021-0113", Corpus: "short", BuiltIn: true},
-			" (per advisory GO-2021-0113, corpus short, built into the scanner)",
+			&pipeline.RefuteSource{Advisory: "FERRALON-JAVA-SSRF-0001", BuiltIn: true},
+			" (per advisory FERRALON-JAVA-SSRF-0001, built into the scanner)",
+		},
+		{
+			"overlong feed name is cut",
+			&pipeline.RefuteSource{Advisory: "ACME-2", Feed: strings.Repeat("f", 70)},
+			" (per advisory ACME-2, feed " + strings.Repeat("f", 64) + "…)",
 		},
 	}
 	for _, tt := range tests {

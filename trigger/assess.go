@@ -943,10 +943,10 @@ func disqualRecord(store artifact.Store, assessmentID string) pipeline.DisqualRe
 }
 
 // refuteAttribution names, in the customer-visible detail, the advisory record a version or symbol
-// refute relied on: the advisory id, then the record's digest pin and the corpus that served it
-// (each a 12-hex prefix of the sha256 the report's provenance carries in full), then the feed the
-// record declares. A refute decoded without a source names nothing, which only an artifact written
-// before attribution existed can produce.
+// refute relied on: the advisory id, then 12-hex prefixes of the record's digest pin and of the
+// corpus that served it (the discovery artifact keeps both in full; the report's provenance carries
+// the corpus digest), then the feed the record declares, cut to maxFeedName runes. A refute decoded without a
+// source names nothing, which only an artifact written before attribution existed can produce.
 func refuteAttribution(src *pipeline.RefuteSource) string {
 	if src == nil || src.Advisory == "" {
 		return ""
@@ -959,12 +959,22 @@ func refuteAttribution(src *pipeline.RefuteSource) string {
 		parts = append(parts, "corpus "+shortDigest(src.Corpus))
 	}
 	if src.Feed != "" {
-		parts = append(parts, "feed "+src.Feed)
+		parts = append(parts, "feed "+truncateRunes(src.Feed, maxFeedName))
 	}
 	if src.BuiltIn {
 		parts = append(parts, "built into the scanner")
 	}
 	return " (per " + strings.Join(parts, ", ") + ")"
+}
+
+// maxFeedName bounds the record-declared feed name carried into customer-visible detail.
+const maxFeedName = 64
+
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }
 
 // shortDigest keeps an "<algo>:<hex>" digest's algorithm and the first 12 hex characters.

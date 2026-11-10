@@ -6,12 +6,16 @@
 package pipeline
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/advisorytest"
 )
 
@@ -167,5 +171,41 @@ func TestRun_BundleRefuteNamesRecord(t *testing.T) {
 				t.Fatalf("Source = %+v, want %+v", res.Source, want)
 			}
 		})
+	}
+}
+
+// The manifest reader names its corpus and the record's pin, and a house canary answered through
+// the same chain is named built-in with no corpus or record: each source stamps only what it served.
+func TestRun_ChainRefuteNamesServingSource(t *testing.T) {
+	const id = "CVE-TEST-MANIFEST-REFUTE"
+	body := `{"schema_version":"ferralon.normalized_advisory.v3","vuln_id":"` + id + `","version_scheme":"gomod","module":"example.com/a","symbols":["example.com/a.Sink"],"affected_ranges":[{"introduced":"0","fixed":"v1.2.0","fixed_version":"v1.2.0"}]}`
+	root := writeCorpus(t, map[string]string{id: body})
+	manifest := NewArtifactSource(root)
+	info, ok := manifest.(CorpusDescriber).Describe()
+	if !ok || info.Digest == "" {
+		t.Fatalf("manifest corpus undescribed: %+v", info)
+	}
+	chain := NewChainSource(manifest, NewHouseCanarySource())
+
+	res := runRealDisqual(t, id, "go", chain, map[string]string{
+		"go.mod": "module example.com/target\n\ngo 1.21\n\nrequire example.com/a v1.3.0\n",
+	})
+	sum := sha256.Sum256([]byte(body))
+	want := RefuteSource{Advisory: id, Corpus: info.Digest, Record: "sha256:" + hex.EncodeToString(sum[:])}
+	if !res.Disqualified || res.Source == nil || *res.Source != want {
+		t.Fatalf("got (%v, %q, %+v), want refute with Source %+v", res.Disqualified, res.Reason, res.Source, want)
+	}
+
+	const canary = "FERRALON-JAVA-SSRF-0001"
+	store := artifact.NewMemStore()
+	c := &assessment.Assessment{ID: "case-canary", Request: assessment.Request{
+		Vulnerability: assessment.VulnRef{ID: canary, Source: "corpus"},
+	}}
+	if err := (advisoryIntake{src: chain}).Run(context.Background(), c, store); err != nil {
+		t.Fatal(err)
+	}
+	got := extractRefuteSource(store, c)
+	if got.Advisory != canary || !got.BuiltIn || got.Corpus != "" || got.Record != "" {
+		t.Fatalf("canary source = %+v, want built-in %s with no corpus or record", got, canary)
 	}
 }

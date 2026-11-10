@@ -2186,6 +2186,14 @@ func TestResolveVersions_ReadPinsDisclosed(t *testing.T) {
 			wantPins: []plugin.Annotation{pin("api/requirements.txt", "django==1.8.2"), pin("web/requirements.txt", "django==1.8.7")},
 		},
 		{
+			name: "an installed copy beside an unreadable surface",
+			files: map[string]string{
+				".venv/lib/python3.11/site-packages/Django-1.8.7.dist-info/METADATA": "Metadata-Version: 2.1\nName: Django\nVersion: 1.8.7\n",
+				"vendor/requirements.txt": "-e ./x\n",
+			},
+			wantPins: []plugin.Annotation{pin(".venv/lib/python3.11/site-packages", "django==1.8.7")},
+		},
+		{
 			name: "a uv source",
 			files: map[string]string{
 				"requirements.txt": "django==1.8.2\n",

@@ -748,6 +748,7 @@ func TestLaunchOptionReasons_OwnJarName(t *testing.T) {
 		{"Gradle JAR from the project directory", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle.kts": "tasks.named<Jar>(\"jar\") {\n  from(layout.projectDirectory.dir(\"classes\"))\n}\n"}, g, optionOnly},
 		{"Gradle JAR bundles a checked-in JAR file", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle": "jar {\n  from('lib/agent.jar')\n}\n"}, g, optionOnly},
 		{"Gradle JAR adds license and text files", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle": "jar {\n  from('LICENSE')\n  from(\"NOTICE.txt\")\n  manifest { from('src/main/resources/META-INF/MANIFEST.MF') }\n}\n"}, g, []string{}},
+		{"Copy task from a checked-in tree beside a JAR block", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle": "jar {\n  manifest { attributes('Main-Class': 'x.Main') }\n}\ntask docs(type: Copy) {\n  from fileTree('docs')\n  into \"$buildDir/docs\"\n}\n"}, g, []string{}},
 		{"Copy task from a checked-in tree is not a JAR input", map[string]string{"run.sh": "java -jar build/libs/mall-common-1.jar\n", "build.gradle": "task docs(type: Copy) {\n  from fileTree('docs')\n  into \"$buildDir/docs\"\n}\n"}, g, []string{}},
 
 		// Words the line does not show can follow the operand.

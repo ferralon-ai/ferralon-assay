@@ -714,6 +714,10 @@ func TestCompiledProjects_ImportResolution(t *testing.T) {
 			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
 			"Worker/Worker.csproj": `<Project><!-- <![CDATA[ --><Import Project="..\build\out.settings" /><!-- ]]> --></Project>`, "build/out.settings": moves,
 		}, 2},
+		{"a processing instruction holding a comment opener before a live import", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj": `<?xml-stylesheet href="a<!--b"?><Project><Import Project="..\build\out.settings" /><!-- c --></Project>`, "build/out.settings": moves,
+		}, 2},
 		{"a commented-out import keeps the drop", "", map[string]string{
 			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
 			"Worker/Worker.csproj": `<Project><!-- <Import Project="$(Foo)\x.props" /> --></Project>`,

@@ -432,7 +432,7 @@ func importedFiles(f string, data []byte, projects []string) ([]string, bool) {
 }
 
 var (
-	xmlInert         = regexp.MustCompile(`(?s)<!--.*?-->|<!\[CDATA\[.*?\]\]>`) // one pass: whichever opens first wins
+	xmlInert         = regexp.MustCompile(`(?s)<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>`) // one pass: whichever opens first wins
 	msbuildEscape    = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
 	fileAboveFunc    = regexp.MustCompile(`(?i)\$\(\s*\[MSBuild\]::(GetPathOfFileAbove|GetDirectoryNameOfFileAbove)\(\s*([^,()]*?)\s*(?:,\s*([^,()]*?)\s*)?\)\s*\)`)
 	unresolvedSyntax = regexp.MustCompile(`[$@%]\(`)

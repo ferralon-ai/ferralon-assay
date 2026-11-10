@@ -23,20 +23,30 @@ import (
 // it does not change soundness.
 type Engine struct {
 	classes     map[string]*classfile.Class
-	declared    map[string]*classfile.Method // key: MethodRef.String() -> declaring method
-	subtypes    map[string][]string          // supertype -> direct subclasses/implementors
-	overridable map[string]bool              // hasOverridable cache
-	loadable    map[string]bool              // platformLoadable cache
-	lambdas     map[string][]lambdaSite      // interface a lambda object implements -> its sites
-	held        map[string]heldTypes         // heldAs cache
-	defined     map[string]bool              // packages a classpath entry defines a class in
-	unlisted    bool                         // a classpath entry could not be listed
-	methodsHold bool                         // platformMethods lists the runtime's methods
-	hidden      []string                     // hiddenSubtypes cache, sorted
-	hiddenDone  bool                         // hidden is computed
-	linked      bool                         // every class the run's classpath defines is loaded (SetLinked)
-	unlinked    map[string]bool              // unlinkable cache
-	resolving   map[string]bool              // lambda implementations met in the outermost lambdaImpl
+	declared    map[string]*classfile.Method     // key: MethodRef.String() -> declaring method
+	subtypes    map[string][]string              // supertype -> direct subclasses/implementors
+	overridable map[string]bool                  // hasOverridable cache
+	loadable    map[string]bool                  // platformLoadable cache
+	lambdas     map[string][]lambdaSite          // interface a lambda object implements -> its sites
+	held        map[string]heldTypes             // heldAs cache
+	defined     map[string]bool                  // packages a classpath entry defines a class in
+	unlisted    bool                             // a classpath entry could not be listed
+	methodsHold bool                             // platformMethods lists the runtime's methods
+	hidden      []string                         // hiddenSubtypes cache, sorted
+	hiddenDone  bool                             // hidden is computed
+	linked      bool                             // every class the run's classpath defines is loaded (SetLinked)
+	unlinked    map[string]bool                  // unlinkable cache
+	resolving   map[string]bool                  // lambda implementations met in the outermost lambdaImpl
+	closures    map[classfile.MethodRef]*closure // Reach's whole search per ingress, under the current linked bit
+	methodIDs   map[classfile.MethodRef]int      // bit index of each method a closure enqueued
+}
+
+// closure is one ingress's search run to exhaustion: every method it enqueued, and the result
+// of a search for a sink it never meets. Nothing in the search depends on the sink except
+// where it stops, so a sink outside enqueued gets that result.
+type closure struct {
+	enqueued []uint64 // bit methodIDs[m] is set when the search enqueued m
+	miss     Result
 }
 
 // lambdaSite is a LambdaMetafactory call site in class from. The object it produces
@@ -155,6 +165,8 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 		lambdas:     map[string][]lambdaSite{},
 		held:        map[string]heldTypes{},
 		resolving:   map[string]bool{},
+		closures:    map[classfile.MethodRef]*closure{},
+		methodIDs:   map[classfile.MethodRef]int{},
 		defined:     map[string]bool{},
 		unlisted:    cp.Unlisted,
 		methodsHold: cp.JDK == platformMethodsJDK,
@@ -1392,6 +1404,7 @@ func (e *Engine) resetLinkage() {
 	e.loadable = map[string]bool{}
 	e.hidden, e.hiddenDone = nil, false
 	e.held = map[string]heldTypes{}
+	e.closures = map[classfile.MethodRef]*closure{}
 }
 
 // unlinkable reports whether loaded class c cannot link on a linked classpath: some
@@ -1775,13 +1788,34 @@ type Result struct {
 // the search starts from that class's initialization closure (initClosure: the class, its
 // superclasses, and each superinterface that declares a default method) as well as the
 // ingress. An instance ingress also runs the class's no-arg constructor first.
+//
+// Each ingress is searched to exhaustion once per linked bit (closure); a sink that search
+// never enqueued gets its result, and only a sink it did enqueue is searched again, for the
+// path.
 func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
-	res := Result{SinkPresent: e.declared[sink.String()] != nil}
-	if !res.SinkPresent {
-		res.Verdict = Undetermined
+	if e.declared[sink.String()] == nil {
+		res := Result{Verdict: Undetermined}
 		res.hazard("sink_not_loaded: " + sink.String())
 		return res
 	}
+	c := e.closures[ingress]
+	if c == nil {
+		c = &closure{}
+		c.miss = e.search(ingress, classfile.MethodRef{}, c)
+		e.closures[ingress] = c
+	}
+	if id, ok := e.methodIDs[sink]; ok && id/64 < len(c.enqueued) && c.enqueued[id/64]&(1<<(id%64)) != 0 {
+		return e.search(ingress, sink, nil)
+	}
+	res := c.miss
+	res.HazardKinds = append([]string(nil), c.miss.HazardKinds...)
+	return res
+}
+
+// search is Reach's BFS from ingress, stopping once it meets sink. With c it marks every
+// method it enqueues in c.enqueued; a zero sink never stops it.
+func (e *Engine) search(ingress, sink classfile.MethodRef, c *closure) Result {
+	res := Result{SinkPresent: true}
 
 	start, over := e.resolveMethod(ingress.Owner, ingress.Name, ingress.Descriptor)
 	if start == nil {
@@ -1807,6 +1841,17 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 	enqueue := func(from classfile.MethodRef, t *classfile.Method) {
 		if t == nil {
 			return
+		}
+		if c != nil {
+			id, ok := e.methodIDs[t.Ref]
+			if !ok {
+				id = len(e.methodIDs)
+				e.methodIDs[t.Ref] = id
+			}
+			for len(c.enqueued) <= id/64 {
+				c.enqueued = append(c.enqueued, 0)
+			}
+			c.enqueued[id/64] |= 1 << (id % 64)
 		}
 		if t.Ref == sink {
 			prev[sink.String()] = from

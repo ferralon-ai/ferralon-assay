@@ -68,6 +68,7 @@ func runHoleCases(t *testing.T, cases []holeCase) {
 			if tc.via != "" && !strings.Contains(PathString(r.Path), tc.via) {
 				t.Errorf("path %s does not pass %s", PathString(r.Path), tc.via)
 			}
+			assertMemoMatchesFresh(t, append(tc.classes, urlFetcherDep()), tc.cp, tc.linked)
 		})
 	}
 }

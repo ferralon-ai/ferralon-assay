@@ -179,6 +179,9 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		prev := cleanup
 		cleanup = func() { done(); prev() }
 	}
+	if language == checkout.LangDotNet {
+		restoreDotNet(ctx, buildDir, os.Stderr)
+	}
 	var goOpts []plugin.Option
 	if language == checkout.LangGo {
 		dir := scanRunCacheDir("go")

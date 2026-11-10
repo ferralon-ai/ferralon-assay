@@ -402,3 +402,30 @@ func TestExactEncoding(t *testing.T) {
 		t.Error("a map encoded; its order is not fixed")
 	}
 }
+
+// Every kind reachable from a class must be one exactEncoding writes; otherwise every key turns
+// random and both caches miss with nothing failing.
+func TestExactEncodingCoversClass(t *testing.T) {
+	seen := map[reflect.Type]bool{}
+	var walk func(reflect.Type, string)
+	walk = func(ty reflect.Type, path string) {
+		if seen[ty] {
+			return
+		}
+		seen[ty] = true
+		switch ty.Kind() {
+		case reflect.String, reflect.Bool,
+			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		case reflect.Pointer, reflect.Slice:
+			walk(ty.Elem(), path+"[]")
+		case reflect.Struct:
+			for i := range ty.NumField() {
+				walk(ty.Field(i).Type, path+"."+ty.Field(i).Name)
+			}
+		default:
+			t.Errorf("%s is a %s, which exactEncoding refuses", path, ty.Kind())
+		}
+	}
+	walk(reflect.TypeOf(classfile.Class{}), "Class")
+}

@@ -1,6 +1,7 @@
 package checkout
 
 import (
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -28,8 +29,8 @@ const (
 // subdirectory such as target/ or src/) makes it Go unconditionally (the module-root marker
 // the Go vendoring / govulncheck setup keys on, and the reason checkout historically required
 // go.mod) — Go is a module-root fact, not a file count, so this short-circuit is preserved
-// exactly; only WHERE it looks for the root has widened. Next, a .NET build manifest at the
-// root (.sln, .csproj, .fsproj) makes it .NET: the root's build decides the lane, so a .NET
+// exactly; only WHERE it looks for the root has widened. Next, a .NET project file at the
+// root (.csproj, .fsproj, .vbproj), or a root .sln/.slnx that names one, makes it .NET: a .NET
 // application that serves thousands of bundled client-library .js files is not routed to JS.
 // Otherwise, detection is dominance-based: a single walk tallies source files per language across kotlin / java /
 // js / python / dotnet / cfamily (applying the same skipSourceDir prune and the same extension rules as
@@ -90,18 +91,49 @@ func DetectLanguage(dir string) string {
 	return best
 }
 
-// rootDotNetManifest reports whether dir itself holds a .NET solution or project file.
+// rootDotNetManifest reports whether dir itself holds a .NET project file, or a solution file
+// that names one. A solution alone is not enough: C++, Python and Node projects in Visual
+// Studio also carry a root .sln.
 func rootDotNetManifest(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
 	for _, e := range entries {
-		if e.IsDir() {
+		if !e.Type().IsRegular() {
 			continue
 		}
-		switch filepath.Ext(e.Name()) {
-		case ".sln", ".csproj", ".fsproj":
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".csproj", ".fsproj", ".vbproj":
+			return true
+		case ".sln", ".slnx":
+			if solutionNamesDotNetProject(filepath.Join(dir, e.Name())) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// solutionMaxBytes bounds how much of a solution file is read for its project list.
+const solutionMaxBytes = 4 << 20
+
+// solutionNamesDotNetProject reports whether a .sln or .slnx file lists a C#, F# or VB project.
+// Both formats quote each member path ("src\App\App.csproj" in a .sln Project line,
+// Path="src/App/App.csproj" in a .slnx Project element).
+func solutionNamesDotNetProject(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, solutionMaxBytes))
+	if err != nil {
+		return false
+	}
+	lower := strings.ToLower(string(data))
+	for _, ext := range []string{`.csproj"`, `.fsproj"`, `.vbproj"`} {
+		if strings.Contains(lower, ext) {
 			return true
 		}
 	}

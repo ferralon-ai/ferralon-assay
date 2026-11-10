@@ -94,39 +94,60 @@ func TestReachability_Searched(t *testing.T) {
 }
 
 // TestReachability_DependencyMissIsScoped: a dependency restore lists but whose code is not
-// on disk is disclosed as a scoped limit bounded by it and its restore closure.
+// on disk is disclosed as a scoped limit bounded by it and its restore closure. It is run-wide
+// only when that closure cannot be bounded: then the missing code could hide any package.
 func TestReachability_DependencyMissIsScoped(t *testing.T) {
-	t.Setenv("NUGET_PACKAGES", t.TempDir())
-	assets := `{"version":3,"targets":{"net8.0":{` +
-		`"Dep/1.0.0":{"type":"package"},` +
-		`"Gone/2.0.0":{"type":"package","dependencies":{"Dep":"1.0.0"},"runtime":{"lib/net8.0/Gone.dll":{}}}}},` +
-		`"libraries":{"Dep/1.0.0":{"type":"package","path":"dep/1.0.0"},"Gone/2.0.0":{"type":"package","path":"gone/2.0.0"}}}`
-	dir := composeILBuildDir(t, map[string][]byte{
-		"App.csproj":              restoredProject,
-		"bin/App.dll":             appCalling(nil, false, true),
-		"bin/Dep.dll":             depWithBoomOverloads(false),
-		"obj/project.assets.json": []byte(assets),
-	})
-	res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{boomSCIP}})
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name        string
+		goneDeps    string // Gone's dependencies object
+		wantTargets []string
+		wantRunWide bool
+	}{
+		{
+			name:        "bounded closure: scoped only",
+			goneDeps:    `{"Dep":"1.0.0"}`,
+			wantTargets: []string{"pkg:nuget/dep", "pkg:nuget/gone"},
+		},
+		{
+			name:        "a dependency restore did not resolve: unbounded, so run-wide too",
+			goneDeps:    `{"Dep":"1.0.0","Lost":"3.0.0"}`,
+			wantRunWide: true,
+		},
 	}
-	want := []plugin.ScopedReason{{
-		Reason:  partialReasonNoDependencyArtifact,
-		Package: "pkg:nuget/gone",
-		Path:    "Gone/2.0.0",
-		Targets: []string{"pkg:nuget/dep", "pkg:nuget/gone"},
-	}}
-	if res.Partiality.Complete || !reflect.DeepEqual(res.Partiality.Scoped, want) {
-		t.Fatalf("partiality = %+v, want scoped %+v", res.Partiality, want)
-	}
-	// Until the gate reads Scoped, the miss is also run-wide.
-	if !hasILReason(res.Partiality, partialReasonNoDependencyArtifact) {
-		t.Fatalf("Reasons = %v, want %s", res.Partiality.Reasons, partialReasonNoDependencyArtifact)
-	}
-	// The miss is not on any traced path (nothing calls Gone), so the sink is still searched;
-	// whether the scoped limit blocks an advisory is the gate's call (Targets names Dep).
-	if !slices.Contains(res.Searched, boomSCIP) {
-		t.Fatalf("Searched = %v, want %s", res.Searched, boomSCIP)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("NUGET_PACKAGES", t.TempDir())
+			assets := `{"version":3,"targets":{"net8.0":{` +
+				`"Dep/1.0.0":{"type":"package"},` +
+				`"Gone/2.0.0":{"type":"package","dependencies":` + c.goneDeps + `,"runtime":{"lib/net8.0/Gone.dll":{}}}}},` +
+				`"libraries":{"Dep/1.0.0":{"type":"package","path":"dep/1.0.0"},"Gone/2.0.0":{"type":"package","path":"gone/2.0.0"}}}`
+			dir := composeILBuildDir(t, map[string][]byte{
+				"App.csproj":              restoredProject,
+				"bin/App.dll":             appCalling(nil, false, true),
+				"bin/Dep.dll":             depWithBoomOverloads(false),
+				"obj/project.assets.json": []byte(assets),
+			})
+			res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{boomSCIP}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []plugin.ScopedReason{{
+				Reason:  partialReasonNoDependencyArtifact,
+				Package: "pkg:nuget/gone",
+				Path:    "Gone/2.0.0",
+				Targets: c.wantTargets,
+			}}
+			if res.Partiality.Complete || !reflect.DeepEqual(res.Partiality.Scoped, want) {
+				t.Fatalf("partiality = %+v, want scoped %+v", res.Partiality, want)
+			}
+			if got := hasILReason(res.Partiality, partialReasonNoDependencyArtifact); got != c.wantRunWide {
+				t.Fatalf("run-wide %s = %v, want %v (reasons %v)", partialReasonNoDependencyArtifact, got, c.wantRunWide, res.Partiality.Reasons)
+			}
+			// The miss is not on any traced path (nothing calls Gone), so the sink is still
+			// searched; whether the scoped limit blocks an advisory is the gate's call.
+			if !slices.Contains(res.Searched, boomSCIP) {
+				t.Fatalf("Searched = %v, want %s", res.Searched, boomSCIP)
+			}
+		})
 	}
 }

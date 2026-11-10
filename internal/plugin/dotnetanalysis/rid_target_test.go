@@ -252,8 +252,8 @@ func TestReachability_RIDTargetOnlyPackages(t *testing.T) {
 			scoped := map[string]string{}
 			for _, s := range res.Partiality.Scoped {
 				scoped[s.Package] = s.Reason
-				if !hasILReason(res.Partiality, s.Reason) {
-					t.Errorf("scoped %s (%s) has no run-wide reason: %v", s.Package, s.Reason, res.Partiality.Reasons)
+				if hasILReason(res.Partiality, s.Reason) {
+					t.Errorf("bounded scoped %s (%s) is also run-wide: %v", s.Package, s.Reason, res.Partiality.Reasons)
 				}
 				if s.Targets == nil || !slices.Contains(s.Targets, s.Package) {
 					t.Errorf("scoped %s targets = %v, want its bounded closure", s.Package, s.Targets)

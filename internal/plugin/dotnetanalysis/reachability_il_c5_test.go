@@ -24,6 +24,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -343,6 +344,11 @@ func composeILBuildDir(t *testing.T, files map[string][]byte) string {
 		trustRestore(t, dir)
 	}
 	return dir
+}
+
+// hasILLimit reports whether p discloses reason at all: run-wide, or scoped to a package.
+func hasILLimit(p plugin.Partiality, reason string) bool {
+	return hasILReason(p, reason) || slices.ContainsFunc(p.Scoped, func(s plugin.ScopedReason) bool { return s.Reason == reason })
 }
 
 func hasILReason(p plugin.Partiality, reason string) bool {

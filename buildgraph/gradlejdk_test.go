@@ -67,6 +67,14 @@ func TestGradleJDK(t *testing.T) {
 	j17arm := jdk("17arm", "17.0.20.1")
 	noLauncher := filepath.Join(root, "nolauncher")
 	writeTestFile(t, filepath.Join(noLauncher, "release"), `JAVA_VERSION="17.0.20.1"`)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relJ17, err := filepath.Rel(wd, j17) // names the JDK 17 from the producer's directory only
+	if err != nil {
+		t.Fatal(err)
+	}
 	pinned := gradle("7.3.1")
 	writeTestFile(t, filepath.Join(pinned, "gradle.properties"), "org.gradle.java.home="+j21+"\n")
 
@@ -95,7 +103,7 @@ func TestGradleJDK(t *testing.T) {
 		{name: "the job names its Gradle JVM in GRADLE_OPTS", dir: gradle("7.3.1"), env: append([]string{"GRADLE_OPTS=-Dorg.gradle.java.home=" + j21}, runner...)},
 		{name: "gradle 9.1 on a newer JDK than the matrix lists", dir: gradle("9.1.0"), env: []string{"JAVA_HOME=" + j26, "PATH=/usr/bin", "JAVA_HOME_25_X64=" + j25}},
 		{name: "gradle 9.0 never runs on a JDK below 17", dir: gradle("9.0.0"), env: []string{"JAVA_HOME=" + j25, "PATH=/usr/bin", "JAVA_HOME_11_X64=" + j11}},
-		{name: "a relative provided JDK is skipped", dir: gradle("7.3.1"), env: []string{"JAVA_HOME=" + j21, "PATH=/usr/bin", "JAVA_HOME_17_X64=17"}},
+		{name: "a relative provided JDK is skipped", dir: gradle("7.3.1"), env: []string{"JAVA_HOME=" + j21, "PATH=/usr/bin", "JAVA_HOME_17_X64=" + relJ17}},
 		{name: "a provided JDK without a launcher is skipped", dir: gradle("7.3.1"), env: []string{"JAVA_HOME=" + j21, "PATH=/usr/bin", "JAVA_HOME_17_X64=" + noLauncher, "JAVA_HOME_11_X64=" + j11}, wantHome: j11, wantProvided: "JAVA_HOME_11_X64"},
 		{name: "equal features tie by variable name", dir: gradle("7.3.1"), env: []string{"JAVA_HOME=" + j21, "PATH=/usr/bin", "JAVA_HOME_17_X64=" + j17, "JAVA_HOME_17_ARM64=" + j17arm}, wantHome: j17arm, wantProvided: "JAVA_HOME_17_ARM64"},
 	}

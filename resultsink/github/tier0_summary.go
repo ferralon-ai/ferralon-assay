@@ -268,7 +268,7 @@ func renderSummary(r report.Report, fetch []resultsink.DependencyFetchNote) stri
 		for _, f := range candidates(r) {
 			pkg := "—"
 			if f.Package != nil {
-				pkg = fmt.Sprintf("`%s`", f.Package.Label())
+				pkg = mdCell(mdCode(f.Package.Label()))
 			}
 			path := f.Evidence.ReachablePath
 			if path == "" {

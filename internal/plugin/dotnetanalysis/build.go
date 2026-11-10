@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/dotnetanalysis/assembly"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -205,13 +206,14 @@ func findProjectFiles(buildDir string) []string {
 // build never compiled, so a tool project kept in the repo but outside the build, such as an
 // installer the Dockerfile never publishes, is not a second program the run failed to trace.
 //
-// The SDK always writes a project's intermediate assembly to obj/<cfg>/<tfm>[/<rid>]/<name>.dll,
-// whatever output path the build redirects to, so a project with no <name>.dll under its obj/,
-// bin/ or publish/ was not compiled here. A project counts as compiled when any of those trees
-// can't be read. The drop holds only while that convention is the one in force: every compiled
-// project shows its intermediate assembly, nothing relocates obj/ (intermediateRelocated), and
-// no compiled project references a dropped one. Otherwise, or when nothing was compiled, every
-// project is kept.
+// The SDK always writes a project's intermediate assembly to obj/<cfg>/<tfm>[/<rid>]/, whatever
+// output path the build redirects to, while restore alone writes no assembly there. So a project
+// with no .dll under its obj/, bin/ or publish/ was not compiled here; the assembly's name is not
+// consulted, since AssemblyName can differ from the project file's. A project counts as compiled
+// when any of those trees can't be read. The drop holds only while that convention is the one in
+// force: every compiled project shows an intermediate assembly no older than its restore output,
+// nothing relocates obj/ (intermediateRelocated), and no compiled project references a dropped
+// one. Otherwise, or when nothing was compiled, every project is kept.
 func compiledProjects(buildDir string, projects []string) []string {
 	if len(projects) < 2 || intermediateRelocated(buildDir, projects) {
 		return projects
@@ -242,15 +244,20 @@ type compiledState int
 
 const (
 	notCompiled          compiledState = iota
-	compiledIntermediate               // obj/<cfg>/<tfm>[/<rid>]/<name>.dll, or an unreadable tree
-	compiledElsewhere                  // a <name>.dll only outside the conventional obj/ path
+	compiledIntermediate               // a fresh obj/<cfg>/<tfm>[/<rid>]/*.dll, or an unreadable tree
+	compiledElsewhere                  // a .dll only outside the conventional obj/ path, or a stale one
 )
 
 // projectCompiled reports whether the project at path was compiled by this build, from the
-// <name>.dll copies under its directory's obj/, bin/ and publish/.
+// assemblies under its directory's obj/, bin/ and publish/. An intermediate assembly older than
+// obj/project.assets.json predates the last restore, so it may be a cached or committed leftover
+// rather than this build's.
 func projectCompiled(path string) compiledState {
 	dir := filepath.Dir(path)
-	want := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) + ".dll"
+	var restored time.Time
+	if fi, err := os.Stat(filepath.Join(dir, "obj", "project.assets.json")); err == nil {
+		restored = fi.ModTime()
+	}
 	state := notCompiled
 	for _, sub := range []string{"obj", "bin", "publish"} {
 		root := filepath.Join(dir, sub)
@@ -262,14 +269,16 @@ func projectCompiled(path string) compiledState {
 				}
 				return nil
 			}
-			if d.IsDir() || d.Name() != want {
+			if d.IsDir() || !strings.EqualFold(filepath.Ext(d.Name()), ".dll") {
 				return nil
 			}
 			if sub == "obj" {
 				if rel, rerr := filepath.Rel(root, p); rerr == nil {
 					if n := len(strings.Split(filepath.ToSlash(rel), "/")); n == 3 || n == 4 {
-						state = compiledIntermediate
-						return filepath.SkipAll
+						if fi, ierr := d.Info(); ierr != nil || !fi.ModTime().Before(restored) {
+							state = compiledIntermediate
+							return filepath.SkipAll
+						}
 					}
 				}
 			}
@@ -284,9 +293,10 @@ func projectCompiled(path string) compiledState {
 }
 
 // intermediateRelocated reports whether the build may write intermediate assemblies somewhere
-// other than each project's obj/: an artifacts/ directory at the build root, or a project file
-// or Directory.Build.props/.targets under it that sets one of the properties that move them.
-// A file that can't be read counts as setting one.
+// other than each project's obj/: an artifacts/ directory at the build root, or a project file,
+// .props or .targets file (Directory.Build.* or one a project imports) or Directory.Build.rsp
+// under it that sets one of the properties that move them. A file that can't be read counts as
+// setting one.
 func intermediateRelocated(buildDir string, projects []string) bool {
 	if fi, err := os.Stat(filepath.Join(buildDir, "artifacts")); err == nil && fi.IsDir() {
 		return true
@@ -302,8 +312,8 @@ func intermediateRelocated(buildDir string, projects []string) bool {
 			}
 			return nil
 		}
-		switch strings.ToLower(d.Name()) {
-		case "directory.build.props", "directory.build.targets":
+		switch name := strings.ToLower(d.Name()); {
+		case strings.HasSuffix(name, ".props"), strings.HasSuffix(name, ".targets"), name == "directory.build.rsp":
 			files = append(files, path)
 		}
 		return nil
@@ -317,9 +327,10 @@ func intermediateRelocated(buildDir string, projects []string) bool {
 	return false
 }
 
-// intermediateProperty matches an MSBuild element setting a property that moves a project's
-// intermediate output out of obj/<cfg>/<tfm>/.
-var intermediateProperty = regexp.MustCompile(`(?i)<\s*(?:BaseIntermediateOutputPath|IntermediateOutputPath|MSBuildProjectExtensionsPath|UseArtifactsOutput|ArtifactsPath)\b`)
+// intermediateProperty matches an MSBuild element, or a response-file -p:/-property: assignment,
+// setting a property that moves a project's intermediate output out of obj/<cfg>/<tfm>/, or the
+// --artifacts-path switch.
+var intermediateProperty = regexp.MustCompile(`(?i)(?:<|[:;])\s*(?:BaseIntermediateOutputPath|IntermediateOutputPath|MSBuildProjectExtensionsPath|UseArtifactsOutput|ArtifactsPath)\b|artifacts-path`)
 
 // projectReference matches a ProjectReference's Include path.
 var projectReference = regexp.MustCompile(`(?i)<\s*ProjectReference\b[^>]*?\bInclude\s*=\s*["']([^"']+)["']`)

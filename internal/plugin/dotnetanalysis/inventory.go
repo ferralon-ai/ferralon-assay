@@ -90,7 +90,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 // project's own tree while CPM discovery must reach the shared solution root (inventory_multiproject.go).
 func tierFallback(buildDir, projDir, projRel, cpmRoot string, carried []string) plugin.DependencyInventory {
 	// Tier 2: packages.lock.json.
-	if lockPath, ok := findFile(buildDir, "packages.lock.json", false); ok {
+	if lockPath, ok := findOwnFile(buildDir, "packages.lock.json", false); ok {
 		if data, rerr := os.ReadFile(lockPath); rerr == nil {
 			lockRel := relTo(buildDir, lockPath)
 			if nodes, edges, pok := parseLockGraph(data, projRel, lockRel); pok {
@@ -340,7 +340,7 @@ type declaredRef struct {
 // the solution root in the multi-project path, so a root-level CPM props file is discovered).
 func parseDeclared(buildDir, projDir, projRel, cpmRoot string) ([]plugin.DependencyNode, []string, bool, bool) {
 	projPath, hasProject := findProjectFile(buildDir)
-	configPath, hasConfig := findFile(buildDir, "packages.config", false)
+	configPath, hasConfig := findOwnFile(buildDir, "packages.config", false)
 	if !hasProject && !hasConfig {
 		return nil, nil, false, false
 	}

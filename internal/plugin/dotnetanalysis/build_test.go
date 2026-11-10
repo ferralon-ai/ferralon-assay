@@ -5,10 +5,13 @@ package dotnetanalysis
 // dependency bytes must be the restore target's the build was compiled for.
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -404,6 +407,31 @@ func TestCompiledProjects(t *testing.T) {
 		{"a reference differing only in case", map[string]string{
 			app: refTo(`installer/INSTALLER.csproj`), appObj: "", installer: empty,
 		}, []string{app, installer}},
+		{"a compiled project whose AssemblyName differs from its file", map[string]string{
+			app: empty, appObj: "",
+			"Worker/Worker.csproj":                      "<Project><PropertyGroup><AssemblyName>Corp.Worker</AssemblyName></PropertyGroup></Project>",
+			"Worker/obj/Release/net8.0/Corp.Worker.dll": "",
+		}, []string{app, "Worker/Worker.csproj"}},
+		{"an intermediate assembly older than the restore", map[string]string{
+			app: empty, appObj: "", "obj/project.assets.json": "{}", installer: empty,
+		}, []string{app, installer}},
+		{"an intermediate assembly newer than the restore", map[string]string{
+			app: empty, appObj: "", "obj/project.assets.json": "{}", installer: empty,
+		}, []string{app}},
+		{"an imported props file moves obj", map[string]string{
+			app: empty, appObj: "", installer: empty,
+			"build/common.props": "<Project><PropertyGroup><IntermediateOutputPath>out/</IntermediateOutputPath></PropertyGroup></Project>",
+		}, []string{app, installer}},
+		{"Directory.Build.rsp sets an artifacts path", map[string]string{
+			app: empty, appObj: "", installer: empty, "Directory.Build.rsp": "--artifacts-path out",
+		}, []string{app, installer}},
+		{"Directory.Build.rsp sets an intermediate path", map[string]string{
+			app: empty, appObj: "", installer: empty, "Directory.Build.rsp": "-p:Configuration=Release;BaseIntermediateOutputPath=o/",
+		}, []string{app, installer}},
+		{"a props file reading an unrelated property keeps the drop", map[string]string{
+			app: empty, appObj: "", installer: empty,
+			"Directory.Build.props": "<Project><PropertyGroup><OutputPath>out/</OutputPath></PropertyGroup></Project>",
+		}, []string{app}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -412,6 +440,11 @@ func TestCompiledProjects(t *testing.T) {
 				files[k] = []byte(v)
 			}
 			dir := composeILBuildDir(t, files)
+			shift := time.Minute
+			if c.name == "an intermediate assembly older than the restore" {
+				shift = -time.Minute
+			}
+			shiftObjAssemblies(t, dir, shift)
 			got := compiledProjects(dir, findProjectFiles(dir))
 			var rel []string
 			for _, p := range got {
@@ -462,7 +495,9 @@ func TestReachability_UncompiledProjectBesideTheBuild(t *testing.T) {
 		if installerCompiled {
 			files["Installer/obj/Release/net8.0/Installer.dll"] = nil
 		}
-		res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: composeILBuildDir(t, files), Symbols: []string{boomSCIP}})
+		dir := composeILBuildDir(t, files)
+		shiftObjAssemblies(t, dir, time.Minute)
+		res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{boomSCIP}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -472,5 +507,65 @@ func TestReachability_UncompiledProjectBesideTheBuild(t *testing.T) {
 		if got := slices.Contains(res.Searched, boomSCIP); got == installerCompiled {
 			t.Fatalf("installer compiled %v: Searched = %v (partiality %+v)", installerCompiled, res.Searched, res.Partiality)
 		}
+	}
+}
+
+// shiftObjAssemblies sets the modification time of every .dll under an obj/ directory in dir to
+// now plus d, ordering it against the restore output written beside it.
+func shiftObjAssemblies(t *testing.T, dir string, d time.Duration) {
+	t.Helper()
+	when := time.Now().Add(d)
+	_ = filepath.WalkDir(dir, func(path string, e os.DirEntry, err error) error {
+		if err != nil || e.IsDir() || filepath.Ext(path) != ".dll" {
+			return nil //nolint:nilerr // fixture walk
+		}
+		if strings.Contains(filepath.ToSlash(path), "/obj/") {
+			if err := os.Chtimes(path, when, when); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return nil
+	})
+}
+
+// TestResolveInventory_RootProjectReadsItsOwnRestore: a root project's inventory comes from its
+// own obj/project.assets.json, not a nested project's, which sorts first.
+func TestResolveInventory_RootProjectReadsItsOwnRestore(t *testing.T) {
+	dir := composeILBuildDir(t, map[string][]byte{
+		"App.csproj":                        []byte("<Project></Project>"),
+		"obj/project.assets.json":           depAssetsJSON("Dep/1.0.0"),
+		"Installer/Installer.csproj":        []byte("<Project></Project>"),
+		"Installer/obj/project.assets.json": depAssetsJSON("Other/1.0.0"),
+	})
+	inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var app []string
+	for _, n := range inv.Nodes {
+		if strings.HasPrefix(n.ID, "App.csproj|") {
+			app = append(app, n.ID)
+		}
+	}
+	if len(app) == 0 || slices.ContainsFunc(app, func(id string) bool { return strings.Contains(strings.ToLower(id), "other") }) ||
+		!slices.ContainsFunc(app, func(id string) bool { return strings.Contains(strings.ToLower(id), "/dep@") }) {
+		t.Fatalf("App.csproj nodes = %v, want Dep only (all %v)", app, inv.Nodes)
+	}
+}
+
+// A lockfile or packages.config inside a nested project's directory is that project's.
+func TestFindOwnFile_SkipsNestedProjects(t *testing.T) {
+	dir := composeILBuildDir(t, map[string][]byte{
+		"App.csproj":                        nil,
+		"Installer/Installer.csproj":        nil,
+		"Installer/packages.lock.json":      nil,
+		"Installer/obj/project.assets.json": nil,
+		"src/packages.lock.json":            nil,
+	})
+	if got, ok := findOwnFile(dir, "packages.lock.json", false); !ok || relSlash(dir, got) != "src/packages.lock.json" {
+		t.Fatalf("lock = %q, %v; want src/packages.lock.json", got, ok)
+	}
+	if got, ok := findOwnFile(dir, "project.assets.json", true); ok {
+		t.Fatalf("assets = %q, want none outside the nested project", got)
 	}
 }

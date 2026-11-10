@@ -101,15 +101,26 @@ type launchScan struct {
 	unread  bool // a file or directory could not be read
 	// repos are the real paths of the build's local repositories inside the walked root.
 	repos []string
-	// ownJar: a -jar launch named this build's own artifact (ownJarOperand). ownJarNames are
-	// the artifact file names among them, and ownJarDirs the module directories their paths
-	// name, that settleOwnJars checks against the build's modules.
-	ownJar      bool
-	ownJarNames []string
-	ownJarDirs  []string
+	// ownJar: a -jar launch named this build's own artifact (ownJarOperand). ownJars are the
+	// launches settleOwnJars checks against the build's modules.
+	ownJar  bool
+	ownJars []ownJarRef
 	// jarHazard: the build can give its JAR a manifest or loader that changes what a -jar
 	// launch runs (jarManifestHazard, jarLoaderHazard).
 	jarHazard bool
+	// copyInto names the tools ("maven", "gradle") whose build files copy into the output
+	// directory a -jar glob matches in (jarCopyHazards), so the glob can match a JAR the build
+	// does not produce.
+	copyInto map[string]bool
+	// finalNames are the literal <finalName> values in the tree's POMs.
+	finalNames []string
+}
+
+// ownJarRef is a -jar operand ownJarOperand took for the build's own artifact. tool is the tool
+// whose output directory the path names, with dir the module directory before it; tool is ""
+// for a bare artifact file name. name is the file name, "" for a POM's own artifact property.
+type ownJarRef struct {
+	tool, dir, name string
 }
 
 func (s *launchScan) unreadable() { s.reasons[PartialReasonLaunchOption] = true }
@@ -346,6 +357,7 @@ func (s *launchScan) content(rel string, inDist bool, r io.Reader, size int64) {
 			s.define(chunk)
 		} else {
 			s.jarHazards(rel, chunk)
+			s.jarCopyHazards(rel, chunk)
 			s.tokensOnly(chunk, final)
 		}
 		if final {
@@ -959,6 +971,7 @@ type launchFile struct {
 
 func (s *launchScan) text(rel string, inDist bool, data []byte) {
 	s.jarHazards(rel, data)
+	s.jarCopyHazards(rel, data)
 	tokens := launchOptionTokens(data)
 	names := launchNames(data)
 	javaCtx := bytes.Contains(data, []byte("java")) && (bytes.Contains(data, []byte("-p")) || bytes.Contains(data, []byte("@")))
@@ -1554,6 +1567,9 @@ func (f *launchFile) ownJarOperand(t launchToken) bool {
 	rest := f.restOfLine(t.end)
 	if f.pom {
 		rest = xmlTag.ReplaceAllString(rest, " ")
+	} else if end := strings.TrimRight(rest, " \t\r"); strings.HasSuffix(end, "\\") || strings.HasSuffix(end, "^") ||
+		strings.ContainsRune(rest, '`') || f.dockerCmdAppends(t) {
+		return false
 	}
 	words := strings.FieldsFunc(rest, ownJarDelim)
 	var op string
@@ -1573,7 +1589,7 @@ func (f *launchFile) ownJarOperand(t launchToken) bool {
 	name := segs[n-1]
 	if f.pom && (name == "${project.build.finalName}.jar" || name == "${project.artifactId}-${project.version}.jar") &&
 		!strings.ContainsAny(strings.Join(segs[:n-1], "/"), "$%`\\") {
-		f.s.ownJarDirs = append(f.s.ownJarDirs, path.Dir(f.rel))
+		f.s.ownJars = append(f.s.ownJars, ownJarRef{tool: "maven", dir: path.Dir(f.rel)})
 		f.s.ownJar = true
 		return true
 	}
@@ -1584,17 +1600,33 @@ func (f *launchFile) ownJarOperand(t launchToken) bool {
 	// rules out absolute paths, ./.. segments and globs there.
 	switch {
 	case n >= 2 && segs[n-2] == "target":
-		f.s.ownJarDirs = append(f.s.ownJarDirs, ownJarDir(segs[:n-2]))
+		f.s.ownJars = append(f.s.ownJars, ownJarRef{tool: "maven", dir: ownJarDir(segs[:n-2]), name: name})
 	case n >= 3 && segs[n-3] == "build" && segs[n-2] == "libs":
-		f.s.ownJarDirs = append(f.s.ownJarDirs, ownJarDir(segs[:n-3]))
+		f.s.ownJars = append(f.s.ownJars, ownJarRef{tool: "gradle", dir: ownJarDir(segs[:n-3]), name: name})
 	case !strings.Contains(name, "*"):
-		f.s.ownJarNames = append(f.s.ownJarNames, name)
+		f.s.ownJars = append(f.s.ownJars, ownJarRef{name: name})
 	default:
 		return false
 	}
 	f.s.ownJar = true
 	return true
 }
+
+// dockerCmdAppends reports whether t sits in a Dockerfile ENTRYPOINT while the file also sets a
+// CMD, whose words the container passes after the entrypoint's own: arguments to the JAR's
+// program that the line does not show.
+func (f *launchFile) dockerCmdAppends(t launchToken) bool {
+	base := strings.ToLower(path.Base(f.rel))
+	if !strings.HasPrefix(base, "dockerfile") && !strings.HasPrefix(base, "containerfile") && !strings.HasSuffix(base, ".dockerfile") {
+		return false
+	}
+	return dockerEntrypoint.MatchString(f.line(f.lineOf(t.start))) && dockerCmd.Match(f.data)
+}
+
+var (
+	dockerEntrypoint = regexp.MustCompile(`(?i)^\s*entrypoint\s`)
+	dockerCmd        = regexp.MustCompile(`(?im)^\s*cmd\s`)
+)
 
 // ownJarDir is the module directory, "." or a relative slash path, that segs name.
 func ownJarDir(segs []string) string {
@@ -1655,39 +1687,126 @@ func (s *launchScan) jarHazards(rel string, data []byte) {
 	}
 }
 
+var (
+	// jarPomOutput is a POM plugin's output directory; jarPomFinalName a literal artifact name.
+	jarPomOutput    = regexp.MustCompile(`<outputDirectory>\s*([^<]*?)\s*</outputDirectory>`)
+	jarPomFinalName = regexp.MustCompile(`<finalName>\s*([A-Za-z0-9._+-]+)\s*</finalName>`)
+	// jarPomSubdir is an output directory below target/ or of no build output at all, which a
+	// target/*.jar glob does not match in.
+	jarPomSubdir = regexp.MustCompile(`^(?:\$\{(?:project\.build\.directory|project\.basedir|basedir)\}/|target/)?[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/?$`)
+	// jarGradleIntoLibs is a Gradle copy into a libs directory.
+	jarGradleIntoLibs = regexp.MustCompile(`\binto\b[^\n]*\blibs\b`)
+)
+
+// jarCopyHazards records the tools whose build files copy into the directory a -jar glob of the
+// build's output matches in, and the POMs' literal artifact names.
+func (s *launchScan) jarCopyHazards(rel string, data []byte) {
+	if s.copyInto == nil {
+		s.copyInto = map[string]bool{}
+	}
+	base := strings.ToLower(rel[strings.LastIndex(rel, "/")+1:])
+	switch {
+	case base == "pom.xml":
+		for _, m := range jarPomOutput.FindAllSubmatch(data, -1) {
+			if d := string(m[1]); !jarPomSubdir.MatchString(d) || strings.Contains(d, "..") || d == "target" || d == "target/" {
+				s.copyInto["maven"] = true
+			}
+		}
+		for _, m := range jarPomFinalName.FindAllSubmatch(data, -1) {
+			s.finalNames = append(s.finalNames, string(m[1]))
+		}
+	case strings.HasSuffix(base, ".gradle") || strings.HasSuffix(base, ".gradle.kts"):
+		if jarGradleIntoLibs.Match(data) {
+			s.copyInto["gradle"] = true
+		}
+	}
+}
+
 // settleOwnJars withholds Searched for the -jar launches ownJarOperand accepted when the build can
-// change what its JAR runs, or when a named artifact or output directory is not one of g's modules.
+// change what its JAR runs, or when one names a JAR g's modules do not produce: a file name that is
+// none of their artifacts, an output directory that is not a module of the tool that writes it,
+// a name in it that is not that module's artifact, or a glob there while the build copies other
+// JARs into it.
 func (s *launchScan) settleOwnJars(g *buildgraph.Graph) {
 	if !s.ownJar {
 		return
 	}
-	if s.jarHazard {
+	if s.jarHazard || g == nil {
 		s.unreadable()
 		return
 	}
-	own, dirs := map[string]bool{}, map[string]bool{}
-	if g != nil {
-		for _, m := range g.Modules {
-			dirs[m.Path] = true
-			for _, nd := range m.Nodes {
-				if nd.ID == m.Root && nd.Artifact != "" && nd.Version != "" {
-					own[nd.Artifact+"-"+nd.Version+".jar"] = true
-				}
+	for _, r := range s.ownJars {
+		if !s.ownJarProduced(g, r) {
+			s.unreadable()
+			return
+		}
+	}
+}
+
+// ownJarProduced reports whether one of g's modules produces the JAR r names.
+func (s *launchScan) ownJarProduced(g *buildgraph.Graph, r ownJarRef) bool {
+	for _, m := range g.Modules {
+		tool := m.Tool
+		if tool == "" {
+			tool = g.Tool.Name
+		}
+		if r.tool != "" && (m.Path != r.dir || tool != r.tool) {
+			continue
+		}
+		switch {
+		case r.name == "":
+			return true
+		case strings.Contains(r.name, "*"):
+			return !s.copyInto[r.tool]
+		case ownArtifactName(r.name, s.artifactStems(m, tool)):
+			return true
+		}
+	}
+	return false
+}
+
+// artifactStems are the file names, without .jar, a module's tool gives its artifact:
+// artifactId-version, under each Gradle alias too, an unversioned name for a Gradle project
+// without a version, and the POMs' literal finalNames.
+func (s *launchScan) artifactStems(m buildgraph.Module, tool string) []string {
+	var stems []string
+	for _, nd := range m.Nodes {
+		if nd.ID != m.Root || nd.Artifact == "" {
+			continue
+		}
+		names := []string{nd.Artifact}
+		if tool == "gradle" {
+			for _, a := range m.Aliases {
+				names = append(names, a[strings.LastIndex(a, ":")+1:])
+			}
+		}
+		for _, a := range names {
+			switch {
+			case nd.Version != "" && nd.Version != "unspecified":
+				stems = append(stems, a+"-"+nd.Version)
+			case tool == "gradle":
+				stems = append(stems, a)
 			}
 		}
 	}
-	for _, name := range s.ownJarNames {
-		if !own[name] {
-			s.unreadable()
-			return
+	if tool == "maven" {
+		stems = append(stems, s.finalNames...)
+	}
+	return stems
+}
+
+// ownArtifactName reports whether name is <stem>.jar or <stem>-<classifier>.jar for one of stems.
+func ownArtifactName(name string, stems []string) bool {
+	stem, ok := strings.CutSuffix(name, ".jar")
+	if !ok {
+		return false
+	}
+	for _, st := range stems {
+		if rest, ok := strings.CutPrefix(stem, st); ok && (rest == "" || len(rest) > 1 && rest[0] == '-') {
+			return true
 		}
 	}
-	for _, dir := range s.ownJarDirs {
-		if !dirs[dir] {
-			s.unreadable()
-			return
-		}
-	}
+	return false
 }
 
 // templateMavenProperty reports whether t is a property the Maven wrapper template passes

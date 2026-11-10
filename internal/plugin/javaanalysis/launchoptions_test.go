@@ -184,7 +184,7 @@ func TestLaunchOptionReasons(t *testing.T) {
 		{"start script variable option", map[string]string{"build/scripts/app": `DEFAULT_JVM_OPTS='"$EXTRA"'` + "\n"}, []string{PartialReasonLaunchOption}},
 		{"start script agent with a variable path", map[string]string{"build/scripts/app": `DEFAULT_JVM_OPTS='"-javaagent:$APP_HOME/lib/otel.jar"'` + "\n"}, []string{PartialReasonLaunchAgent}},
 		{"applicationDefaultJvmArgs from a variable", map[string]string{"build.gradle.kts": "application {\n    applicationDefaultJvmArgs = listOf(jvmFlag)\n}\n"}, []string{PartialReasonLaunchOption}},
-		{"procfile java command", map[string]string{"Procfile": "web: java -Djava.system.class.loader=org.d.D -jar build/libs/app.jar\n"}, []string{PartialReasonLaunchOption}},
+		{"procfile java command", map[string]string{"Procfile": "web: java -Djava.system.class.loader=org.d.D -jar build/libs/app-1.jar\n"}, []string{PartialReasonLaunchOption}},
 		{"groovy applicationDefaultJvmArgs", map[string]string{"build.gradle": "applicationDefaultJvmArgs = ['-Xmx1g', '-Djava.awt.headless=true']\n"}, []string{}},
 		{"applicationDefaultJvmArgs mutated", map[string]string{"build.gradle.kts": "application { applicationDefaultJvmArgs.add(\"-Xmx1g\") }\n"}, []string{PartialReasonLaunchOption}},
 		{"dockerfile legacy ENV form", map[string]string{"Dockerfile": "ENV JAVA_OPTS -Xmx1g -Dlogback.configurationFile=/x.xml\n"}, []string{PartialReasonLaunchOption}},
@@ -202,7 +202,7 @@ func TestLaunchOptionReasons(t *testing.T) {
 		{"dockerfile main class ends the options", map[string]string{"Dockerfile": `ENTRYPOINT ["java", "-Xss1m", "com.example.MainKt", "--spring.profiles.active=prod"]` + "\n"}, []string{}},
 		{"dockerfile value option skips its value", map[string]string{"Dockerfile": `ENTRYPOINT ["java", "--add-opens", "java.base/java.lang=ALL-UNNAMED", "-Dlogback.configurationFile=/x.xml", "-jar", "/app.jar"]` + "\n"}, []string{PartialReasonLaunchOption}},
 		{"kubernetes env allowlisted", map[string]string{"k8s/deploy.yaml": "spec:\n  containers:\n    - name: app\n      env:\n        - name: JAVA_TOOL_OPTIONS\n          value: \"-XX:MaxRAMPercentage=75\"\n"}, []string{}},
-		{"unreadable project jar", map[string]string{"build/libs/app.jar": "not a zip"}, []string{PartialReasonLaunchOption}},
+		{"unreadable project jar", map[string]string{"build/libs/app-1.jar": "not a zip"}, []string{PartialReasonLaunchOption}},
 
 		// Every file is scanned; a reader only accounts for an occurrence it can read whole.
 		{"entrypoint script", map[string]string{"entrypoint.sh": "#!/bin/sh\nexec java -javaagent:/otel.jar -jar /app.jar\n"}, agentAndOption},
@@ -362,28 +362,28 @@ func TestLaunchOptionReasons(t *testing.T) {
 		{"java -cp", map[string]string{"Dockerfile": `ENTRYPOINT ["java", "-cp", "/app/lib/*", "com.example.Main"]` + "\n"}, optionOnly},
 		// -jar of this build's own artifact names code the analysis reads, unless the build can
 		// change what the JAR runs; any other -jar names code it does not.
-		{"java -jar own Gradle output", map[string]string{"Procfile": "web: java -jar build/libs/app.jar\n"}, []string{}},
+		{"java -jar own Gradle output", map[string]string{"Procfile": "web: java -jar build/libs/app-1.jar\n"}, []string{}},
 		{"java -jar own Maven output glob", map[string]string{"README.md": "java -jar target/*.jar\n"}, []string{}},
 		{"java -jar output of a directory that is not a module", map[string]string{"run.sh": "exec java -jar tools/migrator/target/migrator.jar\n"}, optionOnly},
 		{"java -jar Gradle output of a directory that is not a module", map[string]string{"Procfile": "web: java -jar tools/gen/build/libs/gen.jar\n"}, optionOnly},
-		{"java -jar own output, port and profile arguments", map[string]string{"Procfile": "web: java -jar target/app.jar --server.port=8080 --spring.profiles.active=prod,cloud\n"}, []string{}},
-		{"java -jar own output, another program option", map[string]string{"run.sh": "exec java -jar target/app.jar --spring.main.sources=com.x.Extra\n"}, optionOnly},
-		{"java -jar own output, port from a variable", map[string]string{"Procfile": "web: java -jar target/app.jar --server.port=$PORT\n"}, optionOnly},
-		{"java -jar own output, forwarded arguments", map[string]string{"run.sh": "exec java -jar target/app.jar \"$@\"\n"}, optionOnly},
-		{"java -jar own output, literal program argument", map[string]string{"run.sh": "exec java -jar target/app.jar migrate\n"}, []string{}},
-		{"java -jar own output in a JSON entrypoint", map[string]string{"Dockerfile": `ENTRYPOINT ["java", "-jar", "-Duser.timezone=UTC", "target/app.jar"]` + "\n"}, []string{}},
+		{"java -jar own output, port and profile arguments", map[string]string{"Procfile": "web: java -jar target/app-1.jar --server.port=8080 --spring.profiles.active=prod,cloud\n"}, []string{}},
+		{"java -jar own output, another program option", map[string]string{"run.sh": "exec java -jar target/app-1.jar --spring.main.sources=com.x.Extra\n"}, optionOnly},
+		{"java -jar own output, port from a variable", map[string]string{"Procfile": "web: java -jar target/app-1.jar --server.port=$PORT\n"}, optionOnly},
+		{"java -jar own output, forwarded arguments", map[string]string{"run.sh": "exec java -jar target/app-1.jar \"$@\"\n"}, optionOnly},
+		{"java -jar own output, literal program argument", map[string]string{"run.sh": "exec java -jar target/app-1.jar migrate\n"}, []string{}},
+		{"java -jar own output in a JSON entrypoint", map[string]string{"Dockerfile": `ENTRYPOINT ["java", "-jar", "-Duser.timezone=UTC", "target/app-1.jar"]` + "\n"}, []string{}},
 		{"java -jar POM finalName", map[string]string{"pom.xml": `<entryPoint>["java", "-jar","/${project.build.finalName}.jar"]</entryPoint>` + "\n"}, []string{}},
 		{"java -jar POM artifactId-version", map[string]string{"pom.xml": "<arg>java -jar /app/${project.artifactId}-${project.version}.jar</arg>\n"}, []string{}},
-		{"java -jar own output, other options still classify", map[string]string{"Procfile": "web: java -Djava.system.class.loader=org.d.D -jar build/libs/app.jar\n"}, optionOnly},
+		{"java -jar own output, other options still classify", map[string]string{"Procfile": "web: java -Djava.system.class.loader=org.d.D -jar build/libs/app-1.jar\n"}, optionOnly},
 		{"java -jar foreign", map[string]string{"Procfile": "web: java -jar lib/vendor.jar\n"}, optionOnly},
 		{"java -jar foreign absolute without a graph", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /app.jar\n"}, optionOnly},
 		{"java -jar variable", map[string]string{"run.sh": "exec java -jar \"$APP_JAR\"\n"}, optionOnly},
-		{"java -jar outside the checkout", map[string]string{"run.sh": "exec java -jar ../other/target/app.jar\n"}, optionOnly},
-		{"java -jar absolute target", map[string]string{"run.sh": "exec java -jar /target/app.jar\n"}, optionOnly},
+		{"java -jar outside the checkout", map[string]string{"run.sh": "exec java -jar ../other/target/app-1.jar\n"}, optionOnly},
+		{"java -jar absolute target", map[string]string{"run.sh": "exec java -jar /target/app-1.jar\n"}, optionOnly},
 		{"java -jar below target", map[string]string{"run.sh": "exec java -jar target/dependency/tool.jar\n"}, optionOnly},
-		{"java -jar glob directory", map[string]string{"run.sh": "exec java -jar */target/app.jar\n"}, optionOnly},
+		{"java -jar glob directory", map[string]string{"run.sh": "exec java -jar */target/app-1.jar\n"}, optionOnly},
 		{"java -jar Windows path", map[string]string{"run.bat": "java -jar target\\app.jar\r\n"}, optionOnly},
-		{"java -jar operand on the next line", map[string]string{"run.sh": "exec java -jar \\\n  target/app.jar\n"}, optionOnly},
+		{"java -jar operand on the next line", map[string]string{"run.sh": "exec java -jar \\\n  target/app-1.jar\n"}, optionOnly},
 		{"java -jar not a jar", map[string]string{"run.sh": "exec java -jar target/app\n"}, optionOnly},
 		{"java -jar POM finalName outside a POM", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /${project.build.finalName}.jar\n"}, optionOnly},
 		{"java -jar POM finalName in a POM that is not a module", map[string]string{"tools/pom.xml": `<entryPoint>["java", "-jar","/${project.build.finalName}.jar"]</entryPoint>` + "\n"}, optionOnly},
@@ -394,16 +394,16 @@ func TestLaunchOptionReasons(t *testing.T) {
 		{"java -jar own output, repackage layout property", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<properties><spring-boot.repackage.layout>ZIP</spring-boot.repackage.layout></properties>\n"}, optionOnly},
 		{"java -jar own output, layout factory", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<configuration><layoutFactory implementation=\"com.x.F\"/></configuration>\n"}, optionOnly},
 		{"java -jar own output, bnd Add-Opens header", map[string]string{"README.md": "java -jar target/*.jar\n", "bnd.bnd": "Add-Opens: java.base/java.lang\n"}, optionOnly},
-		{"java -jar own output, buildSrc Add-Exports attribute", map[string]string{"README.md": "java -jar build/libs/app.jar\n", "buildSrc/src/main/kotlin/conv.kt": "attributes(\"Add-Exports\" to \"java.base/sun.nio.ch\")\n"}, optionOnly},
+		{"java -jar own output, buildSrc Add-Exports attribute", map[string]string{"README.md": "java -jar build/libs/app-1.jar\n", "buildSrc/src/main/kotlin/conv.kt": "attributes(\"Add-Exports\" to \"java.base/sun.nio.ch\")\n"}, optionOnly},
 		{"java -jar own output, loader.path in a large file", map[string]string{"README.md": "java -jar target/*.jar\n", "src/main/resources/application.properties": strings.Repeat("# filler line\n", 700000) + "loader.path=lib\n"}, optionOnly},
 		{"java -jar own output, manifest classpath", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<manifest><addClasspath>true</addClasspath></manifest>\n"}, optionOnly},
 		{"java -jar own output, manifest Add-Opens", map[string]string{"README.md": "java -jar target/*.jar\n", "build.gradle": "jar { manifest { attributes('Add-Opens': 'java.base/java.lang') } }\n"}, optionOnly},
 		{"java -jar own output, POM manifestEntries Add-Opens", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<plugin><artifactId>maven-jar-plugin</artifactId><configuration><archive><manifestEntries><Add-Opens>java.base/java.lang</Add-Opens></manifestEntries></archive></configuration></plugin>\n"}, optionOnly},
 		{"java -jar own output, PropertiesLauncher", map[string]string{"README.md": "java -jar target/*.jar\n", "build.gradle.kts": "tasks.bootJar { manifest { attributes(\"Main-Class\" to \"org.springframework.boot.loader.launch.PropertiesLauncher\") } }\n"}, optionOnly},
 		{"java -jar own output, loader.path", map[string]string{"README.md": "java -jar target/*.jar\n", "src/main/resources/application.properties": "loader.path=lib\n"}, optionOnly},
-		{"java -jar own output, built JAR with Add-Exports", map[string]string{"README.md": "java -jar target/*.jar\n", "target/app.jar": manifestJar("Manifest-Version: 1.0\r\nAdd-Exports: java.base/sun.nio.ch\r\n")}, optionOnly},
-		{"java -jar own output, built JAR with PropertiesLauncher", map[string]string{"README.md": "java -jar target/*.jar\n", "target/app.jar": manifestJar("Manifest-Version: 1.0\r\nMain-Class: org.springframework.boot.loader.launch.PropertiesLauncher\r\n")}, optionOnly},
-		{"java -jar own output, built JAR plain", map[string]string{"README.md": "java -jar target/*.jar\n", "target/app.jar": manifestJar("Manifest-Version: 1.0\r\nMain-Class: org.springframework.boot.loader.launch.JarLauncher\r\nStart-Class: com.example.App\r\n")}, []string{}},
+		{"java -jar own output, built JAR with Add-Exports", map[string]string{"README.md": "java -jar target/*.jar\n", "target/app-1.jar": manifestJar("Manifest-Version: 1.0\r\nAdd-Exports: java.base/sun.nio.ch\r\n")}, optionOnly},
+		{"java -jar own output, built JAR with PropertiesLauncher", map[string]string{"README.md": "java -jar target/*.jar\n", "target/app-1.jar": manifestJar("Manifest-Version: 1.0\r\nMain-Class: org.springframework.boot.loader.launch.PropertiesLauncher\r\n")}, optionOnly},
+		{"java -jar own output, built JAR plain", map[string]string{"README.md": "java -jar target/*.jar\n", "target/app-1.jar": manifestJar("Manifest-Version: 1.0\r\nMain-Class: org.springframework.boot.loader.launch.JarLauncher\r\nStart-Class: com.example.App\r\n")}, []string{}},
 		{"java -jar own output, test --add-opens is not a manifest", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<plugin><artifactId>maven-surefire-plugin</artifactId><configuration><argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine></configuration></plugin>\n"}, []string{}},
 		{"java -jar own output, manifest words outside a build file", map[string]string{"README.md": "java -jar target/*.jar\n", "docs/packaging.md": "The JAR has no Add-Opens entry and uses <layout>JAR</layout>, not <layout>ZIP</layout>.\n"}, []string{}},
 		{"manifest hazard alone does not block", map[string]string{"pom.xml": "<configuration><layout>ZIP</layout></configuration>\n"}, []string{}},
@@ -473,9 +473,9 @@ func TestLaunchOptionReasons(t *testing.T) {
 		{"upper-case @REM comment names an option variable", map[string]string{"run.cmd": "@REM JAVA_OPTS is read by the launcher\r\n"}, []string{}},
 		{"dock option with a variable value", map[string]string{"run.sh": `JAVA_OPTS="-Xdock:name=$APP_NAME -Xmx$HEAP"` + "\n"}, []string{}},
 		{"variable in an unmodeled option string word", map[string]string{"run.sh": `JAVA_OPTS="-XX:Flags=$FLAGS_FILE"` + "\n"}, optionOnly},
-		{"MANIFEST Class-Path", map[string]string{"build/libs/app.jar": manifestJar("Manifest-Version: 1.0\r\nClass-Path: lib/a.jar\r\n")}, optionOnly},
+		{"MANIFEST Class-Path", map[string]string{"build/libs/app-1.jar": manifestJar("Manifest-Version: 1.0\r\nClass-Path: lib/a.jar\r\n")}, optionOnly},
 		{"MANIFEST Launcher-Agent-Class, folded", map[string]string{"app.war": manifestJar("Manifest-Version: 1.0\r\nlauncher-agent-class: org.d.\r\n Agent\r\n")}, agentOnly},
-		{"MANIFEST plain", map[string]string{"build/libs/app.jar": manifestJar("Manifest-Version: 1.0\r\nMain-Class: com.example.Main\r\n")}, []string{}},
+		{"MANIFEST plain", map[string]string{"build/libs/app-1.jar": manifestJar("Manifest-Version: 1.0\r\nMain-Class: com.example.Main\r\n")}, []string{}},
 
 		// Distribution archives, build tools, binaries and large files.
 		{"distZip lib JAR Class-Path", map[string]string{"build/distributions/app.zip": zipOf(map[string]string{"app/lib/app.jar": manifestJar("Class-Path: x.jar\r\n")})}, optionOnly},
@@ -572,7 +572,7 @@ func TestLaunchOptionReasons(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if got := LaunchOptionReasons(dir, &buildgraph.Graph{Modules: []buildgraph.Module{testModule(t, ".", "app")}}); !reflect.DeepEqual(got, tt.want) {
+			if got := LaunchOptionReasons(dir, bothToolsGraph(t, testModule(t, ".", "app"))); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("LaunchOptionReasons = %v, want %v", got, tt.want)
 			}
 		})
@@ -630,10 +630,35 @@ func TestLaunchContent_ReadError(t *testing.T) {
 	}
 }
 
+// bothToolsGraph is the union of a Maven and a Gradle graph that each list modules.
+func bothToolsGraph(t *testing.T, modules ...buildgraph.Module) *buildgraph.Graph {
+	t.Helper()
+	g, err := buildgraph.Union(
+		&buildgraph.Graph{Tool: buildgraph.Tool{Name: "maven"}, Modules: modules},
+		&buildgraph.Graph{Tool: buildgraph.Tool{Name: "gradle"}, Modules: modules},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
 // TestLaunchOptionReasons_OwnJarName: a -jar of a file named <artifactId>-<version>.jar is the
 // build's own artifact only when that is one of the graph's modules.
 func TestLaunchOptionReasons_OwnJarName(t *testing.T) {
-	g := &buildgraph.Graph{Modules: []buildgraph.Module{testModule(t, ".", "mall-common"), testModule(t, "mall-admin", "mall-admin")}}
+	g := bothToolsGraph(t, testModule(t, ".", "mall-common"), testModule(t, "mall-admin", "mall-admin"))
+	maven := &buildgraph.Graph{Tool: buildgraph.Tool{Name: "maven"}, Modules: []buildgraph.Module{testModule(t, ".", "mall-common"), testModule(t, "mall-admin", "mall-admin")}}
+	gradle := &buildgraph.Graph{Tool: buildgraph.Tool{Name: "gradle"}, Modules: maven.Modules}
+	aliased := func(tool string) *buildgraph.Graph {
+		m := testModule(t, ".", "app")
+		m.Aliases = []string{"com.example:svc"}
+		return &buildgraph.Graph{Tool: buildgraph.Tool{Name: tool}, Modules: []buildgraph.Module{m}}
+	}
+	unversioned := func(tool string) *buildgraph.Graph {
+		m := testModule(t, ".", "svc")
+		m.Nodes[0].Version = "unspecified"
+		return &buildgraph.Graph{Tool: buildgraph.Tool{Name: tool}, Modules: []buildgraph.Module{m}}
+	}
 	tests := []struct {
 		name  string
 		files map[string]string
@@ -644,11 +669,46 @@ func TestLaunchOptionReasons_OwnJarName(t *testing.T) {
 		{"module artifacts on two surfaces", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /mall-admin-1.jar\n", "run.sh": "java -jar /opt/mall-common-1.jar\n"}, g, []string{}},
 		{"other version", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /mall-admin-2.jar\n"}, g, optionOnly},
 		{"one module artifact and one foreign", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /mall-admin-1.jar\n", "run.sh": "java -jar /opt/tool-1.jar\n"}, g, optionOnly},
-		{"module output directory", map[string]string{"run.sh": "exec java -Xss1m -jar ./mall-admin/target/mall-admin-1.0.jar --server.port=8080\n"}, g, []string{}},
+		{"module output directory", map[string]string{"run.sh": "exec java -Xss1m -jar ./mall-admin/target/mall-admin-1.jar --server.port=8080\n"}, g, []string{}},
 		{"module POM finalName", map[string]string{"mall-admin/pom.xml": `<entryPoint>["java", "-jar","/${project.build.finalName}.jar"]</entryPoint>` + "\n"}, g, []string{}},
 		{"output directory without a graph", map[string]string{"README.md": "java -jar target/*.jar\n"}, nil, optionOnly},
 		{"module artifact without a graph", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /mall-admin-1.jar\n"}, nil, optionOnly},
 		{"module artifact with a manifest hazard", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /mall-admin-1.jar\n", "mall-admin/pom.xml": "<layout>ZIP</layout>\n"}, g, optionOnly},
+
+		// An output directory counts only for the tool that writes it, and only names its module's artifact.
+		{"Gradle output of a Maven module", map[string]string{"run.sh": "java -jar mall-admin/build/libs/mall-admin-1.jar\n"}, maven, optionOnly},
+		{"Maven output of a Gradle module", map[string]string{"run.sh": "java -jar mall-admin/target/mall-admin-1.jar\n"}, gradle, optionOnly},
+		{"Maven output of a Maven module", map[string]string{"run.sh": "java -jar mall-admin/target/mall-admin-1.jar\n"}, maven, []string{}},
+		{"another module's artifact in a module's output", map[string]string{"run.sh": "java -jar mall-admin/target/mall-common-1.jar\n"}, g, optionOnly},
+		{"a copied JAR in a module's output", map[string]string{"run.sh": "java -jar target/tool-1.jar\n"}, g, optionOnly},
+		{"classified artifact", map[string]string{"run.sh": "java -jar target/mall-common-1-exec.jar\n"}, g, []string{}},
+		{"artifact of another version", map[string]string{"run.sh": "java -jar target/mall-common-10.jar\n"}, g, optionOnly},
+		{"POM finalName", map[string]string{"run.sh": "java -jar target/server.jar\n", "pom.xml": "<build><finalName>server</finalName></build>\n"}, maven, []string{}},
+		{"POM finalName with a classifier", map[string]string{"run.sh": "java -jar target/server-exec.jar\n", "pom.xml": "<build><finalName>server</finalName></build>\n"}, maven, []string{}},
+		{"name without a POM finalName", map[string]string{"run.sh": "java -jar target/server.jar\n"}, maven, optionOnly},
+		{"POM finalName is not a Gradle archive", map[string]string{"run.sh": "java -jar build/libs/server.jar\n", "pom.xml": "<build><finalName>server</finalName></build>\n"}, gradle, optionOnly},
+		{"Gradle archives alias", map[string]string{"run.sh": "java -jar build/libs/svc-1.jar\n"}, aliased("gradle"), []string{}},
+		{"Gradle alias is not a Maven artifact", map[string]string{"run.sh": "java -jar target/svc-1.jar\n"}, aliased("maven"), optionOnly},
+		{"unversioned Gradle project", map[string]string{"run.sh": "java -jar build/libs/svc.jar\n"}, unversioned("gradle"), []string{}},
+		{"unversioned Maven name", map[string]string{"run.sh": "java -jar target/svc.jar\n"}, unversioned("maven"), optionOnly},
+
+		// A glob matches whatever the build puts in the directory.
+		{"glob, POM copies into the build directory", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<outputDirectory>${project.build.directory}</outputDirectory>\n"}, g, optionOnly},
+		{"glob, POM copies into target", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<outputDirectory>target/</outputDirectory>\n"}, g, optionOnly},
+		{"glob, POM copies into a property's directory", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<outputDirectory>${libs.dir}</outputDirectory>\n"}, g, optionOnly},
+		{"glob, POM copies above the module", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<outputDirectory>${project.build.directory}/../target</outputDirectory>\n"}, g, optionOnly},
+		{"glob, POM copies below the build directory", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<outputDirectory>${project.build.directory}/lib</outputDirectory>\n"}, g, []string{}},
+		{"glob, Gradle copies into libs", map[string]string{"README.md": "java -jar build/libs/*.jar\n", "build.gradle": "task deps(type: Copy) { from configurations.runtimeClasspath; into \"$buildDir/libs\" }\n"}, g, optionOnly},
+		{"glob, a POM copy leaves Gradle's libs alone", map[string]string{"README.md": "java -jar build/libs/*.jar\n", "pom.xml": "<outputDirectory>${project.build.directory}</outputDirectory>\n"}, g, []string{}},
+		{"literal name, POM copies into the build directory", map[string]string{"run.sh": "java -jar target/mall-common-1.jar\n", "pom.xml": "<outputDirectory>${project.build.directory}</outputDirectory>\n"}, g, []string{}},
+
+		// Words the line does not show can follow the operand.
+		{"continued after the operand", map[string]string{"run.sh": "exec java -jar target/mall-common-1.jar \\\n  --spring.main.sources=com.x.Extra\n"}, g, optionOnly},
+		{"batch continued after the operand", map[string]string{"run.cmd": "java -jar target/mall-common-1.jar ^\r\n  --spring.main.sources=com.x.Extra\r\n"}, g, optionOnly},
+		{"command substitution after the operand", map[string]string{"run.sh": "exec java -jar target/mall-common-1.jar `cat args`\n"}, g, optionOnly},
+		{"Dockerfile CMD appended to the entrypoint", map[string]string{"Dockerfile": "ENTRYPOINT [\"java\", \"-jar\", \"target/mall-common-1.jar\"]\nCMD [\"--spring.main.sources=com.x.Extra\"]\n"}, g, optionOnly},
+		{"Dockerfile entrypoint without a CMD", map[string]string{"Dockerfile": "ENTRYPOINT [\"java\", \"-jar\", \"target/mall-common-1.jar\"]\n"}, g, []string{}},
+		{"Dockerfile CMD with no entrypoint", map[string]string{"Dockerfile": "CMD [\"java\", \"-jar\", \"target/mall-common-1.jar\"]\n"}, g, []string{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -98,24 +98,24 @@ func TestReachability_LaunchOptions(t *testing.T) {
 			"Dockerfile": "FROM eclipse-temurin:21\nENTRYPOINT [\"java\", \"-javaagent:/otel.jar\", \"-jar\", \"/app.jar\"]\n",
 		}), agent},
 		{"Procfile", inventory(map[string]string{
-			"Procfile": "web: java -Djava.security.manager=org.d.D -jar build/libs/app.jar\n",
+			"Procfile": "web: java -Djava.security.manager=org.d.D -jar build/libs/app-1.jar\n",
 		}), option},
 		{"Procfile java -jar own Gradle output: searched", inventory(map[string]string{
-			"Procfile": "web: java -jar build/libs/app.jar --server.port=8080\n",
+			"Procfile": "web: java -jar build/libs/app-1.jar --server.port=8080\n",
 		}), ""},
 		{"Procfile java -jar output of a directory that is not a module", inventory(map[string]string{
 			"Procfile": "web: java -jar tools/gen/build/libs/gen.jar\n",
 		}), option},
 		{"Procfile java -jar own output, forwarded arguments", inventory(map[string]string{
-			"Procfile": "web: java -jar build/libs/app.jar \"$@\"\n",
+			"Procfile": "web: java -jar build/libs/app-1.jar \"$@\"\n",
 		}), option},
 		{"java -jar own output, kts Add-Opens manifest attribute", func(t *testing.T) string {
 			dir := appendBuild("\ntasks.jar {\n    manifest { attributes(\"Add-Opens\" to \"java.base/java.lang\") }\n}\n")(t)
-			writeFileAt(t, dir, "Procfile", "web: java -jar build/libs/app.jar\n")
+			writeFileAt(t, dir, "Procfile", "web: java -jar build/libs/app-1.jar\n")
 			return dir
 		}, option},
 		{"java -jar own output, buildSrc Add-Exports attribute", inventory(map[string]string{
-			"Procfile": "web: java -jar build/libs/app.jar\n",
+			"Procfile": "web: java -jar build/libs/app-1.jar\n",
 			"buildSrc/src/main/kotlin/Conventions.kt": "fun manifestAttrs() = mapOf(\"Add-Exports\" to \"java.base/sun.nio.ch\")\n",
 		}), option},
 		{"deploy manifest env", inventory(map[string]string{

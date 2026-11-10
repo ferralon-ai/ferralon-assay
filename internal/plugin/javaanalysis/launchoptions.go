@@ -1455,7 +1455,9 @@ func (f *launchFile) option(t launchToken) {
 	case optionAgent:
 		f.s.agent()
 	case optionUnmodeled:
-		if !f.inSpan(t.start, spanBuild) || !buildClaimable(t.word) {
+		// The Maven wrapper is not a build-tool invocation the program runs under: an option on
+		// any of its lines reaches the JVM it starts.
+		if f.mavenw || !f.inSpan(t.start, spanBuild) || !buildClaimable(t.word) {
 			f.s.unreadable()
 		}
 	}
@@ -1486,7 +1488,7 @@ func buildClaimable(w string) bool {
 // wrapper script's wrapper JAR, or the Maven wrapper script's wrapper JAR and the downloader
 // it compiles into .mvn/wrapper.
 func (f *launchFile) templateClasspath(t launchToken) bool {
-	rest := strings.TrimLeft(string(f.data[t.end:min(t.end+128, len(f.data))]), " \t")
+	rest := strings.TrimLeft(f.restOfLine(t.end), " \t")
 	if f.mavenw {
 		switch t.word {
 		case "-classpath":
@@ -1513,7 +1515,7 @@ func (f *launchFile) templateClasspath(t launchToken) bool {
 // templateMavenProperty reports whether t is a property the Maven wrapper template passes
 // Maven's JVM, closed as the template closes it: its home and project directory.
 func (f *launchFile) templateMavenProperty(t launchToken) bool {
-	rest := string(f.data[t.end:min(t.end+8, len(f.data))])
+	rest := f.restOfLine(t.end)
 	switch t.word {
 	case "-Dmaven.home=${M2_HOME", "-Dmaven.multiModuleProjectDirectory=${MAVEN_PROJECTBASEDIR":
 		return wordIs(rest, `}"`)
@@ -1523,25 +1525,40 @@ func (f *launchFile) templateMavenProperty(t launchToken) bool {
 	return false
 }
 
-// wordIs reports whether rest starts with the words lit, ending there: the shell would join
-// anything else that follows onto the same word.
-func wordIs(rest, lit string) bool {
-	after, ok := strings.CutPrefix(rest, lit)
-	return ok && (after == "" || strings.ContainsRune(" \t\r\n", rune(after[0])))
+// restOfLine is the text from i to the end of its line.
+func (f *launchFile) restOfLine(i int) string {
+	rest := f.data[i:]
+	if j := bytes.IndexByte(rest, '\n'); j >= 0 {
+		rest = rest[:j]
+	}
+	return string(rest)
 }
 
-var wrapperJarAssign = regexp.MustCompile(`(?im)^[ \t]*set[ \t]+"?WRAPPER_JAR=.*$`)
+// wordIs reports whether rest, the rest of a line, starts with the words lit, ending there: the
+// shell would join anything else that follows onto the same word.
+func wordIs(rest, lit string) bool {
+	after, ok := strings.CutPrefix(rest, lit)
+	return ok && (after == "" || strings.ContainsRune(" \t\r", rune(after[0])))
+}
 
 // templateWrapperJar reports whether the Maven wrapper batch script sets WRAPPER_JAR only as its
-// template does.
+// template does: every line that assigns it, in any form cmd accepts (set /p, @set, a set after
+// if, call, for or &, a quoted or caret-escaped name), is the template's own line, and there is
+// one.
 func (f *launchFile) templateWrapperJar() bool {
-	sets := wrapperJarAssign.FindAll(f.data, -1)
-	for _, a := range sets {
-		if strings.TrimSpace(string(a)) != `set WRAPPER_JAR="%MAVEN_PROJECTBASEDIR%\.mvn\wrapper\maven-wrapper.jar"` {
+	const template = `set wrapper_jar=%maven_projectbasedir%\.mvn\wrapper\maven-wrapper.jar`
+	found := false
+	for _, line := range strings.Split(string(f.data), "\n") {
+		norm := strings.ToLower(strings.NewReplacer("^", "", `"`, "").Replace(line))
+		if !strings.Contains(norm, "wrapper_jar=") {
+			continue
+		}
+		if strings.TrimSpace(norm) != template {
 			return false
 		}
+		found = true
 	}
-	return len(sets) > 0
+	return found
 }
 
 // name classifies one occurrence of a launch name. An option variable is accounted for when it

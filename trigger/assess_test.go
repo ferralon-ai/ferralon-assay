@@ -1,12 +1,17 @@
 package trigger
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/pythonanalysis"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -1146,5 +1151,104 @@ func TestFinding_RootPackage(t *testing.T) {
 				t.Fatalf("got %s/%q, want not_exploitable", f.Verdict, f.UndeterminedReason)
 			}
 		})
+	}
+}
+
+// A package whose version did not resolve although pins were read still names the package and
+// lists every pin with its source. The pins are disclosure: the verdict is the one the row reaches
+// with no package, and neither the row's annotations nor the scan's notes carry them.
+func TestAdvisoryFromArtifacts_ReadPins(t *testing.T) {
+	pin := func(path, detail string) plugin.Annotation {
+		return plugin.Annotation{Reason: readPinReason, Path: path, Detail: detail}
+	}
+	inactive := plugin.Annotation{Reason: plugin.AnnotationInstallSurfaceInactive, Path: "ci.yml:4"}
+	pins := func(p ...report.ReadPin) *[]report.ReadPin { return &p }
+	cases := []struct {
+		name string
+		inv  map[string]any
+		want *report.Package
+	}{
+		{
+			name: "one pin beside an unreadable surface",
+			inv: map[string]any{"language": "python", "partiality_flags": []string{plugin.PartialReasonToolFailure},
+				"annotations": []plugin.Annotation{pin("requirements.txt", "django==1.8.2")}},
+			want: &report.Package{Ecosystem: "PyPI", Name: "Django", PURL: "pkg:pypi/django", PartialReason: plugin.PartialReasonToolFailure,
+				ReadPins: pins(report.ReadPin{Version: "1.8.2", Source: "requirements.txt"})},
+		},
+		{
+			name: "two pins, another package's pin and an assumption",
+			inv: map[string]any{"language": "python",
+				"partiality_flags": []string{plugin.PartialReasonToolFailure, plugin.PartialReasonUnrecognisedInstallSurface + ":tox.ini"},
+				"annotations": []plugin.Annotation{pin("api/requirements.txt", "django==1.8.2"), pin("api/requirements.txt", "flask==2.3.0"),
+					pin("web/requirements.txt", "django==1.8.7"), inactive}},
+			want: &report.Package{Ecosystem: "PyPI", Name: "Django", PURL: "pkg:pypi/django",
+				PartialReason: plugin.PartialReasonUnrecognisedInstallSurface + ":tox.ini",
+				ReadPins:      pins(report.ReadPin{Version: "1.8.2", Source: "api/requirements.txt"}, report.ReadPin{Version: "1.8.7", Source: "web/requirements.txt"})},
+		},
+		{
+			name: "no pin read",
+			inv:  map[string]any{"language": "python", "partiality_flags": []string{plugin.PartialReasonToolFailure}},
+		},
+		{
+			name: "fully readable",
+			inv:  map[string]any{"language": "python", "resolved_version": "1.8.2"},
+			want: &report.Package{Ecosystem: "PyPI", Name: "Django", Version: "1.8.2", PURL: "pkg:pypi/django"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			putJSON(t, store, "a1", artifact.TypeNormalizedAdvisory, map[string]any{"coordinate": "Django", "purl": "pkg:pypi/django"})
+			seedInventory(t, store, "a1", tc.inv)
+			adv, got := advisoryFromArtifacts(store, "a1", assessment.Request{Vulnerability: assessment.VulnRef{ID: "CVE-2016-2512"}}, nil)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("package = %+v, want %+v", got, tc.want)
+			}
+			if got != nil && got.ReadPins != nil {
+				f, base := finding(store, "a1", adv, got), finding(store, "a1", adv, nil)
+				if f.Verdict != base.Verdict || f.UndeterminedReason != base.UndeterminedReason || !reflect.DeepEqual(f.Evidence, base.Evidence) {
+					t.Fatalf("verdict with read pins = %s/%q, want %s/%q as with no package", f.Verdict, f.UndeterminedReason, base.Verdict, base.UndeterminedReason)
+				}
+			}
+			for _, a := range annotations(store, "a1") {
+				if a.Reason == readPinReason {
+					t.Fatalf("row annotations carry read pin %+v", a)
+				}
+			}
+			for _, n := range partialityNotes(store, "a1") {
+				if n.Reason == readPinReason {
+					t.Fatalf("scan notes carry read pin %+v", n)
+				}
+			}
+		})
+	}
+}
+
+// The Python resolver's read pins reach the row's package: the producer and this reader agree on
+// the annotation that carries them.
+func TestAdvisoryFromArtifacts_ReadPinsFromPythonResolver(t *testing.T) {
+	if readPinReason != pythonanalysis.ReadPinReason {
+		t.Fatalf("readPinReason = %q, the Python resolver writes %q", readPinReason, pythonanalysis.ReadPinReason)
+	}
+	dir := t.TempDir()
+	for rel, body := range map[string]string{"requirements.txt": "Django==1.8.2\n", "vendor/requirements.txt": "-e ./x\n"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	vr, err := pythonanalysis.ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: dir, Coordinate: "django"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := artifact.NewMemStore()
+	putJSON(t, store, "a1", artifact.TypeNormalizedAdvisory, map[string]any{"coordinate": "django", "purl": "pkg:pypi/django"})
+	seedInventory(t, store, "a1", map[string]any{"language": "python", "partiality_flags": vr.Partiality.Reasons, "annotations": vr.Annotations})
+	_, pkg := advisoryFromArtifacts(store, "a1", assessment.Request{Vulnerability: assessment.VulnRef{ID: "CVE-2016-2512"}}, nil)
+	want := []report.ReadPin{{Version: "1.8.2", Source: "requirements.txt"}}
+	if pkg == nil || pkg.Version != "" || pkg.ReadPins == nil || !reflect.DeepEqual(*pkg.ReadPins, want) {
+		t.Fatalf("package = %+v, want django with read pins %+v and no version", pkg, want)
 	}
 }

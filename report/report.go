@@ -184,13 +184,37 @@ type Package struct {
 	// It says this lock entry is not what the build installs, not that no copy of the package is
 	// present: a tool the environment seeds, such as pip, may still be there at another version.
 	NotInstalled bool `json:"not_installed,omitempty"`
+	// ReadPins are the exact pins the analysis read for this package, each with the file it
+	// came from, when it could not resolve one version from them: a surface it could not read,
+	// or a uv source, may install another version. Version stays empty. They are DISCLOSURE,
+	// never a verdict input: nothing matches them against an advisory range, so a read pin
+	// neither refutes nor confirms one. Omitted when the package resolved, or nothing was read.
+	// A pointer keeps Package comparable: packages are map keys.
+	ReadPins *[]ReadPin `json:"read_pins,omitempty"`
+}
+
+// ReadPin is one exact pin read for a package whose version did not resolve (Package.ReadPins).
+// It is disclosure, never a verdict input.
+type ReadPin struct {
+	// Version is the pinned version as written ("1.8.2").
+	Version string `json:"version"`
+	// Source is the file the pin was read from, relative to the build and slash-separated
+	// ("requirements.txt"), or the site-packages directory of an installed copy.
+	Source string `json:"source"`
 }
 
 // Label is the package as a finding row names it: name@version for a resolved package. A
 // version the inventory observed without resolving it (PartialReason source_unpinned) is
-// shown as an observation, never as name@version, and a package with no version is its name.
+// shown as an observation, never as name@version, and so are the pins read for a package
+// whose version did not resolve (ReadPins). A package with neither is its name.
 func (p Package) Label() string {
 	switch {
+	case p.Version == "" && p.ReadPins != nil && len(*p.ReadPins) > 0:
+		pins := make([]string, len(*p.ReadPins))
+		for i, r := range *p.ReadPins {
+			pins[i] = r.Version + " in " + r.Source
+		}
+		return fmt.Sprintf("%s (read %s, not resolved)", p.Name, strings.Join(pins, ", "))
 	case p.Version == "":
 		return p.Name
 	case p.PinUnresolved():

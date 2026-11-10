@@ -9,7 +9,13 @@
 // fabricates a not-affected).
 package pipeline
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+)
 
 func TestPEP440Ordering(t *testing.T) {
 	// Each pair is strictly-less: comparePEP440(lo, hi) must be < 0 (and the reverse > 0).
@@ -185,5 +191,40 @@ func TestPypiInRange(t *testing.T) {
 		if got != c.want || ok != c.ok {
 			t.Errorf("pypiVersionInRange(%q,%q)=(%v,%v) want (%v,%v)", c.ver, c.spec, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// The pins a Python resolver read but did not count ride the inventory as disclosures. The version
+// axis never reads them: a pin outside the affected range does not disqualify, and the result is
+// the one the same inventory reaches without them.
+func TestPypiDisqual_ReadPinsAreNoVersionInput(t *testing.T) {
+	cases := []struct{ name, pin string }{
+		{"pin outside the range", "1.4.0"},
+		{"pin inside the range", "1.3.9"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := func(annotations []plugin.Annotation) DisqualResult {
+				store := artifact.NewMemStore()
+				putJSON(t, store, "case-read-pins", artifact.TypeNormalizedAdvisory, map[string]any{
+					"vuln_id":         "CVE-2016-2512",
+					"affected_ranges": []map[string]string{{"upper_exclusive": "1.4.0", "scheme": "pypi"}},
+					"trust_tier":      "first_party",
+				})
+				putJSON(t, store, "case-read-pins", artifact.TypeInventory, map[string]any{
+					"language":         "python",
+					"partiality_flags": []string{plugin.PartialReasonToolFailure},
+					"annotations":      annotations,
+				})
+				return runDisqual(t, store, "case-read-pins")
+			}
+			got := run([]plugin.Annotation{{Reason: "disclosure:read_pin", Path: "requirements.txt", Detail: "django==" + tc.pin}})
+			if got.Disqualified {
+				t.Fatalf("a read pin disqualified the advisory: %+v", got)
+			}
+			if base := run(nil); !reflect.DeepEqual(got, base) {
+				t.Fatalf("result with read pins = %+v, without = %+v", got, base)
+			}
+		})
 	}
 }

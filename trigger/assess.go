@@ -228,7 +228,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 // whatever verdict the row reaches, so they are read for every row and gate none.
 func annotations(store artifact.Store, assessmentID string) []plugin.Annotation {
 	inv, _ := inventory(store, assessmentID)
-	return inv.Annotations
+	return withoutReadPins(inv.Annotations)
 }
 
 // guardsOnPath returns the advisory-declared guard symbols present on the candidate
@@ -1045,6 +1045,9 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 		if len(inv.ResolvedVersions) > 0 && !pipeline.ToolchainSubject(store, assessmentID) {
 			return adv, &report.Package{Ecosystem: ecosystemFor(inv.Language), Name: name, PURL: purl, Root: pipeline.RootSubject(store, assessmentID)}
 		}
+		if pins := readPinsOf(inv, name); len(pins) > 0 {
+			return adv, readPinsPackage(name, purl, inv, pins, pipeline.RootSubject(store, assessmentID))
+		}
 		return adv, nil
 	}
 	// The Go toolchain is not an SBOM dependency package. When the adjudicated element is the
@@ -1099,6 +1102,55 @@ func cfamilyObservedPackage(name, purl string, inv inventoryFacts, sbom []report
 		}
 	}
 	return pkg
+}
+
+// readPinReason is the annotation reason a resolver discloses a read but uncounted pin under
+// (pythonanalysis.ReadPinReason): Path is the file it was read from, Detail "<name>==<version>".
+const readPinReason = "disclosure:read_pin"
+
+// readPinsOf returns the pins the inventory's resolver read for the package name but did not
+// count, in the order read. They are disclosure only: the version axis never reads them.
+func readPinsOf(inv inventoryFacts, name string) []report.ReadPin {
+	want := normalizePackageName("pypi", name)
+	var pins []report.ReadPin
+	for _, a := range inv.Annotations {
+		if a.Reason != readPinReason {
+			continue
+		}
+		pinned, version, ok := strings.Cut(a.Detail, "==")
+		if ok && version != "" && normalizePackageName("pypi", pinned) == want {
+			pins = append(pins, report.ReadPin{Version: version, Source: a.Path})
+		}
+	}
+	return pins
+}
+
+// readPinsPackage names a package whose version did not resolve although pins were read for it:
+// a surface the resolver could not read, or a uv source, may install another version. Version
+// stays empty, so G1 (admittedPackage) rejects the shape and nothing on the version axis sees
+// the pins. PartialReason is the inventory's own: an unrecognised install surface when one was
+// named, else its first flag.
+func readPinsPackage(name, purl string, inv inventoryFacts, pins []report.ReadPin, root bool) *report.Package {
+	pkg := &report.Package{Ecosystem: ecosystemFor(inv.Language), Name: name, PURL: purl, Root: root, ReadPins: &pins}
+	for _, f := range inv.PartialityFlags {
+		if strings.HasPrefix(f, plugin.PartialReasonUnrecognisedInstallSurface) {
+			pkg.PartialReason = f
+			return pkg
+		}
+	}
+	if len(inv.PartialityFlags) > 0 {
+		pkg.PartialReason = inv.PartialityFlags[0]
+	}
+	return pkg
+}
+
+// withoutReadPins drops the read-pin disclosures from the inventory's annotations: they ride on
+// the row's package (readPinsOf), and are not assumptions a verdict rests on.
+func withoutReadPins(as []plugin.Annotation) []plugin.Annotation {
+	if !slices.ContainsFunc(as, func(a plugin.Annotation) bool { return a.Reason == readPinReason }) {
+		return as
+	}
+	return slices.DeleteFunc(slices.Clone(as), func(a plugin.Annotation) bool { return a.Reason == readPinReason })
 }
 
 type inventoryFacts struct {
@@ -1481,7 +1533,7 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 		ecosystem = ecosystemFor(inv.Language)
 	}
 	var notes []report.PartialityNote
-	for _, a := range inv.Annotations {
+	for _, a := range withoutReadPins(inv.Annotations) {
 		notes = append(notes, report.PartialityNote{Reason: a.Reason, Ecosystem: ecosystem, Path: a.Path, Detail: a.Detail})
 	}
 	if disqualified(store, assessmentID) {

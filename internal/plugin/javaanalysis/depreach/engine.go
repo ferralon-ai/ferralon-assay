@@ -39,6 +39,7 @@ type Engine struct {
 	resolving   map[string]bool                  // lambda implementations met in the outermost lambdaImpl
 	closures    map[classfile.MethodRef]*closure // Reach's whole search per ingress, under the current linked bit
 	methodIDs   map[classfile.MethodRef]int      // bit index of each method a closure enqueued
+	tableSize   int                              // methodIDs below it are the loaded methods, by class name then declaration
 	dispatched  map[dispatchKey]dispatch         // virtual/interface resolveTargets answers, under the current linked bit
 	below       map[string][]string              // loaded subtypes of a type (closureFrom with no seeds)
 	closed      map[string][]string              // subtypeClosure cache, under the current linked bit
@@ -48,6 +49,9 @@ type Engine struct {
 // of a search for a sink it never meets. Nothing in the search depends on the sink except
 // where it stops, so a sink outside enqueued gets that result.
 type closure struct {
+	// beyond is set when the search enqueued a method outside the loaded table, whose bit
+	// another engine over the same classes would not number alike.
+	beyond   bool
 	enqueued []uint64 // bit methodIDs[m] is set when the search enqueued m
 	miss     Result
 }
@@ -206,7 +210,27 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 			}
 		}
 	}
+	e.numberMethods()
 	return e
+}
+
+// numberMethods gives every loaded method its closure bit, ordered by class name and then
+// declaration, so two engines over the same classes number them alike and a closure one
+// exports (Closure) means the same in the other (SetClosure).
+func (e *Engine) numberMethods() {
+	names := make([]string, 0, len(e.classes))
+	for n := range e.classes {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		for _, m := range e.classes[n].Methods {
+			if _, ok := e.methodIDs[m.Ref]; !ok {
+				e.methodIDs[m.Ref] = len(e.methodIDs)
+			}
+		}
+	}
+	e.tableSize = len(e.methodIDs)
 }
 
 // subtypeClosure returns owner plus all transitive subclasses/implementors, sorted
@@ -1909,6 +1933,9 @@ func (e *Engine) search(ingress, sink classfile.MethodRef, c *closure) Result {
 				id = len(e.methodIDs)
 				e.methodIDs[t.Ref] = id
 			}
+			if id >= e.tableSize {
+				c.beyond = true
+			}
 			for len(c.enqueued) <= id/64 {
 				c.enqueued = append(c.enqueued, 0)
 			}
@@ -2155,3 +2182,43 @@ func (cp *Classpath) Merge(other Classpath) {
 		cp.JDK = 0
 	}
 }
+
+// HasClosure reports whether the engine holds ingress's whole search under the current
+// linked bit.
+func (e *Engine) HasClosure(ingress classfile.MethodRef) bool {
+	_, ok := e.closures[ingress]
+	return ok
+}
+
+// Closure exports ingress's whole search under the current linked bit: one bit per loaded
+// method, numbered as numberMethods does, and the search's result. ok is false when the
+// engine holds no search for ingress, or the search met a method outside the loaded table.
+func (e *Engine) Closure(ingress classfile.MethodRef) (bits []uint64, miss Result, ok bool) {
+	c := e.closures[ingress]
+	if c == nil || c.beyond {
+		return nil, Result{}, false
+	}
+	bits = make([]uint64, closureWords(e.tableSize))
+	copy(bits, c.enqueued)
+	miss = c.miss
+	miss.HazardKinds = append([]string(nil), c.miss.HazardKinds...)
+	return bits, miss, true
+}
+
+// SetClosure installs a search Closure exported from an engine over the same classes,
+// classpath and linked bit; Reach then answers from it as if it had searched. It refuses,
+// and changes nothing, when bits does not fit the loaded table or miss is a found path,
+// which a whole search never is.
+func (e *Engine) SetClosure(ingress classfile.MethodRef, bits []uint64, miss Result) bool {
+	if len(bits) != closureWords(e.tableSize) || miss.Verdict == ReachableCandidate || len(miss.Path) > 0 {
+		return false
+	}
+	if r := e.tableSize % 64; r != 0 && bits[len(bits)-1]>>r != 0 {
+		return false
+	}
+	miss.HazardKinds = append([]string(nil), miss.HazardKinds...)
+	e.closures[ingress] = &closure{enqueued: append([]uint64(nil), bits...), miss: miss}
+	return true
+}
+
+func closureWords(n int) int { return (n + 63) / 64 }

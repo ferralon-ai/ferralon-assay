@@ -53,6 +53,8 @@ const (
 // spots loading the dependencies incurred.
 type reachClosure struct {
 	Engine *depreach.Engine
+	// key fingerprints the inputs the engine was built from (loadReachClosure).
+	key    string
 	Scoped []plugin.ScopedReason
 	// methods indexes every loaded method by depreach's MethodRef.String() key, for the
 	// sink-concreteness check.
@@ -234,6 +236,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	}
 	all = mergeReleases(built, all, gavs, versioned, definedBy, isFirstParty, scoped)
 	built.Engine = depreach.NewEngineOn(all, cp)
+	built.key = fingerprint
 	built.index(all, cp.JDK)
 
 	closureCache.Lock()

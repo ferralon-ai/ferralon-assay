@@ -477,3 +477,61 @@ func TestResolveDependencySymbols_RIDTarget(t *testing.T) {
 		})
 	}
 }
+
+// emptyAsm builds an assembly named name that declares nothing.
+func emptyAsm(name string) []byte {
+	b := scaffold()
+	b.addType(0, "<Module>", "", 0, nil)
+	return b.bytesNamed(name)
+}
+
+// With the runtime identifier unknown, a RID-only package is missed once per runtime
+// target, and each target can give it different dependencies. Its scoped limit covers the
+// union of those closures: B, which X depends on only in win-x64, is loaded, and an advisory
+// on B must still count X's limit.
+func TestReachability_RIDUnknownMissScopedToUnionOfClosures(t *testing.T) {
+	t.Setenv("NUGET_PACKAGES", t.TempDir())
+	pkgRoot := t.TempDir()
+	dep := ridRow("Dep/1.0.0", "lib/net8.0/Dep.dll", "")
+	b := ridRow("B/1.0.0", "lib/net8.0/B.dll", "")
+	a := ridRow("A/1.0.0", "lib/net8.0/A.dll", "")
+	targets := `"net8.0":{` + dep + `,` + b + `},` +
+		`"net8.0/linux-x64":{` + dep + `,` + b + `,` + a + `,` + ridRow("X/1.0.0", "lib/net8.0/X.dll", `"A":"1.0.0"`) + `},` +
+		`"net8.0/win-x64":{` + dep + `,` + b + `,` + ridRow("X/1.0.0", "lib/net8.0/X.dll", `"B":"1.0.0"`) + `}`
+	libs := `"Dep/1.0.0":{"type":"package","path":"dep/1.0.0"},"B/1.0.0":{"type":"package","path":"b/1.0.0"},` +
+		`"A/1.0.0":{"type":"package","path":"a/1.0.0"},"X/1.0.0":{"type":"package","path":"x/1.0.0"}`
+	assets := `{"version":3,"targets":{` + targets + `},"libraries":{` + libs + `},"packageFolders":{"` + pkgRoot + `/":{}}}`
+	dir := composeILBuildDir(t, map[string][]byte{
+		"App.csproj":                       restoredProject,
+		"obj/project.assets.json":          []byte(assets),
+		"bin/Release/net8.0/App.dll":       appMain(".NETCoreApp,Version=v8.0"),
+		"bin/Release/net8.0/App.deps.json": depsJSON(""),
+	})
+	f := depFixture{buildDir: dir, pkgRoot: pkgRoot}
+	f.writePkgFile(t, "dep/1.0.0/lib/net8.0/Dep.dll", ridDep(false))
+	f.writePkgFile(t, "b/1.0.0/lib/net8.0/B.dll", emptyAsm("B"))
+	res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{ridSinkSCIP}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var x *plugin.ScopedReason
+	for i, s := range res.Partiality.Scoped {
+		if s.Path == "X/1.0.0" {
+			if x != nil {
+				t.Fatalf("X disclosed twice: %+v", res.Partiality.Scoped)
+			}
+			x = &res.Partiality.Scoped[i]
+		}
+	}
+	if x == nil {
+		t.Fatalf("no scoped limit for X: %+v", res.Partiality.Scoped)
+	}
+	if want := []string{"pkg:nuget/a", "pkg:nuget/b", "pkg:nuget/x"}; !slices.Equal(x.Targets, want) {
+		t.Errorf("X targets = %v, want %v", x.Targets, want)
+	}
+	for _, s := range res.Partiality.Scoped {
+		if s.Path == "B/1.0.0" {
+			t.Errorf("B was written but is a miss: %+v", s)
+		}
+	}
+}

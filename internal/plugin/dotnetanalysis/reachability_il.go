@@ -262,25 +262,52 @@ func ingressSearch(engine *depreach.Engine, idx *reconcileIndex, roots, sinkKeys
 //
 // A miss whose closure cannot be bounded (no package id, or a dependency restore did not
 // resolve) could hide any code, so its reason is returned in unbounded for the run-wide set.
+// A package missed in several targets (one per runtime identifier when the build's is
+// unknown) is scoped to the union of its closures, and is unbounded if any one is.
 func missLimits(misses []assembly.DepMiss, graph *assetsGraph) (scoped []plugin.ScopedReason, unbounded []string) {
-	seen := map[string]bool{}
+	type limit struct {
+		reason  string
+		id      string
+		targets map[string]bool
+	}
+	var order []string
+	byKey := map[string]*limit{}
+	runWide := map[string]bool{}
 	for _, m := range misses {
+		reason := missReason(m.Reason)
 		id, _ := splitPkgKey(m.Dep.PkgKey)
 		var targets []string
 		if id != "" {
 			targets = graph.closure(m.Dep.Target, m.Dep.PkgKey)
 		}
-		if len(targets) == 0 {
-			unbounded = append(unbounded, missReason(m.Reason))
+		if len(targets) == 0 && !runWide[reason] {
+			runWide[reason] = true
+			unbounded = append(unbounded, reason)
 		}
-		if id == "" || seen[m.Dep.PkgKey] {
+		if id == "" {
 			continue
 		}
-		seen[m.Dep.PkgKey] = true
+		l := byKey[m.Dep.PkgKey]
+		if l == nil {
+			l = &limit{reason: reason, id: id, targets: map[string]bool{}}
+			byKey[m.Dep.PkgKey] = l
+			order = append(order, m.Dep.PkgKey)
+		}
+		for _, t := range targets {
+			l.targets[t] = true
+		}
+	}
+	for _, key := range order {
+		l := byKey[key]
+		var targets []string
+		for t := range l.targets {
+			targets = append(targets, t)
+		}
+		sort.Strings(targets)
 		scoped = append(scoped, plugin.ScopedReason{
-			Reason:  missReason(m.Reason),
-			Package: nugetPackageURL(id),
-			Path:    m.Dep.PkgKey,
+			Reason:  l.reason,
+			Package: nugetPackageURL(l.id),
+			Path:    key,
 			Targets: targets,
 		})
 	}

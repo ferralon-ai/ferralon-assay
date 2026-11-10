@@ -197,9 +197,12 @@ func (e *Engine) SetProgramRoots(keys []MethodKey) {
 		if !tr.IsSpec {
 			return
 		}
-		tes, ok := e.typesInSig(asm, tr.SpecBlob, false)
+		tes, unloaded, ok := e.typesInSig(asm, tr.SpecBlob, false)
 		if !ok {
 			incomplete("undecodable type specification")
+		}
+		if unloaded != "" {
+			incomplete("type specification over a type not in the loaded set: " + unloaded)
 		}
 		for _, te := range tes {
 			addGenArg(te)
@@ -238,9 +241,12 @@ func (e *Engine) SetProgramRoots(keys []MethodKey) {
 				return
 			}
 			ms := asm.MethodSpecs[tok.RID()]
-			tes, ok := e.typesInSig(asm, ms.InstantiationBlob, true)
+			tes, unloaded, ok := e.typesInSig(asm, ms.InstantiationBlob, true)
 			if !ok {
 				incomplete("undecodable method instantiation")
+			}
+			if unloaded != "" {
+				incomplete("method instantiation over a type not in the loaded set: " + unloaded)
 			}
 			for _, te := range tes {
 				addGenArg(te)
@@ -388,7 +394,7 @@ func (e *Engine) frameworkEdge(edge assembly.Edge, fromAsm *assembly.Assembly, c
 	out := edgeOut{fw: true}
 	if inst != nil && isAsyncBuilderStep(owner, name) {
 		// The builder runs the state machine it was handed: an edge to its MoveNext.
-		tes, _ := e.typesInSig(fromAsm, inst, true)
+		tes, _, _ := e.typesInSig(fromAsm, inst, true)
 		for _, te := range tes {
 			for _, m := range te.td.Methods {
 				if m.Name == "MoveNext" && m.RVA != 0 {
@@ -618,25 +624,29 @@ func isValueTypeEntry(te typeEntry) bool {
 }
 
 // typesInSig returns the in-set types named anywhere in a TypeSpec blob (one Type) or a
-// MethodSpec instantiation blob (GENERICINST count, then that many Types). ok is false
-// when the blob does not decode.
-func (e *Engine) typesInSig(asm *assembly.Assembly, blob []byte, methodSpec bool) ([]typeEntry, bool) {
+// MethodSpec instantiation blob (GENERICINST count, then that many Types), and the name of
+// the first type that is neither in the set nor framework (unloaded). ok is false when the
+// blob does not decode.
+func (e *Engine) typesInSig(asm *assembly.Assembly, blob []byte, methodSpec bool) (out []typeEntry, unloaded string, ok bool) {
 	r := &sigReader{b: blob}
 	n := uint32(1)
 	if methodSpec {
 		if b, ok := r.byte(); !ok || b != 0x0A {
-			return nil, false
+			return nil, "", false
 		}
 		n, _ = r.compressedUint()
 	}
-	var out []typeEntry
 	seen := map[*assembly.TypeDef]bool{}
 	var collect func(t TypeSig)
 	collect = func(t TypeSig) {
 		if !t.Token.IsNull() {
-			if te, ok := e.lookupTypeRef(asm, t.Ref); ok && !seen[te.td] {
-				seen[te.td] = true
-				out = append(out, te)
+			if te, ok := e.lookupTypeRef(asm, t.Ref); ok {
+				if !seen[te.td] {
+					seen[te.td] = true
+					out = append(out, te)
+				}
+			} else if unloaded == "" && !e.isFrameworkType(asm, t.Ref) {
+				unloaded = typeRefDisplay(t.Ref)
 			}
 		}
 		if t.Inner != nil {
@@ -649,7 +659,48 @@ func (e *Engine) typesInSig(asm *assembly.Assembly, blob []byte, methodSpec bool
 	for i := uint32(0); i < n && r.err == nil; i++ {
 		collect(r.typeSig(asm))
 	}
-	return out, r.err == nil
+	return out, unloaded, r.err == nil
+}
+
+// unloadedInstantiation names a type outside the loaded set (and not framework) that a
+// call site's generic instantiation passes, either as a method instantiation or in the
+// callee's TypeSpec owner. The callee, framework or in-set, may construct or call into
+// that type (new T(), Activator.CreateInstance<T>, a constrained virtual call), whose body
+// the search cannot read. ok is false when the site names no such type.
+func (e *Engine) unloadedInstantiation(asm *assembly.Assembly, tok assembly.Token) (string, bool) {
+	if !e.fw.active() {
+		// Without the framework model every out-of-set callee is already a hazard, and a
+		// generic argument cannot be told apart from platform code.
+		return "", false
+	}
+	check := func(blob []byte, methodSpec bool) (string, bool) {
+		_, unloaded, ok := e.typesInSig(asm, blob, methodSpec)
+		if !ok {
+			return "an undecodable instantiation", true
+		}
+		return unloaded, unloaded != ""
+	}
+	if tok.Table() == tblMethodSpec {
+		if int(tok.RID()) >= len(asm.MethodSpecs) {
+			return "", false
+		}
+		ms := asm.MethodSpecs[tok.RID()]
+		if name, ok := check(ms.InstantiationBlob, true); ok {
+			return name, true
+		}
+		tok = ms.Method
+	}
+	if tok.Table() != tblMemberRef {
+		return "", false
+	}
+	mr := asm.MemberRef(tok.RID())
+	if mr == nil {
+		return "", false
+	}
+	if parent := asm.TypeRefFor(mr.ParentToken); parent.IsSpec && !isArraySpec(parent) {
+		return check(parent.SpecBlob, false)
+	}
+	return "", false
 }
 
 func methodTokName(asm *assembly.Assembly, tok assembly.Token) string {

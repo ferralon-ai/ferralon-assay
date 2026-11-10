@@ -151,3 +151,81 @@ func TestReachability_DependencyMissIsScoped(t *testing.T) {
 		})
 	}
 }
+
+// absIface builds Abs.dll: interface A.IPlugin { void Run(); } and static
+// A.Holder.Set(IPlugin), a registry the missing package could call back through.
+func absIface() []byte {
+	b := scaffold()
+	obj := cTypeDefOrRef(xTypeRef, b.extTypeRef("System", "Object"))
+	b.addType(0, "<Module>", "", 0, nil)
+	ifc, _ := b.addType(0xA1, "IPlugin", "A", 0, []mspec{{name: "Run", flags: 0x5C6, sig: sigInstVoid}})
+	b.addType(0x1, "Holder", "A", obj, []mspec{{name: "Set", flags: fStatic, sig: []byte{0x00, 0x01, 0x01, 0x12, byte(cTypeDefOrRef(xTypeDef, ifc))}, il: body()}})
+	return b.bytesNamed("Abs")
+}
+
+// appHandsToMissing registers App.Impl (whose Run calls the sink) with A.Holder.Set, then
+// makes a call whose generic instantiation names Gone.W.Worker, a type of the missing Gone
+// package: Lazy<Worker>'s constructor (a framework generic) or, with lazy false, nothing.
+func appHandsToMissing(lazy bool) []byte {
+	a := newFWApp()
+	absRef := a.asmRef("Abs")
+	ifcRef := a.extTypeRefScoped(absRef, "A", "IPlugin")
+	impl, im := a.addType(0, "Impl", "App", a.obj, []mspec{
+		{name: "Run", flags: fIfaceImpl, sig: sigInstVoid, il: a.sinkIf(true)},
+		{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()},
+	})
+	a.row(xInterfaceImpl, impl, cTypeDefOrRef(xTypeRef, ifcRef))
+	set := a.memberRef(a.extTypeRefScoped(absRef, "A", "Holder"), "Set", []byte{0x00, 0x01, 0x01, 0x12, byte(cTypeDefOrRef(xTypeRef, ifcRef))})
+	instrs := [][]byte{ilNewobjOp(mtok(xMethodDef, im[1])), ilCall(set)}
+	if lazy {
+		worker := a.extTypeRefScoped(a.asmRef("Gone"), "W", "Worker")
+		lz := a.extTypeRef("System", "Lazy`1")
+		spec := []byte{0x15, 0x12, byte(cTypeDefOrRef(xTypeRef, lz)), 0x01, 0x12, byte(cTypeDefOrRef(xTypeRef, worker))}
+		instrs = append(instrs, ilNewobjOp(a.specRef(spec, ".ctor", sigInstVoid)))
+	}
+	instrs = append(instrs, a.console())
+	return a.main(instrs...)
+}
+
+// A missing package's scoped limit covers only its restore closure, so an advisory outside
+// it is judged on Searched alone. The missing code can still run without a call edge into
+// it: a framework generic constructs its type argument (new T()), and that code reaches the
+// sink through a registry in a package the closure does not name. A generic instantiation
+// over a type outside the loaded set is therefore a hazard.
+func TestReachability_GenericInstantiationOverMissingType(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		lazy         bool
+		goneDeps     string
+		wantSearched bool
+	}{
+		{"Lazy<missing type>, missing package depends on the registry", true, `{"Abs":"1.0.0"}`, false},
+		{"Lazy<missing type>, missing package has no dependencies", true, `{}`, false},
+		{"missing type never named: searched", false, `{"Abs":"1.0.0"}`, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("NUGET_PACKAGES", t.TempDir())
+			assets := `{"version":3,"targets":{"net8.0":{` +
+				`"Dep/1.0.0":{"type":"package"},"Abs/1.0.0":{"type":"package"},` +
+				`"Gone/1.0.0":{"type":"package","dependencies":` + c.goneDeps + `,"runtime":{"lib/net8.0/Gone.dll":{}}}}},` +
+				`"libraries":{"Dep/1.0.0":{"type":"package","path":"dep/1.0.0"},"Abs/1.0.0":{"type":"package","path":"abs/1.0.0"},"Gone/1.0.0":{"type":"package","path":"gone/1.0.0"}}}`
+			dir := composeILBuildDir(t, map[string][]byte{
+				"App.csproj":              restoredProject,
+				"bin/App.dll":             appHandsToMissing(c.lazy),
+				"bin/Dep.dll":             depBoom(),
+				"bin/Abs.dll":             absIface(),
+				"obj/project.assets.json": []byte(assets),
+			})
+			res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{fwSink}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := slices.Contains(res.Searched, fwSink); got != c.wantSearched {
+				t.Fatalf("searched=%v, want %v (reasons=%v scoped=%+v)", got, c.wantSearched, res.Partiality.Reasons, res.Partiality.Scoped)
+			}
+			if slices.Contains(res.Partiality.Reasons, partialReasonNoDependencyArtifact) {
+				t.Errorf("bounded miss is run-wide: %v", res.Partiality.Reasons)
+			}
+		})
+	}
+}

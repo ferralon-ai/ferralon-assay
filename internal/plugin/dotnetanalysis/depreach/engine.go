@@ -227,6 +227,9 @@ func (e *Engine) resolveTargets(edge assembly.Edge, fromAsm *assembly.Assembly, 
 	if w, ok := dynamicHazard(owner); ok {
 		return edgeOut{hazard: true, why: w + "::" + name}
 	}
+	if t, ok := e.unloadedInstantiation(fromAsm, edge.Token); ok {
+		return edgeOut{hazard: true, why: "generic instantiation over " + t + " (not in the loaded set): " + owner + "::" + name}
+	}
 	if o, ok := e.frameworkEdge(edge, fromAsm, ctx); ok {
 		return o
 	}

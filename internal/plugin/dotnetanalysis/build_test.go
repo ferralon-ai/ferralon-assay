@@ -705,6 +705,15 @@ func TestCompiledProjects_ImportResolution(t *testing.T) {
 			"Directory.Build.props":        "<Project><PropertyGroup><LangVersion>latest</LangVersion></PropertyGroup></Project>",
 			"Worker/Directory.Build.props": `<Project><Import Project="$([MSBuild]::GetPathOfFileAbove('$(MSBuildThisFile)', '$(MSBuildThisFileDirectory)../'))" /></Project>`,
 		}, 1},
+		{"a relative file-above start with a property-derived name in a shared props file", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj": "<Project></Project>", "Worker/Directory.Build.settings": moves,
+			"Directory.Build.props": `<Project><Import Project="$([MSBuild]::GetPathOfFileAbove('$(MSBuildThisFileName).settings', '.'))" /></Project>`,
+		}, 2},
+		{"a CDATA opener inside a comment before a live import", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj": `<Project><!-- <![CDATA[ --><Import Project="..\build\out.settings" /><!-- ]]> --></Project>`, "build/out.settings": moves,
+		}, 2},
 		{"a commented-out import keeps the drop", "", map[string]string{
 			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
 			"Worker/Worker.csproj": `<Project><!-- <Import Project="$(Foo)\x.props" /> --></Project>`,

@@ -393,7 +393,7 @@ func importedFiles(f string, data []byte, projects []string) ([]string, bool) {
 		}
 	}
 	var out []string
-	for _, el := range importElement.FindAllSubmatch(xmlComment.ReplaceAll(xmlCDATA.ReplaceAll(data, nil), nil), -1) {
+	for _, el := range importElement.FindAllSubmatch(xmlInert.ReplaceAll(data, nil), -1) {
 		var project string
 		sdk := false
 		for _, a := range importAttr.FindAllSubmatch(el[1], -1) {
@@ -415,7 +415,7 @@ func importedFiles(f string, data []byte, projects []string) ([]string, bool) {
 		if !perProject {
 			expansions = append(expansions, expandImport(project, f, dir))
 		}
-		if perProject || fileAboveFunc.MatchString(project) {
+		if perProject || strings.Contains(strings.ToLower(project), "fileabove") {
 			for _, pd := range projDirs {
 				expansions = append(expansions, expandImport(project, f, pd))
 			}
@@ -432,8 +432,7 @@ func importedFiles(f string, data []byte, projects []string) ([]string, bool) {
 }
 
 var (
-	xmlCDATA         = regexp.MustCompile(`(?s)<!\[CDATA\[.*?\]\]>`)
-	xmlComment       = regexp.MustCompile(`(?s)<!--.*?-->`)
+	xmlInert         = regexp.MustCompile(`(?s)<!--.*?-->|<!\[CDATA\[.*?\]\]>`) // one pass: whichever opens first wins
 	msbuildEscape    = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
 	fileAboveFunc    = regexp.MustCompile(`(?i)\$\(\s*\[MSBuild\]::(GetPathOfFileAbove|GetDirectoryNameOfFileAbove)\(\s*([^,()]*?)\s*(?:,\s*([^,()]*?)\s*)?\)\s*\)`)
 	unresolvedSyntax = regexp.MustCompile(`[$@%]\(`)

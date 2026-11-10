@@ -390,6 +390,7 @@ func TestLaunchOptionReasons(t *testing.T) {
 		{"java -jar own output, built JAR with PropertiesLauncher", map[string]string{"README.md": "java -jar target/*.jar\n", "target/app.jar": manifestJar("Manifest-Version: 1.0\r\nMain-Class: org.springframework.boot.loader.launch.PropertiesLauncher\r\n")}, optionOnly},
 		{"java -jar own output, built JAR plain", map[string]string{"README.md": "java -jar target/*.jar\n", "target/app.jar": manifestJar("Manifest-Version: 1.0\r\nMain-Class: org.springframework.boot.loader.launch.JarLauncher\r\nStart-Class: com.example.App\r\n")}, []string{}},
 		{"java -jar own output, test --add-opens is not a manifest", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<plugin><artifactId>maven-surefire-plugin</artifactId><configuration><argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine></configuration></plugin>\n"}, []string{}},
+		{"java -jar own output, manifest words outside a build file", map[string]string{"README.md": "java -jar target/*.jar\n", "docs/packaging.md": "The JAR has no Add-Opens entry and uses <layout>JAR</layout>, not <layout>ZIP</layout>.\n"}, []string{}},
 		{"manifest hazard alone does not block", map[string]string{"pom.xml": "<configuration><layout>ZIP</layout></configuration>\n"}, []string{}},
 		{"java --module-path", map[string]string{"Dockerfile": "ENTRYPOINT java --module-path=/mods -m app/com.example.Main\n"}, optionOnly},
 		{"java -p", map[string]string{"run.sh": "java -p /mods -m app/com.example.Main\n"}, optionOnly},

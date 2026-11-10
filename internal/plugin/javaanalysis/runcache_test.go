@@ -55,6 +55,13 @@ func TestDecodeClosure(t *testing.T) {
 		sum := sha256.Sum256(buf.Bytes())
 		return append(buf.Bytes(), sum[:]...)
 	}
+	// A stray byte after the last whole word, re-summed so only the length checks see it.
+	partial := func() []byte {
+		b := forge(func(*closureHeader) {}, bits)
+		body := append(bytes.Clone(b[:len(b)-sha256.Size]), 0)
+		sum := sha256.Sum256(body)
+		return append(body, sum[:]...)
+	}()
 	same := func(*closureHeader) {}
 	tests := []struct {
 		name string
@@ -73,6 +80,7 @@ func TestDecodeClosure(t *testing.T) {
 		{"forged whole entry", forge(same, bits), true},
 		{"another format's entry", forge(func(h *closureHeader) { h.Format = "assay-java-closure-v0" }, bits), false},
 		{"more words than the header counts", forge(same, append(bits, 0)), false},
+		{"partial trailing word", partial, false},
 		{"word count that wraps", forge(func(h *closureHeader) { h.Words = len(bits) + 1<<61 }, bits), false},
 	}
 	for _, tc := range tests {

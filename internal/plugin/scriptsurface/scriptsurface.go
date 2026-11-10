@@ -120,6 +120,10 @@ type Spec struct {
 	// Text, when not nil, is given the whole text of every script surface and GitLab local
 	// include this reads, before the rule applies to it.
 	Text func(src string)
+	// Library, when not nil, reports whether a word that . or source takes alone, literally and
+	// with no slash, names a shell library the lane knows installs nothing. A word that may name
+	// a file the build holds where the command runs is never one. nil means none is.
+	Library func(word string) bool
 }
 
 func (s Spec) complete() bool {
@@ -354,7 +358,28 @@ type Veto struct {
 	named    map[string]bool // whether a file names each backstop hit (namedIn), once known
 	actions  *bool           // a workflow uses an action from the tree (localActions), once known
 	build    *buildFiles     // the files the build reads (buildRead), once known
+	// lists counts the && lists commands have started, last is the cursor the last command
+	// outside any nested shell ran from, and at is where the command Allowed decides stands
+	// (AndList). backstopping marks a walk of a file the backstop reads, not a surface.
+	lists        int
+	last         cursor
+	at           andAt
+	backstopping bool
 }
+
+// andAt is the && list a command is part of, and whether the rule follows its order.
+type andAt struct {
+	list int
+	ok   bool
+}
+
+// AndList reports, while Spec.Allowed decides a command, the && list the command is part of:
+// two commands report the same list only when && alone joins them, and every command between
+// them, in one line of one surface, so the shell runs each once the one before it has
+// succeeded, and in that order. ok is false for a command the rule reaches through a nested
+// shell, a run wrapper or a concurrent runner, or in a file the backstop reads, whose order it
+// does not follow.
+func (v *Veto) AndList() (list int, ok bool) { return v.at.list, v.at.ok }
 
 // sampleRun is what the rule found in one sample hook, classified as any other surface but
 // apart from the rest of the build: why it withholds, and what its commands bind and mention.
@@ -379,7 +404,9 @@ func (v *Veto) Classify(match func(path string, head []byte) (string, bool)) fun
 		if _, surface := surfaceOf(path, head); surface {
 			why, ok = v.surface(path, head)
 		} else {
+			v.backstopping = true
 			why, ok = v.backstop(path, head)
+			v.backstopping = false
 		}
 		if ok {
 			v.vetoed[path] = true
@@ -1149,6 +1176,13 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	if len(words) == 0 {
 		return ""
 	}
+	if depth == 0 {
+		if !seg.and || cur != v.last {
+			v.lists++
+		}
+		v.last = cur
+	}
+	at := andAt{list: v.lists, ok: depth == 0 && !v.backstopping}
 	mark := cur.venv()
 	if mark.chain && !seg.and {
 		// The && list a cd was part of has ended: what runs now may run where the cd did not.
@@ -1191,6 +1225,10 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		// word alone (with: target: .) names a path or a mode, and sources nothing wherever it
 		// is run; a value that only starts with it may be joined to what follows.
 		if seg.param && len(words) == 1 {
+			return ""
+		}
+		if v.spec.Library != nil && len(words) == 2 && !seg.expands && !strings.Contains(words[1], "/") &&
+			v.spec.Library(words[1]) && !cur.present(words[1]) {
 			return ""
 		}
 		if (seg.expands || len(words) < 2 || !cur.sourced(words[1])) && !pathOnly(seg, cur, made) {
@@ -1243,6 +1281,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 			return v.command(segment{words: argv}, cur, depth+1)
 		}
 	}
+	v.at = at
 	if !v.spec.Allowed(words, cur) {
 		return "install command: " + strings.Join(words, " ")
 	}

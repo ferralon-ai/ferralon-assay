@@ -30,8 +30,9 @@ import (
 // or lock read here names (scriptsurface.Veto.Withheld), every pip install -r the script
 // surfaces run, every poetry install they run with the groups it selects (poetryInstalls), and
 // the distributions the build may hold at a version nothing read here records, which a caller
-// withholds as it would every pin: pip after an allowed self-upgrade (pipSelfUpgrade), and in
-// every build the distributions an interpreter or venv seeds (seededDistributions). No
+// withholds as it would every pin: pip after an allowed self-upgrade (pipSelfUpgrade), a tool
+// installed outside the manifests with every coordinate it may move (toolOrder), and in every
+// build the distributions an interpreter or venv seeds (seededDistributions). No
 // self-upgrade is allowed when root holds a pip config file (pipConfigInTree) or a script
 // surface names one (pipConfigNamedRE); configNamed reports the second. A script surface that names a uv config
 // (uvConfigNamedRE) withholds when an allowed uv sync runs, and one that names a poetry or pdm
@@ -99,6 +100,26 @@ func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, s
 		tooling = map[string]bool{}
 	}
 	spec := newScriptSpec(installs, poetry, tooling)
+	spec.Library = gitShellLibrary
+	var (
+		veto    *scriptsurface.Veto
+		current string // the surface the walk is classifying
+	)
+	order := &toolOrder{root: root, manifests: manifests}
+	laneAllowed := spec.Allowed
+	spec.Allowed = func(words []string, b scriptsurface.Binder) bool {
+		list, listed := veto.AndList()
+		ok := laneAllowed(words, b)
+		switch {
+		case ok:
+			order.allowed(words, list, listed)
+		case aptInstallsNoPyPI(words):
+			ok = true
+		case listed && tooling != nil && !sampleHook(root, current):
+			ok = order.tool(words, list, listed, current)
+		}
+		return ok
+	}
 	configNamed, mypyInstalls, uvConfigNamed, toolConfigNamed, uvSynced, toolSynced := false, false, false, false, false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
@@ -121,12 +142,13 @@ func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, s
 		rec = &runRecorder{inner: spec.Allowed, tooling: tooling}
 		spec.Allowed = rec.allowed
 	}
-	veto := scriptsurface.New(root, read, spec)
+	veto = scriptsurface.New(root, read, spec)
 	classify := veto.Classify(pyInstallSurface)
 	if rec != nil {
 		classify = rec.classify(root, veto)
 	}
 	match := func(path string, head []byte) (string, bool) {
+		current = path
 		mypyInstalls = mypyInstalls || mypyConfigInstalls(head) || installTypesLineRE.Match(head)
 		return classify(path, head)
 	}
@@ -136,9 +158,20 @@ func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, s
 		}
 	}
 	scriptWithheld = veto.Withheld() || mypyInstalls
+	if len(order.tools) > 0 && !scriptWithheld {
+		if keep, ok := order.pins(installs); ok {
+			for n := range order.withheld(keep) {
+				tooling[n] = true
+			}
+		} else {
+			scriptWithheld = true
+		}
+	}
 	if rec != nil {
-		rec.rescan(root, manifest, newScriptSpec(pipInstalls{}, poetryInstalls{}, maps.Clone(tooling)))
-		*runs = rec.runs
+		again := newScriptSpec(pipInstalls{}, poetryInstalls{}, maps.Clone(tooling))
+		again.Library = gitShellLibrary
+		rec.rescan(root, manifest, again)
+		*runs = append(rec.runs, order.runs(rec.withheld)...)
 	}
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
@@ -154,6 +187,258 @@ func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, s
 		tooling[n] = true
 	}
 	return manifests, unread || scriptWithheld, scriptWithheld, installs, poetry, tooling, veto.Unrecognised(), veto.Inactive(), configNamed
+}
+
+// gitShellLibrary reports whether a word sourced alone is git-sh-setup, the shell library git's
+// own hooks and commands source (a sample hook's . git-sh-setup), which defines functions and
+// installs nothing.
+func gitShellLibrary(word string) bool { return word == "git-sh-setup" }
+
+// aptPythonRE matches the Debian packages an apt install may name beside packages that are not
+// Python's: the interpreter, its headers, venv and pip. pip is a distribution, and stays
+// withheld in every build (seededDistributions), as do setuptools and wheel, which a distro's
+// pip depends on or recommends.
+var aptPythonRE = regexp.MustCompile(`^python(?:|2|2\.[0-9]+|3|3\.[0-9]+|-dev|2\.[0-9]+-dev|3-dev|3\.[0-9]+-dev|3-venv|3\.[0-9]+-venv|-pip|3-pip)$`)
+
+// debianNameRE is a Debian package name.
+var debianNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
+
+// aptInstallsNoPyPI reports whether words is an apt-get install or apt install whose every
+// package installs no PyPI distribution but pip: each, less a =version or /release suffix and
+// in any case, is a Debian name that does not start with py, or one aptPythonRE matches. Every
+// other word is an option flag. Any other python or py package (python3-django), a path, or a
+// word that is not a package name withholds, as does every other package manager.
+func aptInstallsNoPyPI(words []string) bool {
+	head, ok := scriptsurface.CommandName(words[0])
+	if !ok || head != "apt-get" && head != "apt" {
+		return false
+	}
+	i := 1
+	for i < len(words) && strings.HasPrefix(words[i], "-") {
+		i++
+	}
+	if i == len(words) || words[i] != "install" {
+		return false
+	}
+	packages := 0
+	for _, w := range words[i+1:] {
+		if strings.HasPrefix(w, "-") {
+			continue
+		}
+		name, _, _ := strings.Cut(w, "=")
+		name, _, _ = strings.Cut(name, "/")
+		name = strings.ToLower(name)
+		if !debianNameRE.MatchString(name) || strings.HasPrefix(name, "py") && !aptPythonRE.MatchString(name) {
+			return false
+		}
+		packages++
+	}
+	return packages > 0
+}
+
+// toolTargetRE is a distribution name, bare or with a version specifier, and nothing else: no
+// extras, marker, URL or path.
+var toolTargetRE = regexp.MustCompile(`^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)(?:(?:===|==|~=|!=|<=|>=|<|>)[0-9][0-9A-Za-z.*+!_-]*(?:,(?:===|==|~=|!=|<=|>=|<|>)[0-9][0-9A-Za-z.*+!_-]*)*)?$`)
+
+// toolOrder follows the pip installs the script surfaces run when one of them installs a tool
+// outside the manifests:
+//
+//	pip install [flags] <name>[<specifier>] ...   flags only from selfUpgradeFlags, and no
+//	                                              name a manifest read here names
+//
+// pip may be pipN, pipN.M or pythonN.M -m pip. A tool installs its own dependencies at
+// versions nothing read here records, so it withholds the names it installs and every
+// coordinate the manifests do not pin exactly (withheld). An exact pin keeps its version only
+// when every allowed install the build runs is a pip install -r, and every tool install runs
+// before every one of those in one && list (scriptsurface.Veto.AndList), all through one
+// installer (pipInstaller): pip then reinstalls each pin the files it installs hold, whatever a
+// tool put in place before it, in the one environment both installed into. A pin only those
+// files hold keeps it (pins). Any other order, a poetry, uv, pdm or pipenv install, or a
+// complete lock, which Exhaustive takes as the whole of what the build installs, withholds every
+// version, as a tool install did before this was followed. So do a tool install and an allowed
+// self-upgrade where a script surface names a pip config (versionSurfaces).
+type toolOrder struct {
+	root      string
+	manifests []string
+	named     map[string]bool // every coordinate a manifest read here names, once read
+	toolNames map[string]bool // every coordinate a tool install names
+	steps     int
+	tools     []toolStep
+	installs  []toolStep // the allowed pip install -r runs
+	other     bool       // an allowed install of another kind
+	toolRuns  []scriptRun
+}
+
+// toolStep is one install: the order it ran in, the && list it was part of, and its installer
+// (pipInstaller).
+type toolStep struct {
+	at, list  int
+	listed    bool
+	installer string
+}
+
+// pipInstaller returns the program as written before install in a pip install, with --user
+// when the install carries it: pip3, /opt/venv/bin/pip, python3.11 -m pip. Two installs share an
+// environment only when it can show they do, so pip, pip3, python -m pip, and two paths to one
+// base name are each their own installer, and --user on one install only is another. It is
+// empty when words is no pip install it reads.
+func pipInstaller(words []string) string {
+	head, ok := scriptsurface.CommandName(words[0])
+	var id string
+	switch {
+	case !ok:
+		return ""
+	case pipHeadRE.MatchString(head) && len(words) >= 2 && words[1] == "install":
+		id = words[0]
+	case pythonHeadRE.MatchString(head) && len(words) >= 4 && words[1] == "-m" && pipHeadRE.MatchString(words[2]) && words[3] == "install":
+		id = words[0] + " -m " + words[2]
+	default:
+		return ""
+	}
+	for _, w := range words {
+		if w == "--user" {
+			return id + " --user"
+		}
+	}
+	return id
+}
+
+// allowed notes a command the rule allows.
+func (o *toolOrder) allowed(words []string, list int, listed bool) {
+	if args, ok := pipInstallArgs(words); ok && !isUVPip(words) {
+		if !pipSelfUpgrade(args) {
+			o.steps++
+			o.installs = append(o.installs, toolStep{o.steps, list, listed, pipInstaller(words)})
+		}
+		return
+	}
+	head, _ := scriptsurface.CommandName(words[0])
+	switch head {
+	case "uv", "poetry", "pdm", "pipenv":
+		o.other = o.other || len(words) > 1 && (words[1] == "sync" || words[1] == "install")
+	}
+}
+
+// tool reports whether words is a tool install, and notes it. surface is where it runs.
+func (o *toolOrder) tool(words []string, list int, listed bool, surface string) bool {
+	args, ok := pipInstallArgs(words)
+	if !ok || isUVPip(words) {
+		return false
+	}
+	var names []string
+	for _, a := range args {
+		if selfUpgradeFlags[a] {
+			continue
+		}
+		m := toolTargetRE.FindStringSubmatch(a)
+		if m == nil {
+			return false
+		}
+		names = append(names, normalizePyCoordinate(m[1]))
+	}
+	if len(names) == 0 {
+		return false
+	}
+	named := o.manifestNames()
+	for _, n := range names {
+		if named[n] {
+			return false
+		}
+	}
+	o.steps++
+	o.tools = append(o.tools, toolStep{o.steps, list, listed, pipInstaller(words)})
+	o.toolRuns = append(o.toolRuns, scriptRun{surface: surface, args: args})
+	if o.toolNames == nil {
+		o.toolNames = map[string]bool{}
+	}
+	for _, n := range names {
+		o.toolNames[n] = true
+	}
+	return true
+}
+
+// manifestNames returns every coordinate a manifest read here, or the tree's pixi manifests,
+// names.
+func (o *toolOrder) manifestNames() map[string]bool {
+	if o.named != nil {
+		return o.named
+	}
+	o.named = map[string]bool{}
+	pixi, _, _ := pixiManifestDeps(o.root)
+	for _, d := range pixi {
+		o.named[normalizePyCoordinate(d.Coordinate)] = true
+	}
+	for _, m := range o.manifests {
+		deps, _, _ := parseManifest(m)
+		for _, d := range deps {
+			o.named[normalizePyCoordinate(d.Coordinate)] = true
+		}
+	}
+	return o.named
+}
+
+// pins returns the coordinates whose exact pins keep their version: each one a file the
+// allowed pip install -r runs install (installs) pins exactly. ok is false when the order
+// keeps none (toolOrder).
+func (o *toolOrder) pins(installs pipInstalls) (keep map[string]bool, ok bool) {
+	if o.other || len(o.installs) == 0 {
+		return nil, false
+	}
+	for _, m := range o.manifests {
+		if completeLockfiles[filepath.Base(m)] {
+			return nil, false
+		}
+	}
+	list, installer := o.tools[0].list, o.tools[0].installer
+	for _, s := range append(o.tools[:len(o.tools):len(o.tools)], o.installs...) {
+		if !s.listed || s.list != list || s.installer == "" || s.installer != installer {
+			return nil, false
+		}
+	}
+	if o.tools[len(o.tools)-1].at > o.installs[0].at {
+		return nil, false
+	}
+	keep = map[string]bool{}
+	for f := range installs {
+		deps, _, read := parseManifest(f)
+		if !read {
+			return nil, false
+		}
+		for _, d := range deps {
+			if d.Resolved {
+				keep[normalizePyCoordinate(d.Coordinate)] = true
+			}
+		}
+	}
+	return keep, true
+}
+
+// withheld returns every coordinate a manifest names, or a tool installs, but keep.
+func (o *toolOrder) withheld(keep map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	maps.Copy(out, o.toolNames)
+	for n := range o.manifestNames() {
+		if !keep[n] {
+			out[n] = true
+		}
+	}
+	return out
+}
+
+// runs returns the tool installs' runs on the surfaces the rule did not withhold on, whose
+// runs a rescan records already.
+func (o *toolOrder) runs(withheld []surfaceHead) []scriptRun {
+	again := map[string]bool{}
+	for _, w := range withheld {
+		again[w.path] = true
+	}
+	var out []scriptRun
+	for _, r := range o.toolRuns {
+		if !again[r.surface] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.

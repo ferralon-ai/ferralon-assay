@@ -227,6 +227,9 @@ func (e *Engine) resolveTargets(edge assembly.Edge, fromAsm *assembly.Assembly, 
 	if w, ok := dynamicHazard(owner); ok {
 		return edgeOut{hazard: true, why: w + "::" + name}
 	}
+	if t, ok := e.unloadedInstantiation(fromAsm, edge.Token); ok {
+		return edgeOut{hazard: true, why: "generic instantiation over " + t + " (not in the loaded set): " + owner + "::" + name}
+	}
 	if o, ok := e.frameworkEdge(edge, fromAsm, ctx); ok {
 		return o
 	}
@@ -239,6 +242,16 @@ func (e *Engine) resolveTargets(edge assembly.Edge, fromAsm *assembly.Assembly, 
 	}
 	// A receiver that inherits the slot's body from an out-of-set base runs that body.
 	for _, b := range dr.OutOfSetBases {
+		if b.Iface {
+			// Framework code cannot name an in-set interface, so only a non-framework
+			// interface can supply a default method for its slot, and only on a receiver
+			// that can exist: one instantiated, or one handed to the framework as a generic
+			// argument (a DI container builds it through any constructor).
+			if !e.isFrameworkType(b.Asm, b.Ref) && (b.Via == nil || ctx == nil || ctx.counts(b.Via) || ctx.isGenArg(b.Via)) {
+				out.flag("default interface method from " + typeRefDisplay(b.Ref) + " (not in the loaded set) can fill " + owner + "::" + name)
+			}
+			continue
+		}
 		if e.isFrameworkType(b.Asm, b.Ref) {
 			out.fw = true
 			continue
@@ -582,6 +595,11 @@ func (e *Engine) walk(starts []*methodNode, sinkSet map[*methodNode]bool, ctx *s
 			}
 		}
 		if found == nil {
+			for _, tok := range body.TypeUses {
+				if t, ok := e.unloadedTypeUse(cur.asm, tok); ok {
+					markHazard("box, newarr or constrained. use of " + t + " (not in the loaded set): its Object and interface overrides are unreadable")
+				}
+			}
 			for _, tr := range body.InitTriggers {
 				e.handleTrigger(cur, tr, enqueue, markHazard, markFramework)
 				if found != nil {
@@ -617,6 +635,12 @@ func (e *Engine) walk(starts []*methodNode, sinkSet map[*methodNode]bool, ctx *s
 func (e *Engine) handleTrigger(cur *methodNode, tr assembly.InitTrigger, enqueue func(from, t *methodNode), markHazard func(string), markFramework func()) {
 	if e.disableInitClosure {
 		return // test seam: prove the whole .cctor channel is load-bearing.
+	}
+	if t, ok := e.unloadedInstantiation(cur.asm, tr.Token); ok {
+		// The declaring type is a generic instantiation over a type outside the loaded set:
+		// its .cctor runs with that argument, which it may construct or call into.
+		markHazard("type-init over a generic instantiation over " + t + " (not in the loaded set)")
+		return
 	}
 	te, inSet, outRef, resolvable := e.triggerType(cur.asm, tr.Token)
 	if !resolvable {

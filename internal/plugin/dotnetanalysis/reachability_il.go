@@ -70,8 +70,8 @@ func ilReachability(req plugin.ReachabilityRequest) (res plugin.ReachabilityResu
 
 	// A dep that does not locate/read is a DECLARED MISS: absent from the set ⇒ out-of-set ⇒
 	// a completeness hazard on any call into it ⇒ undetermined, never a silent leaf. It is
-	// disclosed as a scoped limit bounded by what the missing code could reach, and as a
-	// run-wide reason too, so a consumer that reads only Reasons still sees it.
+	// disclosed as a scoped limit bounded by what the missing code could reach. Only a miss
+	// whose reach cannot be bounded is also a run-wide reason (missLimits).
 	set := assembly.LoadSpanningSet(req.BuildDir, fp, locator, deps)
 	set.Misses = append(set.Misses, rt.misses...)
 	engine := depreach.NewEngine(set.Assemblies)
@@ -108,8 +108,9 @@ func ilReachability(req plugin.ReachabilityRequest) (res plugin.ReachabilityResu
 	for _, r := range build.reasons {
 		reasons[r] = true
 	}
-	for _, m := range misses {
-		reasons[missReason(m.Reason)] = true
+	scoped, unbounded := missLimits(misses, graph)
+	for _, r := range unbounded {
+		reasons[r] = true
 	}
 	if untrusted {
 		reasons[partialReasonRestoreUntrusted] = true
@@ -221,7 +222,7 @@ func ilReachability(req plugin.ReachabilityRequest) (res plugin.ReachabilityResu
 		searched = nil
 	}
 	return plugin.ReachabilityResult{
-		Partiality: ilPartiality(reasons, missScopes(misses, graph)),
+		Partiality: ilPartiality(reasons, scoped),
 		Paths:      paths,
 		Searched:   searched,
 	}, true, plugin.ScopedReason{}
@@ -254,25 +255,63 @@ func ingressSearch(engine *depreach.Engine, idx *reconcileIndex, roots, sinkKeys
 	return out
 }
 
-// missScopes discloses each declared dependency miss as a scoped limit: the package's code
-// was not read, so any call into it hides edges into it and everything it depends on.
-func missScopes(misses []assembly.DepMiss, graph *assetsGraph) []plugin.ScopedReason {
-	var out []plugin.ScopedReason
-	seen := map[string]bool{}
+// missLimits discloses each declared dependency miss as a scoped limit: the package's code
+// was not read, so any call into it hides edges into it and everything it depends on. The
+// search already treats a call into the missing code as a hazard; the scoped limit is what
+// keeps an advisory on the package, or on anything it depends on, from being refuted.
+//
+// A miss whose closure cannot be bounded (no package id, or a dependency restore did not
+// resolve) could hide any code, so its reason is returned in unbounded for the run-wide set.
+// A package missed in several targets (one per runtime identifier when the build's is
+// unknown) is scoped to the union of its closures, and is unbounded if any one is.
+func missLimits(misses []assembly.DepMiss, graph *assetsGraph) (scoped []plugin.ScopedReason, unbounded []string) {
+	type limit struct {
+		reason  string
+		id      string
+		targets map[string]bool
+	}
+	var order []string
+	byKey := map[string]*limit{}
+	runWide := map[string]bool{}
 	for _, m := range misses {
+		reason := missReason(m.Reason)
 		id, _ := splitPkgKey(m.Dep.PkgKey)
-		if id == "" || seen[m.Dep.PkgKey] {
+		var targets []string
+		if id != "" {
+			targets = graph.closure(m.Dep.Target, m.Dep.PkgKey)
+		}
+		if len(targets) == 0 && !runWide[reason] {
+			runWide[reason] = true
+			unbounded = append(unbounded, reason)
+		}
+		if id == "" {
 			continue
 		}
-		seen[m.Dep.PkgKey] = true
-		out = append(out, plugin.ScopedReason{
-			Reason:  missReason(m.Reason),
-			Package: nugetPackageURL(id),
-			Path:    m.Dep.PkgKey,
-			Targets: graph.closure(m.Dep.Target, m.Dep.PkgKey),
+		l := byKey[m.Dep.PkgKey]
+		if l == nil {
+			l = &limit{reason: reason, id: id, targets: map[string]bool{}}
+			byKey[m.Dep.PkgKey] = l
+			order = append(order, m.Dep.PkgKey)
+		}
+		for _, t := range targets {
+			l.targets[t] = true
+		}
+	}
+	for _, key := range order {
+		l := byKey[key]
+		var targets []string
+		for t := range l.targets {
+			targets = append(targets, t)
+		}
+		sort.Strings(targets)
+		scoped = append(scoped, plugin.ScopedReason{
+			Reason:  l.reason,
+			Package: nugetPackageURL(l.id),
+			Path:    key,
+			Targets: targets,
 		})
 	}
-	return out
+	return scoped, unbounded
 }
 
 // missReason maps a spanning-set miss to its partiality code: code that was not on disk

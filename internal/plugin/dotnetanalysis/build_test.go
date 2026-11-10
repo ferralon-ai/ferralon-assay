@@ -122,8 +122,8 @@ func TestReachability_BindsToTheBuiltTargetFramework(t *testing.T) {
 				}
 				return
 			}
-			if !hasILReason(res.Partiality, c.wantReason) {
-				t.Fatalf("Reasons = %v, want %s", res.Partiality.Reasons, c.wantReason)
+			if !hasILLimit(res.Partiality, c.wantReason) {
+				t.Fatalf("partiality = %+v, want %s", res.Partiality, c.wantReason)
 			}
 		})
 	}
@@ -333,9 +333,10 @@ func TestReachability_RuntimeSpecificAssets(t *testing.T) {
 				}
 				return
 			}
-			if !hasILReason(res.Partiality, c.wantReason) || len(res.Partiality.Scoped) != 1 ||
+			// The miss is bounded by its package's closure, so it is scoped and not run-wide.
+			if hasILReason(res.Partiality, c.wantReason) || len(res.Partiality.Scoped) != 1 ||
 				res.Partiality.Scoped[0].Reason != c.wantReason {
-				t.Fatalf("partiality = %+v, want %s scoped and run-wide", res.Partiality, c.wantReason)
+				t.Fatalf("partiality = %+v, want %s scoped only", res.Partiality, c.wantReason)
 			}
 			if report.ClassifyPartialityReason(c.wantReason) != report.PartialityDidNotRun {
 				t.Fatalf("%s must classify did_not_run", c.wantReason)

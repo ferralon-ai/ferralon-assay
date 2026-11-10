@@ -33,9 +33,8 @@ const tblMemberRefTable = 0x0A
 
 // ilReachability runs the whole-program IL engine when the first-party compiled assembly is
 // present in req.BuildDir's build output. handled is false to signal DEGRADE (no first-party
-// IL, or a reader parse-hazard): the caller falls back to the lexical tier + tool_failure and
-// NEVER an empty IL graph, NEVER a false not_exploitable.
-// On a degrade, absent names why.
+// IL, or a reader parse-hazard): the caller falls back to the lexical tier, declaring absent
+// (why the IL tier did not run), and NEVER an empty IL graph, NEVER a false not_exploitable.
 func ilReachability(req plugin.ReachabilityRequest) (res plugin.ReachabilityResult, handled bool, absent plugin.ScopedReason) {
 	build := locateFirstPartyBuild(req.BuildDir)
 	if build.fp == nil {

@@ -558,6 +558,6 @@ func TestC5_EmptyGraphMutationControl(t *testing.T) {
 		t.Fatalf("removing first-party IL must NOT yield a clean result (that would be a false NE)")
 	}
 	if !hasILReason(without.Partiality, partialReasonFirstPartyILAbsent) {
-		t.Fatalf("mutation must degrade with tool_failure, got %v", without.Partiality.Reasons)
+		t.Fatalf("mutation must degrade with %s, got %v", partialReasonFirstPartyILAbsent, without.Partiality.Reasons)
 	}
 }

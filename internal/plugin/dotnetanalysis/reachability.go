@@ -47,6 +47,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	// did not run and says why, so the caller never reads the lexical candidate-narrower as a
 	// proven result. It is also a scoped first-party limit with no Targets, so the Report
 	// discloses where the IL was looked for.
+	if absent.Reason == "" {
+		absent.Reason = plugin.PartialReasonToolFailure
+	}
 	res.Partiality = withReason(res.Partiality, absent.Reason)
 	res.Partiality.Scoped = append(res.Partiality.Scoped, absent)
 	return res, nil

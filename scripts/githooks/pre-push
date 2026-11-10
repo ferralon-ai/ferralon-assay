@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# pre-push — refuse a push that creates a second remote branch for an order id.
+#
+# A new remote branch whose name carries an order id (`ASY-<n>` or `eric-req-<slug>`, whole token,
+# case-insensitive) is refused when a different branch on the remote, or another new branch in the
+# same push, already carries that id. Pushes to an existing branch (revisions), deletions and tags
+# always pass.
+#
+# An eric-req slug is the whole hyphenated run after `eric-req-`, so a suffix joined with a hyphen
+# becomes part of the id: `eric-req-x-r1` and `eric-req-x-r2` are two different orders. Name a branch
+# for an eric-req order `eric-req-<slug>`, or end the slug with a delimiter other than a hyphen before
+# any suffix: `eric-req-<slug>/<suffix>`, `eric-req-<slug>_<suffix>` or `eric-req-<slug>.<suffix>`.
+# scripts/pr-order-audit.sh reads ids by the same rule.
+#
+# The check is against the remote's branches, not its pull requests: a branch left on the remote by a
+# merged or closed PR still carries its id and refuses a new branch for that order. Push to that
+# branch, delete it (git push origin --delete <branch>) to clear the id, or set PR_ORDER_ALLOW=1.
+#
+# Exit: 0 allowed; 1 refused; 2 the remote's branches could not be listed (fails closed).
+# Bypass for a deliberate second branch: PR_ORDER_ALLOW=1 git push ...
+# Enable in a clone with scripts/install-githooks.sh.
+set -uo pipefail
+
+remote=${1:-origin}
+
+# ids_fn: the awk function ids(str, out) that fills out[] with each whole-token order id in str,
+# lower-case. The one copy of the id rule in this hook.
+ids_fn='
+  function ids(str, out,    s, pos, rest, tok, pre, post) {
+    s = tolower(str); pos = 1
+    while (pos <= length(s)) {
+      rest = substr(s, pos)
+      if (!match(rest, /(asy-[0-9]+|eric-req-[a-z0-9]+(-[a-z0-9]+)*)/)) break
+      tok = substr(rest, RSTART, RLENGTH)
+      pre = (pos + RSTART - 1 > 1) ? substr(s, pos + RSTART - 2, 1) : ""
+      post = substr(s, pos + RSTART - 1 + RLENGTH, 1)
+      if (pre !~ /[a-z0-9]/ && post !~ /[a-z0-9]/) { out[tok] = 1; pos += RSTART - 1 + RLENGTH }
+      else pos += RSTART
+    }
+  }'
+
+zeros='^0+$'
+new_branches=()
+while read -r _lref lsha rref rsha; do
+  case "$rref" in refs/heads/*) ;; *) continue ;; esac
+  [[ "$lsha" =~ $zeros ]] && continue      # deleting a branch
+  [[ "$rsha" =~ $zeros ]] || continue      # existing branch: a revision
+  new_branches+=("${rref#refs/heads/}")
+done
+
+[ "${#new_branches[@]}" -gt 0 ] || exit 0
+
+# Only a push creating a branch that carries an order id goes on to list the remote.
+printf '%s\n' "${new_branches[@]}" |
+  awk "$ids_fn"' { delete f; ids($0, f); for (id in f) found = 1 } END { exit found ? 0 : 1 }'
+case $? in
+  0) ;;
+  1) exit 0 ;;
+  *) echo "pre-push: cannot read the pushed branch names; refusing (set PR_ORDER_ALLOW=1 to bypass)" >&2; exit 2 ;;
+esac
+
+if [ "${PR_ORDER_ALLOW:-}" = 1 ]; then
+  echo "pre-push: PR_ORDER_ALLOW=1, skipping the one-branch-per-order check" >&2
+  exit 0
+fi
+
+heads=$(git ls-remote --heads "$remote") || {
+  echo "pre-push: cannot list branches on '$remote'; refusing (set PR_ORDER_ALLOW=1 to bypass)" >&2
+  exit 2
+}
+
+# Every branch on the remote and every branch this push creates, one "where<TAB>branch" line each;
+# each pushed branch is refused when any other of them carries one of its ids.
+refusals=$(
+  {
+    printf '%s\n' "$heads" | awk '$2 ~ /^refs\/heads\// { sub(/^refs\/heads\//, "", $2); print "remote\t" $2 }'
+    printf 'push\t%s\n' "${new_branches[@]}"
+  } | awk -F '\t' -v remote="$remote" "$ids_fn"'
+    { delete f; ids($2, f); for (id in f) { n++; where[n] = $1; br[n] = $2; idof[n] = id } }
+    END {
+      for (i = 1; i <= n; i++) if (where[i] == "push")
+        for (j = 1; j <= n; j++) if (br[j] != br[i] && idof[j] == idof[i]) {
+          if (where[j] == "push") { said = "in this same push also"; hint = "Push only one of them" }
+          else { said = "on " remote " already"; hint = "Push to \047" br[j] "\047 instead" }
+          print "pre-push: refusing \047" br[i] "\047: \047" br[j] "\047 " said " carries order id " idof[i] "."
+          print "  " hint ", or set PR_ORDER_ALLOW=1 for a deliberate second branch."
+        }
+    }'
+) || {
+  echo "pre-push: cannot compare branch names; refusing (set PR_ORDER_ALLOW=1 to bypass)" >&2
+  exit 2
+}
+[ -z "$refusals" ] && exit 0
+printf '%s\n' "$refusals" >&2
+exit 1

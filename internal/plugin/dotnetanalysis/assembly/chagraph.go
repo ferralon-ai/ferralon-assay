@@ -76,10 +76,13 @@ type DispatchResult struct {
 	OutOfSetBases []OutOfSetBase
 }
 
-// OutOfSetBase is an out-of-set base type, as the TypeRef Asm reads it.
+// OutOfSetBase is an out-of-set base type, as the TypeRef Asm reads it. Iface marks an
+// out-of-set interface a class with no body for an interface slot implements: the runtime
+// binds the slot to a default method, which that interface can supply.
 type OutOfSetBase struct {
-	Asm *Assembly
-	Ref TypeRef
+	Asm   *Assembly
+	Ref   TypeRef
+	Iface bool
 }
 
 // SigCompatible reports whether signature sigA (read in asmA) can name the method whose
@@ -378,28 +381,43 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig [
 			}
 		}
 	}
-	// walked marks classes whose inherited body is already accounted for: the first body
+	// walked records, per class, whether a body was found at or above it: the first body
 	// at or above a node is the same whichever descendant the walk started from.
 	walked := map[*typeNode]bool{}
 	inherit := func(t *typeNode) {
-		for n := t; ; {
-			if walked[n] {
-				return
+		var chain []*typeNode
+		var ifaces []OutOfSetBase
+		found := false
+		for n := t; ; n = n.base {
+			if f, ok := walked[n]; ok {
+				found = f
+				break
 			}
-			walked[n] = true
+			chain = append(chain, n)
 			if n != t {
 				if ms := slotBodies(n); len(ms) > 0 {
 					add(n, ms)
-					return
+					found = true
+					break
 				}
+			}
+			if ownerIsIface {
+				ifaces = c.outOfSetIfaces(n, ifaces)
 			}
 			if n.base == nil {
 				if !n.def.Extends.Token.IsNull() && (!isRootBase(n.def.Extends) || objectVirtual(name)) {
 					bases = append(bases, OutOfSetBase{Asm: n.asm, Ref: n.def.Extends})
 				}
-				return
+				break
 			}
-			n = n.base
+		}
+		// With no class body for an interface slot the runtime binds a default method,
+		// which an out-of-set interface on the chain can supply.
+		if !found {
+			bases = append(bases, ifaces...)
+		}
+		for _, n := range chain {
+			walked[n] = found
 		}
 	}
 
@@ -424,6 +442,25 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig [
 		}
 	}
 	return targets, bases
+}
+
+// outOfSetIfaces appends the out-of-set interfaces n implements, directly or through an
+// in-set interface it implements.
+func (c *CHA) outOfSetIfaces(n *typeNode, acc []OutOfSetBase) []OutOfSetBase {
+	seen := map[*typeNode]bool{}
+	var walk func(t *typeNode)
+	walk = func(t *typeNode) {
+		for _, ref := range t.def.Interfaces {
+			if i := c.lookup(t.asm, ref); i == nil {
+				acc = append(acc, OutOfSetBase{Asm: t.asm, Ref: ref, Iface: true})
+			} else if !seen[i] {
+				seen[i] = true
+				walk(i)
+			}
+		}
+	}
+	walk(n)
+	return acc
 }
 
 // interfaceTarget resolves how type t satisfies interface member iface.name/sig:

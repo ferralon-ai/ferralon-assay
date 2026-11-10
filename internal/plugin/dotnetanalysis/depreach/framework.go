@@ -76,6 +76,7 @@ type fwModel struct {
 	reentry    map[int][]*methodNode
 	reentryDIM map[int]string
 	fields     map[*assembly.TypeDef]string
+	fieldsBusy map[*assembly.TypeDef]bool
 	phaseB     map[string]searchOut
 }
 
@@ -131,6 +132,7 @@ func (e *Engine) SetFramework(names map[string]bool) {
 		reentry:    map[int][]*methodNode{},
 		reentryDIM: map[int]string{},
 		fields:     map[*assembly.TypeDef]string{},
+		fieldsBusy: map[*assembly.TypeDef]bool{},
 		phaseB:     map[string]searchOut{},
 	}
 	e.fw.allCtx = e.newCtx(nil, nil)
@@ -799,7 +801,15 @@ func (e *Engine) unloadedField(te typeEntry) string {
 		e.fw.fields[te.td] = ""
 		return ""
 	}
-	e.fw.fields[te.td] = "" // a struct cannot contain itself; this only stops a malformed cycle
+	// A struct can reach itself through an array or a generic argument (A{B[] bs},
+	// B{A a}). The outermost computation reads every field on the cycle, so a busy type
+	// contributes nothing new there; but a negative found under it is partial, and only
+	// the outermost result, or a positive, is cached.
+	if e.fw.fieldsBusy[te.td] {
+		return ""
+	}
+	e.fw.fieldsBusy[te.td] = true
+	outermost := len(e.fw.fieldsBusy) == 1
 	name := te.td.Namespace + "." + te.td.Name
 	r := ""
 	sigs, ok := te.asm.InstanceFieldSigs(te.td)
@@ -813,6 +823,9 @@ func (e *Engine) unloadedField(te typeEntry) string {
 			break
 		}
 		rd.skipPrefixes()
+		if b, _ := rd.peek(); b == etPtr || b == etByRef || b == etFnPtr {
+			continue // reflection-based Equals never dereferences or calls through these
+		}
 		unloaded, ok := e.unloadedInSig(te.asm, s[rd.pos:], false)
 		if !ok {
 			r = "an undecodable field signature on " + name
@@ -823,7 +836,10 @@ func (e *Engine) unloadedField(te typeEntry) string {
 			break
 		}
 	}
-	e.fw.fields[te.td] = r
+	delete(e.fw.fieldsBusy, te.td)
+	if outermost || r != "" {
+		e.fw.fields[te.td] = r
+	}
 	return r
 }
 

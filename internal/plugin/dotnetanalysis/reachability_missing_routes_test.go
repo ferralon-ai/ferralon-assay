@@ -123,6 +123,33 @@ func TestReachability_RoutesIntoMissingPackage(t *testing.T) {
 	boxHash := func(c *mrCtx, td uint32) [][]byte {
 		return [][]byte{mrOp([]byte{0x8C}, mtok(xTypeDef, td)), ilCallvirt(c.a.fwRef("System", "Object", "GetHashCode", getHashCode)), mrPop}
 	}
+	// inSetIfaceDIM: App.IRun.Run, called through the interface on Foo, which implements
+	// IRun and Gone.W.IThing (through an in-set App.J when viaInSet, or IDisposable instead
+	// when framework) and declares Run itself only when fills.
+	inSetIfaceDIM := func(fills, viaInSet, framework bool) func(c *mrCtx) [][]byte {
+		return func(c *mrCtx) [][]byte {
+			a := c.a
+			irun, rm := a.addType(0xA1, "IRun", "App", 0, []mspec{{name: "Run", flags: 0x5C6, sig: sigInstVoid}})
+			ms := []mspec{{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()}}
+			if fills {
+				ms = append(ms, mspec{name: "Run", flags: fIfaceImpl, sig: sigInstVoid, il: body()})
+			}
+			other := cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing"))
+			if viaInSet {
+				j, _ := a.addType(0xA1, "J", "App", 0, nil)
+				a.row(xInterfaceImpl, j, other)
+				other = cTypeDefOrRef(xTypeDef, j)
+			}
+			foo, fm := a.addType(0, "Foo", "App", a.obj, ms)
+			a.row(xInterfaceImpl, foo, cTypeDefOrRef(xTypeDef, irun))
+			if framework {
+				a.implements(foo, "System", "IDisposable")
+			} else {
+				a.row(xInterfaceImpl, foo, other)
+			}
+			return [][]byte{ilNewobjOp(mtok(xMethodDef, fm[0])), ilCallvirt(mtok(xMethodDef, rm[0]))}
+		}
+	}
 	staticGoneS := func(c *mrCtx) uint32 {
 		return mtok(xField, c.a.row(xField, 0x16, c.a.str("s"), c.a.blob(append([]byte{0x06}, mrValue(c.gstruct)...))))
 	}
@@ -305,6 +332,31 @@ func TestReachability_RoutesIntoMissingPackage(t *testing.T) {
 			a.row(xInterfaceImpl, foo, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
 			return [][]byte{ilNewobjOp(mtok(xMethodDef, fm[0])), ilCallvirt(a.fwRef("System", "IDisposable", "Dispose", sigInstVoid))}
 		}, false},
+		{"in-set interface slot a missing interface's default method can fill", inSetIfaceDIM(false, false, false), false},
+		{"in-set interface slot, missing interface reached through an in-set one", inSetIfaceDIM(false, true, false), false},
+		{"in-set interface slot the type fills itself: searched", inSetIfaceDIM(true, false, false), true},
+		{"in-set interface slot paired only with a framework interface: searched", inSetIfaceDIM(false, false, true), true},
+		{"box a framework struct: searched", func(c *mrCtx) [][]byte {
+			return [][]byte{mrOp([]byte{0x8C}, mtok(xTypeRef, c.a.extTypeRef("System", "Int32"))), ilCallvirt(c.a.fwRef("System", "Object", "GetHashCode", getHashCode)), mrPop}
+		}, true},
+		{"box an in-set struct with an unreadable field list", func(c *mrCtx) [][]byte {
+			key := mrStruct(c, "Key", []byte{0x08})
+			c.a.tables[xTypeDef][key-1][4] = 0
+			return boxHash(c, key)
+		}, false},
+		{"box an in-set struct holding a function pointer: searched", func(c *mrCtx) [][]byte {
+			return boxHash(c, mrStruct(c, "Key", []byte{0x1B, 0x00, 0x00, 0x01}))
+		}, true},
+		{"box an in-set struct holding a pointer to a missing struct: searched", func(c *mrCtx) [][]byte {
+			return boxHash(c, mrStruct(c, "Key", append([]byte{0x0F}, mrValue(c.gstruct)...)))
+		}, true},
+		{"in-set class holding a missing struct as a Dictionary key: searched", func(c *mrCtx) [][]byte {
+			a := c.a
+			key := mrStruct(c, "Key", mrValue(c.gstruct))
+			a.tables[xTypeDef][key-1][0], a.tables[xTypeDef][key-1][3] = 0x100001, a.obj
+			dict := mrGenInst(mrClass(a.extTypeRef("System.Collections.Generic", "Dictionary`2")), mrDef(key), []byte{0x08})
+			return [][]byte{ilNewobjOp(a.specRef(dict, ".ctor", sigInstVoid)), mrPop}
+		}, true},
 	} {
 		t.Run(r.name, func(t *testing.T) {
 			t.Setenv("NUGET_PACKAGES", t.TempDir())

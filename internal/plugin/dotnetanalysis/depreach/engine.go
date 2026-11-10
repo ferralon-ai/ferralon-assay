@@ -242,6 +242,14 @@ func (e *Engine) resolveTargets(edge assembly.Edge, fromAsm *assembly.Assembly, 
 	}
 	// A receiver that inherits the slot's body from an out-of-set base runs that body.
 	for _, b := range dr.OutOfSetBases {
+		if b.Iface {
+			// Framework code cannot name an in-set interface, so only a non-framework
+			// interface can supply a default method for its slot.
+			if !e.isFrameworkType(b.Asm, b.Ref) {
+				out.flag("default interface method from " + typeRefDisplay(b.Ref) + " (not in the loaded set) can fill " + owner + "::" + name)
+			}
+			continue
+		}
 		if e.isFrameworkType(b.Asm, b.Ref) {
 			out.fw = true
 			continue
@@ -587,7 +595,7 @@ func (e *Engine) walk(starts []*methodNode, sinkSet map[*methodNode]bool, ctx *s
 		if found == nil {
 			for _, tok := range body.TypeUses {
 				if t, ok := e.unloadedTypeUse(cur.asm, tok); ok {
-					markHazard("boxed or constrained value of " + t + " (not in the loaded set): its Object overrides are unreadable")
+					markHazard("box, newarr or constrained. use of " + t + " (not in the loaded set): its Object and interface overrides are unreadable")
 				}
 			}
 			for _, tr := range body.InitTriggers {

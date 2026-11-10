@@ -613,7 +613,10 @@ func splitOptionWords(value string) (words []string, unreadable bool) {
 		if strings.Contains(w, "$") || strings.Contains(w, "%") || strings.Contains(w, "`") {
 			switch classifyLaunchOption(w) {
 			case optionAgent, optionInert:
-				words = append(words, w) // an agent whatever path it names; inert whatever value
+				// An agent whatever path it names; inert whatever value. An unquoted expansion
+				// word-splits, so a value carrying an agent (HEAP="1g -javaagent:x") is caught
+				// where the checkout assigns it; one set only at deploy time is residue, as for -D.
+				words = append(words, w)
 				continue
 			}
 			if prop, ok := strings.CutPrefix(w, "-D"); ok {
@@ -678,12 +681,16 @@ var propertyNameByte = func() (t [256]bool) {
 // launchOptionTokens returns every launch-option token in data. A token is a whole word; one
 // that touches a control byte or is not UTF-8 is binary data, not text, and is skipped. So is
 // one in a binary file (past its script text, for a script with a payload) whose surrounding
-// run of non-space bytes is not UTF-8: delimiters that happen to fall in compressed data.
+// run of non-space bytes is not UTF-8: delimiters that happen to fall in compressed data. An
+// agent token is never skipped that way.
 func launchOptionTokens(data []byte) []launchToken {
 	var out []launchToken
 	binaryFrom := bytes.IndexByte(data, 0)
 	if binaryFrom >= 0 && !bytes.HasPrefix(data, []byte("#!")) {
-		binaryFrom = 0
+		binaryFrom = -1
+		if n := bytes.Count(data, []byte{0}); binaryMagic(data) || n >= binaryMinNULs && n*binaryNULDensity >= len(data) {
+			binaryFrom = 0
+		}
 	}
 	for pos := 0; pos < len(data); {
 		loc := optionHead.FindIndex(data[pos:])
@@ -709,7 +716,8 @@ func launchOptionTokens(data []byte) []launchToken {
 			end++
 		}
 		pos = end
-		if binaryAdjacent(data, h, end) || binaryFrom >= 0 && h >= binaryFrom && !utf8.Valid(binaryRun(data, h, end)) {
+		if binaryAdjacent(data, h, end) || binaryFrom >= 0 && h >= binaryFrom && !utf8.Valid(binaryRun(data, h, end)) &&
+			classifyLaunchOption(string(data[h:end])) != optionAgent {
 			continue
 		}
 		word := string(data[h:end])
@@ -787,6 +795,23 @@ func lineContinuation(data []byte, i int) int {
 func binaryAdjacent(data []byte, a, b int) bool {
 	ctl := func(c byte) bool { return c < ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\f' && c != '\v' }
 	return a > 0 && ctl(data[a-1]) || b < len(data) && ctl(data[b])
+}
+
+// A file without a shebang is binary when it opens with a binary format's magic, or its NULs
+// number at least binaryMinNULs and one in binaryNULDensity bytes: compressed data, not a text
+// file with a stray NUL.
+const binaryMinNULs, binaryNULDensity = 4, 512
+
+var binaryMagics = [][]byte{[]byte("wOFF"), []byte("wOF2"), []byte("PK\x03\x04"), []byte("\x89PNG"),
+	[]byte("GIF8"), []byte("\xff\xd8\xff"), []byte("\xca\xfe\xba\xbe"), []byte("\x1f\x8b")}
+
+func binaryMagic(data []byte) bool {
+	for _, m := range binaryMagics {
+		if bytes.HasPrefix(data, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // binaryRun widens data[a:b] to the run of bytes around it that are neither whitespace nor
@@ -1051,7 +1076,7 @@ func isJavaCommand(w string) bool {
 // and a line that assigns SBT's or Ant's option variable or Gradle's daemon JVM arguments.
 // Maven's .mvn/jvm.config, like MAVEN_OPTS, configures the JVM exec:java runs the program in.
 func (f *launchFile) buildSpans(rel string) {
-	if f.gradlew || f.mavenw || strings.HasSuffix(rel, ".mvn/maven.config") || rel == ".mvn/maven.config" {
+	if f.gradlew || strings.HasSuffix(rel, ".mvn/maven.config") || rel == ".mvn/maven.config" {
 		f.spans = append(f.spans, launchSpan{0, len(f.data), spanBuild})
 		return
 	}
@@ -1417,6 +1442,9 @@ func (f *launchFile) option(t launchToken) {
 	if t.word == "-p" || f.inSpan(t.start, spanTest) || f.template[f.lineOf(t.start)] {
 		return
 	}
+	if f.mavenw && f.templateMavenProperty(t) {
+		return
+	}
 	if isClasspathToken(t.word) {
 		if !f.templateClasspath(t) {
 			f.s.unreadable()
@@ -1458,14 +1486,14 @@ func buildClaimable(w string) bool {
 // wrapper script's wrapper JAR, or the Maven wrapper script's wrapper JAR and the downloader
 // it compiles into .mvn/wrapper.
 func (f *launchFile) templateClasspath(t launchToken) bool {
-	rest := strings.TrimLeft(string(f.data[t.end:min(t.end+64, len(f.data))]), " \t")
+	rest := strings.TrimLeft(string(f.data[t.end:min(t.end+128, len(f.data))]), " \t")
 	if f.mavenw {
 		switch t.word {
 		case "-classpath":
-			return strings.HasPrefix(rest, `"$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.jar"`) ||
-				strings.HasPrefix(rest, `%WRAPPER_JAR%`)
+			return wordIs(rest, `"$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.jar"`) ||
+				wordIs(rest, `%WRAPPER_JAR%`) && f.templateWrapperJar()
 		case "-cp":
-			return strings.HasPrefix(rest, ".mvn/wrapper MavenWrapperDownloader ")
+			return wordIs(rest, ".mvn/wrapper MavenWrapperDownloader")
 		}
 		return false
 	}
@@ -1474,13 +1502,46 @@ func (f *launchFile) templateClasspath(t launchToken) bool {
 	}
 	switch t.word {
 	case "-classpath":
-		return strings.HasPrefix(rest, `"$CLASSPATH"`) || strings.HasPrefix(rest, `"\"$CLASSPATH\""`) ||
-			strings.HasPrefix(rest, `"%CLASSPATH%"`)
+		return wordIs(rest, `"$CLASSPATH"`) || wordIs(rest, `"\"$CLASSPATH\""`) || wordIs(rest, `"%CLASSPATH%"`)
 	case "-jar":
-		return f.gradlew && (strings.HasPrefix(rest, `"$APP_HOME/gradle/wrapper/gradle-wrapper.jar"`) ||
-			strings.HasPrefix(rest, `"%APP_HOME%\gradle\wrapper\gradle-wrapper.jar"`))
+		return f.gradlew && (wordIs(rest, `"$APP_HOME/gradle/wrapper/gradle-wrapper.jar"`) ||
+			wordIs(rest, `"%APP_HOME%\gradle\wrapper\gradle-wrapper.jar"`))
 	}
 	return false
+}
+
+// templateMavenProperty reports whether t is a property the Maven wrapper template passes
+// Maven's JVM, closed as the template closes it: its home and project directory.
+func (f *launchFile) templateMavenProperty(t launchToken) bool {
+	rest := string(f.data[t.end:min(t.end+8, len(f.data))])
+	switch t.word {
+	case "-Dmaven.home=${M2_HOME", "-Dmaven.multiModuleProjectDirectory=${MAVEN_PROJECTBASEDIR":
+		return wordIs(rest, `}"`)
+	case "-Dmaven.multiModuleProjectDirectory=%MAVEN_PROJECTBASEDIR%":
+		return wordIs(rest, `"`)
+	}
+	return false
+}
+
+// wordIs reports whether rest starts with the words lit, ending there: the shell would join
+// anything else that follows onto the same word.
+func wordIs(rest, lit string) bool {
+	after, ok := strings.CutPrefix(rest, lit)
+	return ok && (after == "" || strings.ContainsRune(" \t\r\n", rune(after[0])))
+}
+
+var wrapperJarAssign = regexp.MustCompile(`(?im)^[ \t]*set[ \t]+"?WRAPPER_JAR=.*$`)
+
+// templateWrapperJar reports whether the Maven wrapper batch script sets WRAPPER_JAR only as its
+// template does.
+func (f *launchFile) templateWrapperJar() bool {
+	sets := wrapperJarAssign.FindAll(f.data, -1)
+	for _, a := range sets {
+		if strings.TrimSpace(string(a)) != `set WRAPPER_JAR="%MAVEN_PROJECTBASEDIR%\.mvn\wrapper\maven-wrapper.jar"` {
+			return false
+		}
+	}
+	return len(sets) > 0
 }
 
 // name classifies one occurrence of a launch name. An option variable is accounted for when it
@@ -1566,12 +1627,13 @@ func launchExpansion(data []byte, a, b int) bool {
 func isLaunchCommentLine(line string) bool {
 	t := strings.TrimSpace(line)
 	lower := strings.ToLower(t)
-	for _, p := range []string{"#", "//", "/*", "*", "<!--", "::", ";", "@rem"} {
-		if strings.HasPrefix(lower, p) {
+	for _, p := range []string{"#", "//", "/*", "*", "<!--", "::", ";"} {
+		if strings.HasPrefix(t, p) {
 			return true
 		}
 	}
-	return lower == "rem" || strings.HasPrefix(lower, "rem ")
+	lower = strings.TrimPrefix(lower, "@")
+	return lower == "rem" || strings.HasPrefix(lower, "rem ") || strings.HasPrefix(lower, "rem\t")
 }
 
 var assignOp = regexp.MustCompile(`^\s*(\?=|\+=|::=|:=|=|:)\s*`)

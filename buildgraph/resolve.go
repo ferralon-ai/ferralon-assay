@@ -68,6 +68,10 @@ func Resolve(ctx context.Context, req Request) (*Graph, error) {
 	if err != nil {
 		return nil, err
 	}
+	provided := ""
+	if tool == ToolGradle && isWrapper {
+		env, provided = gradleJDK(dir, env, req.Conditions)
+	}
 	r := &runner{dir: dir, tool: exe, shown: shown, env: env, work: work}
 
 	var g *Graph
@@ -81,6 +85,7 @@ func Resolve(ctx context.Context, req Request) (*Graph, error) {
 	}
 	g.Schema = Schema
 	g.Producer = req.Producer
+	g.JVM.Provided = provided
 	g.Tool.Wrapper = isWrapper
 	g.Conditions = req.Conditions
 	g.Commands = r.commands

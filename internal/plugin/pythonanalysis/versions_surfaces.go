@@ -250,8 +250,9 @@ var toolTargetRE = regexp.MustCompile(`^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9
 // versions nothing read here records, so it withholds the names it installs and every
 // coordinate the manifests do not pin exactly (withheld). An exact pin keeps its version only
 // when every allowed install the build runs is a pip install -r, and every tool install runs
-// before every one of those in one && list (scriptsurface.Veto.AndList): pip then reinstalls
-// each pin the files it installs hold, whatever a tool put in place before it. A pin only those
+// before every one of those in one && list (scriptsurface.Veto.AndList), all through one
+// installer (pipInstaller): pip then reinstalls each pin the files it installs hold, whatever a
+// tool put in place before it, in the one environment both installed into. A pin only those
 // files hold keeps it (pins). Any other order, a poetry, uv, pdm or pipenv install, or a
 // complete lock, which Exhaustive takes as the whole of what the build installs, withholds every
 // version, as a tool install did before this was followed. So do a tool install and an allowed
@@ -268,10 +269,29 @@ type toolOrder struct {
 	toolRuns  []scriptRun
 }
 
-// toolStep is one install: the order it ran in, and the && list it was part of.
+// toolStep is one install: the order it ran in, the && list it was part of, and its installer
+// (pipInstaller).
 type toolStep struct {
-	at, list int
-	listed   bool
+	at, list  int
+	listed    bool
+	installer string
+}
+
+// pipInstaller returns the words before install in a pip install, the program named by
+// scriptsurface.CommandName: pip3, or python3.11 -m pip. Two installs share an environment only
+// when it can show they do, so pip, pip3 and python -m pip are each their own installer. It is
+// empty when words is no pip install it reads.
+func pipInstaller(words []string) string {
+	head, ok := scriptsurface.CommandName(words[0])
+	switch {
+	case !ok:
+		return ""
+	case pipHeadRE.MatchString(head) && len(words) >= 2 && words[1] == "install":
+		return head
+	case pythonHeadRE.MatchString(head) && len(words) >= 4 && words[1] == "-m" && pipHeadRE.MatchString(words[2]) && words[3] == "install":
+		return head + " -m " + words[2]
+	}
+	return ""
 }
 
 // allowed notes a command the rule allows.
@@ -279,7 +299,7 @@ func (o *toolOrder) allowed(words []string, list int, listed bool) {
 	if args, ok := pipInstallArgs(words); ok && !isUVPip(words) {
 		if !pipSelfUpgrade(args) {
 			o.steps++
-			o.installs = append(o.installs, toolStep{o.steps, list, listed})
+			o.installs = append(o.installs, toolStep{o.steps, list, listed, pipInstaller(words)})
 		}
 		return
 	}
@@ -317,7 +337,7 @@ func (o *toolOrder) tool(words []string, list int, listed bool, surface string) 
 		}
 	}
 	o.steps++
-	o.tools = append(o.tools, toolStep{o.steps, list, listed})
+	o.tools = append(o.tools, toolStep{o.steps, list, listed, pipInstaller(words)})
 	o.toolRuns = append(o.toolRuns, scriptRun{surface: surface, args: args})
 	if o.toolNames == nil {
 		o.toolNames = map[string]bool{}
@@ -360,9 +380,9 @@ func (o *toolOrder) pins(installs pipInstalls) (keep map[string]bool, ok bool) {
 			return nil, false
 		}
 	}
-	list := o.tools[0].list
+	list, installer := o.tools[0].list, o.tools[0].installer
 	for _, s := range append(o.tools[:len(o.tools):len(o.tools)], o.installs...) {
-		if !s.listed || s.list != list {
+		if !s.listed || s.list != list || s.installer == "" || s.installer != installer {
 			return nil, false
 		}
 	}

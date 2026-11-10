@@ -386,6 +386,12 @@ func TestResolveVersions_ScriptSurfaceNarrowed(t *testing.T) {
 		{"control: extras", tree(map[string]string{"Dockerfile": docker + "pip install 'black[d]' && pip install -r requirements.txt\n"}), nil, all},
 		{"control: a pipenv sync", tree(map[string]string{"Dockerfile": chain, "Pipfile": "[packages]\n", "Pipfile.lock": "{}\n", "sync.sh": "pipenv sync\n"}), nil, all},
 		{"control: a complete lock", tree(map[string]string{"Dockerfile": chain, "pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2==3.1.4\"]\n", "uv.lock": lockUV}), nil, all},
+		{"one installer through python3 -m pip", tree(map[string]string{"Dockerfile": docker + "python3 -m pip install black && python3 -m pip install -r requirements.txt\n"}), []string{"jinja2"}, []string{"flask", "pip", "black"}},
+		{"one installer through pip", tree(map[string]string{"Dockerfile": docker + "pip install black && pip install -r requirements.txt\n"}), []string{"jinja2"}, []string{"flask", "pip", "black"}},
+		{"control: pip3 then pip2", tree(map[string]string{"Dockerfile": docker + "pip3 install black && pip2 install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: python3.11 then python3.12", tree(map[string]string{"Dockerfile": docker + "python3.11 -m pip install black && python3.12 -m pip install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: pip then pip3", tree(map[string]string{"Dockerfile": docker + "pip install black && pip3 install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: pip then python -m pip", tree(map[string]string{"Dockerfile": docker + "pip install black && python -m pip install -r requirements.txt\n"}), nil, append(all, "black")},
 		{"control: a pip config named", tree(map[string]string{"Dockerfile": "FROM python:3.12\n# pip reads /etc/pip.conf\n" + chain[len("FROM python:3.12\n"):]}), nil, all},
 	}
 	for _, tt := range tests {

@@ -5,6 +5,7 @@ package dotnetanalysis
 // dependency bytes must be the restore target's the build was compiled for.
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -121,6 +122,37 @@ func TestReachability_BindsToTheBuiltTargetFramework(t *testing.T) {
 				t.Fatalf("Reasons = %v, want %s", res.Partiality.Reasons, c.wantReason)
 			}
 		})
+	}
+}
+
+// An unreadable build directory beside a readable copy may hold another build, as an unreadable
+// copy may: the run surfaces it rather than tracing the readable copy as the only one.
+func TestReachability_UnreadableBuildDirBesideACopy(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every directory")
+	}
+	t.Setenv("NUGET_PACKAGES", t.TempDir())
+	pkgRoot := t.TempDir()
+	dir := composeILBuildDir(t, map[string][]byte{
+		"App.csproj":                 restoredProject,
+		"obj/project.assets.json":    twoTargetAssets(pkgRoot),
+		"bin/Release/net8.0/App.dll": appMain(""),
+		"bin/Release/net7.0/App.xml": []byte("<doc/>"),
+	})
+	f := depFixture{buildDir: dir, pkgRoot: pkgRoot}
+	f.writePkgFile(t, "newtonsoft.json/12.0.3/lib/net8.0/Newtonsoft.Json.dll", newtonsoftLike(false))
+	locked := filepath.Join(dir, "bin", "Release", "net7.0")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{scipDeserialize}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(res.Searched, scipDeserialize) || !hasILReason(res.Partiality, partialReasonMultipleProjects) {
+		t.Fatalf("searched = %v, partiality = %+v, want unsearched with %s", res.Searched, res.Partiality, partialReasonMultipleProjects)
 	}
 }
 

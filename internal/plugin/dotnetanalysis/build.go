@@ -119,6 +119,9 @@ func locateFirstPartyBuild(buildDir string) firstPartyBuild {
 	tfmOf := map[string]string{}
 	built, unreadableDirs := builtAssemblies(buildDir, name)
 	b.unreadable = unreadableDirs
+	for _, dir := range unreadableDirs {
+		entries["unreadable:"+dir] = true // it may hold another build, as an unreadable copy may
+	}
 	for _, path := range built {
 		a, ok := assembly.ReadAssembly(path)
 		if !ok || a == nil || a.Failed {

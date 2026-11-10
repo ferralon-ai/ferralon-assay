@@ -13,6 +13,7 @@ package dotnetanalysis
 import (
 	"encoding/json"
 	"errors"
+	"html"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -360,7 +361,7 @@ func intermediateRelocated(buildDir string, projects []string) bool {
 
 // importElement matches an MSBuild <Import> element's attributes; importAttr one attribute.
 var (
-	importElement = regexp.MustCompile(`(?is)<\s*Import\b([^>]*)>`)
+	importElement = regexp.MustCompile(`(?is)<\s*Import\b((?:[^>"']|"[^"]*"|'[^']*')*)>`)
 	importAttr    = regexp.MustCompile(`(?is)\b(Project|Sdk)\s*=\s*(?:"([^"]*)"|'([^']*)')`)
 	importProp    = regexp.MustCompile(`\$\(\s*([A-Za-z0-9_]+)\s*\)`)
 )
@@ -374,10 +375,12 @@ var toolchainRoots = map[string]bool{
 }
 
 // importedFiles returns the repository files the MSBuild file f imports. Each <Import Project>
-// outside an XML comment is unescaped, $(MSBuildThisFileDirectory) is expanded to f's directory and
-// $(MSBuildProjectDirectory) to the directory of each project that may import f (f's own directory
-// for a project or .user file), [MSBuild]::GetPathOfFileAbove and GetDirectoryNameOfFileAbove are
-// evaluated, and the result is resolved against f's directory. Sdk imports and imports rooted in
+// outside an XML comment or CDATA section is entity-decoded and unescaped, the MSBuildThisFile*
+// properties are expanded for f and $(MSBuildProjectDirectory) to the directory of each project that
+// may import f (f's own directory for a project or .user file), [MSBuild]::GetPathOfFileAbove and
+// GetDirectoryNameOfFileAbove are evaluated, and the result is resolved against f's directory. A
+// relative start directory for those functions is tried against f's directory and each project
+// directory, since which one MSBuild uses depends on the evaluating process. Sdk imports and imports rooted in
 // the toolchain are skipped, and so is a path that names no existing file, since the build would
 // have failed had it been required. It reports false when a path depends on anything else.
 func importedFiles(f string, data []byte, projects []string) ([]string, bool) {
@@ -390,7 +393,7 @@ func importedFiles(f string, data []byte, projects []string) ([]string, bool) {
 		}
 	}
 	var out []string
-	for _, el := range importElement.FindAllSubmatch(xmlComment.ReplaceAll(data, nil), -1) {
+	for _, el := range importElement.FindAllSubmatch(xmlComment.ReplaceAll(xmlCDATA.ReplaceAll(data, nil), nil), -1) {
 		var project string
 		sdk := false
 		for _, a := range importAttr.FindAllSubmatch(el[1], -1) {
@@ -400,21 +403,22 @@ func importedFiles(f string, data []byte, projects []string) ([]string, bool) {
 				project = string(a[2]) + string(a[3])
 			}
 		}
-		project = strings.TrimSpace(msbuildUnescape(project))
+		project = strings.TrimSpace(msbuildUnescape(html.UnescapeString(project)))
 		if sdk || project == "" {
 			continue
 		}
 		if m := importProp.FindStringSubmatch(project); m != nil && strings.HasPrefix(project, m[0]) && toolchainRoots[strings.ToLower(m[1])] {
 			continue
 		}
-		expansions := []string{project}
-		if strings.Contains(strings.ToLower(project), "msbuildprojectdirectory") {
-			expansions = expansions[:0]
+		var expansions []string
+		perProject := strings.Contains(strings.ToLower(project), "msbuildprojectdirectory")
+		if !perProject {
+			expansions = append(expansions, expandImport(project, f, dir))
+		}
+		if perProject || fileAboveFunc.MatchString(project) {
 			for _, pd := range projDirs {
-				expansions = append(expansions, expandImport(project, dir, pd))
+				expansions = append(expansions, expandImport(project, f, pd))
 			}
-		} else {
-			expansions[0] = expandImport(project, dir, dir)
 		}
 		for _, e := range expansions {
 			paths, ok := resolveImport(e, dir)
@@ -428,6 +432,7 @@ func importedFiles(f string, data []byte, projects []string) ([]string, bool) {
 }
 
 var (
+	xmlCDATA         = regexp.MustCompile(`(?s)<!\[CDATA\[.*?\]\]>`)
 	xmlComment       = regexp.MustCompile(`(?s)<!--.*?-->`)
 	msbuildEscape    = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
 	fileAboveFunc    = regexp.MustCompile(`(?i)\$\(\s*\[MSBuild\]::(GetPathOfFileAbove|GetDirectoryNameOfFileAbove)\(\s*([^,()]*?)\s*(?:,\s*([^,()]*?)\s*)?\)\s*\)`)
@@ -445,15 +450,25 @@ func msbuildUnescape(s string) string {
 	})
 }
 
-// expandImport expands the properties importedFiles models in an import path: thisDir for
-// $(MSBuildThisFileDirectory) (with its trailing separator) and projDir for
-// $(MSBuildProjectDirectory), then the file-above property functions. Anything else is left in
-// place for resolveImport to refuse.
-func expandImport(project, thisDir, projDir string) string {
+// expandImport expands the properties importedFiles models in an import path: the
+// MSBuildThisFile* properties for thisFile and projDir for $(MSBuildProjectDirectory), then the
+// file-above property functions, whose relative start directory is taken against projDir. Anything
+// else is left in place for resolveImport to refuse.
+func expandImport(project, thisFile, projDir string) string {
+	thisDir := filepath.Dir(thisFile)
+	base := filepath.Base(thisFile)
 	s := importProp.ReplaceAllStringFunc(project, func(m string) string {
 		switch strings.ToLower(importProp.FindStringSubmatch(m)[1]) {
 		case "msbuildthisfiledirectory":
 			return thisDir + "/"
+		case "msbuildthisfile":
+			return base
+		case "msbuildthisfilename":
+			return strings.TrimSuffix(base, filepath.Ext(base))
+		case "msbuildthisfileextension":
+			return filepath.Ext(base)
+		case "msbuildthisfilefullpath":
+			return thisFile
 		case "msbuildprojectdirectory":
 			return projDir
 		}
@@ -472,8 +487,9 @@ func expandImport(project, thisDir, projDir string) string {
 			return m
 		}
 		start = filepath.FromSlash(strings.ReplaceAll(start, `\`, "/"))
+		name = filepath.FromSlash(strings.ReplaceAll(name, `\`, "/"))
 		if !filepath.IsAbs(start) {
-			start = filepath.Join(thisDir, start)
+			start = filepath.Join(projDir, start)
 		}
 		for d := filepath.Clean(start); ; d = filepath.Dir(d) {
 			if _, err := os.Stat(filepath.Join(d, name)); err == nil {
@@ -499,6 +515,9 @@ func resolveImport(expanded, dir string) ([]string, bool) {
 	rel := filepath.FromSlash(strings.ReplaceAll(strings.TrimSpace(expanded), `\`, "/"))
 	if rel == "" {
 		return nil, true
+	}
+	if strings.Contains(rel, "**") {
+		return nil, false // a recursive wildcard; filepath.Glob would match one segment
 	}
 	if !strings.ContainsAny(rel, "*?") {
 		path := rel

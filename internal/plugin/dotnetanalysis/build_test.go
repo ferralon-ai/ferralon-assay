@@ -675,6 +675,36 @@ func TestCompiledProjects_ImportResolution(t *testing.T) {
 			"Directory.Build.props":        "<Project><PropertyGroup><LangVersion>latest</LangVersion></PropertyGroup></Project>",
 			"Worker/Directory.Build.props": `<Project><Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" /></Project>`,
 		}, 1},
+		{"a Windows separator in the file-above name", "src", map[string]string{
+			"build/Common.props": moves, "src/App/App.csproj": "<Project></Project>", "src/App/obj/Release/net8.0/A.dll": "",
+			"src/Worker/Worker.csproj": `<Project><Import Project="$([MSBuild]::GetPathOfFileAbove('build\Common.props', '$(MSBuildThisFileDirectory)..\'))" /></Project>`,
+		}, 2},
+		{"a literal > in an attribute before Project", "src", map[string]string{
+			"Common.props": moves, "src/App/App.csproj": "<Project></Project>", "src/App/obj/Release/net8.0/A.dll": "",
+			"src/Worker/Worker.csproj": `<Project><Import Condition="'$(VisualStudioVersion)' >= '15.0'" Project="..\..\Common.props" /></Project>`,
+		}, 2},
+		{"a recursive wildcard import", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj": `<Project><Import Project="..\build\**\*.settings" /></Project>`, "build/a/b/out.settings": moves,
+		}, 2},
+		{"an entity in the import path", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj": `<Project><Import Project="..\R&amp;D\out.settings" /></Project>`, "R&D/out.settings": moves,
+		}, 2},
+		{"an import between CDATA sections that look like a comment", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj": `<Project><![CDATA[<!--]]><Import Project="..\build\out.settings" /><![CDATA[-->]]></Project>`, "build/out.settings": moves,
+		}, 2},
+		{"a relative file-above start in a shared props file", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj": "<Project></Project>", "Worker/local.settings": moves,
+			"Directory.Build.props": `<Project><Import Project="$([MSBuild]::GetPathOfFileAbove('local.settings', '.'))" /></Project>`,
+		}, 2},
+		{"the chained idiom through $(MSBuildThisFile) keeps the drop", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "", "Worker/Worker.csproj": "<Project></Project>",
+			"Directory.Build.props":        "<Project><PropertyGroup><LangVersion>latest</LangVersion></PropertyGroup></Project>",
+			"Worker/Directory.Build.props": `<Project><Import Project="$([MSBuild]::GetPathOfFileAbove('$(MSBuildThisFile)', '$(MSBuildThisFileDirectory)../'))" /></Project>`,
+		}, 1},
 		{"a commented-out import keeps the drop", "", map[string]string{
 			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
 			"Worker/Worker.csproj": `<Project><!-- <Import Project="$(Foo)\x.props" /> --></Project>`,

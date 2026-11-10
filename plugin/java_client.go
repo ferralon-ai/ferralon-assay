@@ -56,6 +56,18 @@ func WithJavaBuildGraph(file string) JavaOption {
 	return func(p *javaPlugin) { p.env = append(p.env, BuildGraphEnv+"="+file) }
 }
 
+// WithJavaRunCacheDir hands the subprocess a directory, owned by the caller for one scan over one
+// checkout, where it keeps each root's whole reachability search so a later advisory's subprocess
+// does not search the program again. The caller removes the directory after the scan. An empty
+// dir turns the cache off, including one the host process's own environment would otherwise pass
+// down.
+func WithJavaRunCacheDir(dir string) JavaOption {
+	return func(p *javaPlugin) { p.env = append(p.env, javaRunCacheDirEnv+"="+dir) }
+}
+
+// javaRunCacheDirEnv is read by cmd/assay-plugin-java, which hands it to the analyzer.
+const javaRunCacheDirEnv = brand.EnvPrefix + "_JAVA_RUN_CACHE_DIR"
+
 // The subprocess reads the analyzer settings from these env vars (see
 // cmd/assay-plugin-java), so the options travel on the child's environment
 // rather than on the plugin protocol.
@@ -79,7 +91,7 @@ func withJavaEnv(key, value string) JavaOption {
 // discovery mirrors NewGoPlugin: an explicit path via WithJavaBinaryPath takes
 // precedence; otherwise exec.LookPath resolves BinaryName("java") on PATH.
 func NewJavaPlugin(opts ...JavaOption) (LanguagePlugin, error) {
-	p := &javaPlugin{}
+	p := &javaPlugin{env: []string{javaRunCacheDirEnv + "="}}
 	for _, opt := range opts {
 		opt(p)
 	}

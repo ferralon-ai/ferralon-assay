@@ -230,6 +230,31 @@ func TestWithPythonRunCacheDir(t *testing.T) {
 	}
 }
 
+// TestWithJavaRunCacheDir pins the same contract for the Java client, under the name
+// cmd/assay-plugin-java reads.
+func TestWithJavaRunCacheDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    []JavaOption
+		wantEnv []string
+	}{
+		{name: "no option", wantEnv: []string{"ASSAY_JAVA_RUN_CACHE_DIR="}},
+		{name: "dir set", opts: []JavaOption{WithJavaRunCacheDir("/tmp/run-cache")}, wantEnv: []string{"ASSAY_JAVA_RUN_CACHE_DIR=", "ASSAY_JAVA_RUN_CACHE_DIR=/tmp/run-cache"}},
+		{name: "empty dir", opts: []JavaOption{WithJavaRunCacheDir("")}, wantEnv: []string{"ASSAY_JAVA_RUN_CACHE_DIR=", "ASSAY_JAVA_RUN_CACHE_DIR="}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := NewJavaPlugin(append([]JavaOption{WithJavaBinaryPath("/bin/true")}, tt.opts...)...)
+			if err != nil {
+				t.Fatalf("NewJavaPlugin: %v", err)
+			}
+			if got := p.(*javaPlugin).env; !reflect.DeepEqual(got, tt.wantEnv) {
+				t.Errorf("env = %q, want %q", got, tt.wantEnv)
+			}
+		})
+	}
+}
+
 func TestBinaryName(t *testing.T) {
 	for _, tc := range []struct {
 		language string

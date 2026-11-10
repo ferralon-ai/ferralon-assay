@@ -209,7 +209,16 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		}
 		pyOpts = append(pyOpts, plugin.WithPythonRunCacheDir(dir))
 	}
-	lp, err := selectPlugin(language, pluginBin, graph, goOpts, jsOpts, pyOpts, cfOpts...)
+	var javaOpts []plugin.JavaOption
+	if language == checkout.LangJava {
+		dir := scanRunCacheDir("java")
+		if dir != "" {
+			prev := cleanup
+			cleanup = func() { prev(); _ = os.RemoveAll(dir) }
+		}
+		javaOpts = append(javaOpts, plugin.WithJavaRunCacheDir(dir))
+	}
+	lp, err := selectPlugin(language, pluginBin, graph, goOpts, jsOpts, pyOpts, javaOpts, cfOpts...)
 	if err != nil {
 		cleanup()
 		var missing *plugin.NotInstalledError
@@ -276,7 +285,7 @@ func (e *analyzerMissingError) Unwrap() error { return e.missing }
 // not there is a *plugin.NotInstalledError. Only one plugin runs per scan (the tree is a single
 // language), so a single override suffices. cfOpts apply to the C-family plugin only, goOpts to the
 // Go plugin only.
-func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option, jsOpts []plugin.JSOption, pyOpts []plugin.PythonOption, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
+func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option, jsOpts []plugin.JSOption, pyOpts []plugin.PythonOption, javaOpts []plugin.JavaOption, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
 	var graphFile string
 	if graph != nil {
 		graphFile = graph.file
@@ -288,11 +297,11 @@ func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option,
 		}
 		return plugin.NewGoPlugin(goOpts...)
 	case checkout.LangJava:
-		opts := []plugin.JavaOption{plugin.WithJavaBuildGraph(graphFile)}
+		javaOpts = append(javaOpts, plugin.WithJavaBuildGraph(graphFile))
 		if bin != "" {
-			opts = append(opts, plugin.WithJavaBinaryPath(bin))
+			javaOpts = append(javaOpts, plugin.WithJavaBinaryPath(bin))
 		}
-		return plugin.NewJavaPlugin(opts...)
+		return plugin.NewJavaPlugin(javaOpts...)
 	case checkout.LangKotlin:
 		opts := []plugin.KotlinOption{plugin.WithKotlinBuildGraph(graphFile)}
 		if bin != "" {

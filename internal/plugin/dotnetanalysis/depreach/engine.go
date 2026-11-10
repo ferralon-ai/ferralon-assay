@@ -244,8 +244,9 @@ func (e *Engine) resolveTargets(edge assembly.Edge, fromAsm *assembly.Assembly, 
 	for _, b := range dr.OutOfSetBases {
 		if b.Iface {
 			// Framework code cannot name an in-set interface, so only a non-framework
-			// interface can supply a default method for its slot.
-			if !e.isFrameworkType(b.Asm, b.Ref) {
+			// interface can supply a default method for its slot, and only on a receiver
+			// that can exist.
+			if !e.isFrameworkType(b.Asm, b.Ref) && (b.Via == nil || ctx == nil || ctx.counts(b.Via)) {
 				out.flag("default interface method from " + typeRefDisplay(b.Ref) + " (not in the loaded set) can fill " + owner + "::" + name)
 			}
 			continue

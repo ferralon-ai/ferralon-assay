@@ -359,6 +359,20 @@ func TestReachability_RoutesIntoMissingPackage(t *testing.T) {
 		{"in-set interface slot reached only through a missing interface", bridgedDIM(false, false), false},
 		{"in-set interface slot reached only through a missing interface, type fills it: searched", bridgedDIM(true, false), true},
 		{"class with only a framework interface, called through an in-set interface: searched", bridgedDIM(false, true), true},
+		{"never-constructed class carrying a missing interface, in-set interface call: searched", func(c *mrCtx) [][]byte {
+			a := c.a
+			bar, _ := a.addType(0, "Bar", "App", a.obj, nil)
+			a.row(xInterfaceImpl, bar, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
+			return inSetIfaceDIM(true, false, true)(c)
+		}, true},
+		{"subclass of a class carrying a missing interface, constructed: in-set interface call", func(c *mrCtx) [][]byte {
+			a := c.a
+			_, rm := a.addType(0xA1, "IRun", "App", 0, []mspec{{name: "Run", flags: 0x5C6, sig: sigInstVoid}})
+			bar, _ := a.addType(0, "Bar", "App", a.obj, nil)
+			a.row(xInterfaceImpl, bar, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
+			_, qm := a.addType(0, "Baz", "App", cTypeDefOrRef(xTypeDef, bar), []mspec{{name: ".ctor", flags: fPublicCtor, sig: sigInstVoid, il: body()}})
+			return [][]byte{ilNewobjOp(mtok(xMethodDef, qm[0])), ilCallvirt(mtok(xMethodDef, rm[0]))}
+		}, false},
 		{"in-set class slot reached only through a missing base class", func(c *mrCtx) [][]byte {
 			a := c.a
 			_, bm := a.addType(0x81, "Base", "App", a.obj, []mspec{{name: "Run", flags: 0x1C6, sig: sigInstVoid}})

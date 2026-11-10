@@ -86,6 +86,7 @@ type OutOfSetBase struct {
 	Asm   *Assembly
 	Ref   TypeRef
 	Iface bool
+	Via   *TypeDef // for Iface: the receiver class whose slot it can fill
 }
 
 // SigCompatible reports whether signature sigA (read in asmA) can name the method whose
@@ -423,29 +424,37 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig [
 			}
 		}
 	}
-	// walked records, per class, whether a body was found at or above it: the first body
-	// at or above a node is the same whichever descendant the walk started from.
-	walked := map[*typeNode]bool{}
+	// walked records, per class, whether a body was found at or above it and, if not, the
+	// out-of-set interfaces at or above it: both are the same whichever descendant the
+	// walk started from.
+	type walkMemo struct {
+		found  bool
+		ifaces []OutOfSetBase
+	}
+	walked := map[*typeNode]walkMemo{}
 	inherit := func(t *typeNode) {
 		var chain []*typeNode
-		var ifaces []OutOfSetBase
-		found := false
+		var own [][]OutOfSetBase
+		var acc walkMemo
 		for n := t; ; n = n.base {
-			if f, ok := walked[n]; ok {
-				found = f
+			if m, ok := walked[n]; ok {
+				acc = m
 				break
 			}
 			chain = append(chain, n)
 			if n != t {
 				if ms := slotBodies(n); len(ms) > 0 {
 					add(n, ms)
-					found = true
+					own = append(own, nil)
+					acc.found = true
 					break
 				}
 			}
+			var mine []OutOfSetBase
 			if ownerIsIface {
-				ifaces = c.outOfSetIfaces(n, ifaces)
+				mine = c.outOfSetIfaces(n, nil)
 			}
+			own = append(own, mine)
 			if n.base == nil {
 				if !n.def.Extends.Token.IsNull() && (!isRootBase(n.def.Extends) || objectVirtual(name)) {
 					bases = append(bases, OutOfSetBase{Asm: n.asm, Ref: n.def.Extends})
@@ -453,13 +462,19 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig [
 				break
 			}
 		}
-		// With no class body for an interface slot the runtime binds a default method,
-		// which an out-of-set interface on the chain can supply.
-		if !found {
-			bases = append(bases, ifaces...)
+		for i := len(chain) - 1; i >= 0; i-- {
+			if !acc.found {
+				acc.ifaces = append(slices.Clip(own[i]), acc.ifaces...)
+			}
+			walked[chain[i]] = acc
 		}
-		for _, n := range chain {
-			walked[n] = found
+		// With no class body for an interface slot the runtime binds a default method,
+		// which an out-of-set interface on the chain can supply when t is the receiver.
+		if !acc.found {
+			for _, b := range acc.ifaces {
+				b.Via = t.def
+				bases = append(bases, b)
+			}
 		}
 	}
 

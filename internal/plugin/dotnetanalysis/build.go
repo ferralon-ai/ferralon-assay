@@ -295,7 +295,8 @@ func projectCompiled(path string) compiledState {
 // intermediateRelocated reports whether the build may write intermediate assemblies somewhere
 // other than each project's obj/. It reads every MSBuild input that can set a property moving
 // them: the project files and their .user files; every .props and .targets file and
-// Directory.Build.rsp under buildDir; Directory.Build.props, .targets and .rsp in buildDir's
+// Directory.Build.rsp under buildDir (outside the directories skipDir skips, which hold no input
+// the build reads unless imported); Directory.Build.props, .targets and .rsp in buildDir's
 // ancestors; and, transitively, every file those import. It reports true when one of them sets
 // such a property, when an artifacts/ directory sits at the build root, or when an input can't
 // be read or an import path can't be resolved.
@@ -315,7 +316,7 @@ func intermediateRelocated(buildDir string, projects []string) bool {
 			return nil //nolint:nilerr // an unreadable subtree holds no project findProjectFiles saw.
 		}
 		if d.IsDir() {
-			if path != buildDir && buildOutputDir(d.Name()) {
+			if path != buildDir && skipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -348,21 +349,11 @@ func intermediateRelocated(buildDir string, projects []string) bool {
 		if err != nil || intermediateProperty.Match(data) {
 			return true
 		}
-		imports, ok := importedFiles(f, data)
+		imports, ok := importedFiles(f, data, projects)
 		if !ok {
 			return true
 		}
 		queue = append(queue, imports...)
-	}
-	return false
-}
-
-// buildOutputDir reports whether a directory named name holds build or restore output, or
-// tooling state, rather than MSBuild inputs the build reads.
-func buildOutputDir(name string) bool {
-	switch name {
-	case "bin", "obj", "packages", ".git", ".vs", "node_modules", "TestResults":
-		return true
 	}
 	return false
 }
@@ -382,59 +373,160 @@ var toolchainRoots = map[string]bool{
 	"msbuildsdkspath": true,
 }
 
-// importedFiles returns the repository files the MSBuild file f imports, resolving each
-// <Import Project> against f's directory and expanding $(MSBuildThisFileDirectory) and
-// $(MSBuildProjectDirectory). Sdk imports and imports rooted in the toolchain are skipped, and so
-// is a path that names no existing file, since the build would have failed had it been required.
-// It reports false when a path depends on any other property.
-func importedFiles(f string, data []byte) ([]string, bool) {
+// importedFiles returns the repository files the MSBuild file f imports. Each <Import Project>
+// outside an XML comment is unescaped, $(MSBuildThisFileDirectory) is expanded to f's directory and
+// $(MSBuildProjectDirectory) to the directory of each project that may import f (f's own directory
+// for a project or .user file), [MSBuild]::GetPathOfFileAbove and GetDirectoryNameOfFileAbove are
+// evaluated, and the result is resolved against f's directory. Sdk imports and imports rooted in
+// the toolchain are skipped, and so is a path that names no existing file, since the build would
+// have failed had it been required. It reports false when a path depends on anything else.
+func importedFiles(f string, data []byte, projects []string) ([]string, bool) {
 	dir := filepath.Dir(f)
+	projDirs := []string{dir}
+	if ext := strings.ToLower(filepath.Ext(f)); ext != ".csproj" && ext != ".fsproj" && ext != ".vbproj" && ext != ".user" {
+		projDirs = projDirs[:0]
+		for _, p := range projects {
+			projDirs = append(projDirs, filepath.Dir(p))
+		}
+	}
 	var out []string
-	for _, el := range importElement.FindAllSubmatch(data, -1) {
+	for _, el := range importElement.FindAllSubmatch(xmlComment.ReplaceAll(data, nil), -1) {
 		var project string
 		sdk := false
 		for _, a := range importAttr.FindAllSubmatch(el[1], -1) {
-			v := string(a[2]) + string(a[3])
 			if strings.EqualFold(string(a[1]), "Sdk") {
 				sdk = true
 			} else {
-				project = v
+				project = string(a[2]) + string(a[3])
 			}
 		}
-		if sdk || strings.TrimSpace(project) == "" {
+		project = strings.TrimSpace(msbuildUnescape(project))
+		if sdk || project == "" {
 			continue
 		}
-		unresolved, toolchain := false, false
-		expanded := importProp.ReplaceAllStringFunc(project, func(m string) string {
-			switch name := strings.ToLower(importProp.FindStringSubmatch(m)[1]); {
-			case name == "msbuildthisfiledirectory":
-				return dir + "/"
-			case name == "msbuildprojectdirectory":
-				return dir
-			case toolchainRoots[name]:
-				toolchain = true
-			default:
-				unresolved = true
+		if m := importProp.FindStringSubmatch(project); m != nil && strings.HasPrefix(project, m[0]) && toolchainRoots[strings.ToLower(m[1])] {
+			continue
+		}
+		expansions := []string{project}
+		if strings.Contains(strings.ToLower(project), "msbuildprojectdirectory") {
+			expansions = expansions[:0]
+			for _, pd := range projDirs {
+				expansions = append(expansions, expandImport(project, dir, pd))
 			}
+		} else {
+			expansions[0] = expandImport(project, dir, dir)
+		}
+		for _, e := range expansions {
+			paths, ok := resolveImport(e, dir)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, paths...)
+		}
+	}
+	return out, true
+}
+
+var (
+	xmlComment       = regexp.MustCompile(`(?s)<!--.*?-->`)
+	msbuildEscape    = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+	fileAboveFunc    = regexp.MustCompile(`(?i)\$\(\s*\[MSBuild\]::(GetPathOfFileAbove|GetDirectoryNameOfFileAbove)\(\s*([^,()]*?)\s*(?:,\s*([^,()]*?)\s*)?\)\s*\)`)
+	unresolvedSyntax = regexp.MustCompile(`[$@%]\(`)
+)
+
+// msbuildUnescape decodes MSBuild's %XX escapes.
+func msbuildUnescape(s string) string {
+	return msbuildEscape.ReplaceAllStringFunc(s, func(m string) string {
+		v, err := strconv.ParseUint(m[1:], 16, 8)
+		if err != nil {
 			return m
-		})
-		if toolchain && strings.HasPrefix(strings.TrimSpace(project), "$(") {
-			continue
 		}
-		if unresolved || toolchain {
-			return nil, false
+		return string(rune(v))
+	})
+}
+
+// expandImport expands the properties importedFiles models in an import path: thisDir for
+// $(MSBuildThisFileDirectory) (with its trailing separator) and projDir for
+// $(MSBuildProjectDirectory), then the file-above property functions. Anything else is left in
+// place for resolveImport to refuse.
+func expandImport(project, thisDir, projDir string) string {
+	s := importProp.ReplaceAllStringFunc(project, func(m string) string {
+		switch strings.ToLower(importProp.FindStringSubmatch(m)[1]) {
+		case "msbuildthisfiledirectory":
+			return thisDir + "/"
+		case "msbuildprojectdirectory":
+			return projDir
 		}
-		path := filepath.FromSlash(strings.ReplaceAll(strings.TrimSpace(expanded), `\`, "/"))
+		return m
+	})
+	return fileAboveFunc.ReplaceAllStringFunc(s, func(m string) string {
+		g := fileAboveFunc.FindStringSubmatch(m)
+		unq := func(a string) string { return strings.Trim(strings.TrimSpace(a), `'"`) }
+		name, start := unq(g[2]), thisDir
+		if strings.EqualFold(g[1], "GetDirectoryNameOfFileAbove") {
+			start, name = unq(g[2]), unq(g[3])
+		} else if g[3] != "" {
+			start = unq(g[3])
+		}
+		if name == "" || start == "" || unresolvedSyntax.MatchString(name+start) {
+			return m
+		}
+		start = filepath.FromSlash(strings.ReplaceAll(start, `\`, "/"))
+		if !filepath.IsAbs(start) {
+			start = filepath.Join(thisDir, start)
+		}
+		for d := filepath.Clean(start); ; d = filepath.Dir(d) {
+			if _, err := os.Stat(filepath.Join(d, name)); err == nil {
+				if strings.EqualFold(g[1], "GetDirectoryNameOfFileAbove") {
+					return d
+				}
+				return filepath.Join(d, name)
+			}
+			if filepath.Dir(d) == d {
+				return "" // not found: MSBuild evaluates both functions to the empty string
+			}
+		}
+	})
+}
+
+// resolveImport resolves an expanded import path against dir, reporting false when it still
+// depends on a property, item or metadata reference. A path with a wildcard is globbed; any
+// other names at most the one file that exists.
+func resolveImport(expanded, dir string) ([]string, bool) {
+	if unresolvedSyntax.MatchString(expanded) {
+		return nil, false
+	}
+	rel := filepath.FromSlash(strings.ReplaceAll(strings.TrimSpace(expanded), `\`, "/"))
+	if rel == "" {
+		return nil, true
+	}
+	if !strings.ContainsAny(rel, "*?") {
+		path := rel
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(dir, path)
 		}
-		matches, err := filepath.Glob(path)
-		if err != nil {
-			return nil, false
+		if _, err := os.Stat(path); err != nil {
+			return nil, true
 		}
-		out = append(out, matches...)
+		return []string{path}, true
 	}
-	return out, true
+	pattern := rel
+	if !filepath.IsAbs(pattern) {
+		pattern = filepath.Join(globEscape(dir), rel)
+	}
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, false
+	}
+	return matches, true
+}
+
+// globEscape escapes the filepath.Match metacharacters in a literal path.
+func globEscape(p string) string {
+	if filepath.Separator == '\\' {
+		return strings.NewReplacer("[", "[[]", "*", "[*]", "?", "[?]").Replace(p)
+	}
+	return strings.NewReplacer(`\`, `\\`, "[", `\[`, "*", `\*`, "?", `\?`).Replace(p)
 }
 
 // intermediateProperty matches an MSBuild element, or a response-file -p:/-property: assignment,

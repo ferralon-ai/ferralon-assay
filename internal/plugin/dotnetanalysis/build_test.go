@@ -611,6 +611,82 @@ func TestCompiledProjects_ImportAboveBuildDir(t *testing.T) {
 	}
 }
 
+// A Directory.Build.props above the build root that moves one project's obj keeps every project.
+func TestCompiledProjects_DirectoryBuildPropsAboveBuildDir(t *testing.T) {
+	root := composeILBuildDir(t, map[string][]byte{
+		"Directory.Build.props":            []byte(`<Project><PropertyGroup><BaseIntermediateOutputPath Condition="'$(MSBuildProjectName)' == 'Worker'">out/</BaseIntermediateOutputPath></PropertyGroup></Project>`),
+		"src/App/App.csproj":               []byte("<Project></Project>"),
+		"src/App/obj/Release/net8.0/A.dll": nil,
+		"src/Worker/Worker.csproj":         []byte("<Project></Project>"),
+	})
+	dir := filepath.Join(root, "src")
+	shiftObjAssemblies(t, dir, time.Minute)
+	if got := compiledProjects(dir, findProjectFiles(dir)); len(got) != 2 {
+		t.Fatalf("kept %v, want both projects", got)
+	}
+}
+
+// Imports resolved through MSBuild escapes, property functions and per-project properties; each
+// case's build root is sub under the composed tree.
+func TestCompiledProjects_ImportResolution(t *testing.T) {
+	const moves = "<Project><PropertyGroup><BaseIntermediateOutputPath>out/</BaseIntermediateOutputPath></PropertyGroup></Project>"
+	cases := []struct {
+		name  string
+		sub   string
+		files map[string]string
+		want  int
+	}{
+		{"GetPathOfFileAbove reaches a props file above the build root", "src", map[string]string{
+			"Common.props": moves, "src/App/App.csproj": "<Project></Project>", "src/App/obj/Release/net8.0/A.dll": "",
+			"src/Worker/Worker.csproj": `<Project><Import Project="$([MSBuild]::GetPathOfFileAbove('Common.props', '$(MSBuildThisFileDirectory)../'))" /></Project>`,
+		}, 2},
+		{"GetDirectoryNameOfFileAbove reaches a props file above the build root", "src", map[string]string{
+			"Common.props": moves, "src/App/App.csproj": "<Project></Project>", "src/App/obj/Release/net8.0/A.dll": "",
+			"src/Worker/Worker.csproj": `<Project><Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildThisFileDirectory), Common.props))\Common.props" /></Project>`,
+		}, 2},
+		{"a shared props file imports a per-project file", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj":  "<Project></Project>",
+			"Worker/local.settings": moves,
+			"Directory.Build.props": `<Project><Import Project="$(MSBuildProjectDirectory)\local.settings" Condition="Exists('$(MSBuildProjectDirectory)\local.settings')" /></Project>`,
+		}, 2},
+		{"an escaped import path", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj": `<Project><Import Project="..\build%5Cout.settings" /></Project>`, "build/out.settings": moves,
+		}, 2},
+		{"a property function the expander does not model", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj": `<Project><Import Project="$([System.IO.Path]::Combine('..', 'out.settings'))" /></Project>`,
+		}, 2},
+		{"a build root whose path holds glob metacharacters", "repo[1]", map[string]string{
+			"repo[1]/App/App.csproj": "<Project></Project>", "repo[1]/App/obj/Release/net8.0/A.dll": "",
+			"repo[1]/Worker/Worker.csproj": `<Project><Import Project="..\build\out.settings" /></Project>`, "repo[1]/build/out.settings": moves,
+		}, 2},
+		{"the chained Directory.Build.props idiom keeps the drop", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "", "Worker/Worker.csproj": "<Project></Project>",
+			"Directory.Build.props":        "<Project><PropertyGroup><LangVersion>latest</LangVersion></PropertyGroup></Project>",
+			"Worker/Directory.Build.props": `<Project><Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" /></Project>`,
+		}, 1},
+		{"a commented-out import keeps the drop", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj": `<Project><!-- <Import Project="$(Foo)\x.props" /> --></Project>`,
+		}, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			files := map[string][]byte{}
+			for k, v := range c.files {
+				files[k] = []byte(v)
+			}
+			dir := filepath.Join(composeILBuildDir(t, files), c.sub)
+			shiftObjAssemblies(t, dir, time.Minute)
+			if got := compiledProjects(dir, findProjectFiles(dir)); len(got) != c.want {
+				t.Fatalf("kept %v, want %d", got, c.want)
+			}
+		})
+	}
+}
+
 // The single-project inventory reads its own project's lockfile and packages.config, even when
 // the project sits in a subdirectory of the build root.
 func TestResolveInventory_SingleNestedProjectReadsItsOwnFiles(t *testing.T) {

@@ -360,7 +360,37 @@ func TestLaunchOptionReasons(t *testing.T) {
 
 		// Classpath, JAR and module-path options name the launch's code: unclassifiable.
 		{"java -cp", map[string]string{"Dockerfile": `ENTRYPOINT ["java", "-cp", "/app/lib/*", "com.example.Main"]` + "\n"}, optionOnly},
-		{"java -jar", map[string]string{"Procfile": "web: java -jar build/libs/app.jar\n"}, optionOnly},
+		// -jar of this build's own artifact names code the analysis reads, unless the build can
+		// change what the JAR runs; any other -jar names code it does not.
+		{"java -jar own Gradle output", map[string]string{"Procfile": "web: java -jar build/libs/app.jar\n"}, []string{}},
+		{"java -jar own Maven output glob", map[string]string{"README.md": "java -jar target/*.jar\n"}, []string{}},
+		{"java -jar own module output", map[string]string{"run.sh": "exec java -Xss1m -jar ./mall-admin/target/mall-admin-1.0.jar --server.port=8080\n"}, []string{}},
+		{"java -jar own output in a JSON entrypoint", map[string]string{"Dockerfile": `ENTRYPOINT ["java", "-jar", "-Duser.timezone=UTC", "target/app.jar"]` + "\n"}, []string{}},
+		{"java -jar POM finalName", map[string]string{"pom.xml": `<entryPoint>["java", "-jar","/${project.build.finalName}.jar"]</entryPoint>` + "\n"}, []string{}},
+		{"java -jar POM artifactId-version", map[string]string{"pom.xml": "<arg>java -jar /app/${project.artifactId}-${project.version}.jar</arg>\n"}, []string{}},
+		{"java -jar own output, other options still classify", map[string]string{"Procfile": "web: java -Djava.system.class.loader=org.d.D -jar build/libs/app.jar\n"}, optionOnly},
+		{"java -jar foreign", map[string]string{"Procfile": "web: java -jar lib/vendor.jar\n"}, optionOnly},
+		{"java -jar foreign absolute without a graph", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /app.jar\n"}, optionOnly},
+		{"java -jar variable", map[string]string{"run.sh": "exec java -jar \"$APP_JAR\"\n"}, optionOnly},
+		{"java -jar outside the checkout", map[string]string{"run.sh": "exec java -jar ../other/target/app.jar\n"}, optionOnly},
+		{"java -jar absolute target", map[string]string{"run.sh": "exec java -jar /target/app.jar\n"}, optionOnly},
+		{"java -jar below target", map[string]string{"run.sh": "exec java -jar target/dependency/tool.jar\n"}, optionOnly},
+		{"java -jar glob directory", map[string]string{"run.sh": "exec java -jar */target/app.jar\n"}, optionOnly},
+		{"java -jar Windows path", map[string]string{"run.bat": "java -jar target\\app.jar\r\n"}, optionOnly},
+		{"java -jar operand on the next line", map[string]string{"run.sh": "exec java -jar \\\n  target/app.jar\n"}, optionOnly},
+		{"java -jar not a jar", map[string]string{"run.sh": "exec java -jar target/app\n"}, optionOnly},
+		{"java -jar POM finalName outside a POM", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /${project.build.finalName}.jar\n"}, optionOnly},
+		{"java -jar POM finalName in a variable directory", map[string]string{"pom.xml": "<arg>java -jar ${dir}/${project.build.finalName}.jar</arg>\n"}, optionOnly},
+		{"java -jar own output, Spring Boot ZIP layout", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<configuration><layout>ZIP</layout></configuration>\n"}, optionOnly},
+		{"java -jar own output, manifest classpath", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<manifest><addClasspath>true</addClasspath></manifest>\n"}, optionOnly},
+		{"java -jar own output, manifest Add-Opens", map[string]string{"README.md": "java -jar target/*.jar\n", "build.gradle": "jar { manifest { attributes('Add-Opens': 'java.base/java.lang') } }\n"}, optionOnly},
+		{"java -jar own output, PropertiesLauncher", map[string]string{"README.md": "java -jar target/*.jar\n", "build.gradle.kts": "tasks.bootJar { manifest { attributes(\"Main-Class\" to \"org.springframework.boot.loader.launch.PropertiesLauncher\") } }\n"}, optionOnly},
+		{"java -jar own output, loader.path", map[string]string{"README.md": "java -jar target/*.jar\n", "src/main/resources/application.properties": "loader.path=lib\n"}, optionOnly},
+		{"java -jar own output, built JAR with Add-Exports", map[string]string{"README.md": "java -jar target/*.jar\n", "target/app.jar": manifestJar("Manifest-Version: 1.0\r\nAdd-Exports: java.base/sun.nio.ch\r\n")}, optionOnly},
+		{"java -jar own output, built JAR with PropertiesLauncher", map[string]string{"README.md": "java -jar target/*.jar\n", "target/app.jar": manifestJar("Manifest-Version: 1.0\r\nMain-Class: org.springframework.boot.loader.launch.PropertiesLauncher\r\n")}, optionOnly},
+		{"java -jar own output, built JAR plain", map[string]string{"README.md": "java -jar target/*.jar\n", "target/app.jar": manifestJar("Manifest-Version: 1.0\r\nMain-Class: org.springframework.boot.loader.launch.JarLauncher\r\nStart-Class: com.example.App\r\n")}, []string{}},
+		{"java -jar own output, test --add-opens is not a manifest", map[string]string{"README.md": "java -jar target/*.jar\n", "pom.xml": "<plugin><artifactId>maven-surefire-plugin</artifactId><configuration><argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine></configuration></plugin>\n"}, []string{}},
+		{"manifest hazard alone does not block", map[string]string{"pom.xml": "<configuration><layout>ZIP</layout></configuration>\n"}, []string{}},
 		{"java --module-path", map[string]string{"Dockerfile": "ENTRYPOINT java --module-path=/mods -m app/com.example.Main\n"}, optionOnly},
 		{"java -p", map[string]string{"run.sh": "java -p /mods -m app/com.example.Main\n"}, optionOnly},
 		{"java @argfile", map[string]string{"run.sh": "exec java @/app/jvm.args com.example.Main\n"}, optionOnly},
@@ -579,6 +609,42 @@ func TestLaunchContent_ReadError(t *testing.T) {
 			s.content("x", false, &errReader{data: tt.data}, tt.size)
 			if !s.reasons[PartialReasonLaunchOption] {
 				t.Errorf("reasons = %v, want %s", s.reasons, PartialReasonLaunchOption)
+			}
+		})
+	}
+}
+
+// TestLaunchOptionReasons_OwnJarName: a -jar of a file named <artifactId>-<version>.jar is the
+// build's own artifact only when that is one of the graph's modules.
+func TestLaunchOptionReasons_OwnJarName(t *testing.T) {
+	g := &buildgraph.Graph{Modules: []buildgraph.Module{testModule(t, ".", "mall-common"), testModule(t, "mall-admin", "mall-admin")}}
+	tests := []struct {
+		name  string
+		files map[string]string
+		g     *buildgraph.Graph
+		want  []string
+	}{
+		{"module artifact", map[string]string{"Dockerfile": `ENTRYPOINT ["java", "-jar","/mall-admin-1.jar"]` + "\n"}, g, []string{}},
+		{"module artifacts on two surfaces", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /mall-admin-1.jar\n", "run.sh": "java -jar /opt/mall-common-1.jar\n"}, g, []string{}},
+		{"other version", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /mall-admin-2.jar\n"}, g, optionOnly},
+		{"one module artifact and one foreign", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /mall-admin-1.jar\n", "run.sh": "java -jar /opt/tool-1.jar\n"}, g, optionOnly},
+		{"module artifact without a graph", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /mall-admin-1.jar\n"}, nil, optionOnly},
+		{"module artifact with a manifest hazard", map[string]string{"Dockerfile": "ENTRYPOINT java -jar /mall-admin-1.jar\n", "mall-admin/pom.xml": "<layout>ZIP</layout>\n"}, g, optionOnly},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, content := range tt.files {
+				p := filepath.Join(dir, filepath.FromSlash(name))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := LaunchOptionReasons(dir, tt.g); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("LaunchOptionReasons = %v, want %v", got, tt.want)
 			}
 		})
 	}

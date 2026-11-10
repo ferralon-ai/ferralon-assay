@@ -85,6 +85,54 @@ exec "$JAVACMD" "$@" -jar "$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
 const gradlewBatExcerpt = "set DEFAULT_JVM_OPTS=\"-Xmx64m\" \"-Xms64m\"\r\n" +
 	"\"%JAVA_EXE%\" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% \"-Dorg.gradle.appname=%APP_BASE_NAME%\" -classpath \"%CLASSPATH%\" org.gradle.wrapper.GradleWrapperMain %*\r\n"
 
+// gradlew7Excerpt is the option lines of Gradle 7's wrapper template, which escapes the
+// classpath for eval and names the macOS dock on Darwin.
+const gradlew7Excerpt = `CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
+    GRADLE_OPTS="$GRADLE_OPTS \"-Xdock:name=$APP_NAME\" \"-Xdock:icon=$APP_HOME/media/gradle.icns\""
+eval set -- $DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS "\"-Dorg.gradle.appname=$APP_BASE_NAME\"" -classpath "\"$CLASSPATH\"" org.gradle.wrapper.GradleWrapperMain "$APP_ARGS"
+`
+
+// mvnwExcerpt is the option lines of the Maven wrapper's shell template.
+const mvnwExcerpt = `#   MAVEN_OPTS - parameters passed to the Java VM when running Maven
+#     e.g. to debug Maven itself, use
+#       set MAVEN_OPTS=-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8000
+  [ -n "$CLASSPATH" ] &&
+    CLASSPATH=$(cygpath --path --unix "$CLASSPATH")
+        ("$JAVA_HOME/bin/java" -cp .mvn/wrapper MavenWrapperDownloader "$wrapperUrl" "$wrapperJarPath") || rm -f "$wrapperJarPath"
+MAVEN_OPTS="$(concat_lines "$MAVEN_PROJECTBASEDIR/.mvn/jvm.config") $MAVEN_OPTS"
+WRAPPER_LAUNCHER=org.apache.maven.wrapper.MavenWrapperMain
+exec "$JAVACMD" \
+  $MAVEN_OPTS \
+  $MAVEN_DEBUG_OPTS \
+  -classpath "$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.jar" \
+  "-Dmaven.home=${M2_HOME}" \
+  "-Dmaven.multiModuleProjectDirectory=${MAVEN_PROJECTBASEDIR}" \
+  ${WRAPPER_LAUNCHER} $MAVEN_CONFIG "$@"
+`
+
+// apacheMvnwCmd and takariMvnwCmd are upstream Maven wrapper batch templates: Apache Maven
+// Wrapper 3.3.4 (CRLF) and Takari maven-wrapper 0.5.6 (LF), the latter with a caret-continued
+// command.
+var apacheMvnwCmd, takariMvnwCmd = readTestdata("testdata/mvnw/apache-3.3.4.cmd"), readTestdata("testdata/mvnw/takari-0.5.6.cmd")
+
+func readTestdata(name string) string {
+	b, err := os.ReadFile(name)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// insertAfter returns s with ins inserted after the first line containing marker.
+func insertAfter(s, marker, ins string) string {
+	i := strings.Index(s, marker)
+	if i < 0 {
+		panic("insertAfter: no " + marker)
+	}
+	i += strings.IndexByte(s[i:], '\n') + 1
+	return s[:i] + ins + s[i:]
+}
+
 func manifestJar(manifest string) string {
 	return zipOf(map[string]string{"META-INF/MANIFEST.MF": manifest})
 }
@@ -322,6 +370,63 @@ func TestLaunchOptionReasons(t *testing.T) {
 		{"template classpath outside a start script", map[string]string{"run.sh": "exec java -classpath \"$CLASSPATH\" com.example.Main\n"}, optionOnly},
 		{"gradle wrapper template", map[string]string{"gradlew": gradlewExcerpt, "gradlew.bat": gradlewBatExcerpt}, []string{}},
 		{"gradle wrapper agent", map[string]string{"gradlew": "DEFAULT_JVM_OPTS='\"-javaagent:/a.jar\"'\n"}, agentOnly},
+		{"gradle 7 wrapper template", map[string]string{"gradlew": gradlew7Excerpt}, []string{}},
+		{"gradle 7 escaped classpath of another variable", map[string]string{"gradlew": gradlew7Excerpt + `eval set -- -classpath "\"$EXTRA\"" org.gradle.wrapper.GradleWrapperMain` + "\n"}, optionOnly},
+		{"escaped template classpath outside a template", map[string]string{"run.sh": `eval set -- -classpath "\"$CLASSPATH\"" com.example.Main` + "\n"}, optionOnly},
+		{"maven wrapper template", map[string]string{"mvnw": mvnwExcerpt, "mvnw.cmd": apacheMvnwCmd}, []string{}},
+		{"takari maven wrapper batch template", map[string]string{"mvnw.cmd": takariMvnwCmd}, []string{}},
+		{"maven wrapper batch template with a comment edited", map[string]string{"mvnw.cmd": strings.Replace(apacheMvnwCmd, "@REM Licensed to the Apache", "@REM Copied from the Apache", 1)}, []string{}},
+		{"maven wrapper batch template with a comment added", map[string]string{"mvnw.cmd": insertAfter(apacheMvnwCmd, "@REM Licensed to the Apache", "@REM vendored by us\r\n")}, []string{}},
+		{"maven wrapper batch template with a code line added", map[string]string{"mvnw.cmd": insertAfter(apacheMvnwCmd, "@REM Licensed to the Apache", "echo x\r\n")}, optionOnly},
+		{"maven wrapper batch template with a comment continued by a caret over a code line", map[string]string{"mvnw.cmd": insertAfter(apacheMvnwCmd, "@REM Begin all REM lines", "@REM x ^\r\n")}, optionOnly},
+		{"maven wrapper batch template with a comment after a caret-continued line", map[string]string{"mvnw.cmd": insertAfter(takariMvnwCmd, `"}"^`, "@REM x\n")}, optionOnly},
+		{"maven wrapper batch template with an expansion in a comment", map[string]string{"mvnw.cmd": insertAfter(apacheMvnwCmd, "@REM Licensed to the Apache", "@REM %X%\r\n")}, optionOnly},
+		{"maven wrapper batch template with a delayed expansion in a comment", map[string]string{"mvnw.cmd": insertAfter(apacheMvnwCmd, "@REM Licensed to the Apache", "@REM !X!\r\n")}, optionOnly},
+		{"maven wrapper batch template with a control character", map[string]string{"mvnw.cmd": insertAfter(apacheMvnwCmd, "@REM Licensed to the Apache", "@REM \x1a\r\n")}, optionOnly},
+		{"maven wrapper batch template with a bare CR", map[string]string{"mvnw.cmd": insertAfter(apacheMvnwCmd, "@REM Licensed to the Apache", "@REM a\rset WRAPPER_JAR=x\r\n")}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR assigned from file data by for /f", map[string]string{"mvnw.cmd": apacheMvnwCmd + "for /f \"delims=\" %%a in (x.txt) do set \"%%a\"\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR assignment built from two variables", map[string]string{"mvnw.cmd": apacheMvnwCmd + "set A=set WRAPPER_\r\nset B=JAR=lib\\evil.jar\r\n%A%%B%\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR assigned by set;", map[string]string{"mvnw.cmd": apacheMvnwCmd + "set;WRAPPER_JAR=lib\\evil.jar\r\n"}, optionOnly},
+		{"maven wrapper agent", map[string]string{"mvnw": mvnwExcerpt + "MAVEN_OPTS=\"-javaagent:/a.jar\"\n"}, agentOnly},
+		{"maven wrapper classpath of another JAR", map[string]string{"mvnw": mvnwExcerpt + "exec java -classpath \"$MAVEN_PROJECTBASEDIR/lib/app.jar\" com.example.Main\n"}, optionOnly},
+		{"maven wrapper -cp of another directory", map[string]string{"mvnw": mvnwExcerpt + "java -cp lib com.example.Main\n"}, optionOnly},
+		{"maven wrapper batch classpath of another variable", map[string]string{"mvnw.cmd": apacheMvnwCmd + "%MAVEN_JAVA_EXE% -classpath %APP_JAR% com.example.Main\r\n"}, optionOnly},
+		{"maven wrapper CLASSPATH assigned", map[string]string{"mvnw": mvnwExcerpt + "CLASSPATH=lib/app.jar\n"}, []string{}},
+		{"maven wrapper jvm.config line outside the wrapper", map[string]string{"run.sh": `MAVEN_OPTS="$(concat_lines "$MAVEN_PROJECTBASEDIR/.mvn/jvm.config") $MAVEN_OPTS"` + "\n"}, optionOnly},
+		{"maven wrapper debug comment outside the wrapper", map[string]string{"run.sh": "# set MAVEN_OPTS=-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8000\n"}, agentOnly},
+		{"maven wrapper template outside the root", map[string]string{"deploy/mvnw": mvnwExcerpt}, agentAndOption},
+		{"root mvnw that is not the wrapper", map[string]string{"mvnw": "exec java -Djava.system.class.loader=org.d.D com.example.Main\n"}, optionOnly},
+		{"maven wrapper exec line with a JVM property", map[string]string{"mvnw": mvnwExcerpt + "exec \"$JAVACMD\" \\\n  $MAVEN_OPTS \\\n  -Djava.system.class.loader=org.d.D \\\n  -classpath \"$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.jar\" \\\n  ${WRAPPER_LAUNCHER} \"$@\"\n"}, optionOnly},
+		{"maven wrapper exec line with a VM options file", map[string]string{"mvnw": mvnwExcerpt + "exec \"$JAVACMD\" -XX:VMOptionsFile=/tmp/x ${WRAPPER_LAUNCHER} \"$@\"\n"}, optionOnly},
+		{"maven wrapper template property with a suffix", map[string]string{"mvnw": mvnwExcerpt + "exec \"$JAVACMD\" \"-Dmaven.home=${M2_HOME}\"x ${WRAPPER_LAUNCHER}\n"}, optionOnly},
+		{"maven wrapper JAR classpath with another JAR joined", map[string]string{"mvnw": mvnwExcerpt + "exec \"$JAVACMD\" -classpath \"$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.jar\":lib/extra.jar ${WRAPPER_LAUNCHER}\n"}, optionOnly},
+		{"maven wrapper batch classpath with another JAR joined", map[string]string{"mvnw.cmd": apacheMvnwCmd + "%MAVEN_JAVA_EXE% -classpath %WRAPPER_JAR%;lib\\x.jar %WRAPPER_LAUNCHER% %*\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR reassigned", map[string]string{"mvnw.cmd": apacheMvnwCmd + "set WRAPPER_JAR=\"lib\\evil.jar\"\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR assignment commented out", map[string]string{"mvnw.cmd": strings.ReplaceAll(apacheMvnwCmd, "set WRAPPER_JAR=", "rem WRAPPER_JAR=")}, optionOnly},
+		{"maven wrapper JAR classpath joined at the 128th byte", map[string]string{"mvnw": mvnwExcerpt + "exec \"$JAVACMD\" -classpath                                                                          \"$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.jar\":lib/x.jar ${WRAPPER_LAUNCHER}\n"}, optionOnly},
+		{"start script template classpath joined at the 128th byte", map[string]string{"build/scripts/app": "set -- -classpath                                                                                                                    \"$CLASSPATH\":lib/x.jar com.example.MainKt\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR assigned by @set", map[string]string{"mvnw.cmd": apacheMvnwCmd + "@set WRAPPER_JAR=\"lib\\evil.jar\"\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR assigned by set after if", map[string]string{"mvnw.cmd": apacheMvnwCmd + "if 1==1 set WRAPPER_JAR=lib\\evil.jar\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR assigned by quoted set after &", map[string]string{"mvnw.cmd": apacheMvnwCmd + "echo x& set \"WRAPPER_JAR=lib\\evil.jar\"\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR assigned by set /p", map[string]string{"mvnw.cmd": apacheMvnwCmd + "set /p WRAPPER_JAR=<x.txt\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR assigned by caret-escaped name", map[string]string{"mvnw.cmd": apacheMvnwCmd + "set WRAPPER_JA^R=lib\\evil.jar\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR assignment continued after a caret", map[string]string{"mvnw.cmd": apacheMvnwCmd + "set WRAPPER_JAR^\r\n=lib\\evil.jar\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR name split by a caret", map[string]string{"mvnw.cmd": apacheMvnwCmd + "set WRAPPER_^\r\nJAR=lib\\evil.jar\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR empty variable in the name", map[string]string{"mvnw.cmd": apacheMvnwCmd + "set e=\r\nset WRAPPER_JAR%e%=lib\\evil.jar\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR name from another variable", map[string]string{"mvnw.cmd": apacheMvnwCmd + "set W=WRAPPER_JAR\r\nset %W%=lib\\evil.jar\r\n"}, optionOnly},
+		{"maven wrapper batch WRAPPER_JAR for variable as the name", map[string]string{"mvnw.cmd": apacheMvnwCmd + "for %%a in (WRAPPER_JAR) do set %%a=lib\\evil.jar\r\n"}, optionOnly},
+		{"maven wrapper VM options file in a mvn span", map[string]string{"mvnw": mvnwExcerpt + "echo mvn $JAVACMD -XX:VMOptionsFile=/x ${WRAPPER_LAUNCHER}\n"}, optionOnly},
+		{"start script template classpath with another JAR joined", map[string]string{"build/scripts/app": "set -- -classpath \"$CLASSPATH\":lib/x.jar com.example.MainKt\n"}, optionOnly},
+		{"agent in a Latin-1 batch file with a stray NUL", map[string]string{"run.cmd": "set JAVA_OPTS=-javaagent:C:\\agents\\dd.jar;C:\\Pr\xfcfung\r\n\x00"}, agentOnly},
+		{"JVM property in a Latin-1 batch file with a stray NUL", map[string]string{"run.cmd": "set JAVA_OPTS=-Djava.system.class.loader=org.d.D;C:\\Pr\xfcfung\r\n\x00"}, optionOnly},
+		{"option in a binary file's UTF-8 text", map[string]string{"lib/x.bin": "PK\x03\x04\x00\x00 -Djava.system.class.loader=org.d.D \x00"}, optionOnly},
+		{"root mvnw without the wrapper's entry point", map[string]string{"mvnw": "java -cp .mvn/wrapper MavenWrapperDownloader \"$u\"\n"}, optionOnly},
+		{"agent in a binary file", map[string]string{"lib/x.bin": "PK\x03\x04\x00\x00 -javaagent:/a.jar,\xbd \x00"}, agentOnly},
+		{"upper-case REM comment", map[string]string{"run.cmd": "@REM set JAVA_OPTS=%X%\r\n"}, []string{}},
+		{"@REMARK is not a comment", map[string]string{"run.cmd": "@REMARK JAVA_OPTS=$X\r\n"}, optionOnly},
+		{"upper-case @REM comment names an option variable", map[string]string{"run.cmd": "@REM JAVA_OPTS is read by the launcher\r\n"}, []string{}},
+		{"dock option with a variable value", map[string]string{"run.sh": `JAVA_OPTS="-Xdock:name=$APP_NAME -Xmx$HEAP"` + "\n"}, []string{}},
+		{"variable in an unmodeled option string word", map[string]string{"run.sh": `JAVA_OPTS="-XX:Flags=$FLAGS_FILE"` + "\n"}, optionOnly},
 		{"MANIFEST Class-Path", map[string]string{"build/libs/app.jar": manifestJar("Manifest-Version: 1.0\r\nClass-Path: lib/a.jar\r\n")}, optionOnly},
 		{"MANIFEST Launcher-Agent-Class, folded", map[string]string{"app.war": manifestJar("Manifest-Version: 1.0\r\nlauncher-agent-class: org.d.\r\n Agent\r\n")}, agentOnly},
 		{"MANIFEST plain", map[string]string{"build/libs/app.jar": manifestJar("Manifest-Version: 1.0\r\nMain-Class: com.example.Main\r\n")}, []string{}},
@@ -341,6 +446,15 @@ func TestLaunchOptionReasons(t *testing.T) {
 		{"jib property is a launch option", map[string]string{"ci.sh": "./gradlew jib -Djib.container.jvmFlags=-javaagent:/a.jar\n"}, optionOnly},
 		{"jib property in a build command blocks", map[string]string{"ci.sh": "./gradlew jib -Djib.container.mainClass=com.acme.Main\n"}, optionOnly},
 		{"spring-boot property in a build command blocks", map[string]string{"ci.sh": "./mvnw package -Dspring-boot.build-image.imageName=app\n"}, optionOnly},
+		{"spring-boot run profiles in a build command", map[string]string{"setup.txt": "mvn spring-boot:run -Dspring-boot.run.profiles=mysql\n"}, []string{}},
+		{"spring-boot run JVM arguments in a build command", map[string]string{"setup.txt": "mvn spring-boot:run -Dspring-boot.run.jvmArguments=-Dx=1\n"}, optionOnly},
+		{"spring-boot run profiles outside a build command", map[string]string{"run.sh": "exec java -Dspring-boot.run.profiles=mysql com.example.Main\n"}, optionOnly},
+		{"jib push target in a build command", map[string]string{"README.md": "mvn compile jib:build -Djib.to.image=x -Djib.to.auth.username=u -Djib.to.auth.password=p\n"}, []string{}},
+		{"jib base image in a build command blocks", map[string]string{"ci.sh": "mvn compile jib:build -Djib.from.image=eclipse-temurin:21\n"}, optionOnly},
+		{"option delimiters in compressed binary data", map[string]string{"static/font.woff": "wOFF\x00\x01l(6qA,\xbd,-DN,\xc4\x0f\x94\x829"}, []string{}},
+		{"option in a binary file between UTF-8 text", map[string]string{"app.bin": "\x00\x01 -Djava.system.class.loader=org.d.D \x02"}, optionOnly},
+		{"option in a script's text before its payload", map[string]string{"bin/app": "#!/bin/sh\nexec java -Djava.system.class.loader=org.d.D,\xbd -jar \"$0\"\n\x00PK"}, optionOnly},
+		{"option delimiters in a script's payload", map[string]string{"bin/app": "#!/bin/sh\nexec java -Xmx1g com.example.Main\n\x00PK\xbd,-DN,\xc4"}, []string{}},
 		{"name in a binary serialization", map[string]string{".gradle/8.4/executionHistory/executionHistory.bin": "\x00\x8fdefaultJvmOpts\x0c\x01APP_OPTS\x92"}, []string{}},
 		{"name in prose", map[string]string{"README.md": "Set JAVA_OPTS to tune the heap.\n"}, optionOnly},
 		{"name in a comment", map[string]string{"run.sh": "# JAVA_OPTS is read by the start script\nexec ./bin/app\n"}, []string{}},

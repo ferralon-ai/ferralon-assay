@@ -16,6 +16,8 @@ import (
 	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -533,7 +535,7 @@ var inertJVMFlags = map[string]bool{
 }
 
 var inertFlagPrefixes = []string{"-Xmx", "-Xms", "-Xss", "-Xmn", "-Xlog:", "-verbose:", "-ea:", "-da:",
-	"-enableassertions:", "-disableassertions:"}
+	"-enableassertions:", "-disableassertions:", "-Xdock:"}
 
 // inertXX are -XX options that size or tune the VM and load no code.
 var inertXX = map[string]bool{
@@ -611,8 +613,12 @@ func splitOptionWords(value string) (words []string, unreadable bool) {
 			continue
 		}
 		if strings.Contains(w, "$") || strings.Contains(w, "%") || strings.Contains(w, "`") {
-			if classifyLaunchOption(w) == optionAgent {
-				words = append(words, w) // an agent whatever path it names
+			switch classifyLaunchOption(w) {
+			case optionAgent, optionInert:
+				// An agent whatever path it names; inert whatever value. An unquoted expansion
+				// word-splits, so a value carrying an agent (HEAP="1g -javaagent:x") is caught
+				// where the checkout assigns it; one set only at deploy time is residue, as for -D.
+				words = append(words, w)
 				continue
 			}
 			if prop, ok := strings.CutPrefix(w, "-D"); ok {
@@ -675,9 +681,19 @@ var propertyNameByte = func() (t [256]bool) {
 }()
 
 // launchOptionTokens returns every launch-option token in data. A token is a whole word; one
-// that touches a control byte or is not UTF-8 is binary data, not text, and is skipped.
+// that touches a control byte or is not UTF-8 is binary data, not text, and is skipped. So is
+// one in a binary file (past its script text, for a script with a payload) whose surrounding
+// run of non-space bytes is not UTF-8: delimiters that happen to fall in compressed data. An
+// agent token is never skipped that way.
 func launchOptionTokens(data []byte) []launchToken {
 	var out []launchToken
+	binaryFrom := bytes.IndexByte(data, 0)
+	if binaryFrom >= 0 && !bytes.HasPrefix(data, []byte("#!")) {
+		binaryFrom = -1
+		if n := bytes.Count(data, []byte{0}); binaryMagic(data) || n >= binaryMinNULs && n*binaryNULDensity >= len(data) {
+			binaryFrom = 0
+		}
+	}
 	for pos := 0; pos < len(data); {
 		loc := optionHead.FindIndex(data[pos:])
 		if loc == nil {
@@ -702,7 +718,8 @@ func launchOptionTokens(data []byte) []launchToken {
 			end++
 		}
 		pos = end
-		if binaryAdjacent(data, h, end) {
+		if binaryAdjacent(data, h, end) || binaryFrom >= 0 && h >= binaryFrom && !utf8.Valid(binaryRun(data, h, end)) &&
+			classifyLaunchOption(string(data[h:end])) != optionAgent {
 			continue
 		}
 		word := string(data[h:end])
@@ -780,6 +797,35 @@ func lineContinuation(data []byte, i int) int {
 func binaryAdjacent(data []byte, a, b int) bool {
 	ctl := func(c byte) bool { return c < ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\f' && c != '\v' }
 	return a > 0 && ctl(data[a-1]) || b < len(data) && ctl(data[b])
+}
+
+// A file without a shebang is binary when it opens with a binary format's magic, or its NULs
+// number at least binaryMinNULs and one in binaryNULDensity bytes: compressed data, not a text
+// file with a stray NUL.
+const binaryMinNULs, binaryNULDensity = 4, 512
+
+var binaryMagics = [][]byte{[]byte("wOFF"), []byte("wOF2"), []byte("PK\x03\x04"), []byte("\x89PNG"),
+	[]byte("GIF8"), []byte("\xff\xd8\xff"), []byte("\xca\xfe\xba\xbe"), []byte("\x1f\x8b")}
+
+func binaryMagic(data []byte) bool {
+	for _, m := range binaryMagics {
+		if bytes.HasPrefix(data, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// binaryRun widens data[a:b] to the run of bytes around it that are neither whitespace nor
+// control bytes.
+func binaryRun(data []byte, a, b int) []byte {
+	for a > 0 && data[a-1] > ' ' && data[a-1] != 0x7f {
+		a--
+	}
+	for b < len(data) && data[b] > ' ' && data[b] != 0x7f {
+		b++
+	}
+	return data[a:b]
 }
 
 func validPropertyName(name string) bool {
@@ -880,6 +926,7 @@ type launchFile struct {
 	data        []byte
 	lines       []int // start offset of each line
 	gradlew     bool
+	mavenw      bool
 	startScript bool
 	spans       []launchSpan
 	testScopes  [][2]int     // Surefire/Failsafe plugin elements
@@ -897,7 +944,7 @@ func (s *launchScan) text(rel string, inDist bool, data []byte) {
 		return
 	}
 	base := strings.ToLower(rel[strings.LastIndex(rel, "/")+1:])
-	f := &launchFile{s: s, data: data, gradlew: isGradleWrapper(rel, inDist, data),
+	f := &launchFile{s: s, data: data, gradlew: isGradleWrapper(rel, inDist, data), mavenw: isMavenWrapper(rel, inDist, data),
 		startScript: isStartScript(rel, inDist), yamlLines: map[int]bool{}, template: map[int]bool{}}
 	f.lines = append(f.lines, 0)
 	for i, b := range data {
@@ -907,7 +954,7 @@ func (s *launchScan) text(rel string, inDist bool, data []byte) {
 	}
 	f.buildSpans(rel)
 	f.testSpans(base)
-	if f.gradlew || f.startScript {
+	if f.gradlew || f.mavenw || f.startScript {
 		for i := range f.lines {
 			if startScriptCommentLines[strings.Join(strings.Fields(f.line(i)), " ")] {
 				f.template[i] = true
@@ -935,6 +982,13 @@ func isGradleWrapper(rel string, inDist bool, data []byte) bool {
 		(bytes.Contains(data, []byte("org.gradle.wrapper.GradleWrapperMain")) || bytes.Contains(data, []byte("gradle-wrapper.jar")))
 }
 
+// isMavenWrapper reports whether rel is the checkout's Maven wrapper script: mvnw or mvnw.cmd
+// at the root, carrying the template's wrapper entry point.
+func isMavenWrapper(rel string, inDist bool, data []byte) bool {
+	return !inDist && (rel == "mvnw" || rel == "mvnw.cmd") &&
+		(bytes.Contains(data, []byte("org.apache.maven.wrapper.MavenWrapperMain")) || bytes.Contains(data, []byte("maven-wrapper.jar")))
+}
+
 // isStartScript reports whether rel is a Gradle-generated start script: build/scripts/<name>
 // or build/install/<app>/bin/<name> in any project, or <app>/bin/<name> in a distribution.
 func isStartScript(rel string, inDist bool) bool {
@@ -947,10 +1001,14 @@ func isStartScript(rel string, inDist bool) bool {
 		n >= 5 && parts[n-5] == "build" && parts[n-4] == "install" && parts[n-2] == "bin"
 }
 
-// startScriptCommentLines are the comment lines of Gradle's start-script and wrapper templates
-// that name options.
+// startScriptCommentLines are the lines of Gradle's start-script and wrapper templates and
+// Maven's wrapper template that name options or option variables: the comments, and the Maven
+// wrapper's prepending of .mvn/jvm.config to MAVEN_OPTS (that file is scanned where it lies).
 var startScriptCommentLines = map[string]bool{
 	"# * -classpath": true, "# * -D...appname settings": true, "# * --module-path (only if needed)": true,
+	"# set MAVEN_OPTS=-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8000":    true,
+	"@REM set MAVEN_OPTS=-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8000": true,
+	`MAVEN_OPTS="$(concat_lines "$MAVEN_PROJECTBASEDIR/.mvn/jvm.config") $MAVEN_OPTS"`:          true,
 }
 
 func (f *launchFile) lineOf(off int) int {
@@ -1386,6 +1444,9 @@ func (f *launchFile) option(t launchToken) {
 	if t.word == "-p" || f.inSpan(t.start, spanTest) || f.template[f.lineOf(t.start)] {
 		return
 	}
+	if f.mavenw && f.templateMavenProperty(t) {
+		return
+	}
 	if isClasspathToken(t.word) {
 		if !f.templateClasspath(t) {
 			f.s.unreadable()
@@ -1396,35 +1457,153 @@ func (f *launchFile) option(t launchToken) {
 	case optionAgent:
 		f.s.agent()
 	case optionUnmodeled:
-		if !f.inSpan(t.start, spanBuild) || !buildClaimable(t.word) {
+		// The Maven wrapper is not a build-tool invocation the program runs under: an option on
+		// any of its lines reaches the JVM it starts.
+		if f.mavenw || !f.inSpan(t.start, spanBuild) || !buildClaimable(t.word) {
 			f.s.unreadable()
 		}
 	}
 }
 
+// buildClaimable reports whether an unmodeled option in a build-tool span configures only the
+// build. Jib and Spring Boot properties can set the program's own JVM options, main class or
+// base image, except Jib's push target (jib.to.*) and the Spring profiles spring-boot:run
+// activates, which the analysis already covers (a @Profile never narrows resolution).
 func buildClaimable(w string) bool {
 	if strings.HasPrefix(w, "-XX:") {
 		return true
 	}
 	prop, ok := strings.CutPrefix(w, "-D")
-	return ok && !strings.HasPrefix(prop, "jib.") && !strings.HasPrefix(prop, "spring-boot.")
+	if !ok {
+		return false
+	}
+	name, _, _ := strings.Cut(prop, "=")
+	switch {
+	case strings.HasPrefix(name, "jib.to."), name == "spring-boot.run.profiles":
+		return true
+	}
+	return !strings.HasPrefix(name, "jib.") && !strings.HasPrefix(name, "spring-boot.")
 }
 
-// templateClasspath reports whether a classpath token is the Gradle template's own: a start
-// script's -classpath "$CLASSPATH", or the wrapper script's wrapper JAR.
+// templateClasspath reports whether a classpath token is a template's own: a Gradle start
+// script's -classpath "$CLASSPATH" (Gradle 7 and earlier escape it for eval), the Gradle
+// wrapper script's wrapper JAR, or the Maven wrapper script's wrapper JAR and the downloader
+// it compiles into .mvn/wrapper.
 func (f *launchFile) templateClasspath(t launchToken) bool {
+	rest := strings.TrimLeft(f.restOfLine(t.end), " \t")
+	if f.mavenw {
+		switch t.word {
+		case "-classpath":
+			return wordIs(rest, `"$MAVEN_PROJECTBASEDIR/.mvn/wrapper/maven-wrapper.jar"`) ||
+				wordIs(rest, `%WRAPPER_JAR%`) && f.templateWrapperJar()
+		case "-cp":
+			return wordIs(rest, ".mvn/wrapper MavenWrapperDownloader")
+		}
+		return false
+	}
 	if !f.gradlew && !f.startScript {
 		return false
 	}
-	rest := strings.TrimLeft(string(f.data[t.end:min(t.end+64, len(f.data))]), " \t")
 	switch t.word {
 	case "-classpath":
-		return strings.HasPrefix(rest, `"$CLASSPATH"`) || strings.HasPrefix(rest, `"%CLASSPATH%"`)
+		return wordIs(rest, `"$CLASSPATH"`) || wordIs(rest, `"\"$CLASSPATH\""`) || wordIs(rest, `"%CLASSPATH%"`)
 	case "-jar":
-		return f.gradlew && (strings.HasPrefix(rest, `"$APP_HOME/gradle/wrapper/gradle-wrapper.jar"`) ||
-			strings.HasPrefix(rest, `"%APP_HOME%\gradle\wrapper\gradle-wrapper.jar"`))
+		return f.gradlew && (wordIs(rest, `"$APP_HOME/gradle/wrapper/gradle-wrapper.jar"`) ||
+			wordIs(rest, `"%APP_HOME%\gradle\wrapper\gradle-wrapper.jar"`))
 	}
 	return false
+}
+
+// templateMavenProperty reports whether t is a property the Maven wrapper template passes
+// Maven's JVM, closed as the template closes it: its home and project directory.
+func (f *launchFile) templateMavenProperty(t launchToken) bool {
+	rest := f.restOfLine(t.end)
+	switch t.word {
+	case "-Dmaven.home=${M2_HOME", "-Dmaven.multiModuleProjectDirectory=${MAVEN_PROJECTBASEDIR":
+		return wordIs(rest, `}"`)
+	case "-Dmaven.multiModuleProjectDirectory=%MAVEN_PROJECTBASEDIR%":
+		return wordIs(rest, `"`)
+	}
+	return false
+}
+
+// restOfLine is the text from i to the end of its line.
+func (f *launchFile) restOfLine(i int) string {
+	rest := f.data[i:]
+	if j := bytes.IndexByte(rest, '\n'); j >= 0 {
+		rest = rest[:j]
+	}
+	return string(rest)
+}
+
+// wordIs reports whether rest, the rest of a line, starts with the words lit, ending there: the
+// shell would join anything else that follows onto the same word.
+func wordIs(rest, lit string) bool {
+	after, ok := strings.CutPrefix(rest, lit)
+	return ok && (after == "" || strings.ContainsRune(" \t\r", rune(after[0])))
+}
+
+// templateWrapperJar reports whether the Maven wrapper batch script is an upstream template,
+// Apache Maven Wrapper 3.1.0 to 3.3.4 or Takari maven-wrapper 0.2.0 to 0.5.6, with at most its
+// comments edited. cmd can assign WRAPPER_JAR in more forms than a reader can enumerate, so the
+// script's code lines must be exactly a template's.
+func (f *launchFile) templateWrapperJar() bool {
+	fp, ok := cmdCodeFingerprint(f.data)
+	return ok && mavenWrapperTemplates[fp]
+}
+
+// cmdCodeFingerprint hashes a batch script's code lines, line endings normalized to LF. A REM line
+// is dropped as inert unless cmd could read it as more: it continues onto the next line or
+// follows one that does (a trailing caret), or it holds a %- or !-expansion, which cmd expands
+// before it sees REM. A script with a control character or a bare CR does not fingerprint.
+func cmdCodeFingerprint(data []byte) (string, bool) {
+	for _, c := range data {
+		if c < 0x20 && c != '\t' && c != '\n' && c != '\r' {
+			return "", false
+		}
+	}
+	s := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if strings.Contains(s, "\r") {
+		return "", false
+	}
+	var code []string
+	prev := ""
+	for _, line := range strings.Split(s, "\n") {
+		inert := cmdRemark.MatchString(line) && !strings.HasSuffix(line, "^") &&
+			!strings.HasSuffix(prev, "^") && !strings.ContainsAny(line, "%!")
+		if !inert {
+			code = append(code, line)
+		}
+		prev = line
+	}
+	sum := sha256.Sum256([]byte(strings.Join(code, "\n")))
+	return hex.EncodeToString(sum[:]), true
+}
+
+var cmdRemark = regexp.MustCompile(`(?i)^[ \t]*@?rem(?:[ \t].*)?$`)
+
+// mavenWrapperTemplates holds cmdCodeFingerprint of each upstream mvnw.cmd that sets WRAPPER_JAR.
+// Apache's bin, script and source distributions of one version share a fingerprint.
+var mavenWrapperTemplates = map[string]bool{
+	"361e8194ff865c389423b366b89af6122b00741b7fc227e7b67fef73449f92bb": true, // Apache 3.1.0
+	"32243652660a21297ee4ef74b08025536cd43de597aaadbbfe20d449647fe461": true, // Apache 3.1.1
+	"62e6ee9ee0de204630df0655b0db4da482390adfe3f754f1c4db80a5f70ce446": true, // Apache 3.2.0
+	"7059f02bbdf291eebf37742187667ef957215e70a4e603105e33de51eae945e0": true, // Apache 3.3.0
+	"0798e541fffc8ff869baf784d4b07f8c94749a64d53d3375c92d19a81ac9c6c7": true, // Apache 3.3.1
+	"af4d20788627bc79ddfe2f12702fae6d8aa9d2feb0c906190a937e5b41fb1f21": true, // Apache 3.3.2
+	"66749d2f050b62555a642b05a794f233d10a1425d177bfeb2f5b93ecc77ef16b": true, // Apache 3.3.3
+	"271a94bbeb24386f1df54627001ba5aec6f47f8b02ff33a7cfa3f42d9319168e": true, // Apache 3.3.4
+	"754dab2ba0d567eb745b9a67dc42813f558703566ea72bec5b80d50a321bd18e": true, // Takari 0.2.0-0.2.3
+	"435e6e62dc1a422f17eaef93a1bda62db7d906cef0d8074e29bb6b3e81164421": true, // Takari 0.3.0
+	"fd1747782fd67e3f7410c3f3e894b5de5d1161dbd73a9094e257d92e0bce4dcf": true, // Takari 0.4.0-0.4.1
+	"368ded28290c11b6446f509aaf919423ed7508d952e3e3b66649fd1ac2e51398": true, // Takari 0.4.2
+	"4a0ccc5ddbd763b3889fc73bd2bf9fffdf367e4dd709dea798e8556b36bd501e": true, // Takari 0.5.0
+	"f8da45155d4b2a00cfbe30da7629ccc181e39de5d6ec20dec0ad964f6ecf8a58": true, // Takari 0.5.1
+	"b512311cfcb31dbd3cf979701f51d0e8a205a9a0350bd737fe35ce5f57fb0d80": true, // Takari 0.5.2
+	"208c88bee29a70badda9f4e9ac140739c520ca12ea6495e098efc87476a5885d": true, // Takari 0.5.3
+	"eaa16c19994ec84d7a3a64dc7e55e3ba010156f2c9b5dcb61ee446420776a567": true, // Takari 0.5.4
+	"216dbbf27259f1694f54f8cc266df42c744c0f16e0e4ff0f23a3c69dce90d40a": true, // Takari 0.5.5
+	"446bf654db5d5da0baa81a1b4e67b9252bec9b7da045d9d218073ddeeb134fd2": true, // Takari 0.5.6
 }
 
 // name classifies one occurrence of a launch name. An option variable is accounted for when it
@@ -1448,7 +1627,7 @@ func (f *launchFile) name(a, b int) {
 	}
 	li := f.lineOf(a)
 	line := f.line(li)
-	if isLaunchCommentLine(line) {
+	if isLaunchCommentLine(line) || f.template[li] {
 		return
 	}
 	if launchDSLNames[n] {
@@ -1457,8 +1636,9 @@ func (f *launchFile) name(a, b int) {
 	}
 	if n == "CLASSPATH" {
 		// java reads CLASSPATH when no -cp is given: it names the launch's code. The Gradle
-		// templates set it for their own -classpath "$CLASSPATH".
-		if !f.gradlew && !f.startScript && strings.TrimSpace(line[:a-f.lines[li]]) != "unset" {
+		// templates set it for their own -classpath "$CLASSPATH"; the Maven wrapper converts
+		// it for Cygwin and passes its own -classpath.
+		if !f.gradlew && !f.mavenw && !f.startScript && strings.TrimSpace(line[:a-f.lines[li]]) != "unset" {
 			f.s.unreadable()
 		}
 		return
@@ -1509,12 +1689,13 @@ func launchExpansion(data []byte, a, b int) bool {
 func isLaunchCommentLine(line string) bool {
 	t := strings.TrimSpace(line)
 	lower := strings.ToLower(t)
-	for _, p := range []string{"#", "//", "/*", "*", "<!--", "::", ";", "@rem"} {
+	for _, p := range []string{"#", "//", "/*", "*", "<!--", "::", ";"} {
 		if strings.HasPrefix(t, p) {
 			return true
 		}
 	}
-	return lower == "rem" || strings.HasPrefix(lower, "rem ")
+	lower = strings.TrimPrefix(lower, "@")
+	return lower == "rem" || strings.HasPrefix(lower, "rem ") || strings.HasPrefix(lower, "rem\t")
 }
 
 var assignOp = regexp.MustCompile(`^\s*(\?=|\+=|::=|:=|=|:)\s*`)

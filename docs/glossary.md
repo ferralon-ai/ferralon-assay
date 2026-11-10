@@ -6,7 +6,7 @@ says nothing they do not; where no file defines a term, the entry says so and de
 term is used. Each entry cites one to three `path:line` locations, the defining one first. Where two
 sources disagree, or one word names two things, the entry is marked **Collision** and gives both. A
 term that belongs to Ferralon's paid product is described only as far as this repository's own docs
-describe it. All citations were taken at commit `9fbd3c6874d9f0d091ae6e4a1b5bc384ee6741f9`; a line
+describe it. All citations were taken at commit `6ca71c51ab6faab120fce4c416156145cb8e3b36`; a line
 number can drift once the cited file changes. Each entry has an anchor (`#term-name`) for deep links.
 
 ## Label schemes
@@ -22,9 +22,10 @@ order: S1 `advisory_intake`, S2 `codebase_inventory`, S3 `disqualification_disco
 before a finding may become `not_exploitable`. G0: an analysis step that did not run leaves the
 advisory `undetermined`, even when grounds exist. G1: the advisory was admitted on a package whose
 installed version resolved. G2: every advisory symbol resolved inside that package and was searched
-from the entry points (arm A), or the analyzer refuted the package on positive evidence (arm B).
-*Source:* `docs/floor.md:9`, `trigger/grounds.go:23`. *See also:* [grounds](#grounds),
-[not_exploitable](#not-exploitable).
+from the entry points, on a vetted symbol set (arm A); an unvetted set leaves the advisory
+`undetermined` unless arm B grounds it. Arm B: the analyzer refuted the package on positive
+evidence. *Source:* `docs/floor.md:9`, `trigger/grounds.go:23`. *See also:* [grounds](#grounds),
+[not_exploitable](#not-exploitable), [vetted symbol set](#vetted-symbols).
 
 <a id="scheme-capability-groups"></a>**Capability groups 1–8** — The eight stages each language
 advances through, each unlocking a stronger verdict: 1 Dependency inventory, 2 Version clearing, 3
@@ -97,7 +98,7 @@ advisory corpus repository. With `advisory-corpus-policy` set, such a tag is the
 reader can detect their shape: `tegron.report.v3` (the Report; v1 and v2 are read and upgraded),
 `tegron.poe.v2` (PoE), `tegron.objection.v1` (Objection), `assay.buildgraph/v2` (resolved JVM
 dependency graph), `ferralon.floor-summary.v1` (floor summary). The `tegron.` prefix is not defined in
-the docs. *Source:* `report/report.go:52`, `verdict/verdict.go:40`, `buildgraph/schema.go:17`.
+the docs. *Source:* `report/report.go:52`, `verdict/verdict.go:40`, `buildgraph/schema.go:19`.
 *See also:* [Report](#report), [PoE](#poe), [build graph](#build-graph).
 
 <a id="scheme-corpus-file-versions"></a>**Corpus file versions** — The corpus release's `bundles.json` carries a
@@ -239,7 +240,7 @@ attacker-controllable ingress reaches the symbol *and* tainted data flows along 
 in the work set and, with a store selected, persists the result for `pr-inherit` and `cve-watch`.
 (2) A branch name: the case-study demo repositories keep their code on a branch called `baseline`,
 which is also the README's example `analyze.ref`. *Source:* `README.md:371`,
-`docs/operator-guide.md:324`, `docs/floor.md:86`. *See also:* [run modes](#run-modes),
+`docs/operator-guide.md:324`, `docs/floor.md:90`. *See also:* [run modes](#run-modes),
 [floor run](#floor-run).
 
 <a id="basis"></a>**basis (`evidence.basis`)** — The grounds field of a finding and the only grounds
@@ -354,8 +355,10 @@ comes from it, not from pinning the corpus ref. *Source:* `README.md:257`, `READ
 <a id="corpus-policy"></a>**corpus policy (`advisory-corpus-policy`)** — A named selection of the
 corpus (for example `published-7d`, `published-24h`, `full`). Declared, it defines the work set:
 every advisory in the policy whose affected package is one of the repository's dependencies. Without
-one, the corpus supplies facts only. *Source:* `README.md:275`, `README.md:286`,
-`docs/floor.md:68`. *See also:* [work set](#work-set).
+one, the corpus supplies facts only. The floor run sets one per lane: demo targets use
+`published-24h` (`full` is refused there), the `pinned` lane of commit-pinned public repositories
+uses its own policy, today `full`. *Source:* `README.md:275`, `README.md:286`,
+`docs/floor.md:69`. *See also:* [work set](#work-set).
 
 <a id="corpus-signer"></a>**corpus signer (`corpus-signer-identity`, `corpus-signer-issuer`)** — The
 exact certificate identity and OIDC issuer the corpus release's signature must verify against on the
@@ -441,9 +444,10 @@ disqualification predicate fails open, since "unknown" must never be read as "no
 *Source:* `README.md:216`, `README.md:491`. *See also:* [undetermined](#undetermined).
 
 <a id="floor-run"></a>**floor run (`floorcheck`)** — The nightly workflow that builds the scanner
-from `main`, scans each demo repository in `floor/targets.json`, and fails on an ungrounded
+from `main`, scans each demo repository in `floor/targets.json` plus a `pinned` lane of real public repositories
+(each at a full commit id, under its own corpus policy), and fails on an ungrounded
 `not_exploitable` or a failed, timed-out or cut-short scan. `cmd/floorcheck` reads each
-`report.json` and assigns a failure kind. *Source:* `docs/floor.md:3`, `docs/floor.md:21`.
+`report.json` and assigns a failure kind. *Source:* `docs/floor.md:3`, `docs/floor.md:21`, `docs/floor.md:69`.
 *See also:* [grounds conditions](#scheme-grounds).
 
 ### G
@@ -493,7 +497,7 @@ no `AssessOptions`: no checkout and no analyzer subprocess. `pipeline.WithPlugin
 (the `FERRALON-APP-*` Go application-sink findings and synthetic Java, Kotlin, JS, Python and .NET
 advisories) that a run reads only when it opts in. It is not a coverage control, and a doc that
 presents the canaries as coverage is a review finding. *Source:* `action.yml:247`,
-`docs/review-guide.md:215`, `cmd/ferralon-assay/acquire.go:402`. *See also:* [canary](#canary)
+`docs/review-guide.md:215`, `cmd/ferralon-assay/acquire.go:405`. *See also:* [canary](#canary)
 (Collision), [work set](#work-set).
 
 ### I
@@ -897,8 +901,8 @@ from an advisory's CWE (and, in the code, its summary), for example `injection`,
 
 <a id="withhold"></a>**withhold / withheld** — **Collision.** (1) Current usage: a limit or hazard
 withholds a verdict, so a row that might have been `not_exploitable` is `undetermined` instead. (2)
-In the v1 Report schema, an advisory withheld under a limit was left out of `advisories[]` entirely;
-`PartialityNote.Advisories` keeps those ids for upgrading stored v1 documents. A JavaScript scan also
+`PartialityNote.Advisories` carries the ids of advisories withheld under a limit; they are still
+read when upgrading stored v1 Report documents. A JavaScript scan also
 "withholds each package it could not" fetch. *Source:* `docs/capabilities/README.md:37`,
 `report/report.go:936`, `README.md:92`. *See also:* [hazard bounding](#hazard-bounding),
 [refutation_withheld](#refutation-withheld).

@@ -1671,9 +1671,11 @@ func isDockerfile(rel string) bool {
 }
 
 // containerKeys records whether a file sets a container's args, command or entrypoint: a YAML,
-// JSON, Jsonnet or HCL key, quoted or not, in any case and set with :, +: or =, at the start of
-// a line or a flow collection's entry; a JSON patch path ending in one; a Jsonnet withArgs or
-// withCommand call; or a Dockerfile ENTRYPOINT or CMD instruction.
+// JSON or Jsonnet key, quoted or not, in any case and set with : or +:, at the start of a line
+// or a flow collection's entry; the same key set with = in an HCL or Jsonnet file; a JSON patch
+// path ending in one, in a file with an op key; a withArgs or withCommand call; or a Dockerfile
+// ENTRYPOINT or CMD instruction. An = assignment elsewhere (a Gradle bootRun block, a script's
+// args variable) is not a container key.
 func (s *launchScan) containerKeys(rel string, data []byte) {
 	var k uint8
 	if isDockerfile(rel) {
@@ -1684,13 +1686,18 @@ func (s *launchScan) containerKeys(rel string, data []byte) {
 			k |= keyCommand
 		}
 	} else {
-		if containerArgs.Match(data) {
+		assign := assignKeyFile(rel)
+		patch := jsonPatchOp.Match(data)
+		set := func(colon, eq, path *regexp.Regexp) bool {
+			return colon.Match(data) || assign && eq.Match(data) || patch && path != nil && path.Match(data)
+		}
+		if set(containerArgs, containerArgsAssign, containerArgsPath) {
 			s.argsKey = true
 		}
-		if containerCommand.Match(data) {
+		if set(containerCommand, containerCommandAssign, containerCommandPath) {
 			k |= keyCommand
 		}
-		if containerEntrypoint.Match(data) {
+		if set(containerEntrypoint, containerEntrypointAssign, nil) {
 			k |= keyEntrypoint
 		}
 	}
@@ -1706,6 +1713,16 @@ func (s *launchScan) containerKeys(rel string, data []byte) {
 // sets a container's args, r's own file sets both an entrypoint and a command, or another file
 // sets a command or an entrypoint (a Compose override, a Kubernetes manifest for the image a
 // Dockerfile builds, a Kustomize patch). Which container a key belongs to is not resolved.
+// assignKeyFile reports whether rel is an HCL or Jsonnet file, where a container key is set
+// with = (Nomad, Terraform, Jsonnet).
+func assignKeyFile(rel string) bool {
+	switch strings.ToLower(filepath.Ext(rel)) {
+	case ".tf", ".hcl", ".nomad", ".jsonnet", ".libsonnet":
+		return true
+	}
+	return false
+}
+
 func (s *launchScan) argsAppended(r ownJarRef) bool {
 	if !r.appendable {
 		return false
@@ -1722,12 +1739,18 @@ func (s *launchScan) argsAppended(r ownJarRef) bool {
 }
 
 var (
-	dockerEntrypoint    = regexp.MustCompile(`(?i)^\s*entrypoint\s`)
-	dockerEntrypointAny = regexp.MustCompile(`(?im)^\s*entrypoint\s`)
-	dockerCmd           = regexp.MustCompile(`(?im)^\s*cmd\s`)
-	containerArgs       = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?args["']?\s*\+?\s*[:=]|path["']?\s*:\s*["']?/\S*/args\b|\bwithArgs\s*\(`)
-	containerCommand    = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?command["']?\s*\+?\s*[:=]|path["']?\s*:\s*["']?/\S*/command\b|\bwithCommand\s*\(`)
-	containerEntrypoint = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?entrypoint["']?\s*\+?\s*[:=]`)
+	dockerEntrypoint          = regexp.MustCompile(`(?i)^\s*entrypoint\s`)
+	dockerEntrypointAny       = regexp.MustCompile(`(?im)^\s*entrypoint\s`)
+	dockerCmd                 = regexp.MustCompile(`(?im)^\s*cmd\s`)
+	containerArgs             = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?args["']?\s*\+?\s*:|\bwithArgs\s*\(`)
+	containerCommand          = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?command["']?\s*\+?\s*:|\bwithCommand\s*\(`)
+	containerEntrypoint       = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?entrypoint["']?\s*\+?\s*:`)
+	containerArgsAssign       = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?args["']?\s*\+?\s*=`)
+	containerCommandAssign    = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?command["']?\s*\+?\s*=`)
+	containerEntrypointAssign = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?entrypoint["']?\s*\+?\s*=`)
+	containerArgsPath         = regexp.MustCompile(`(?i)path["']?\s*:\s*["']?/\S*/args\b`)
+	containerCommandPath      = regexp.MustCompile(`(?i)path["']?\s*:\s*["']?/\S*/command\b`)
+	jsonPatchOp               = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?op["']?\s*:`)
 )
 
 // ownJarDir is the module directory, "." or a relative slash path, that segs name.
@@ -1773,9 +1796,9 @@ var (
 	// shadowJar, a task of type Jar, register<Jar>, withType(Jar) and the like.
 	gradleJarHeader = regexp.MustCompile(`(?im)^[^\n{]*\b\w*jar\b[^\n{]*\{`)
 	// gradleCheckedInTree is a file collection built from paths in the checkout.
-	gradleCheckedInTree = regexp.MustCompile(`(?i)\b(?:fileTree|files|zipTree|tarTree)\s*\(\s*(?:["']|file\s*\(|dir\s*[:=]|project\.file|rootProject\.file|layout\.projectDirectory)|\bprojectDirectory\b`)
+	gradleCheckedInTree = regexp.MustCompile(`(?i)\b(?:fileTree|files|zipTree|tarTree)\s*\(\s*(?:["']|file\s*\(|dir\s*[:=]|mapOf\s*\(|project\.file|rootProject\.file|layout\.projectDirectory)|\bprojectDirectory\b`)
 	// gradleFromLiteral is a from() of a path literal.
-	gradleFromLiteral = regexp.MustCompile(`\bfrom\b\s*\(?\s*(?:file\s*\(\s*)?["']([^"']*)["']`)
+	gradleFromLiteral = regexp.MustCompile(`\bfrom\b\s*\(?\s*(?:(?:\w+\.)*file\s*\(\s*)?["']([^"']*)["']`)
 	// gradleTextFiles are checked-in files a JAR commonly carries that hold no code.
 	gradleTextFiles = map[string]bool{"license": true, "notice": true, "copying": true, "readme": true}
 )

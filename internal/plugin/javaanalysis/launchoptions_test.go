@@ -376,6 +376,8 @@ func TestLaunchOptionReasons(t *testing.T) {
 		{"start script template classpath with another JAR joined", map[string]string{"build/scripts/app": "set -- -classpath \"$CLASSPATH\":lib/x.jar com.example.MainKt\n"}, optionOnly},
 		{"agent in a Latin-1 batch file with a stray NUL", map[string]string{"run.cmd": "set JAVA_OPTS=-javaagent:C:\\agents\\dd.jar;C:\\Pr\xfcfung\r\n\x00"}, agentOnly},
 		{"JVM property in a Latin-1 batch file with a stray NUL", map[string]string{"run.cmd": "set JAVA_OPTS=-Djava.system.class.loader=org.d.D;C:\\Pr\xfcfung\r\n\x00"}, optionOnly},
+		{"option in a binary file's UTF-8 text", map[string]string{"lib/x.bin": "PK\x03\x04\x00\x00 -Djava.system.class.loader=org.d.D \x00"}, optionOnly},
+		{"root mvnw without the wrapper's entry point", map[string]string{"mvnw": "java -cp .mvn/wrapper MavenWrapperDownloader \"$u\"\n"}, optionOnly},
 		{"agent in a binary file", map[string]string{"lib/x.bin": "PK\x03\x04\x00\x00 -javaagent:/a.jar,\xbd \x00"}, agentOnly},
 		{"upper-case REM comment", map[string]string{"run.cmd": "@REM set JAVA_OPTS=%X%\r\n"}, []string{}},
 		{"@REMARK is not a comment", map[string]string{"run.cmd": "@REMARK JAVA_OPTS=$X\r\n"}, optionOnly},

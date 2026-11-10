@@ -662,6 +662,14 @@ func TestCompiledProjects_ImportResolution(t *testing.T) {
 			"repo[1]/App/App.csproj": "<Project></Project>", "repo[1]/App/obj/Release/net8.0/A.dll": "",
 			"repo[1]/Worker/Worker.csproj": `<Project><Import Project="..\build\out.settings" /></Project>`, "repo[1]/build/out.settings": moves,
 		}, 2},
+		{"a wildcard import under a build root whose path holds glob metacharacters", "repo[1]", map[string]string{
+			"repo[1]/App/App.csproj": "<Project></Project>", "repo[1]/App/obj/Release/net8.0/A.dll": "",
+			"repo[1]/Worker/Worker.csproj": `<Project><Import Project="..\build\*.settings" /></Project>`, "repo[1]/build/out.settings": moves,
+		}, 2},
+		{"a toolchain property in the middle of a repository path", "", map[string]string{
+			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "",
+			"Worker/Worker.csproj": `<Project><Import Project="..\build\$(MSBuildToolsPath)\out.settings" /></Project>`,
+		}, 2},
 		{"the chained Directory.Build.props idiom keeps the drop", "", map[string]string{
 			"App/App.csproj": "<Project></Project>", "App/obj/Release/net8.0/A.dll": "", "Worker/Worker.csproj": "<Project></Project>",
 			"Directory.Build.props":        "<Project><PropertyGroup><LangVersion>latest</LangVersion></PropertyGroup></Project>",

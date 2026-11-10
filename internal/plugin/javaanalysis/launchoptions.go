@@ -1646,7 +1646,8 @@ func (f *launchFile) appendable(t launchToken) bool {
 		}
 		return dockerEntrypoint.MatchString(f.line(i))
 	}
-	return spliceFile(f.rel) || containerCommand.Match(f.data) || containerEntrypoint.Match(f.data)
+	_, command, entrypoint := keyedFile(f.rel, f.data)
+	return spliceFile(f.rel) || command || entrypoint
 }
 
 // dockerContinued reports whether a Dockerfile line continues onto the next: it ends in the
@@ -1670,12 +1671,8 @@ func isDockerfile(rel string) bool {
 	return strings.HasPrefix(base, "dockerfile") || strings.HasPrefix(base, "containerfile") || strings.HasSuffix(base, ".dockerfile")
 }
 
-// containerKeys records whether a file sets a container's args, command or entrypoint: a YAML,
-// JSON or Jsonnet key, quoted or not, in any case and set with : or +:, at the start of a line
-// or a flow collection's entry; the same key set with = in an HCL or Jsonnet file; a JSON patch
-// path ending in one, in a file with an op key; a withArgs or withCommand call; or a Dockerfile
-// ENTRYPOINT or CMD instruction. An = assignment elsewhere (a Gradle bootRun block, a script's
-// args variable) is not a container key.
+// containerKeys records whether a file sets a container's args, command or entrypoint: a
+// Dockerfile ENTRYPOINT or CMD instruction, or a key keyedFile reads.
 func (s *launchScan) containerKeys(rel string, data []byte) {
 	var k uint8
 	if isDockerfile(rel) {
@@ -1686,18 +1683,14 @@ func (s *launchScan) containerKeys(rel string, data []byte) {
 			k |= keyCommand
 		}
 	} else {
-		assign := assignKeyFile(rel)
-		patch := jsonPatchOp.Match(data)
-		set := func(colon, eq, path *regexp.Regexp) bool {
-			return colon.Match(data) || assign && eq.Match(data) || patch && path != nil && path.Match(data)
-		}
-		if set(containerArgs, containerArgsAssign, containerArgsPath) {
+		args, command, entrypoint := keyedFile(rel, data)
+		if args {
 			s.argsKey = true
 		}
-		if set(containerCommand, containerCommandAssign, containerCommandPath) {
+		if command {
 			k |= keyCommand
 		}
-		if set(containerEntrypoint, containerEntrypointAssign, nil) {
+		if entrypoint {
 			k |= keyEntrypoint
 		}
 	}
@@ -1709,20 +1702,46 @@ func (s *launchScan) containerKeys(rel string, data []byte) {
 	}
 }
 
-// argsAppended reports whether some file can pass the appendable launch r arguments: any file
-// sets a container's args, r's own file sets both an entrypoint and a command, or another file
-// sets a command or an entrypoint (a Compose override, a Kubernetes manifest for the image a
-// Dockerfile builds, a Kustomize patch). Which container a key belongs to is not resolved.
-// assignKeyFile reports whether rel is an HCL or Jsonnet file, where a container key is set
-// with = (Nomad, Terraform, Jsonnet).
+// keyedFile reports whether a non-Dockerfile sets a container's args, command or entrypoint: a
+// YAML, JSON or Jsonnet key, quoted or not, in any case and set with : or +:, at the start of a
+// line or a flow collection's entry; the same key set with = in an HCL, TOML or Starlark file; a
+// keyword argument set to a list in a Python file (Pulumi, CDK); a JSON patch path ending in
+// /args or /command, in a file with an op key; or a withArgs or withCommand call. An =
+// assignment elsewhere (a Gradle bootRun block, a script's args variable) is not a container
+// key. appendable and containerKeys both read it, so they agree on what a key is.
+func keyedFile(rel string, data []byte) (args, command, entrypoint bool) {
+	assign, py := assignKeyFile(rel), strings.EqualFold(path.Ext(rel), ".py")
+	patch := jsonPatchOp.Match(data)
+	set := func(colon, eq, kw, p *regexp.Regexp) bool {
+		return colon.Match(data) || assign && eq.Match(data) || py && kw.Match(data) || patch && p != nil && p.Match(data)
+	}
+	return set(containerArgs, containerArgsAssign, containerArgsKeyword, containerArgsPath),
+		set(containerCommand, containerCommandAssign, containerCommandKeyword, containerCommandPath),
+		set(containerEntrypoint, containerEntrypointAssign, containerEntrypointKeyword, nil)
+}
+
+// assignKeyFile reports whether rel is a file where a container key is set with =: HCL
+// (Terraform, Nomad, including templated names such as job.nomad.tpl), TOML (fly.toml) or
+// Starlark (Bazel BUILD files).
 func assignKeyFile(rel string) bool {
-	switch strings.ToLower(filepath.Ext(rel)) {
-	case ".tf", ".hcl", ".nomad", ".jsonnet", ".libsonnet":
+	base := strings.ToLower(path.Base(rel))
+	if base == "build" || base == "build.bazel" {
 		return true
+	}
+	parts := strings.Split(base, ".")
+	for _, ext := range parts[1:] {
+		switch ext {
+		case "tf", "hcl", "nomad", "toml", "bzl":
+			return true
+		}
 	}
 	return false
 }
 
+// argsAppended reports whether some file can pass the appendable launch r arguments: any file
+// sets a container's args, r's own file sets both an entrypoint and a command, or another file
+// sets a command or an entrypoint (a Compose override, a Kubernetes manifest for the image a
+// Dockerfile builds, a Kustomize patch). Which container a key belongs to is not resolved.
 func (s *launchScan) argsAppended(r ownJarRef) bool {
 	if !r.appendable {
 		return false
@@ -1739,18 +1758,21 @@ func (s *launchScan) argsAppended(r ownJarRef) bool {
 }
 
 var (
-	dockerEntrypoint          = regexp.MustCompile(`(?i)^\s*entrypoint\s`)
-	dockerEntrypointAny       = regexp.MustCompile(`(?im)^\s*entrypoint\s`)
-	dockerCmd                 = regexp.MustCompile(`(?im)^\s*cmd\s`)
-	containerArgs             = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?args["']?\s*\+?\s*:|\bwithArgs\s*\(`)
-	containerCommand          = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?command["']?\s*\+?\s*:|\bwithCommand\s*\(`)
-	containerEntrypoint       = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?entrypoint["']?\s*\+?\s*:`)
-	containerArgsAssign       = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?args["']?\s*\+?\s*=`)
-	containerCommandAssign    = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?command["']?\s*\+?\s*=`)
-	containerEntrypointAssign = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?entrypoint["']?\s*\+?\s*=`)
-	containerArgsPath         = regexp.MustCompile(`(?i)path["']?\s*:\s*["']?/\S*/args\b`)
-	containerCommandPath      = regexp.MustCompile(`(?i)path["']?\s*:\s*["']?/\S*/command\b`)
-	jsonPatchOp               = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?op["']?\s*:`)
+	dockerEntrypoint           = regexp.MustCompile(`(?i)^\s*entrypoint\s`)
+	dockerEntrypointAny        = regexp.MustCompile(`(?im)^\s*entrypoint\s`)
+	dockerCmd                  = regexp.MustCompile(`(?im)^\s*cmd\s`)
+	containerArgs              = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?args["']?\s*\+?\s*:|\bwithArgs\s*\(`)
+	containerCommand           = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?command["']?\s*\+?\s*:|\bwithCommand\s*\(`)
+	containerEntrypoint        = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?entrypoint["']?\s*\+?\s*:`)
+	containerArgsAssign        = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?args["']?\s*\+?\s*=`)
+	containerCommandAssign     = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?command["']?\s*\+?\s*=`)
+	containerEntrypointAssign  = regexp.MustCompile(`(?im)(?:^|[{,\[])\s*["']?entrypoint["']?\s*\+?\s*=`)
+	containerArgsPath          = regexp.MustCompile(`(?i)path["']?\s*:\s*["']?/\S*/args\b`)
+	containerArgsKeyword       = regexp.MustCompile(`(?i)\bargs\s*=\s*\[`)
+	containerCommandKeyword    = regexp.MustCompile(`(?i)\bcommand\s*=\s*\[`)
+	containerEntrypointKeyword = regexp.MustCompile(`(?i)\bentry_?point\s*=\s*\[`)
+	containerCommandPath       = regexp.MustCompile(`(?i)path["']?\s*:\s*["']?/\S*/command\b`)
+	jsonPatchOp                = regexp.MustCompile(`(?im)(?:^|[{,\[])[\s-]*["']?op["']?\s*:`)
 )
 
 // ownJarDir is the module directory, "." or a relative slash path, that segs name.

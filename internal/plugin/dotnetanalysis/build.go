@@ -5,9 +5,10 @@ package dotnetanalysis
 // locateFirstPartyBuild, so they see the same assembly bound to the same target.
 //
 // One project and one entry assembly are supported. A build directory with more than one
-// project file, or a project built for more than one target framework, is analyzed from the
-// first one for candidate paths, but the run carries multiple_projects_unsupported and no
-// sink is searched: the others were never traced.
+// project file the build compiled, or a project built for more than one target framework, is
+// analyzed from the first one for candidate paths, but the run carries
+// multiple_projects_unsupported and no sink is searched: the others were never traced. A project
+// the build never compiled is not counted (compiledProjects).
 
 import (
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,7 +107,7 @@ type firstPartyBuild struct {
 // and binds the assembly to the restore target matching the framework it was compiled for.
 func locateFirstPartyBuild(buildDir string) firstPartyBuild {
 	var b firstPartyBuild
-	projects := findProjectFiles(buildDir)
+	projects := compiledProjects(buildDir, findProjectFiles(buildDir))
 	if len(projects) == 0 {
 		return b
 	}
@@ -163,7 +165,7 @@ func locateFirstPartyBuild(buildDir string) firstPartyBuild {
 		b.reasons = append(b.reasons, partialReasonMultipleProjects)
 	}
 
-	path, data, ok := readAssetsFile(buildDir)
+	path, data, ok := projectAssetsFile(buildDir, b.project)
 	if !ok {
 		return b
 	}
@@ -197,6 +199,157 @@ func findProjectFiles(buildDir string) []string {
 	})
 	sort.Strings(found)
 	return found
+}
+
+// compiledProjects drops from projects (sorted, as findProjectFiles returns them) every one this
+// build never compiled, so a tool project kept in the repo but outside the build, such as an
+// installer the Dockerfile never publishes, is not a second program the run failed to trace.
+//
+// The SDK always writes a project's intermediate assembly to obj/<cfg>/<tfm>[/<rid>]/<name>.dll,
+// whatever output path the build redirects to, so a project with no <name>.dll under its obj/,
+// bin/ or publish/ was not compiled here. A project counts as compiled when any of those trees
+// can't be read. The drop holds only while that convention is the one in force: every compiled
+// project shows its intermediate assembly, nothing relocates obj/ (intermediateRelocated), and
+// no compiled project references a dropped one. Otherwise, or when nothing was compiled, every
+// project is kept.
+func compiledProjects(buildDir string, projects []string) []string {
+	if len(projects) < 2 || intermediateRelocated(buildDir, projects) {
+		return projects
+	}
+	var kept, dropped []string
+	for _, p := range projects {
+		switch projectCompiled(p) {
+		case compiledIntermediate:
+			kept = append(kept, p)
+		case compiledElsewhere:
+			return projects // compiled, but not where the convention puts it
+		default:
+			dropped = append(dropped, p)
+		}
+	}
+	if len(kept) == 0 || len(dropped) == 0 {
+		return projects
+	}
+	for _, p := range kept {
+		if referencesAny(p, dropped) {
+			return projects
+		}
+	}
+	return kept
+}
+
+type compiledState int
+
+const (
+	notCompiled          compiledState = iota
+	compiledIntermediate               // obj/<cfg>/<tfm>[/<rid>]/<name>.dll, or an unreadable tree
+	compiledElsewhere                  // a <name>.dll only outside the conventional obj/ path
+)
+
+// projectCompiled reports whether the project at path was compiled by this build, from the
+// <name>.dll copies under its directory's obj/, bin/ and publish/.
+func projectCompiled(path string) compiledState {
+	dir := filepath.Dir(path)
+	want := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) + ".dll"
+	state := notCompiled
+	for _, sub := range []string{"obj", "bin", "publish"} {
+		root := filepath.Join(dir, sub)
+		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				if !(p == root && errors.Is(err, fs.ErrNotExist)) {
+					state = compiledIntermediate // unreadable: it may hold the build
+					return filepath.SkipAll
+				}
+				return nil
+			}
+			if d.IsDir() || d.Name() != want {
+				return nil
+			}
+			if sub == "obj" {
+				if rel, rerr := filepath.Rel(root, p); rerr == nil {
+					if n := len(strings.Split(filepath.ToSlash(rel), "/")); n == 3 || n == 4 {
+						state = compiledIntermediate
+						return filepath.SkipAll
+					}
+				}
+			}
+			state = compiledElsewhere
+			return nil
+		})
+		if state == compiledIntermediate {
+			return state
+		}
+	}
+	return state
+}
+
+// intermediateRelocated reports whether the build may write intermediate assemblies somewhere
+// other than each project's obj/: an artifacts/ directory at the build root, or a project file
+// or Directory.Build.props/.targets under it that sets one of the properties that move them.
+// A file that can't be read counts as setting one.
+func intermediateRelocated(buildDir string, projects []string) bool {
+	if fi, err := os.Stat(filepath.Join(buildDir, "artifacts")); err == nil && fi.IsDir() {
+		return true
+	}
+	files := append([]string(nil), projects...)
+	_ = filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // an unreadable subtree holds no project findProjectFiles saw.
+		}
+		if d.IsDir() {
+			if path != buildDir && skipDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		switch strings.ToLower(d.Name()) {
+		case "directory.build.props", "directory.build.targets":
+			files = append(files, path)
+		}
+		return nil
+	})
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil || intermediateProperty.Match(data) {
+			return true
+		}
+	}
+	return false
+}
+
+// intermediateProperty matches an MSBuild element setting a property that moves a project's
+// intermediate output out of obj/<cfg>/<tfm>/.
+var intermediateProperty = regexp.MustCompile(`(?i)<\s*(?:BaseIntermediateOutputPath|IntermediateOutputPath|MSBuildProjectExtensionsPath|UseArtifactsOutput|ArtifactsPath)\b`)
+
+// projectReference matches a ProjectReference's Include path.
+var projectReference = regexp.MustCompile(`(?i)<\s*ProjectReference\b[^>]*?\bInclude\s*=\s*["']([^"']+)["']`)
+
+// referencesAny reports whether the project file at path references one of targets. A file
+// that can't be read counts as referencing one.
+func referencesAny(path string, targets []string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return true
+	}
+	for _, m := range projectReference.FindAllSubmatch(data, -1) {
+		ref := filepath.Clean(filepath.Join(filepath.Dir(path), filepath.FromSlash(strings.ReplaceAll(string(m[1]), `\`, "/"))))
+		for _, t := range targets {
+			if strings.EqualFold(ref, filepath.Clean(t)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// projectAssetsFile reads the restore output for project: its own obj/project.assets.json when
+// present, else the build's (readAssetsFile).
+func projectAssetsFile(buildDir, project string) (string, []byte, bool) {
+	own := filepath.Join(filepath.Dir(project), "obj", "project.assets.json")
+	if data, err := os.ReadFile(own); err == nil {
+		return own, data, true
+	}
+	return readAssetsFile(buildDir)
 }
 
 // builtAssemblies returns every "<name>.dll" under buildDir/bin then buildDir/publish, each

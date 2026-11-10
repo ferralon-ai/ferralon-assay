@@ -342,3 +342,135 @@ func TestReachability_RuntimeSpecificAssets(t *testing.T) {
 		})
 	}
 }
+
+// TestCompiledProjects: a project this build never compiled is not a second program, but the
+// drop holds only while the SDK's obj/ convention is the evidence for it.
+func TestCompiledProjects(t *testing.T) {
+	const (
+		app       = "App.csproj"
+		installer = "Installer/Installer.csproj"
+		appObj    = "obj/Release/net8.0/App.dll"
+		empty     = "<Project></Project>"
+	)
+	refTo := func(include string) string {
+		return `<Project><ItemGroup><ProjectReference Include="` + include + `" /></ItemGroup></Project>`
+	}
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  []string
+	}{
+		{"one project is kept", map[string]string{app: empty}, []string{app}},
+		{"an installer the build never compiled is dropped", map[string]string{
+			app: empty, appObj: "", installer: empty, "Installer/obj/project.assets.json": "{}",
+		}, []string{app}},
+		{"a runtime-specific intermediate path is the convention", map[string]string{
+			app: empty, "obj/Release/net8.0/linux-x64/App.dll": "", installer: empty,
+		}, []string{app}},
+		{"a reference to an unrelated project keeps the drop", map[string]string{
+			app: refTo(`..\Lib\Lib.csproj`), appObj: "", installer: empty,
+		}, []string{app}},
+		{"both compiled", map[string]string{
+			app: empty, appObj: "", installer: empty, "Installer/obj/Debug/net8.0/Installer.dll": "",
+		}, []string{app, installer}},
+		{"nothing compiled", map[string]string{app: empty, installer: empty}, []string{app, installer}},
+		{"a compiled project with no intermediate assembly", map[string]string{
+			app: empty, "bin/Release/net8.0/App.dll": "", installer: empty,
+		}, []string{app, installer}},
+		{"an assembly outside the conventional obj path", map[string]string{
+			app: empty, "obj/App.dll": "", installer: empty,
+		}, []string{app, installer}},
+		{"the other project built only to bin", map[string]string{
+			app: empty, appObj: "", installer: empty, "Installer/bin/Installer.dll": "",
+		}, []string{app, installer}},
+		{"Directory.Build.props moves obj", map[string]string{
+			app: empty, appObj: "", installer: empty,
+			"Directory.Build.props": "<Project><PropertyGroup><BaseIntermediateOutputPath>../build/</BaseIntermediateOutputPath></PropertyGroup></Project>",
+		}, []string{app, installer}},
+		{"a nested Directory.Build.targets opts into artifacts output", map[string]string{
+			app: empty, appObj: "", installer: empty,
+			"Installer/Directory.Build.targets": "<Project><PropertyGroup><UseArtifactsOutput>true</UseArtifactsOutput></PropertyGroup></Project>",
+		}, []string{app, installer}},
+		{"the dropped project sets its own intermediate path", map[string]string{
+			app: empty, appObj: "",
+			installer: "<Project><PropertyGroup><IntermediateOutputPath>/tmp/i/</IntermediateOutputPath></PropertyGroup></Project>",
+		}, []string{app, installer}},
+		{"an artifacts directory at the root", map[string]string{
+			app: empty, appObj: "", installer: empty, "artifacts/README": "",
+		}, []string{app, installer}},
+		{"a compiled project references the uncompiled one", map[string]string{
+			app: refTo(`Installer\Installer.csproj`), appObj: "", installer: empty,
+		}, []string{app, installer}},
+		{"a reference differing only in case", map[string]string{
+			app: refTo(`installer/INSTALLER.csproj`), appObj: "", installer: empty,
+		}, []string{app, installer}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			files := map[string][]byte{}
+			for k, v := range c.files {
+				files[k] = []byte(v)
+			}
+			dir := composeILBuildDir(t, files)
+			got := compiledProjects(dir, findProjectFiles(dir))
+			var rel []string
+			for _, p := range got {
+				rel = append(rel, relSlash(dir, p))
+			}
+			if !slices.Equal(rel, c.want) {
+				t.Fatalf("kept %v, want %v", rel, c.want)
+			}
+		})
+	}
+}
+
+// An unreadable obj/ may hold the build, so its project counts as compiled.
+func TestCompiledProjects_UnreadableObj(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every directory")
+	}
+	dir := composeILBuildDir(t, map[string][]byte{
+		"App.csproj":                       []byte("<Project></Project>"),
+		"obj/Release/net8.0/App.dll":       nil,
+		"Installer/Installer.csproj":       []byte("<Project></Project>"),
+		"Installer/obj/project.nuget.json": nil,
+	})
+	locked := filepath.Join(dir, "Installer", "obj")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	if got := compiledProjects(dir, findProjectFiles(dir)); len(got) != 2 {
+		t.Fatalf("kept %v, want both", got)
+	}
+}
+
+// TestReachability_UncompiledProjectBesideTheBuild: GoNorth's shape. The installer project the
+// build never compiled no longer withholds the run, and the dependencies come from the traced
+// project's own restore, not the installer's, which sorts first.
+func TestReachability_UncompiledProjectBesideTheBuild(t *testing.T) {
+	for _, installerCompiled := range []bool{false, true} {
+		files := map[string][]byte{
+			"App.csproj":                        restoredProject,
+			"bin/App.dll":                       appCalling(nil, false, true),
+			"bin/Dep.dll":                       depWithBoomOverloads(false),
+			"obj/project.assets.json":           depAssetsJSON("Dep/1.0.0"),
+			"obj/Release/net8.0/App.dll":        appCalling(nil, false, true),
+			"Installer/Installer.csproj":        []byte("<Project></Project>"),
+			"Installer/obj/project.assets.json": depAssetsJSON("Other/1.0.0"),
+		}
+		if installerCompiled {
+			files["Installer/obj/Release/net8.0/Installer.dll"] = nil
+		}
+		res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: composeILBuildDir(t, files), Symbols: []string{boomSCIP}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := hasILReason(res.Partiality, partialReasonMultipleProjects); got != installerCompiled {
+			t.Fatalf("installer compiled %v: %s present = %v (partiality %+v)", installerCompiled, partialReasonMultipleProjects, got, res.Partiality)
+		}
+		if got := slices.Contains(res.Searched, boomSCIP); got == installerCompiled {
+			t.Fatalf("installer compiled %v: Searched = %v (partiality %+v)", installerCompiled, res.Searched, res.Partiality)
+		}
+	}
+}

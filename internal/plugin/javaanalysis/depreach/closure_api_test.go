@@ -61,6 +61,9 @@ func TestClosure_SetClosureRefuses(t *testing.T) {
 	found.Verdict = ReachableCandidate
 	withPath := miss
 	withPath.Path = []classfile.MethodRef{in}
+	clearedHazard := Result{Verdict: NotExploitable, SinkPresent: true, HazardOnFrontier: true, HazardWhy: "reflection: x"}
+	quietUndetermined := Result{Verdict: Undetermined, SinkPresent: true}
+	noVerdict := Result{SinkPresent: true}
 	tests := []struct {
 		name string
 		bits []uint64
@@ -71,6 +74,9 @@ func TestClosure_SetClosureRefuses(t *testing.T) {
 		{"bit past the table", trailing, miss},
 		{"found path as the miss", bits, found},
 		{"path on the miss", bits, withPath},
+		{"refutation its hazard contradicts", bits, clearedHazard},
+		{"undetermined with no hazard", bits, quietUndetermined},
+		{"no verdict", bits, noVerdict},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -92,11 +98,28 @@ func TestClosure_SetClosureRefuses(t *testing.T) {
 // it is never exported.
 func TestClosure_BeyondTableNotExported(t *testing.T) {
 	in := mref("com/acme/app/App", "reachable", "()V")
-	e := NewEngineOn(c7Classes(), Classpath{})
-	e.closures[in] = &closure{beyond: true}
-	if _, _, ok := e.Closure(in); ok {
-		t.Error("exported a search beyond the table")
-	}
+	t.Run("marked beyond", func(t *testing.T) {
+		e := NewEngineOn(c7Classes(), Classpath{})
+		e.closures[in] = &closure{beyond: true}
+		if _, _, ok := e.Closure(in); ok {
+			t.Error("exported a search beyond the table")
+		}
+	})
+	// A later class of the same binary name replaces the earlier in the table, but the earlier's
+	// constructor stays declared, so the search enqueues a method the table has no bit for.
+	t.Run("duplicated class name", func(t *testing.T) {
+		shadow := classfile.Class{Name: "com/evil/netkit/ServiceImpl", Super: "java/lang/Object", Interfaces: []string{"com/evil/netkit/Service"}, Methods: []classfile.Method{
+			{Ref: mref("com/evil/netkit/ServiceImpl", "run", "()V")},
+		}}
+		e := NewEngineOn(append(c7Classes(), shadow), Classpath{})
+		e.Reach(in, in)
+		if !e.HasClosure(in) {
+			t.Fatal("no search to export")
+		}
+		if _, _, ok := e.Closure(in); ok {
+			t.Error("exported a search that enqueued a method outside the table")
+		}
+	})
 }
 
 // The subtype and dispatch memos are per linked bit: a flip forgets what the other bit

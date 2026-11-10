@@ -73,6 +73,7 @@ func TestDecodeClosure(t *testing.T) {
 		{"forged whole entry", forge(same, bits), true},
 		{"another format's entry", forge(func(h *closureHeader) { h.Format = "assay-java-closure-v0" }, bits), false},
 		{"more words than the header counts", forge(same, append(bits, 0)), false},
+		{"word count that wraps", forge(func(h *closureHeader) { h.Words = len(bits) + 1<<61 }, bits), false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -293,4 +294,52 @@ func (a *appFixture) reachCtx(ctx context.Context, symbols ...string) plugin.Rea
 		a.t.Fatalf("Reachability: %v", err)
 	}
 	return res
+}
+
+// The first-party fingerprint keys the engine and every run-cache entry: two processes that read
+// the same classes derive the same one, however each allocated them, and a change to anything
+// the search reads moves it.
+func TestFirstPartyFingerprint(t *testing.T) {
+	classes := func() []classfile.Class {
+		lambda := classfile.MethodRef{Owner: "com/acme/App", Name: "lambda$main$0", Descriptor: "()V"}
+		return []classfile.Class{{
+			Name: "com/acme/App", Super: "java/lang/Object", Public: true,
+			Methods: []classfile.Method{
+				{Ref: testRoot, Static: true, Public: true, Edges: []classfile.Edge{{
+					To:   classfile.MethodRef{Owner: "java/lang/Runnable", Name: "run", Descriptor: "()V"},
+					Kind: classfile.EdgeDynamic,
+					Bootstrap: &classfile.Bootstrap{
+						Method: classfile.MethodHandle{Kind: 6, Ref: classfile.MethodRef{Owner: "java/lang/invoke/LambdaMetafactory", Name: "metafactory", Descriptor: "()V"}},
+						Args:   []classfile.BootstrapArg{{Handle: &classfile.MethodHandle{Kind: 6, Ref: lambda}}},
+					},
+				}}},
+				{Ref: lambda, Static: true, Private: true},
+			},
+		}}
+	}
+	want := firstPartyFingerprint(classes())
+	if got := firstPartyFingerprint(classes()); got != want {
+		t.Fatalf("two allocations of the same classes fingerprint apart: %s vs %s", got, want)
+	}
+	tests := []struct {
+		name string
+		mod  func([]classfile.Class)
+	}{
+		{"class abstract", func(c []classfile.Class) { c[0].Abstract = true }},
+		{"class public", func(c []classfile.Class) { c[0].Public = false }},
+		{"method access", func(c []classfile.Class) { c[0].Methods[1].Private = false }},
+		{"static field read", func(c []classfile.Class) {
+			c[0].Methods[0].StaticFieldRefs = []classfile.FieldRef{{Owner: "com/acme/Cfg", Name: "x", Descriptor: "I"}}
+		}},
+		{"bootstrap target", func(c []classfile.Class) { c[0].Methods[0].Edges[0].Bootstrap.Args[0].Handle.Ref.Name = "other" }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := classes()
+			tc.mod(c)
+			if firstPartyFingerprint(c) == want {
+				t.Errorf("changing the %s keeps the fingerprint", tc.name)
+			}
+		})
+	}
 }

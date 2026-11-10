@@ -2207,10 +2207,15 @@ func (e *Engine) Closure(ingress classfile.MethodRef) (bits []uint64, miss Resul
 
 // SetClosure installs a search Closure exported from an engine over the same classes,
 // classpath and linked bit; Reach then answers from it as if it had searched. It refuses,
-// and changes nothing, when bits does not fit the loaded table or miss is a found path,
-// which a whole search never is.
+// and changes nothing, when bits does not fit the loaded table or miss is not a result a whole
+// search's miss can be: a found path, or a verdict its hazard bit contradicts.
 func (e *Engine) SetClosure(ingress classfile.MethodRef, bits []uint64, miss Result) bool {
-	if len(bits) != closureWords(e.tableSize) || miss.Verdict == ReachableCandidate || len(miss.Path) > 0 {
+	if len(bits) != closureWords(e.tableSize) || len(miss.Path) > 0 {
+		return false
+	}
+	// A whole search's miss is Undetermined exactly when its frontier met a hazard, and
+	// NotExploitable otherwise.
+	if !(miss.Verdict == Undetermined && miss.HazardOnFrontier) && !(miss.Verdict == NotExploitable && !miss.HazardOnFrontier) {
 		return false
 	}
 	if r := e.tableSize % 64; r != 0 && bits[len(bits)-1]>>r != 0 {

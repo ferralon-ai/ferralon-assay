@@ -202,7 +202,7 @@ func decodeClosure(b, key []byte, root classfile.MethodRef) ([]uint64, depreach.
 	}
 	rest := body[nl+1:]
 	if hdr.Format != closureFormat || hdr.Key != hex.EncodeToString(key) || hdr.Root != root.String() ||
-		hdr.Words < 0 || len(rest) != 8*hdr.Words {
+		len(rest)%8 != 0 || hdr.Words != len(rest)/8 {
 		return nil, depreach.Result{}, errClosureCorrupt
 	}
 	bits := make([]uint64, hdr.Words)

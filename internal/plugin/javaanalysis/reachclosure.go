@@ -1,8 +1,10 @@
 package javaanalysis
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -99,8 +101,8 @@ func (g gav) String() string {
 
 // closureCache keeps the last engine built per build dir. The pipeline asks Reachability
 // once per advisory, and every ask would otherwise rebuild the hierarchy over the whole
-// closure. The key fingerprints every input (JAR paths, sizes and times; the first-party
-// classes' hierarchy, methods and call edges), so any change rebuilds.
+// closure. The key fingerprints every input (JAR paths and digests; the first-party classes in
+// full; the classpath), so any change rebuilds.
 var closureCache = struct {
 	sync.Mutex
 	m map[string]closureEntry
@@ -311,23 +313,19 @@ func mergeReleases(built *reachClosure, all []classfile.Class, gavs []gav, versi
 	return append(all, extra...)
 }
 
-// firstPartyFingerprint digests what the engine reads from the first-party classes: each
-// class's hierarchy, and each method's flags and call edges.
+// firstPartyFingerprint digests the first-party classes in full, in a form every process
+// derives alike, so it keys both the engine cached in this process and the run cache's entries
+// across processes. A class that cannot be encoded gets a digest nothing else matches.
 func firstPartyFingerprint(classes []classfile.Class) string {
 	lines := make([]string, 0, len(classes))
 	for _, c := range classes {
-		var b strings.Builder
-		fmt.Fprintf(&b, "%s<%s%v", c.Name, c.Super, c.Interfaces)
-		for _, m := range c.Methods {
-			fmt.Fprintf(&b, "|%s:%v%v", m.Ref, m.Abstract, m.Native)
-			for _, e := range m.Edges {
-				fmt.Fprintf(&b, ",%v", e)
-			}
-			for _, e := range m.InitTriggers {
-				fmt.Fprintf(&b, ";%v", e)
-			}
+		b, err := json.Marshal(c)
+		if err != nil {
+			nonce := make([]byte, 16)
+			_, _ = rand.Read(nonce)
+			return "unkeyed:" + hex.EncodeToString(nonce)
 		}
-		lines = append(lines, b.String())
+		lines = append(lines, string(b))
 	}
 	sort.Strings(lines)
 	h := sha256.Sum256([]byte(strings.Join(lines, "\n")))

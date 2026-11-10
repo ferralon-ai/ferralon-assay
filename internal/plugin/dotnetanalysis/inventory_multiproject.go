@@ -176,7 +176,7 @@ func resolveOneProject(buildDir, projPath, projRel string) plugin.DependencyInve
 	// outside any nested project's directory, whose restore output is that project's.
 	assetsPath, ok := filepath.Join(projDir, "obj", "project.assets.json"), true
 	if _, err := os.Stat(assetsPath); err != nil {
-		assetsPath, ok = findOwnFile(projDir, "project.assets.json", true)
+		assetsPath, ok = findOwnFile(projDir, projDir, "project.assets.json", true)
 	}
 	if ok {
 		if data, err := os.ReadFile(assetsPath); err == nil {
@@ -232,22 +232,23 @@ func projectMarker(projRel string) string {
 	return "project::" + projRel
 }
 
-// findOwnFile is findFile under projDir, skipping every subdirectory that holds another project
-// file: the files there belong to that project.
-func findOwnFile(projDir, name string, includeObj bool) (string, bool) {
+// findOwnFile is findFile under root on behalf of the project in projDir, skipping every
+// subdirectory that holds another project file: the files there belong to that project. projDir
+// itself and the directories leading to it are never skipped.
+func findOwnFile(root, projDir, name string, includeObj bool) (string, bool) {
 	var found []string
-	_ = filepath.WalkDir(projDir, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // an unreadable subtree yields no match; keep walking.
 		}
 		if d.IsDir() {
-			if path == projDir {
+			if path == root {
 				return nil
 			}
 			if !(includeObj && d.Name() == "obj") && skipDir(d.Name()) {
 				return filepath.SkipDir
 			}
-			if holdsProjectFile(path) {
+			if !leadsTo(path, projDir) && holdsProjectFile(path) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -262,6 +263,12 @@ func findOwnFile(projDir, name string, includeObj bool) (string, bool) {
 	}
 	sort.Strings(found)
 	return found[0], true
+}
+
+// leadsTo reports whether dir is target or one of its ancestors.
+func leadsTo(dir, target string) bool {
+	rel, err := filepath.Rel(dir, target)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // holdsProjectFile reports whether dir directly contains a .csproj, .fsproj or .vbproj. An

@@ -6,6 +6,7 @@ package dotnetanalysis
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -428,6 +429,31 @@ func TestCompiledProjects(t *testing.T) {
 		{"Directory.Build.rsp sets an intermediate path", map[string]string{
 			app: empty, appObj: "", installer: empty, "Directory.Build.rsp": "-p:Configuration=Release;BaseIntermediateOutputPath=o/",
 		}, []string{app, installer}},
+		{"a project imports a props file from a dot-directory", map[string]string{
+			app: empty, appObj: "",
+			installer:          `<Project><Import Project="..\.build\out.props" /></Project>`,
+			".build/out.props": "<Project><PropertyGroup><BaseIntermediateOutputPath>out/</BaseIntermediateOutputPath></PropertyGroup></Project>",
+		}, []string{app, installer}},
+		{"a project imports a .proj file that moves obj", map[string]string{
+			app: empty, appObj: "",
+			installer:           `<Project><Import Project="$(MSBuildThisFileDirectory)../build/Output.proj" /></Project>`,
+			"build/Output.proj": "<Project><PropertyGroup><IntermediateOutputPath>out/</IntermediateOutputPath></PropertyGroup></Project>",
+		}, []string{app, installer}},
+		{"a project's .user file moves obj", map[string]string{
+			app: empty, appObj: "", installer: empty,
+			installer + ".user": "<Project><PropertyGroup><BaseIntermediateOutputPath>out/</BaseIntermediateOutputPath></PropertyGroup></Project>",
+		}, []string{app, installer}},
+		{"an import through an unknown property", map[string]string{
+			app: empty, appObj: "", installer: `<Project><Import Project="$(RepoRoot)/eng/out.props" /></Project>`,
+		}, []string{app, installer}},
+		{"a response file with a comma-separated property list", map[string]string{
+			app: empty, appObj: "", installer: empty, "Directory.Build.rsp": "-p:Configuration=Release,BaseIntermediateOutputPath=o/",
+		}, []string{app, installer}},
+		{"toolchain, Sdk and missing optional imports keep the drop", map[string]string{
+			app: empty, appObj: "",
+			installer: `<Project><Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" /><Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />` +
+				`<Import Project="..\packages\Tool.1.0\build\Tool.targets" Condition="Exists('..\packages\Tool.1.0\build\Tool.targets')" /></Project>`,
+		}, []string{app}},
 		{"a props file reading an unrelated property keeps the drop", map[string]string{
 			app: empty, appObj: "", installer: empty,
 			"Directory.Build.props": "<Project><PropertyGroup><OutputPath>out/</OutputPath></PropertyGroup></Project>",
@@ -562,10 +588,83 @@ func TestFindOwnFile_SkipsNestedProjects(t *testing.T) {
 		"Installer/obj/project.assets.json": nil,
 		"src/packages.lock.json":            nil,
 	})
-	if got, ok := findOwnFile(dir, "packages.lock.json", false); !ok || relSlash(dir, got) != "src/packages.lock.json" {
+	if got, ok := findOwnFile(dir, dir, "packages.lock.json", false); !ok || relSlash(dir, got) != "src/packages.lock.json" {
 		t.Fatalf("lock = %q, %v; want src/packages.lock.json", got, ok)
 	}
-	if got, ok := findOwnFile(dir, "project.assets.json", true); ok {
+	if got, ok := findOwnFile(dir, dir, "project.assets.json", true); ok {
 		t.Fatalf("assets = %q, want none outside the nested project", got)
+	}
+}
+
+// An import above the build root that moves one project's obj keeps every project.
+func TestCompiledProjects_ImportAboveBuildDir(t *testing.T) {
+	root := composeILBuildDir(t, map[string][]byte{
+		"eng/out.props":                    []byte("<Project><PropertyGroup><BaseIntermediateOutputPath>out/</BaseIntermediateOutputPath></PropertyGroup></Project>"),
+		"src/App/App.csproj":               []byte("<Project></Project>"),
+		"src/App/obj/Release/net8.0/A.dll": nil,
+		"src/Worker/Worker.csproj":         []byte(`<Project><Import Project="..\..\eng\out.props" /></Project>`),
+	})
+	dir := filepath.Join(root, "src")
+	shiftObjAssemblies(t, dir, time.Minute)
+	if got := compiledProjects(dir, findProjectFiles(dir)); len(got) != 2 {
+		t.Fatalf("kept %v, want both projects", got)
+	}
+}
+
+// The single-project inventory reads its own project's lockfile and packages.config, even when
+// the project sits in a subdirectory of the build root.
+func TestResolveInventory_SingleNestedProjectReadsItsOwnFiles(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string][]byte
+		want  []string
+	}{
+		{"lockfile beside the project", map[string][]byte{
+			"src/App/App.csproj": []byte(`<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>`),
+			"src/App/packages.lock.json": []byte(`{"version":1,"dependencies":{"net8.0":{` +
+				`"Newtonsoft.Json":{"type":"Direct","requested":"[13.0.1, )","resolved":"13.0.1"},` +
+				`"Transitive.Pkg":{"type":"Transitive","resolved":"2.0.0"}}}}`),
+		}, []string{"newtonsoft.json@13.0.1", "transitive.pkg@2.0.0"}},
+		{"packages.config beside a legacy project", map[string][]byte{
+			"src/Legacy/Legacy.csproj":   []byte(`<Project ToolsVersion="15.0"></Project>`),
+			"src/Legacy/packages.config": []byte(`<packages><package id="Newtonsoft.Json" version="9.0.1" /></packages>`),
+		}, []string{"newtonsoft.json@9.0.1"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: composeILBuildDir(t, c.files)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := strings.ToLower(fmt.Sprint(inv.Nodes))
+			for _, w := range c.want {
+				if !strings.Contains(ids, w) {
+					t.Errorf("missing %s in %v", w, inv.Nodes)
+				}
+			}
+		})
+	}
+}
+
+// Declared-manifest parsing reads the project being resolved, not a nested one that sorts first.
+func TestResolveInventory_DeclaredManifestIsTheResolvedProjects(t *testing.T) {
+	ref := func(id string) []byte {
+		return []byte(`<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="` + id + `" Version="1.0.0" /></ItemGroup></Project>`)
+	}
+	inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: composeILBuildDir(t, map[string][]byte{
+		"Zeta.csproj":                ref("Dep"),
+		"Installer/Installer.csproj": ref("Other"),
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var zeta []string
+	for _, n := range inv.Nodes {
+		if strings.HasPrefix(n.ID, "Zeta.csproj|") {
+			zeta = append(zeta, strings.ToLower(n.ID))
+		}
+	}
+	if j := strings.Join(zeta, " "); !strings.Contains(j, "/dep@") || strings.Contains(j, "other") {
+		t.Fatalf("Zeta.csproj nodes = %v, want Dep only (all %v)", zeta, inv.Nodes)
 	}
 }

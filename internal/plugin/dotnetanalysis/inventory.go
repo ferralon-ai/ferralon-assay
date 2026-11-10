@@ -90,7 +90,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 // project's own tree while CPM discovery must reach the shared solution root (inventory_multiproject.go).
 func tierFallback(buildDir, projDir, projRel, cpmRoot string, carried []string) plugin.DependencyInventory {
 	// Tier 2: packages.lock.json.
-	if lockPath, ok := findOwnFile(buildDir, "packages.lock.json", false); ok {
+	if lockPath, ok := findOwnFile(buildDir, projDir, "packages.lock.json", false); ok {
 		if data, rerr := os.ReadFile(lockPath); rerr == nil {
 			lockRel := relTo(buildDir, lockPath)
 			if nodes, edges, pok := parseLockGraph(data, projRel, lockRel); pok {
@@ -339,8 +339,14 @@ type declaredRef struct {
 // cpmRoot bounds the Directory.Packages.props upward walk (buildDir in the single-project path;
 // the solution root in the multi-project path, so a root-level CPM props file is discovered).
 func parseDeclared(buildDir, projDir, projRel, cpmRoot string) ([]plugin.DependencyNode, []string, bool, bool) {
-	projPath, hasProject := findProjectFile(buildDir)
-	configPath, hasConfig := findOwnFile(buildDir, "packages.config", false)
+	// The project being resolved, not one rediscovered under buildDir: a nested project can sort first.
+	projPath, hasProject := filepath.Join(cpmRoot, filepath.FromSlash(projRel)), false
+	if projRel != "" {
+		if fi, err := os.Stat(projPath); err == nil && !fi.IsDir() {
+			hasProject = true
+		}
+	}
+	configPath, hasConfig := findOwnFile(buildDir, projDir, "packages.config", false)
 	if !hasProject && !hasConfig {
 		return nil, nil, false, false
 	}

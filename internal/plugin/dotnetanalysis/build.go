@@ -293,44 +293,154 @@ func projectCompiled(path string) compiledState {
 }
 
 // intermediateRelocated reports whether the build may write intermediate assemblies somewhere
-// other than each project's obj/: an artifacts/ directory at the build root, or a project file,
-// .props or .targets file (Directory.Build.* or one a project imports) or Directory.Build.rsp
-// under it that sets one of the properties that move them. A file that can't be read counts as
-// setting one.
+// other than each project's obj/. It reads every MSBuild input that can set a property moving
+// them: the project files and their .user files; every .props and .targets file and
+// Directory.Build.rsp under buildDir; Directory.Build.props, .targets and .rsp in buildDir's
+// ancestors; and, transitively, every file those import. It reports true when one of them sets
+// such a property, when an artifacts/ directory sits at the build root, or when an input can't
+// be read or an import path can't be resolved.
 func intermediateRelocated(buildDir string, projects []string) bool {
 	if fi, err := os.Stat(filepath.Join(buildDir, "artifacts")); err == nil && fi.IsDir() {
 		return true
 	}
-	files := append([]string(nil), projects...)
+	var queue []string
+	for _, p := range projects {
+		queue = append(queue, p)
+		if _, err := os.Stat(p + ".user"); err == nil {
+			queue = append(queue, p+".user")
+		}
+	}
 	_ = filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // an unreadable subtree holds no project findProjectFiles saw.
 		}
 		if d.IsDir() {
-			if path != buildDir && skipDir(d.Name()) {
+			if path != buildDir && buildOutputDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		switch name := strings.ToLower(d.Name()); {
 		case strings.HasSuffix(name, ".props"), strings.HasSuffix(name, ".targets"), name == "directory.build.rsp":
-			files = append(files, path)
+			queue = append(queue, path)
 		}
 		return nil
 	})
-	for _, f := range files {
+	for dir := filepath.Dir(filepath.Clean(buildDir)); ; dir = filepath.Dir(dir) {
+		for _, n := range []string{"Directory.Build.props", "Directory.Build.targets", "Directory.Build.rsp"} {
+			if _, err := os.Stat(filepath.Join(dir, n)); err == nil {
+				queue = append(queue, filepath.Join(dir, n))
+			}
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	seen := map[string]bool{}
+	for len(queue) > 0 {
+		f := filepath.Clean(queue[0])
+		queue = queue[1:]
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
 		data, err := os.ReadFile(f)
 		if err != nil || intermediateProperty.Match(data) {
 			return true
 		}
+		imports, ok := importedFiles(f, data)
+		if !ok {
+			return true
+		}
+		queue = append(queue, imports...)
 	}
 	return false
+}
+
+// buildOutputDir reports whether a directory named name holds build or restore output, or
+// tooling state, rather than MSBuild inputs the build reads.
+func buildOutputDir(name string) bool {
+	switch name {
+	case "bin", "obj", "packages", ".git", ".vs", "node_modules", "TestResults":
+		return true
+	}
+	return false
+}
+
+// importElement matches an MSBuild <Import> element's attributes; importAttr one attribute.
+var (
+	importElement = regexp.MustCompile(`(?is)<\s*Import\b([^>]*)>`)
+	importAttr    = regexp.MustCompile(`(?is)\b(Project|Sdk)\s*=\s*(?:"([^"]*)"|'([^']*)')`)
+	importProp    = regexp.MustCompile(`\$\(\s*([A-Za-z0-9_]+)\s*\)`)
+)
+
+// toolchainRoots are the properties that root an import in the MSBuild or Visual Studio install,
+// not in the repository.
+var toolchainRoots = map[string]bool{
+	"msbuildtoolspath": true, "msbuildbinpath": true, "msbuildextensionspath": true,
+	"msbuildextensionspath32": true, "msbuildextensionspath64": true, "vstoolspath": true,
+	"msbuildsdkspath": true,
+}
+
+// importedFiles returns the repository files the MSBuild file f imports, resolving each
+// <Import Project> against f's directory and expanding $(MSBuildThisFileDirectory) and
+// $(MSBuildProjectDirectory). Sdk imports and imports rooted in the toolchain are skipped, and so
+// is a path that names no existing file, since the build would have failed had it been required.
+// It reports false when a path depends on any other property.
+func importedFiles(f string, data []byte) ([]string, bool) {
+	dir := filepath.Dir(f)
+	var out []string
+	for _, el := range importElement.FindAllSubmatch(data, -1) {
+		var project string
+		sdk := false
+		for _, a := range importAttr.FindAllSubmatch(el[1], -1) {
+			v := string(a[2]) + string(a[3])
+			if strings.EqualFold(string(a[1]), "Sdk") {
+				sdk = true
+			} else {
+				project = v
+			}
+		}
+		if sdk || strings.TrimSpace(project) == "" {
+			continue
+		}
+		unresolved, toolchain := false, false
+		expanded := importProp.ReplaceAllStringFunc(project, func(m string) string {
+			switch name := strings.ToLower(importProp.FindStringSubmatch(m)[1]); {
+			case name == "msbuildthisfiledirectory":
+				return dir + "/"
+			case name == "msbuildprojectdirectory":
+				return dir
+			case toolchainRoots[name]:
+				toolchain = true
+			default:
+				unresolved = true
+			}
+			return m
+		})
+		if toolchain && strings.HasPrefix(strings.TrimSpace(project), "$(") {
+			continue
+		}
+		if unresolved || toolchain {
+			return nil, false
+		}
+		path := filepath.FromSlash(strings.ReplaceAll(strings.TrimSpace(expanded), `\`, "/"))
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		matches, err := filepath.Glob(path)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, matches...)
+	}
+	return out, true
 }
 
 // intermediateProperty matches an MSBuild element, or a response-file -p:/-property: assignment,
 // setting a property that moves a project's intermediate output out of obj/<cfg>/<tfm>/, or the
 // --artifacts-path switch.
-var intermediateProperty = regexp.MustCompile(`(?i)(?:<|[:;])\s*(?:BaseIntermediateOutputPath|IntermediateOutputPath|MSBuildProjectExtensionsPath|UseArtifactsOutput|ArtifactsPath)\b|artifacts-path`)
+var intermediateProperty = regexp.MustCompile(`(?i)(?:<|[:;,])\s*(?:BaseIntermediateOutputPath|IntermediateOutputPath|MSBuildProjectExtensionsPath|UseArtifactsOutput|ArtifactsPath)\b|artifacts-path`)
 
 // projectReference matches a ProjectReference's Include path.
 var projectReference = regexp.MustCompile(`(?i)<\s*ProjectReference\b[^>]*?\bInclude\s*=\s*["']([^"']+)["']`)

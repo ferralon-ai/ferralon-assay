@@ -365,6 +365,17 @@ func TestReachability_RoutesIntoMissingPackage(t *testing.T) {
 			a.row(xInterfaceImpl, bar, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
 			return inSetIfaceDIM(true, false, true)(c)
 		}, true},
+		{"class carrying a missing interface, built by DI through a constructor with parameters", func(c *mrCtx) [][]byte {
+			a := c.a
+			irun, rm := a.addType(0xA1, "IRun", "App", 0, []mspec{{name: "Run", flags: 0x5C6, sig: sigInstVoid}})
+			foo, _ := a.addType(0, "Foo", "App", a.obj, []mspec{{name: ".ctor", flags: fPublicCtor, sig: []byte{0x20, 0x01, 0x01, 0x1C}, il: body()}})
+			a.row(xInterfaceImpl, foo, cTypeDefOrRef(xTypeRef, a.extTypeRefScoped(c.gone, "W", "IThing")))
+			add := a.fwRef("Microsoft.Extensions.DependencyInjection", "ServiceCollectionServiceExtensions", "AddSingleton", []byte{0x10, 0x02, 0x01, 0x1C, 0x1C})
+			spec := a.row(xMethodSpec, (add&0xFFFFFF)<<1|1, a.blob(append(append([]byte{0x0A, 0x02}, mrDef(irun)...), mrDef(foo)...)))
+			get := a.fwRef("Microsoft.Extensions.DependencyInjection", "ServiceProviderServiceExtensions", "GetRequiredService", []byte{0x10, 0x01, 0x01, 0x1E, 0x00, 0x1C})
+			gspec := a.row(xMethodSpec, (get&0xFFFFFF)<<1|1, a.blob(append([]byte{0x0A, 0x01}, mrDef(irun)...)))
+			return [][]byte{ilCall(mtok(xMethodSpec, spec)), ilCall(mtok(xMethodSpec, gspec)), ilCallvirt(mtok(xMethodDef, rm[0]))}
+		}, false},
 		{"subclass of a class carrying a missing interface, constructed: in-set interface call", func(c *mrCtx) [][]byte {
 			a := c.a
 			_, rm := a.addType(0xA1, "IRun", "App", 0, []mspec{{name: "Run", flags: 0x5C6, sig: sigInstVoid}})

@@ -245,8 +245,9 @@ func (e *Engine) resolveTargets(edge assembly.Edge, fromAsm *assembly.Assembly, 
 		if b.Iface {
 			// Framework code cannot name an in-set interface, so only a non-framework
 			// interface can supply a default method for its slot, and only on a receiver
-			// that can exist.
-			if !e.isFrameworkType(b.Asm, b.Ref) && (b.Via == nil || ctx == nil || ctx.counts(b.Via)) {
+			// that can exist: one instantiated, or one handed to the framework as a generic
+			// argument (a DI container builds it through any constructor).
+			if !e.isFrameworkType(b.Asm, b.Ref) && (b.Via == nil || ctx == nil || ctx.counts(b.Via) || ctx.isGenArg(b.Via)) {
 				out.flag("default interface method from " + typeRefDisplay(b.Ref) + " (not in the loaded set) can fill " + owner + "::" + name)
 			}
 			continue

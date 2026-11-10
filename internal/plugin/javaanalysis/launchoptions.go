@@ -16,6 +16,8 @@ import (
 	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -1541,52 +1543,67 @@ func wordIs(rest, lit string) bool {
 	return ok && (after == "" || strings.ContainsRune(" \t\r", rune(after[0])))
 }
 
-// templateWrapperJar reports whether the Maven wrapper batch script sets WRAPPER_JAR only as its
-// template does. It reads the script as cmd does, a line ending in a caret joined to the next, and
-// then every command that assigns WRAPPER_JAR, in any form cmd accepts (set /p, @set, a set after
-// if, call, for or &, a quoted or caret-escaped name), is the template's own, and there is one. A
-// set whose name is expanded from a variable can assign anything, so it is never the template's.
+// templateWrapperJar reports whether the Maven wrapper batch script is an upstream template,
+// Apache Maven Wrapper 3.1.0 to 3.3.4 or Takari maven-wrapper 0.2.0 to 0.5.6, with at most its
+// comments edited. cmd can assign WRAPPER_JAR in more forms than a reader can enumerate, so the
+// script's code lines must be exactly a template's.
 func (f *launchFile) templateWrapperJar() bool {
-	const template = `set wrapper_jar=%maven_projectbasedir%\.mvn\wrapper\maven-wrapper.jar`
-	found := false
-	for _, line := range cmdLogicalLines(string(f.data)) {
-		norm := strings.ToLower(strings.NewReplacer("^", "", `"`, "").Replace(line))
-		if expandedSetName.MatchString(norm) {
-			return false
-		}
-		if !strings.Contains(norm, "wrapper_jar=") {
-			continue
-		}
-		if strings.TrimSpace(norm) != template {
-			return false
-		}
-		found = true
-	}
-	return found
+	fp, ok := cmdCodeFingerprint(f.data)
+	return ok && mavenWrapperTemplates[fp]
 }
 
-// expandedSetName matches a set command whose variable name holds a %- or !-expansion.
-var expandedSetName = regexp.MustCompile(`(?:^|[^a-z0-9_])set\s+(?:/[ap]\s*)?[^=\s]*[%!][^=]*=`)
-
-// cmdLogicalLines splits a batch script into the lines cmd runs: one ending in a caret continues
-// on the next.
-func cmdLogicalLines(data string) []string {
-	var out []string
-	var cur strings.Builder
-	for _, line := range strings.Split(data, "\n") {
-		line = strings.TrimSuffix(line, "\r")
-		if rest, ok := strings.CutSuffix(line, "^"); ok {
-			cur.WriteString(rest)
-			continue
+// cmdCodeFingerprint hashes a batch script's code lines, line endings normalized to LF. A REM line
+// is dropped as inert unless cmd could read it as more: it continues onto the next line or
+// follows one that does (a trailing caret), or it holds a %- or !-expansion, which cmd expands
+// before it sees REM. A script with a control character or a bare CR does not fingerprint.
+func cmdCodeFingerprint(data []byte) (string, bool) {
+	for _, c := range data {
+		if c < 0x20 && c != '\t' && c != '\n' && c != '\r' {
+			return "", false
 		}
-		cur.WriteString(line)
-		out = append(out, cur.String())
-		cur.Reset()
 	}
-	if cur.Len() > 0 {
-		out = append(out, cur.String())
+	s := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if strings.Contains(s, "\r") {
+		return "", false
 	}
-	return out
+	var code []string
+	prev := ""
+	for _, line := range strings.Split(s, "\n") {
+		inert := cmdRemark.MatchString(line) && !strings.HasSuffix(line, "^") &&
+			!strings.HasSuffix(prev, "^") && !strings.ContainsAny(line, "%!")
+		if !inert {
+			code = append(code, line)
+		}
+		prev = line
+	}
+	sum := sha256.Sum256([]byte(strings.Join(code, "\n")))
+	return hex.EncodeToString(sum[:]), true
+}
+
+var cmdRemark = regexp.MustCompile(`(?i)^[ \t]*@?rem(?:[ \t].*)?$`)
+
+// mavenWrapperTemplates holds cmdCodeFingerprint of each upstream mvnw.cmd that sets WRAPPER_JAR.
+// Apache's bin, script and source distributions of one version share a fingerprint.
+var mavenWrapperTemplates = map[string]bool{
+	"361e8194ff865c389423b366b89af6122b00741b7fc227e7b67fef73449f92bb": true, // Apache 3.1.0
+	"32243652660a21297ee4ef74b08025536cd43de597aaadbbfe20d449647fe461": true, // Apache 3.1.1
+	"62e6ee9ee0de204630df0655b0db4da482390adfe3f754f1c4db80a5f70ce446": true, // Apache 3.2.0
+	"7059f02bbdf291eebf37742187667ef957215e70a4e603105e33de51eae945e0": true, // Apache 3.3.0
+	"0798e541fffc8ff869baf784d4b07f8c94749a64d53d3375c92d19a81ac9c6c7": true, // Apache 3.3.1
+	"af4d20788627bc79ddfe2f12702fae6d8aa9d2feb0c906190a937e5b41fb1f21": true, // Apache 3.3.2
+	"66749d2f050b62555a642b05a794f233d10a1425d177bfeb2f5b93ecc77ef16b": true, // Apache 3.3.3
+	"271a94bbeb24386f1df54627001ba5aec6f47f8b02ff33a7cfa3f42d9319168e": true, // Apache 3.3.4
+	"754dab2ba0d567eb745b9a67dc42813f558703566ea72bec5b80d50a321bd18e": true, // Takari 0.2.0-0.2.3
+	"435e6e62dc1a422f17eaef93a1bda62db7d906cef0d8074e29bb6b3e81164421": true, // Takari 0.3.0
+	"fd1747782fd67e3f7410c3f3e894b5de5d1161dbd73a9094e257d92e0bce4dcf": true, // Takari 0.4.0-0.4.1
+	"368ded28290c11b6446f509aaf919423ed7508d952e3e3b66649fd1ac2e51398": true, // Takari 0.4.2
+	"4a0ccc5ddbd763b3889fc73bd2bf9fffdf367e4dd709dea798e8556b36bd501e": true, // Takari 0.5.0
+	"f8da45155d4b2a00cfbe30da7629ccc181e39de5d6ec20dec0ad964f6ecf8a58": true, // Takari 0.5.1
+	"b512311cfcb31dbd3cf979701f51d0e8a205a9a0350bd737fe35ce5f57fb0d80": true, // Takari 0.5.2
+	"208c88bee29a70badda9f4e9ac140739c520ca12ea6495e098efc87476a5885d": true, // Takari 0.5.3
+	"eaa16c19994ec84d7a3a64dc7e55e3ba010156f2c9b5dcb61ee446420776a567": true, // Takari 0.5.4
+	"216dbbf27259f1694f54f8cc266df42c744c0f16e0e4ff0f23a3c69dce90d40a": true, // Takari 0.5.5
+	"446bf654db5d5da0baa81a1b4e67b9252bec9b7da045d9d218073ddeeb134fd2": true, // Takari 0.5.6
 }
 
 // name classifies one occurrence of a launch name. An option variable is accounted for when it

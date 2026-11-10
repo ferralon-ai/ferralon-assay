@@ -120,7 +120,7 @@ const solutionMaxBytes = 4 << 20
 
 // solutionNamesDotNetProject reports whether a .sln or .slnx file lists a C#, F# or VB project.
 // Both formats quote each member path ("src\App\App.csproj" in a .sln Project line,
-// Path="src/App/App.csproj" in a .slnx Project element).
+// Path="src/App/App.csproj" or Path='...' in a .slnx Project element).
 func solutionNamesDotNetProject(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -132,8 +132,8 @@ func solutionNamesDotNetProject(path string) bool {
 		return false
 	}
 	lower := strings.ToLower(string(data))
-	for _, ext := range []string{`.csproj"`, `.fsproj"`, `.vbproj"`} {
-		if strings.Contains(lower, ext) {
+	for _, ext := range []string{".csproj", ".fsproj", ".vbproj"} {
+		if strings.Contains(lower, ext+`"`) || strings.Contains(lower, ext+`'`) {
 			return true
 		}
 	}

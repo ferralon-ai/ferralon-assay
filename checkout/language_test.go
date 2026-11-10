@@ -220,6 +220,24 @@ func TestDetectLanguageDominance(t *testing.T) {
 			want:     LangDotNet,
 		},
 		{
+			name:     "root slnx naming a single-quoted csproj -> dotnet",
+			files:    []string{"App.slnx", "web/a.js", "web/b.js"},
+			contents: map[string]string{"App.slnx": `<Solution><Project Path='src/App/App.csproj' /></Solution>`},
+			want:     LangDotNet,
+		},
+		{
+			name:     "root slnx naming only a vcxproj -> cfamily",
+			files:    []string{"Engine.slnx", "main.cpp", "render.cpp"},
+			contents: map[string]string{"Engine.slnx": `<Solution><Project Path="Engine.vcxproj" /></Solution>`},
+			want:     LangCFamily,
+		},
+		{
+			name:     "upper-case sln naming an upper-case csproj -> dotnet",
+			files:    []string{"APP.SLN", "web/a.js", "web/b.js"},
+			contents: map[string]string{"APP.SLN": `Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "APP.CSPROJ", "{1}"` + "\nEndProject\n"},
+			want:     LangDotNet,
+		},
+		{
 			// Visual Studio C++, Python and Node projects carry a root .sln too.
 			name:     "root sln naming only a vcxproj -> cfamily",
 			files:    []string{"Engine.sln", "Engine.vcxproj", "main.cpp", "render.cpp", "render.h"},

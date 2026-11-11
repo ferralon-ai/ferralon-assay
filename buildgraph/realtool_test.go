@@ -678,6 +678,17 @@ func TestGradleComplete(t *testing.T) {
 			want: "jackson-annotations-2.17.2.jar, which no collected configuration lists",
 		},
 		{
+			name: "dependency-management exclusion pass whose file collection resolves under the listener",
+			append: map[string]string{
+				"settings.gradle": "include 'dm'\n",
+				"dm/build.gradle": "plugins { id 'java'; id 'io.spring.dependency-management' version '1.1.6' }\n" +
+					"def extra = configurations.detachedConfiguration(dependencies.create('com.fasterxml.jackson.core:jackson-annotations:2.17.2'))\n" +
+					"configurations { tool }\n" +
+					"dependencies { implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.2'; tool files(extra) }\n",
+			},
+			want: "Could not resolve all artifacts", // Gradle refuses a resolution nested in a listener callback
+		},
+		{
 			name: "project build script classpath",
 			append: map[string]string{
 				"settings.gradle": "include 'bs'\n",

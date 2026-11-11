@@ -69,6 +69,7 @@ func TestDualBuild_PerToolUnits(t *testing.T) {
 			a := newApp(t, "", false)
 			a.source("src/main/java/com/acme/App.java", appSource)
 			a.class("target/classes", "com/acme/App", mainCalling(callStatic("com/evil/netkit/Api", "safe")))
+			a.class("build/classes/java/main", "com/acme/App", mainCalling(callStatic("com/evil/netkit/Api", "safe")))
 			jars := map[string]string{}
 			for _, v := range append(append([]string{}, c.maven.versions...), c.gradle.versions...) {
 				if _, ok := jars[v]; !ok {
@@ -96,6 +97,99 @@ func TestDualBuild_PerToolUnits(t *testing.T) {
 			}
 			if got := hasScoped(res.Partiality, reasonDependencyVersionAmbiguous, mavenPURLNoVersion("com.evil:netkit")); got != c.wantAmbiguous {
 				t.Errorf("version-ambiguous scoped reason = %v, want %v (partiality %+v)", got, c.wantAmbiguous, res.Partiality)
+			}
+		})
+	}
+}
+
+// Each tool's unit reads only the class output its own build wrote. Both builds' compiled App
+// are present and differ: a merged set would run one build's App on the other's dependencies, and
+// a duplicate class keeps only one copy.
+func TestDualBuild_OwnClassOutput(t *testing.T) {
+	reach := callStatic("com/evil/netkit/Api", "safe")
+	cases := map[string]struct {
+		mavenApp, gradleApp func(b *cpb) []byte // nil writes no class output for that tool
+		mavenVer, gradleVer string
+		wantPath            bool
+		wantSearched        bool
+	}{
+		// the tool whose own App calls Api.safe runs it on its own netkit, whose Api.safe reaches the sink
+		"gradle app reaches on gradle's vulnerable version": {mavenApp: justReturn, gradleApp: reach, mavenVer: "2.0.0", gradleVer: "1.0.0", wantPath: true},
+		"maven app reaches on maven's vulnerable version":   {mavenApp: reach, gradleApp: justReturn, mavenVer: "1.0.0", gradleVer: "2.0.0", wantPath: true},
+		"both apps clean": {mavenApp: justReturn, gradleApp: justReturn, mavenVer: "1.0.0", gradleVer: "2.0.0", wantSearched: true},
+		// the other tool's classes are never borrowed for a tool with none of its own
+		"gradle wrote no output": {mavenApp: justReturn, mavenVer: "2.0.0", gradleVer: "1.0.0"},
+		"maven wrote no output":  {gradleApp: justReturn, mavenVer: "1.0.0", gradleVer: "2.0.0"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.source("src/main/java/com/acme/App.java", appSource)
+			if c.gradleApp != nil {
+				a.class("build/classes/java/main", "com/acme/App", mainCalling(c.gradleApp))
+			}
+			if c.mavenApp != nil {
+				a.class("target/classes", "com/acme/App", mainCalling(c.mavenApp))
+			}
+			jars := map[string]string{}
+			for _, v := range []string{c.mavenVer, c.gradleVer} {
+				if _, ok := jars[v]; !ok {
+					jars[v] = a.writeNetkitAt(v, v == "1.0.0")
+				}
+			}
+			a.graph = dualGraph(t, map[string][]buildgraph.Module{
+				"maven":  {testModule(t, ".", "app", graphDep{group: "com.evil", artifact: "netkit", version: c.mavenVer, jar: jars[c.mavenVer]})},
+				"gradle": {testModule(t, ".", "app", graphDep{group: "com.evil", artifact: "netkit", version: c.gradleVer, jar: jars[c.gradleVer]})},
+			})
+			res := a.reach(netkitSinkID)
+			if got := len(res.Paths) > 0; got != c.wantPath {
+				t.Errorf("paths = %+v, want a path %v", res.Paths, c.wantPath)
+			}
+			if got := len(res.Searched) == 1; got != c.wantSearched {
+				t.Errorf("Searched = %v, want searched %v (partiality %+v)", res.Searched, c.wantSearched, res.Partiality)
+			}
+		})
+	}
+}
+
+// Class output in a project directory neither build's graph holds is a project the search cannot
+// place, whichever tool wrote it: the run is refused, not searched.
+func TestDualBuild_ExtraProjectDirRefused(t *testing.T) {
+	a := newApp(t, "", false)
+	a.source("src/main/java/com/acme/App.java", appSource)
+	a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+	a.class("build/classes/java/main", "com/acme/App", mainCalling(justReturn))
+	a.class("extra/target/classes", "com/acme/Extra", mainCalling(justReturn))
+	v := a.writeNetkitAt("2.0.0", false)
+	dep := graphDep{group: "com.evil", artifact: "netkit", version: "2.0.0", jar: v}
+	a.graph = dualGraph(t, map[string][]buildgraph.Module{
+		"maven":  {testModule(t, ".", "app", dep)},
+		"gradle": {testModule(t, ".", "app", dep)},
+	})
+	res := a.reach(netkitSinkID)
+	if len(res.Searched) != 0 || !hasReason(res.Partiality, reasonMultipleProjectsUnsupported) {
+		t.Errorf("Searched = %v, partiality %+v; want refused as multiple projects", res.Searched, res.Partiality)
+	}
+}
+
+// A classpath copy in either tool's graph is not a unit the plan can place.
+func TestReactorUnits_ByToolCopyRefused(t *testing.T) {
+	for _, withCopy := range []string{"maven", "gradle"} {
+		t.Run(withCopy, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.source("src/main/java/com/acme/App.java", appSource)
+			a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+			byTool := map[string][]buildgraph.Module{}
+			for _, tl := range []string{"maven", "gradle"} {
+				project := testModule(t, ".", "app")
+				byTool[tl] = []buildgraph.Module{project}
+				if tl == withCopy {
+					byTool[tl] = append(byTool[tl], classpathCopy(t, project, "test"))
+				}
+			}
+			plan, multi, why := reactorUnits(a.build, dualGraph(t, byTool))
+			if plan != nil || !multi || !strings.Contains(why, "classpath copy") {
+				t.Errorf("plan = %v, refused %v (%q), want refused for the classpath copy", plan, multi, why)
 			}
 		})
 	}

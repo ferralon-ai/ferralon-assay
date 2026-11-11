@@ -103,6 +103,22 @@ func toolUnits(g *buildgraph.Graph, buildDir string) (plan *reactorPlan, multi b
 	return plan, false, ""
 }
 
+// toolOutputs returns the class outputs the build tool wrote: Maven's target/classes, Gradle's
+// build/classes/<lang>/main.
+func toolOutputs(tool string, outputs []classOutput) []classOutput {
+	var out []classOutput
+	for _, o := range outputs {
+		wrote := "gradle"
+		if filepath.Base(filepath.Dir(o.root)) == "target" {
+			wrote = "maven"
+		}
+		if wrote == tool {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
 // toolGraph is g restricted to the modules the build tool resolved.
 func toolGraph(g *buildgraph.Graph, tool string) *buildgraph.Graph {
 	out := *g
@@ -367,8 +383,17 @@ func unitsReachability(ctx context.Context, buildDir string, prog *program, plan
 	pathFound := map[string]bool{}
 	searchedBy := map[string]int{}
 	for _, u := range plan.units {
-		files, fp, uopt := prog.files, assembleFirstParty(buildDir, outputs, prog.files), withTool(u.tool)
-		if !u.whole() {
+		files, fp, uopt := prog.files, (*firstPartyBytecode)(nil), withTool(u.tool)
+		if u.whole() {
+			own := toolOutputs(u.tool, outputs)
+			if len(own) == 0 {
+				// No class output is that tool's own, and the merged set would run another build's
+				// classes on this tool's dependencies: this unit searches nothing.
+				reasons[plugin.PartialReasonReachabilityUndetermined] = true
+				continue
+			}
+			fp = assembleFirstParty(buildDir, own, prog.files)
+		} else {
 			files = unitFiles(plan, u, prog.files)
 			fp = unitBytecode(buildDir, u, outputs, files)
 			uopt = withUnit(u.id)

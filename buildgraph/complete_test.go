@@ -252,6 +252,8 @@ func TestMavenIncomplete(t *testing.T) {
 		{name: "buildnumber create", build: plugin("org.codehaus.mojo:buildnumber-maven-plugin", exec("", "validate", "create"))},
 		{name: "buildnumber create-metadata", build: plugin("org.codehaus.mojo:buildnumber-maven-plugin", exec("meta", "generate-resources", "create-metadata")), want: "buildnumber-maven-plugin:create-metadata"},
 		{name: "central publishing", build: plugin("org.sonatype.central:central-publishing-maven-plugin", exec("injected-central-publishing", "deploy", "publish"))},
+		{name: "central publishing goal off the list", build: plugin("org.sonatype.central:central-publishing-maven-plugin", exec("stage", "deploy", "stage")), want: "central-publishing-maven-plugin:stage"},
+		{name: "copy goal of another plugin beside resolved items", build: plugin("org.codehaus.mojo:build-helper-maven-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.h2database:h2"}}, want: "build-helper-maven-plugin:copy (execution agent)"},
 		{name: "unknown plugin", build: plugin("com.acme:fetch-maven-plugin", exec("fetch", "package", "fetch")), want: "com.acme:fetch-maven-plugin execution fetch is not a plugin"},
 		{name: "dependency copy with every item resolved", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.h2database:h2"}}},
 		{name: "dependency unpack with every item resolved", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "unpack")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.example:cli"}}},

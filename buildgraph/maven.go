@@ -508,7 +508,7 @@ func unlistedInPOM(modules []Module, effective []effectiveProject, overridden bo
 				if single {
 					continue
 				}
-				if coords, ok := itemCoordinates(p, reactor, ex.Configuration, pl.Configuration); ok {
+				if coords, ok := itemCoordinates(p, reactor, false, ex.Configuration, pl.Configuration); ok {
 					if m.UnlistedTargets == nil {
 						m.UnlistedTargets = map[string][]string{}
 					}
@@ -536,8 +536,9 @@ type artifactItem struct {
 // A reactor module's item at the module's own version does: that module's dependencies are already
 // in the graph, whatever its type. Any other item, including another release of a reactor module,
 // does only as a plain JAR with no classifier; an archive or a classified JAR (a Karaf features
-// zip, a shaded jar, a previous release's distribution) can carry other packages.
-func itemCoordinates(p effectiveProject, reactor map[string]string, configs ...xmlChildren) ([]string, bool) {
+// zip, a shaded jar, a previous release's distribution) can carry other packages. With
+// reactorOnly, every item must be a reactor module's at the module's own version.
+func itemCoordinates(p effectiveProject, reactor map[string]string, reactorOnly bool, configs ...xmlChildren) ([]string, bool) {
 	var coords []string
 	for _, c := range configs {
 		if !c.has("artifactItems") {
@@ -559,6 +560,9 @@ func itemCoordinates(p effectiveProject, reactor map[string]string, configs ...x
 			}
 			coord := g + ":" + a
 			if mv, ok := reactor[coord]; !ok || mv != v {
+				if reactorOnly {
+					return nil, false
+				}
 				typ, cls := strings.TrimSpace(it.Type), strings.TrimSpace(it.Classifier)
 				if (typ != "" && typ != "jar" && typ != "bundle") || cls != "" {
 					return nil, false
@@ -624,10 +628,12 @@ type effectiveExecution struct {
 type effectiveProject struct {
 	GroupID    string      `xml:"groupId"`
 	ArtifactID string      `xml:"artifactId"`
+	Version    string      `xml:"version"`
 	Properties xmlChildren `xml:"properties"`
 	Build      struct {
-		Directory  string `xml:"directory"`
-		Extensions struct {
+		Directory       string `xml:"directory"`
+		OutputDirectory string `xml:"outputDirectory"`
+		Extensions      struct {
 			Extension []struct {
 				GroupID    string `xml:"groupId"`
 				ArtifactID string `xml:"artifactId"`

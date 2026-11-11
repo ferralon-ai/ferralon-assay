@@ -225,6 +225,7 @@ func TestMavenIncomplete(t *testing.T) {
 		unlisted []string
 		targets  map[string][]string
 		link     string // a symlink at this checkout path to a directory outside the checkout
+		linkFile string // a symlink at this checkout path to a file outside the checkout
 		want     string
 	}{
 		{name: "core lifecycle", build: plugin("org.apache.maven.plugins:maven-compiler-plugin", exec("default-compile", "compile", "compile"))},
@@ -284,6 +285,7 @@ func TestMavenIncomplete(t *testing.T) {
 		{name: "assembly archiveBaseDirectory", build: assembly(dist + `<archiveBaseDirectory>/opt/vendor</archiveBaseDirectory>`), files: descriptor(fileSet("lib")), want: "sets archiveBaseDirectory"},
 		{name: "assembly fileSet holding the local repository", repo: true, build: assembly(dist), files: descriptor(fileSet("")), want: "holds the local repository"},
 		{name: "assembly fileSet over a symlink out", link: "lib/ext", build: assembly(dist), files: descriptor(fileSet("lib")), want: "outside the checkout"},
+		{name: "assembly fileSet over a file symlink out", linkFile: "lib/agent.jar", build: assembly(dist), files: descriptor(fileSet("lib")), want: "agent.jar outside the checkout"},
 		{name: "assembly build directory outside the checkout", build: `<directory>/opt/build</directory>` + plugin("org.apache.maven.plugins:maven-assembly-plugin", `<executions><execution><id>main</id><phase>package</phase><goals><goal>single</goal></goals><configuration>`+dist+`</configuration></execution></executions>`), files: descriptor(fileSet("${project.build.directory}/lib")), want: "reads /opt/build/lib, outside the checkout"},
 		{name: "assembly build directory above the checkout", build: `<directory>$ROOT/..</directory>` + plugin("org.apache.maven.plugins:maven-assembly-plugin", `<executions><execution><id>main</id><phase>package</phase><goals><goal>single</goal></goals><configuration>`+dist+`</configuration></execution></executions>`), files: descriptor(fileSet("${project.build.directory}/sibling")), want: "outside the checkout"},
 		{name: "assembly moduleSets", build: assembly(dist), files: descriptor(`<moduleSets><moduleSet><useAllReactorProjects>true</useAllReactorProjects></moduleSet></moduleSets>`), want: "has moduleSets"},
@@ -314,6 +316,17 @@ func TestMavenIncomplete(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.Symlink(t.TempDir(), link); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.linkFile != "" {
+				target := filepath.Join(t.TempDir(), "agent.jar")
+				link := filepath.Join(dir, filepath.FromSlash(tc.linkFile))
+				writeFiles(t, filepath.Dir(target), map[string]string{"agent.jar": ""})
+				if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, link); err != nil {
 					t.Fatal(err)
 				}
 			}

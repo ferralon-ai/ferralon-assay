@@ -271,6 +271,13 @@ func TestIntake_DisagreeingLegacyRangesAdmit(t *testing.T) {
 			coordinate: "multer", ver: "1.4.2", wantDisq: false,
 		},
 		{
+			// Through the stored artifact: the legacy range's introduced must not cap the element's
+			// open last_affected range, so the merged set stays open above.
+			name:       "a legacy introduced does not cap the element's open range",
+			src:        fakeRangesSource{legacy: []Range{{Introduced: "2.0.0", Fixed: "2.0.3"}}, elems: []AffectedPackage{elem("multer", Range{Introduced: "1.0.0", LastAffected: "1.4.0"})}},
+			coordinate: "multer", ver: "2.5.0", wantDisq: false,
+		},
+		{
 			name: "legacy ranges describe the primary package only",
 			src: fakeRangesSource{
 				legacy: []Range{{Fixed: "2.3.0"}},

@@ -2180,7 +2180,7 @@ func versionOutsideRanges(ver string, rngs []affectedRange) (outside bool, ok bo
 	if len(rngs) == 0 {
 		return false, false
 	}
-	for _, rng := range rngs {
+	for _, rng := range capOpenLastAffected(rngs) {
 		out, rok := versionOutsideRange(ver, rng)
 		if !rok {
 			return false, false // uncertainty in any range ⇒ OPEN

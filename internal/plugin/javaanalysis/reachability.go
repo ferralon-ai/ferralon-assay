@@ -59,12 +59,14 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest, opts ...O
 		return plugin.ReachabilityResult{Partiality: reachabilityPartiality(reasons), Paths: paths}, nil
 	}
 
-	// Dependency sinks are searched over the compiled program (reachability_bytecode.go).
-	// A build with several projects, or without class output, keeps the lexical answer and
-	// says why it went no further.
-	fp := loadFirstPartyBytecode(req.BuildDir, prog)
-	multi, why := multipleProjects(req.BuildDir, opts...)
-	if dirs := fp.projectDirs(); !multi && len(dirs) > 1 {
+	// Dependency sinks are searched over the compiled program (reachability_bytecode.go); a
+	// Maven reactor, one application unit at a time (units.go). A build with several projects
+	// the search cannot place, or without class output, keeps the lexical answer and says why
+	// it went no further.
+	outputs := readClassOutputs(req.BuildDir)
+	fp := assembleFirstParty(req.BuildDir, outputs, prog.files)
+	plan, multi, why := reactorUnits(req.BuildDir, opts...)
+	if dirs := fp.projectDirs(); plan == nil && !multi && len(dirs) > 1 {
 		multi, why = true, "class output in "+strings.Join(relSlashAll(req.BuildDir, dirs), ", ")
 	}
 	if multi || len(fp.roots) == 0 {
@@ -93,7 +95,17 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest, opts ...O
 			reasons[r] = true
 		}
 	}
-	bp, searched, br, scoped, err := bytecodeReachability(ctx, req.BuildDir, prog, fp, depSinks, opts...)
+	var (
+		bp       []plugin.ReachPath
+		searched []string
+		br       map[string]bool
+		scoped   []plugin.ScopedReason
+	)
+	if plan != nil {
+		bp, searched, br, scoped, err = unitsReachability(ctx, req.BuildDir, prog, plan, outputs, depSinks, opts...)
+	} else {
+		bp, searched, br, scoped, err = bytecodeReachability(ctx, req.BuildDir, prog.files, fp, depSinks, opts...)
+	}
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}

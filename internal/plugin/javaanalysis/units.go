@@ -1,0 +1,308 @@
+package javaanalysis
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
+
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+)
+
+// units.go — a multi-module Maven reactor searched one application unit at a time. A unit is a
+// module with code that no other module with code depends on: what the reactor deploys. A
+// library module's code runs only inside a unit that loads it, so it is searched there, on that
+// unit's resolved versions. Each unit is searched over its own class output plus that of every
+// reactor sibling on its runtime classpath, with the dependency JARs its own module resolved.
+//
+// The plan is built from the build graph alone, and any code it cannot place leaves the build
+// with the run-wide multiple_projects_unsupported answer: a module with code no unit loads, a
+// main source under no module, class output under a module the plan does not search, a reactor
+// artifact loaded from somewhere other than a module's own output, a classpath copy, two modules
+// at one path or with one root, and a graph from any tool but Maven.
+
+// reactorUnit is one application unit of a reactor plan.
+type reactorUnit struct {
+	id   string   // the unit module's ID
+	path string   // its module path, slash-separated
+	dir  string   // its module directory
+	dirs []string // dir plus each reactor sibling on its runtime classpath, sorted
+}
+
+// reactorPlan is the units a reactor is searched as, and every module directory, by which a
+// file is attributed to the module whose directory most closely holds it.
+type reactorPlan struct {
+	units      []reactorUnit
+	moduleDirs []string
+}
+
+// owner returns the directory of the module whose directory most closely holds path, or "".
+func (p *reactorPlan) owner(path string) string {
+	best := ""
+	for _, d := range p.moduleDirs {
+		if within(d, path) && len(d) > len(best) {
+			best = d
+		}
+	}
+	return best
+}
+
+// withUnit scopes the dependency closure to the runtime classpath of the reactor module id.
+func withUnit(id string) Option {
+	return func(a *analyzer) { a.unit = id }
+}
+
+// unitModules returns the module of g whose ID is id, never a classpath copy.
+func unitModules(g *buildgraph.Graph, id string) []buildgraph.Module {
+	var out []buildgraph.Module
+	for _, m := range g.Modules {
+		if _, isCopy := m.Project(); !isCopy && m.ID == id {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// reactorUnits plans the per-unit search of the build at buildDir. plan is nil when the build
+// graph holds at most one module with code; multi is set, with why, when it holds several and the
+// plan cannot place every one.
+func reactorUnits(buildDir string, opts ...Option) (plan *reactorPlan, multi bool, why string) {
+	g := BuildGraph(opts...)
+	if g == nil {
+		return nil, false, ""
+	}
+	multi, why = multipleModules(g, buildDir)
+	if !multi {
+		return nil, false, ""
+	}
+	sources, err := javaFiles(buildDir)
+	if err != nil {
+		return nil, true, why + ": " + err.Error()
+	}
+	plan, failure := planUnits(g, buildDir, sources, classOutputProjects(classOutputRoots(buildDir)))
+	if plan == nil {
+		return nil, true, why + ": " + failure
+	}
+	return plan, false, ""
+}
+
+// planUnits places every module with code of g as a unit or as a reactor sibling a unit loads.
+// sources are the build's .java files and outputs the project directories of its class output.
+// On failure the plan is nil and failure says what could not be placed.
+func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string) (plan *reactorPlan, failure string) {
+	if tools := g.Tools(); len(tools) != 1 || tools[0] != "maven" {
+		return nil, "not a Maven reactor (" + strings.Join(tools, ", ") + ")"
+	}
+	var mods []buildgraph.Module
+	paths := map[string]bool{}
+	byRoot := map[string]int{}
+	for _, m := range g.Modules {
+		if _, isCopy := m.Project(); isCopy {
+			return nil, "classpath copy " + m.ID
+		}
+		if paths[m.Path] {
+			return nil, "two modules at " + m.Path
+		}
+		paths[m.Path] = true
+		if _, dup := byRoot[m.Root]; dup {
+			return nil, "two modules with root " + m.Root
+		}
+		byRoot[m.Root] = len(mods)
+		mods = append(mods, m)
+	}
+	byCoord := map[string]int{}
+	for i, m := range mods {
+		for _, n := range m.Nodes {
+			if n.ID == m.Root {
+				byCoord[strings.ToLower(n.Group+":"+n.Artifact)] = i
+			}
+		}
+		for _, a := range m.Aliases {
+			byCoord[strings.ToLower(a)] = i
+		}
+	}
+
+	dirs := make([]string, len(mods))
+	code := make([]bool, len(mods))
+	for i, m := range mods {
+		dirs[i] = filepath.Join(buildDir, filepath.FromSlash(m.Path))
+		info, err := os.Stat(filepath.Join(dirs[i], "src"))
+		code[i] = err == nil && info.IsDir()
+	}
+
+	referenced := make([]bool, len(mods))
+	siblings := make([][]int, len(mods))
+	for i, m := range mods {
+		if !code[i] {
+			continue
+		}
+		for _, n := range m.Nodes {
+			if n.ID == m.Root {
+				continue
+			}
+			j, isRoot := byRoot[n.ID]
+			if !isRoot {
+				var isReactor bool
+				j, isReactor = byCoord[strings.ToLower(n.Group+":"+n.Artifact)]
+				if !isReactor {
+					continue
+				}
+				// A reactor artifact other than a module's own output (a test-jar, a classified
+				// or relocated build) is not code the plan can place.
+				if runtimeScope(n.Scope) {
+					return nil, m.Path + " loads reactor artifact " + n.ID + ", not a module's own output"
+				}
+			}
+			if j == i {
+				continue
+			}
+			referenced[j] = true
+			if isRoot && runtimeScope(n.Scope) {
+				siblings[i] = append(siblings[i], j)
+			}
+		}
+	}
+
+	covered := make([]bool, len(mods))
+	plan = &reactorPlan{moduleDirs: dirs}
+	for i, m := range mods {
+		if !code[i] || referenced[i] {
+			continue
+		}
+		u := reactorUnit{id: m.ID, path: m.Path, dir: dirs[i], dirs: []string{dirs[i]}}
+		covered[i] = true
+		for _, j := range siblings[i] {
+			covered[j] = true
+			if code[j] && !slices.Contains(u.dirs, dirs[j]) {
+				u.dirs = append(u.dirs, dirs[j])
+			}
+		}
+		sort.Strings(u.dirs)
+		plan.units = append(plan.units, u)
+	}
+	if len(plan.units) == 0 {
+		return nil, "no module with code is an application unit"
+	}
+	searched := map[string]bool{}
+	for i, m := range mods {
+		if code[i] && !covered[i] {
+			return nil, m.Path + " has code no application unit loads"
+		}
+		if code[i] {
+			searched[dirs[i]] = true
+		}
+	}
+	for _, s := range sources {
+		if !isMainSource(buildDir, s) {
+			continue
+		}
+		if !searched[plan.owner(s)] {
+			return nil, relSlash(buildDir, s) + " is in no module the units load"
+		}
+	}
+	for _, o := range outputs {
+		if !searched[o] {
+			return nil, "class output in " + relSlash(buildDir, o) + " is in no module the units load"
+		}
+	}
+	sort.Slice(plan.units, func(i, j int) bool { return plan.units[i].path < plan.units[j].path })
+	return plan, ""
+}
+
+// unitOutput is a unit's own module output, from which its launch entry is read.
+type unitOutput struct {
+	dir     string
+	roots   []string
+	classes []classfile.Class
+}
+
+// unitBytecode is the first-party view of unit u: the class output of its directories, checked
+// against files, the main sources those directories own (unitFiles), with the unit module's own
+// output kept apart for the launch entry.
+func unitBytecode(buildDir string, u reactorUnit, outputs []classOutput, files []fileParse) *firstPartyBytecode {
+	var kept []classOutput
+	own := &unitOutput{dir: u.dir}
+	for _, o := range outputs {
+		d := classOutputProject(o.root)
+		if !slices.Contains(u.dirs, d) {
+			continue
+		}
+		kept = append(kept, o)
+		if d == u.dir {
+			own.roots = append(own.roots, o.root)
+			own.classes = append(own.classes, o.classes...)
+		}
+	}
+	fp := assembleFirstParty(buildDir, kept, files)
+	fp.unit = own
+	return fp
+}
+
+// unitFiles returns the parsed files the unit's directories own.
+func unitFiles(plan *reactorPlan, u reactorUnit, files []fileParse) []fileParse {
+	var out []fileParse
+	for _, f := range files {
+		if slices.Contains(u.dirs, plan.owner(f.path)) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// unitsReachability searches the dependency sinks in every unit of plan and combines the
+// answers. A path any unit finds is reported, the first unit's, its trace starting in that
+// unit's classes. A sink is Searched only when every unit searched it with no path. Reasons and
+// scoped reasons are the union over the units.
+func unitsReachability(ctx context.Context, buildDir string, prog *program, plan *reactorPlan, outputs []classOutput, sinks []string, opts ...Option) ([]plugin.ReachPath, []string, map[string]bool, []plugin.ScopedReason, error) {
+	reasons := map[string]bool{}
+	var paths []plugin.ReachPath
+	var scoped []plugin.ScopedReason
+	seenScoped := map[string]bool{}
+	pathFound := map[string]bool{}
+	searchedBy := map[string]int{}
+	for _, u := range plan.units {
+		files := unitFiles(plan, u, prog.files)
+		fp := unitBytecode(buildDir, u, outputs, files)
+		uopts := append(append([]Option{}, opts...), withUnit(u.id))
+		bp, searched, br, sc, err := bytecodeReachability(ctx, buildDir, files, fp, sinks, uopts...)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		for _, p := range bp {
+			if !pathFound[p.Sink.SCIP] {
+				pathFound[p.Sink.SCIP] = true
+				paths = append(paths, p)
+			}
+		}
+		unitSearched := map[string]bool{}
+		for _, s := range searched {
+			if !unitSearched[s] {
+				unitSearched[s] = true
+				searchedBy[s]++
+			}
+		}
+		for r := range br {
+			reasons[r] = true
+		}
+		for _, s := range sc {
+			key := s.Reason + "\x00" + s.Package + "\x00" + s.Path + "\x00" + strings.Join(s.Targets, "\x00")
+			if !seenScoped[key] {
+				seenScoped[key] = true
+				scoped = append(scoped, s)
+			}
+		}
+	}
+	var searched []string
+	listed := map[string]bool{}
+	for _, id := range sinks {
+		if searchedBy[id] == len(plan.units) && !pathFound[id] && !listed[id] {
+			listed[id] = true
+			searched = append(searched, id)
+		}
+	}
+	return paths, searched, reasons, scoped, nil
+}

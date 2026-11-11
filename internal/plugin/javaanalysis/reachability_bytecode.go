@@ -51,7 +51,7 @@ type bytecodeRoot struct {
 }
 
 // bytecodeReachability searches each sink from every main and mapped ingress.
-func bytecodeReachability(ctx context.Context, buildDir string, prog *program, fp *firstPartyBytecode, sinks []string, opts ...Option) ([]plugin.ReachPath, []string, map[string]bool, []plugin.ScopedReason, error) {
+func bytecodeReachability(ctx context.Context, buildDir string, files []fileParse, fp *firstPartyBytecode, sinks []string, opts ...Option) ([]plugin.ReachPath, []string, map[string]bool, []plugin.ScopedReason, error) {
 	reasons := map[string]bool{}
 	var scoped []plugin.ScopedReason
 
@@ -85,7 +85,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 	linked := rc.Listed && len(rc.Reasons) == 0 && fp.complete() && entry.licenses()
 	rc.Engine.SetLinked(linked)
 	mains := mainRoots(fp.classes)
-	ingresses, unmapped := ingressRoots(prog, fp.classes)
+	ingresses, unmapped := ingressRoots(files, fp.classes)
 	if len(mains) == 0 {
 		reasons[reasonNoWholeProgramRoot] = true
 	}
@@ -156,13 +156,13 @@ func mainRoots(classes []classfile.Class) []bytecodeRoot {
 // binary class (package path + '$'-joined enclosing chain), same name, same parameter
 // count. unmapped is true when some marker has no compiled counterpart, so a framework
 // entry exists that the search cannot start from.
-func ingressRoots(prog *program, classes []classfile.Class) (roots []bytecodeRoot, unmapped bool) {
+func ingressRoots(files []fileParse, classes []classfile.Class) (roots []bytecodeRoot, unmapped bool) {
 	byName := make(map[string]*classfile.Class, len(classes))
 	for i := range classes {
 		byName[classes[i].Name] = &classes[i]
 	}
 	seen := map[string]bool{}
-	for _, f := range prog.files {
+	for _, f := range files {
 		pkgPath := strings.ReplaceAll(f.pkg, ".", "/")
 		for _, in := range f.ingresses {
 			owner := strings.Join(in.enclosing, "$")

@@ -125,11 +125,17 @@ var springBootLaunchers = map[string]bool{
 	"org.springframework.boot.loader.launch.WarLauncher": true,
 }
 
-// findLaunchEntry reads the launch entry of the projects whose class output fp read.
-// lookup returns a loaded class (first-party or dependency) by binary name.
+// findLaunchEntry reads the launch entry of the projects whose class output fp read; for a
+// reactor unit, of the unit module alone, whose reactor parent POMs may be read from the
+// checkout. lookup returns a loaded class (first-party or dependency) by binary name.
 func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string) (*classfile.Class, bool)) launchEntry {
 	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir)}
-	for _, dir := range fp.projectDirs() {
+	dirs, roots, bootClasses := fp.projectDirs(), fp.roots, fp.classes
+	if fp.unit != nil {
+		dirs, roots, bootClasses = []string{fp.unit.dir}, fp.unit.roots, fp.unit.classes
+		r.checkout = buildDir
+	}
+	for _, dir := range dirs {
 		r.maven(filepath.Join(dir, "pom.xml"))
 		for _, n := range []string{"build.gradle", "build.gradle.kts"} {
 			r.gradle(filepath.Join(dir, n))
@@ -139,7 +145,7 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 			r.archives(filepath.Join(dir, out))
 		}
 	}
-	for _, root := range fp.roots {
+	for _, root := range roots {
 		r.manifestFile(filepath.Join(root, "META-INF", "MANIFEST.MF"))
 	}
 	if r.bootPlugin {
@@ -166,7 +172,7 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 		e.mains = append(e.mains, bin)
 	}
 	if len(r.named) == 0 {
-		if main, ok := r.bootMain(fp); ok {
+		if main, ok := r.bootMain(bootClasses, roots); ok {
 			e.mains = append(e.mains, main)
 		} else {
 			r.reasons[reasonLaunchEntryUnnamed] = true
@@ -203,11 +209,11 @@ const springBootApplication = "Lorg/springframework/boot/autoconfigure/SpringBoo
 //
 // This lane reads the Maven plugin only. A Gradle build applying org.springframework.boot with no
 // main named keeps launch_entry_unnamed here; the Kotlin lane reads the Gradle plugin.
-func (r *entryReader) bootMain(fp *firstPartyBytecode) (string, bool) {
+func (r *entryReader) bootMain(classes []classfile.Class, roots []string) (string, bool) {
 	if !r.bootPlugin || r.bootBlocked {
 		return "", false
 	}
-	return BootMainClass(fp.classes, fp.roots)
+	return BootMainClass(classes, roots)
 }
 
 // BootMainClass is the main Spring Boot's MainClassFinder picks from classes, the first-party
@@ -339,6 +345,8 @@ type entryReader struct {
 	named    map[string]bool
 	propKeys map[string]bool // POM properties a launch entry resolved through
 	cache    *mavenCache
+	// checkout is the build dir a parent POM may be read from at its relativePath, "" for none.
+	checkout string
 
 	bootPlugin  bool // a POM in the chain applies spring-boot-maven-plugin
 	bootBlocked bool // the build may hand the Boot plugin a main bootMain does not see
@@ -469,28 +477,70 @@ func (r *entryReader) bootMaven(chain []*mvnPOM, files []string, complete bool) 
 	}
 }
 
-// pomChain returns pom (read from path) and the parents it inherits from, nearest first, read
-// from the Maven cache, with the file each was read from. complete is false when a parent is not
-// there: its profiles are unknown, not absent. A parent inside the checkout is a second project,
-// which multiple_projects_unsupported withholds already.
+// pomChain returns pom (read from path) and the parents it inherits from, nearest first, with
+// the file each was read from. complete is false when a parent is not there: its profiles are
+// unknown, not absent. A parent comes from the Maven cache; when r reads a reactor unit, first
+// from the checkout at its relativePath, as Maven takes it, when that POM's coordinate matches.
 func (r *entryReader) pomChain(pom *mvnPOM, path string) ([]*mvnPOM, []string, bool) {
 	chain, files := []*mvnPOM{pom}, []string{path}
 	seen := map[string]bool{}
-	for cur := pom; len(chain) <= 20; {
+	for cur, curFile := pom, path; len(chain) <= 20; {
 		p := cur.Parent
 		if p.ArtifactID == "" {
 			return chain, files, true
 		}
 		key := gavKey(p.GroupID, p.ArtifactID, p.Version)
-		next, ok := r.cache.get(p.GroupID, p.ArtifactID, p.Version)
-		if !ok || seen[key] {
+		if seen[key] {
+			return chain, files, false
+		}
+		next, file, ok := r.checkoutParent(curFile, p)
+		parentFile := file
+		if !ok {
+			// A cached POM's relativePath points into the repository, never the checkout.
+			next, ok = r.cache.get(p.GroupID, p.ArtifactID, p.Version)
+			file, parentFile = r.cache.pomFile(p.GroupID, p.ArtifactID, p.Version), ""
+		}
+		if !ok {
 			return chain, files, false
 		}
 		seen[key] = true
-		chain, files = append(chain, next), append(files, r.cache.pomFile(p.GroupID, p.ArtifactID, p.Version))
-		cur = next
+		chain, files = append(chain, next), append(files, file)
+		cur, curFile = next, parentFile
 	}
 	return chain, files, false
+}
+
+// checkoutParent reads parent p of the checkout POM at child from the checkout, at p's
+// relativePath, ../pom.xml when it names none; a directory names its pom.xml and an empty one
+// turns the lookup off. It is found only when r has a checkout, the file lies inside it, and the
+// POM there has p's coordinate.
+func (r *entryReader) checkoutParent(child string, p mvnParent) (*mvnPOM, string, bool) {
+	relPath := "../pom.xml"
+	if p.RelativePath != nil {
+		relPath = *p.RelativePath
+	}
+	if r.checkout == "" || relPath == "" || child == "" {
+		return nil, "", false
+	}
+	candidate := filepath.Join(filepath.Dir(child), filepath.FromSlash(relPath))
+	if !within(r.checkout, candidate) {
+		return nil, "", false
+	}
+	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+		candidate = filepath.Join(candidate, "pom.xml")
+	}
+	rel, err := filepath.Rel(r.checkout, candidate)
+	if err != nil {
+		return nil, "", false
+	}
+	if _, st := inCache(r.checkout, rel); st != cacheHit {
+		return nil, "", false
+	}
+	pom, ok := parseMavenPOM(candidate)
+	if !ok || pom.GroupID != p.GroupID || pom.ArtifactID != p.ArtifactID || pom.Version != p.Version {
+		return nil, "", false
+	}
+	return pom, candidate, true
 }
 
 // pomFile returns the cache file mavenCache.get reads g:a:v's POM from, or "" when there is none;

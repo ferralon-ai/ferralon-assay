@@ -72,7 +72,12 @@ func listsEveryInstall(g *buildgraph.Graph, buildDir string) bool {
 // plugin's own launcher classes (Spring Boot's loader) are not listed; no application or
 // dependency class takes a supertype from them.
 func RuntimeListed(g *buildgraph.Graph, buildDir string) bool {
-	for _, m := range g.Modules {
+	return runtimeListed(g, g.Modules, buildDir)
+}
+
+// runtimeListed is RuntimeListed over the modules mods of g; the install listing is g's whole.
+func runtimeListed(g *buildgraph.Graph, mods []buildgraph.Module, buildDir string) bool {
+	for _, m := range mods {
 		for _, n := range m.Nodes {
 			if n.Scope == buildgraph.ScopeOther {
 				return false
@@ -390,10 +395,16 @@ func runtimeScope(scope string) bool {
 // pick. Output is sorted so the load order, and so which JAR wins a duplicate class, is
 // deterministic.
 func RuntimeSelection(g *buildgraph.Graph) (load []RuntimeJar, miss []RuntimeMiss) {
+	return runtimeSelection(g, g.Modules)
+}
+
+// runtimeSelection is RuntimeSelection over the modules mods of g, with every module of g still
+// counting as the reactor.
+func runtimeSelection(g *buildgraph.Graph, mods []buildgraph.Module) (load []RuntimeJar, miss []RuntimeMiss) {
 	reactor := moduleCoordinates(g)
 	roots := moduleRoots(g)
 	byCoord := map[string][]buildgraph.Node{}
-	for _, m := range g.Modules {
+	for _, m := range mods {
 		// A classpath copy never comes from runtimeClasspath, whose copy the project keeps, so it
 		// is not what the project loads.
 		if _, isCopy := m.Project(); isCopy {
@@ -497,8 +508,13 @@ func graphVersionsOf(g *buildgraph.Graph, coordinate string) []string {
 // bound would need the JAR's own declarations, which the graph does not carry. nil when no
 // module resolved coordinate.
 func BlindSpotTargets(g *buildgraph.Graph, coordinate string) []string {
+	return blindSpotTargets(g.Modules, coordinate)
+}
+
+// blindSpotTargets is BlindSpotTargets over the modules mods.
+func blindSpotTargets(mods []buildgraph.Module, coordinate string) []string {
 	out := map[string]bool{}
-	for _, m := range g.Modules {
+	for _, m := range mods {
 		holds := false
 		for _, n := range m.Nodes {
 			if n.ID != m.Root && isCoordinate(n, coordinate) {

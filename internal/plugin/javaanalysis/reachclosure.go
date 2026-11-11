@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -98,9 +99,9 @@ func (g gav) String() string {
 	return s
 }
 
-// closureCache keeps the last engine built per build dir. The pipeline asks Reachability
-// once per advisory, and every ask would otherwise rebuild the hierarchy over the whole
-// closure. The key fingerprints every input (JAR paths and digests; the first-party classes in
+// closureCache keeps the last engine built per build dir, and per reactor unit within it. The
+// pipeline asks Reachability once per advisory, and every ask would otherwise rebuild the
+// hierarchy over the whole closure. The key fingerprints every input (JAR paths and digests; the first-party classes in
 // full; the classpath), so any change rebuilds.
 var closureCache = struct {
 	sync.Mutex
@@ -116,10 +117,24 @@ type closureEntry struct {
 // compiled output and fpClasspath what its directories define: it goes into the engine, and a
 // dependency class with the same binary name is skipped, since the build output is what the
 // build packaged. Without a graph only firstParty is loaded, and the closure says so run-wide.
-// The engine runs on the JDK the graph's run conditions state.
+// The engine runs on the JDK the graph's run conditions state. A per-unit search (withUnit) loads
+// the unit module's runtime classpath only; the launch options, the JDK and the graph's
+// completeness stay the whole graph's.
 func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath depreach.Classpath, opts ...Option) (*reachClosure, error) {
 	g := BuildGraph(opts...)
 	reasons := LaunchOptionReasons(buildDir, g)
+	unit := resolveOptions(opts).unit
+	var mods []buildgraph.Module
+	if g != nil {
+		mods = g.Modules
+		if unit != "" {
+			mods = unitModules(g, unit)
+		}
+	}
+	cacheKey := buildDir
+	if unit != "" {
+		cacheKey += "\x00" + unit
+	}
 
 	targetsMemo := map[string][]string{}
 	targets := func(coord string) []string {
@@ -128,7 +143,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 		}
 		var t []string
 		if g != nil {
-			t = BlindSpotTargets(g, coord)
+			t = blindSpotTargets(mods, coord)
 		}
 		targetsMemo[coord] = t
 		return t
@@ -146,7 +161,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	var cp depreach.Classpath
 	cp.Merge(fpClasspath)
 	fp := sha256.New()
-	whole := g != nil && RuntimeListed(g, buildDir) && g.RuntimeJDK() > 8
+	whole := g != nil && (unit == "" || len(mods) > 0) && runtimeListed(g, mods, buildDir) && g.RuntimeJDK() > 8
 	if g == nil {
 		cp.Unlisted = true
 		reasons = append([]string{PartialReasonBuildGraphAbsent}, reasons...)
@@ -155,7 +170,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 		if OtherToolBuild(g, buildDir) {
 			reasons = append([]string{PartialReasonOtherToolBuild}, reasons...)
 		}
-		load, miss := RuntimeSelection(g)
+		load, miss := runtimeSelection(g, mods)
 		for _, m := range miss {
 			cp.Unlisted = true // no JAR is listed for it
 			reason := reasonNoDependencyArtifact
@@ -183,7 +198,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	fingerprint := hex.EncodeToString(fp.Sum(nil))
 
 	closureCache.Lock()
-	hit, ok := closureCache.m[buildDir]
+	hit, ok := closureCache.m[cacheKey]
 	closureCache.Unlock()
 	if ok && hit.key == fingerprint {
 		out := *hit.rc
@@ -241,7 +256,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	built.index(all, cp.JDK)
 
 	closureCache.Lock()
-	closureCache.m[buildDir] = closureEntry{key: fingerprint, rc: built}
+	closureCache.m[cacheKey] = closureEntry{key: fingerprint, rc: built}
 	closureCache.Unlock()
 
 	out := *built

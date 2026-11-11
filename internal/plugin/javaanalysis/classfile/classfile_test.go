@@ -187,6 +187,45 @@ func TestParseClass_Refs(t *testing.T) {
 	}
 }
 
+// Refs also names each class a UTF-8 entry carries: a descriptor or generic signature, an
+// annotation's class literal, a whole dotted or slashed binary name (a Class.forName string).
+// A string naming no packaged class adds nothing.
+func TestParseClass_RefsFromUTF8(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		utf8 string
+		want []string
+	}{
+		{"method descriptor", "(Lcom/sink/Net;I)Ljava/util/List;", []string{"com/sink/Net", "java/util/List"}},
+		{"generic signature", "Ljava/util/Map<Lcom/sink/Key;[Lcom/sink/Val;>;", []string{"com/sink/Key", "com/sink/Val", "java/util/Map"}},
+		{"annotation class literal", "Lcom/sink/Net;", []string{"com/sink/Net"}},
+		{"dotted forName string", "com.sink.Net$Inner", []string{"com/sink/Net$Inner"}},
+		{"slashed name string", "com/sink/Net", []string{"com/sink/Net"}},
+		{"plain word", "hello", nil},
+		{"sentence", "fetch failed. retry", nil},
+		{"mixed separators", "com.sink/Net", nil},
+		{"self", "Lcom/example/app/App;", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newClassBuilder()
+			b.utf8(tc.utf8)
+			cls, err := ParseClass(b.build("com/example/app/App", "java/lang/Object", "handle", "()V", []byte{0xB1}))
+			if err != nil {
+				t.Fatalf("ParseClass: %v", err)
+			}
+			var got []string
+			for _, r := range cls.Refs {
+				if r != "java/lang/Object" || slices.Contains(tc.want, r) {
+					got = append(got, r)
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("Refs = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestParseClass_CollectsInitTriggers proves the parser surfaces the classes whose
 // static initializer this method triggers — new / invokestatic, and the field a
 // getstatic names — so the

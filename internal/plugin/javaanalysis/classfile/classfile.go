@@ -227,9 +227,12 @@ type Class struct {
 	// KotlinMetadata is the class's @kotlin.Metadata in full (kotlinmeta.go); nil when the
 	// class carries none, as a javac-compiled class does.
 	KotlinMetadata *KotlinMetadata
-	// Refs are the internal names of the other classes the constant pool names (JVMS §4.4.1),
-	// an array's element class in place of the array, sorted: every class whose code or
-	// members this class's bytecode can reach by name.
+	// Refs are the internal names of the other classes the constant pool names, sorted: each
+	// CONSTANT_Class (JVMS §4.4.1), an array's element class in place of the array, and each
+	// class a UTF-8 entry names, as a descriptor or generic signature does (L<name>; or
+	// L<name><), as an annotation's class literal does, or as a whole dotted or slashed binary
+	// name, as a Class.forName string does. It over-reads, never under-reads: every class this
+	// class can reach by name.
 	Refs []string
 }
 
@@ -560,26 +563,84 @@ func ParseClass(data []byte) (Class, error) {
 func classRefs(cp constPool, self string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, e := range cp {
-		if !e.valid || e.tag != cpClass {
-			continue
-		}
-		n := cp.utf8(e.ref1)
-		if strings.HasPrefix(n, "[") {
-			n = strings.TrimLeft(n, "[")
-			if len(n) < 3 || n[0] != 'L' || n[len(n)-1] != ';' {
-				continue // an array of a primitive type
-			}
-			n = n[1 : len(n)-1]
-		}
+	add := func(n string) {
 		if n == "" || n == self || seen[n] {
-			continue
+			return
 		}
 		seen[n] = true
 		out = append(out, n)
 	}
+	for _, e := range cp {
+		if !e.valid {
+			continue
+		}
+		switch e.tag {
+		case cpClass:
+			n := cp.utf8(e.ref1)
+			if strings.HasPrefix(n, "[") {
+				n = strings.TrimLeft(n, "[")
+				if len(n) < 3 || n[0] != 'L' || n[len(n)-1] != ';' {
+					continue // an array of a primitive type
+				}
+				n = n[1 : len(n)-1]
+			}
+			add(n)
+		case cpUtf8:
+			utf8ClassNames(e.utf8, add)
+		}
+	}
 	sort.Strings(out)
 	return out
+}
+
+// utf8ClassNames calls add for every class name s may carry: each L<name>; or L<name>< run, the
+// form descriptors, generic signatures and annotation class literals take, and s itself when it
+// is a binary name with a package, dotted or slashed. A run that is not a class name is read as
+// one anyway: a name read in excess only withholds.
+func utf8ClassNames(s string, add func(string)) {
+	if strings.IndexByte(s, ';') >= 0 || strings.IndexByte(s, '<') >= 0 {
+		for i := 0; i < len(s); i++ {
+			if s[i] != 'L' {
+				continue
+			}
+			j := i + 1
+			for j < len(s) && !strings.ContainsRune(";<>()[]:. \t\n", rune(s[j])) {
+				j++
+			}
+			if j < len(s) && j > i+1 && (s[j] == ';' || s[j] == '<') {
+				add(s[i+1 : j])
+				i = j
+			}
+		}
+	}
+	if isPackagedBinaryName(s) {
+		add(strings.ReplaceAll(s, ".", "/"))
+	}
+}
+
+// isPackagedBinaryName reports whether s is two or more Java identifiers joined by one kind of
+// separator, '.' or '/'.
+func isPackagedBinaryName(s string) bool {
+	dot, slash := strings.IndexByte(s, '.') >= 0, strings.IndexByte(s, '/') >= 0
+	if dot == slash {
+		return false
+	}
+	sep := "."
+	if slash {
+		sep = "/"
+	}
+	for _, part := range strings.Split(s, sep) {
+		if part == "" {
+			return false
+		}
+		for k, r := range part {
+			letter := r == '_' || r == '$' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r > 0x7f
+			if !letter && (k == 0 || r < '0' || r > '9') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // indySite locates one invokedynamic edge in a method's edge list and the

@@ -529,7 +529,10 @@ func (r *entryReader) pomChain(pom *mvnPOM, path string) ([]*mvnPOM, []string, b
 		if seen[key] {
 			return chain, files, false
 		}
-		next, file, ok := r.checkoutParent(curFile, p)
+		next, file, ok, escaped := r.checkoutParent(curFile, p)
+		if escaped {
+			return chain, files, false
+		}
 		parentFile := file
 		if !ok {
 			// A cached POM's relativePath points into the repository, never the checkout.
@@ -579,34 +582,38 @@ func modulePOM(dir string) string { return filepath.Join(dir, "pom.xml") }
 // checkoutParent reads parent p of the checkout POM at child from the checkout, at p's
 // relativePath, ../pom.xml when it names none; a directory names its pom.xml and an empty one
 // turns the lookup off. It is found only when r has a checkout, the file lies inside it, and the
-// POM there has p's coordinate.
-func (r *entryReader) checkoutParent(child string, p mvnParent) (*mvnPOM, string, bool) {
+// POM there has p's coordinate. escaped reports a file at that path that resolves outside the
+// checkout, or cannot be judged: Maven reads it, and the repository copy may not be what it reads.
+func (r *entryReader) checkoutParent(child string, p mvnParent) (pom *mvnPOM, file string, ok, escaped bool) {
 	relPath := "../pom.xml"
 	if p.RelativePath != nil {
 		relPath = *p.RelativePath
 	}
 	if r.checkout == "" || relPath == "" || child == "" {
-		return nil, "", false
+		return nil, "", false, false
 	}
 	candidate := filepath.Join(filepath.Dir(child), filepath.FromSlash(relPath))
 	if !within(r.checkout, candidate) {
-		return nil, "", false
+		return nil, "", false, false
 	}
 	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 		candidate = filepath.Join(candidate, "pom.xml")
 	}
 	rel, err := filepath.Rel(r.checkout, candidate)
 	if err != nil {
-		return nil, "", false
+		return nil, "", false, false
 	}
-	if _, st := inCache(r.checkout, rel); st != cacheHit {
-		return nil, "", false
+	switch _, st := inCache(r.checkout, rel); st {
+	case cacheEscape:
+		return nil, "", false, true
+	case cacheMiss:
+		return nil, "", false, false
 	}
-	pom, ok := parseMavenPOM(candidate)
+	pom, ok = parseMavenPOM(candidate)
 	if !ok || pom.GroupID != p.GroupID || pom.ArtifactID != p.ArtifactID || pom.Version != p.Version {
-		return nil, "", false
+		return nil, "", false, false
 	}
-	return pom, candidate, true
+	return pom, candidate, true, false
 }
 
 // pomFile returns the cache file mavenCache.get reads g:a:v's POM from, or "" when there is none;

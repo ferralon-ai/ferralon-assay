@@ -434,6 +434,7 @@ func TestPomChain_CheckoutParent(t *testing.T) {
 		cached       bool   // whether the Maven cache holds com.acme:parent:1.0.0
 		complete     bool
 		fromCheckout bool
+		link         string // "inside" or "outside": the checkout's pom.xml is a symlink to a matching parent there
 	}{
 		"matching coordinate":           {parentGAV: "com.acme:parent:1.0.0", unit: true, complete: true, fromCheckout: true},
 		"explicit relativePath":         {parentGAV: "com.acme:parent:1.0.0", relativePath: "<relativePath>../pom.xml</relativePath>", unit: true, complete: true, fromCheckout: true},
@@ -446,6 +447,9 @@ func TestPomChain_CheckoutParent(t *testing.T) {
 		"not a unit":                    {parentGAV: "com.acme:parent:1.0.0"},
 		"not a unit, cached":            {parentGAV: "com.acme:parent:1.0.0", cached: true, complete: true},
 		"checkout preferred over cache": {parentGAV: "com.acme:parent:1.0.0", unit: true, cached: true, complete: true, fromCheckout: true},
+		// Maven reads the linked file; the cache copy may not be it.
+		"parent links outside checkout": {parentGAV: "com.acme:parent:1.0.0", unit: true, cached: true, link: "outside"},
+		"parent links inside checkout":  {parentGAV: "com.acme:parent:1.0.0", unit: true, cached: true, link: "inside", complete: true, fromCheckout: true},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -458,6 +462,23 @@ func TestPomChain_CheckoutParent(t *testing.T) {
 			writeFileT(t, filepath.Join(outer, "pom.xml"), parentPOM(""))
 			if c.cached {
 				writeFileT(t, filepath.Join(build, ".m2", "repository", "com", "acme", "parent", "1.0.0", "parent-1.0.0.pom"), parentPOM(""))
+			}
+			if c.link != "" {
+				target := filepath.Join(outer, "linked", "pom.xml")
+				if c.link == "inside" {
+					target = filepath.Join(build, "linked", "pom.xml")
+				}
+				data, err := os.ReadFile(filepath.Join(build, "pom.xml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeFileT(t, target, string(data))
+				if err := os.Remove(filepath.Join(build, "pom.xml")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, filepath.Join(build, "pom.xml")); err != nil {
+					t.Fatal(err)
+				}
 			}
 			child := filepath.Join(build, "one", "pom.xml")
 			writeFileT(t, child, strings.Replace(childPOM, "%s", c.relativePath, 1))

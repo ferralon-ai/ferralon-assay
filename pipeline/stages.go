@@ -1717,6 +1717,7 @@ type affectedRange struct {
 	LowerInclusive string `json:"lower_inclusive,omitempty"` // an introduced bound above zero
 	LastAffected   string `json:"last_affected,omitempty"`
 	Type           string `json:"type,omitempty"`
+	Legacy         bool   `json:"legacy,omitempty"` // merged from the advisory-level legacy ranges
 }
 
 // advisoryAffectedPackage is one element of the normalized-advisory artifact's affected_packages[]

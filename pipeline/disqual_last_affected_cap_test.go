@@ -56,6 +56,46 @@ func TestVersionOutsideRanges_LastAffectedCappedByNextRange(t *testing.T) {
 				{LowerInclusive: "5.3.0", LastAffected: "5.3.44", Scheme: "maven"},
 				{Type: "GIT", LowerInclusive: "6.0.0", UpperExclusive: "6.0.3", Scheme: "maven"},
 			}, false, true},
+		{"a later range of another scheme does not cap", "7.0.9",
+			[]affectedRange{
+				{LowerInclusive: "5.3.0", LastAffected: "5.3.44", Scheme: "maven"},
+				{LowerInclusive: "6.0.0", UpperExclusive: "6.0.3", Scheme: "npm"},
+			}, false, true},
+		{"an unorderable later introduced does not cap", "7.0.9",
+			[]affectedRange{
+				{LowerInclusive: "1.0.0", LastAffected: "1.4.0", Scheme: "npm"},
+				{LowerInclusive: "garbage", UpperExclusive: "2.1.0", Scheme: "npm"},
+			}, false, true},
+		{"a zero introduced does not cap", "7.0.9",
+			[]affectedRange{
+				{LowerInclusive: "5.3.0", LastAffected: "5.3.44", Scheme: "maven"},
+				{LowerInclusive: "0", UpperExclusive: "6.0.3", Scheme: "maven"},
+			}, false, true},
+		{"a legacy range does not cap an element range", "7.0.9",
+			[]affectedRange{
+				{LowerInclusive: "5.3.0", LastAffected: "5.3.44", Scheme: "maven"},
+				{LowerInclusive: "6.0.0", UpperExclusive: "6.0.3", Scheme: "maven", Legacy: true},
+			}, false, true},
+		{"an element range does not cap a legacy range", "7.0.9",
+			[]affectedRange{
+				{LowerInclusive: "6.0.0", UpperExclusive: "6.0.3", Scheme: "maven"},
+				{LowerInclusive: "5.3.0", LastAffected: "5.3.44", Scheme: "maven", Legacy: true},
+			}, false, true},
+		{"legacy ranges cap each other", "7.0.9",
+			[]affectedRange{
+				{LowerInclusive: "5.3.0", LastAffected: "5.3.44", Scheme: "maven", Legacy: true},
+				{LowerInclusive: "6.0.0", UpperExclusive: "6.0.3", Scheme: "maven", Legacy: true},
+			}, true, true},
+		{"a range never caps itself", "7.0.0",
+			[]affectedRange{
+				{LowerInclusive: "6.0.0", LastAffected: "5.0.0", Scheme: "maven"},
+				{LowerInclusive: "1.0.0", UpperExclusive: "1.0.3", Scheme: "maven"},
+			}, false, true},
+		{"a cap at or below the range's own introduced is not taken", "7.0.0",
+			[]affectedRange{
+				{LowerInclusive: "6.0.0", LastAffected: "5.0.0", Scheme: "maven"},
+				{LowerInclusive: "5.5.0", UpperExclusive: "5.5.3", Scheme: "maven"},
+			}, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -78,5 +118,26 @@ func TestCapOpenLastAffected_DoesNotModifyInput(t *testing.T) {
 	}
 	if got[0].UpperExclusive != "6.0.0" {
 		t.Errorf("capped upper = %q, want 6.0.0", got[0].UpperExclusive)
+	}
+}
+
+// An element whose one range is open above stays open when disagreeing legacy ranges are merged
+// beside it: the merged set admits wherever either source admits, so a legacy range's introduced
+// never caps the element's range.
+func TestCapOpenLastAffected_MergedLegacyKeepsElementOpen(t *testing.T) {
+	pkg := AffectedPackage{
+		Coordinate:     "org.springframework:spring-core",
+		AffectedRanges: []Range{{Introduced: "5.3.0", LastAffected: "5.3.44"}},
+	}
+	facts := AdvisoryFacts{
+		Coordinate:     pkg.Coordinate,
+		AffectedRanges: []Range{{Introduced: "6.0.0", Fixed: "6.0.3"}},
+	}
+	rngs := withDisagreeingLegacyRanges(buildAffectedRanges(pkg.AffectedRanges, "", "maven"), pkg, facts, "maven")
+	if len(rngs) != 2 {
+		t.Fatalf("merged ranges = %+v, want the element's and the legacy one", rngs)
+	}
+	if outside, ok := versionOutsideRanges("7.0.9", rngs); outside || !ok {
+		t.Errorf("versionOutsideRanges(7.0.9, %+v) = (%v, %v), want (false, true)", rngs, outside, ok)
 	}
 }

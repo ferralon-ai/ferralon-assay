@@ -77,8 +77,10 @@ func versionAboveRangeTop(ver string, rng affectedRange) (above bool, ok bool) {
 }
 
 // capOpenLastAffected returns rngs with each range that ends at LastAffected alone capped at the
-// lowest introduced, among the set's other ranges, that orders above its LastAffected: a record
-// that describes a later branch line in its own range has said where the earlier line stops. The
+// lowest introduced, among the set's other ranges from the same source, that orders above its
+// LastAffected and above its own introduced: a record that describes a later branch line in its own
+// range has said where the earlier line stops. Legacy ranges merged beside an element's
+// (withDisagreeingLegacyRanges) are another source, and one never caps the other. The
 // cap reads an upper end the record implies, so it only ever places more versions outside; a
 // version between LastAffected and the cap stays inside. The topmost such range, and the one range
 // of a single-range set, has nothing above it and stays open-ended. Any bound the scheme cannot
@@ -93,20 +95,21 @@ func capOpenLastAffected(rngs []affectedRange) []affectedRange {
 		if r.UpperExclusive != "" || r.LastAffected == "" || !rangeTypeOrderable(r.Type) {
 			continue
 		}
-		if c, ok := nextIntroduced(r, rngs); ok {
+		if c, ok := nextIntroduced(i, rngs); ok {
 			out[i].UpperExclusive = c
 		}
 	}
 	return out
 }
 
-// nextIntroduced returns the lowest LowerInclusive among rngs that orders strictly above r's
-// LastAffected under r's scheme. ok is false when there is none, or when any candidate's ordering
-// is unknown.
-func nextIntroduced(r affectedRange, rngs []affectedRange) (string, bool) {
+// nextIntroduced returns the lowest LowerInclusive among the other ranges of rngs from rngs[i]'s
+// source that orders strictly above rngs[i]'s LastAffected and its own LowerInclusive, under its
+// scheme. ok is false when there is none, or when any ordering it needs is unknown.
+func nextIntroduced(i int, rngs []affectedRange) (string, bool) {
+	r := rngs[i]
 	var low string
-	for _, c := range rngs {
-		if c.LowerInclusive == "" || c.LowerInclusive == "0" || c.Scheme != r.Scheme || !rangeTypeOrderable(c.Type) {
+	for j, c := range rngs {
+		if j == i || c.Legacy != r.Legacy || c.LowerInclusive == "" || c.Scheme != r.Scheme || !rangeTypeOrderable(c.Type) {
 			continue
 		}
 		cmp, ok := compareVersions(c.LowerInclusive, r.LastAffected, r.Scheme)
@@ -125,6 +128,11 @@ func nextIntroduced(r affectedRange, rngs []affectedRange) (string, bool) {
 			}
 		}
 		low = c.LowerInclusive
+	}
+	if low != "" && r.LowerInclusive != "" {
+		if cmp, ok := compareVersions(low, r.LowerInclusive, r.Scheme); !ok || cmp <= 0 {
+			return "", false
+		}
 	}
 	return low, low != ""
 }
@@ -215,7 +223,11 @@ func withDisagreeingLegacyRanges(rngs []affectedRange, pkg AffectedPackage, fact
 	if !legacyRangesDisagree(pkg.AffectedRanges, facts.AffectedRanges) {
 		return rngs
 	}
-	return append(rngs, buildAffectedRanges(facts.AffectedRanges, "", scheme)...)
+	legacy := buildAffectedRanges(facts.AffectedRanges, "", scheme)
+	for i := range legacy {
+		legacy[i].Legacy = true
+	}
+	return append(rngs, legacy...)
 }
 
 // describesPrimary reports whether pkg is the element the advisory's scalar block names.

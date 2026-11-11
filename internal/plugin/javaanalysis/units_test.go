@@ -864,17 +864,26 @@ func TestCacheClosure_Bounded(t *testing.T) {
 		}
 	}
 	// Restoring a key already held evicts nothing.
-	closureCache.Lock()
-	var held string
-	for k := range closureCache.m {
-		held = k
-		break
-	}
-	closureCache.Unlock()
+	held := fmt.Sprintf("build-%d", closureCacheCap)
 	cacheClosure(held, closureEntry{key: held})
 	closureCache.Lock()
+	n := len(closureCache.m)
+	closureCache.Unlock()
+	if n != closureCacheCap {
+		t.Errorf("re-storing a held key left %d entries, want %d", n, closureCacheCap)
+	}
+	// The oldest held entry, once looked up, outlives the next oldest: the least recently used goes.
+	oldest, next := fmt.Sprintf("build-%d", closureCacheCap+1), fmt.Sprintf("build-%d", closureCacheCap+2)
+	if _, ok := cachedClosure(oldest); !ok {
+		t.Fatalf("%s not held", oldest)
+	}
+	cacheClosure("fresh", closureEntry{key: "fresh"})
+	closureCache.Lock()
 	defer closureCache.Unlock()
-	if len(closureCache.m) != closureCacheCap {
-		t.Errorf("re-storing a held key left %d entries, want %d", len(closureCache.m), closureCacheCap)
+	if _, ok := closureCache.m[oldest]; !ok {
+		t.Errorf("evicted %s, which was just looked up", oldest)
+	}
+	if _, ok := closureCache.m[next]; ok {
+		t.Errorf("kept %s, the least recently used", next)
 	}
 }

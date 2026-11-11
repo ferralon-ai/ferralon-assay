@@ -110,32 +110,54 @@ func (g gav) String() string {
 // closureCache keeps the last engine built per build dir, and per reactor unit within it. The
 // pipeline asks Reachability once per advisory, and every ask would otherwise rebuild the
 // hierarchy over the whole closure. The key fingerprints every input (JAR paths and digests; the first-party classes in
-// full; the classpath), so any change rebuilds. It holds at most closureCacheCap entries.
+// full; the classpath), so any change rebuilds. It holds at most closureCacheCap entries, and
+// drops the least recently used first.
 var closureCache = struct {
 	sync.Mutex
-	m map[string]closureEntry
+	m    map[string]closureEntry
+	tick uint64
 }{m: map[string]closureEntry{}}
 
 type closureEntry struct {
-	key string
-	rc  *reachClosure
+	key  string
+	rc   *reachClosure
+	used uint64 // closureCache.tick when last stored or looked up
 }
 
 // closureCacheCap bounds the engines closureCache holds: a long-lived process searching many
 // builds, or a reactor of many units, keeps at most this many.
 const closureCacheCap = 16
 
-// cacheClosure stores e under key, first dropping some other entry when the cache is full.
+// cacheClosure stores e under key, first dropping the least recently used other entry when the
+// cache is full.
 func cacheClosure(key string, e closureEntry) {
 	closureCache.Lock()
 	defer closureCache.Unlock()
 	if _, ok := closureCache.m[key]; !ok && len(closureCache.m) >= closureCacheCap {
-		for k := range closureCache.m {
-			delete(closureCache.m, k)
-			break
+		var lru string
+		for k, v := range closureCache.m {
+			if lru == "" || v.used < closureCache.m[lru].used {
+				lru = k
+			}
 		}
+		delete(closureCache.m, lru)
 	}
+	closureCache.tick++
+	e.used = closureCache.tick
 	closureCache.m[key] = e
+}
+
+// cachedClosure returns the entry under key, marking it used.
+func cachedClosure(key string) (closureEntry, bool) {
+	closureCache.Lock()
+	defer closureCache.Unlock()
+	e, ok := closureCache.m[key]
+	if ok {
+		closureCache.tick++
+		e.used = closureCache.tick
+		closureCache.m[key] = e
+	}
+	return e, ok
 }
 
 // loadReachClosure loads every runtime JAR the build graph names. firstParty is the build's
@@ -222,9 +244,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	fmt.Fprintln(fp, classpathFingerprint(cp))
 	fingerprint := hex.EncodeToString(fp.Sum(nil))
 
-	closureCache.Lock()
-	hit, ok := closureCache.m[cacheKey]
-	closureCache.Unlock()
+	hit, ok := cachedClosure(cacheKey)
 	if ok && hit.key == fingerprint {
 		out := *hit.rc
 		out.Scoped = append(rc.Scoped, hit.rc.Scoped...)

@@ -111,24 +111,29 @@ func acquireBuildGraph(ctx context.Context, dir string, req graphRequest) (*jvmG
 	if maven, gradle := buildgraph.DetectTools(dir); tool == buildgraph.ToolAuto && maven && gradle {
 		// Both builds can install what the program runs; neither is guessed. Each tool resolves
 		// its own build, and a version is out of range only when it is under both.
-		var files []string
-		var failures []error
+		var files, kept, failed []string
+		var failures []*buildgraph.Failure
 		for _, t := range []string{buildgraph.ToolMaven, buildgraph.ToolGradle} {
 			file, err := resolveGraph(ctx, dir, t, req.conditions, filepath.Join(work, t))
 			if err != nil {
-				failures = append(failures, err)
+				failures = append(failures, typeFailure(err))
+				failed = append(failed, t)
 				continue
 			}
 			files = append(files, file)
+			kept = append(kept, t)
+		}
+		for i, f := range failures {
+			fmt.Fprintf(os.Stderr, "%s: %s graph: %s\n", brand.Name, failed[i], f.Cause())
 		}
 		switch len(files) {
 		case 0:
-			g.failure = asFailure(failures[0])
-			fmt.Fprintf(os.Stderr, "%s: gradle graph: %s\n", brand.Name, asFailure(failures[1]).Cause())
+			g.failure = failures[0]
+			fmt.Fprintf(os.Stderr, "%s: no build graph\n", brand.Name)
 		case 1:
 			g.file = files[0]
-			g.partial = asFailure(failures[0])
-			fmt.Fprintf(os.Stderr, "%s: build graph lists one of the root's two builds: %s\n", brand.Name, g.partial.Cause())
+			g.partial = failures[0]
+			fmt.Fprintf(os.Stderr, "%s: kept the %s graph without the %s graph\n", brand.Name, kept[0], failed[0])
 		default:
 			g.file = strings.Join(files, string(os.PathListSeparator))
 		}
@@ -189,9 +194,16 @@ func writeGraph(file string, g *buildgraph.Graph) error {
 	return nil
 }
 
-// asFailure types err, which buildgraph always returns as a *Failure, and prints the failing
-// step's log for the job's output.
+// asFailure types err and reports that the scan has no build graph.
 func asFailure(err error) *buildgraph.Failure {
+	f := typeFailure(err)
+	fmt.Fprintf(os.Stderr, "%s: no build graph: %s\n", brand.Name, f.Cause())
+	return f
+}
+
+// typeFailure types err, which buildgraph always returns as a *Failure, and prints the failing
+// step's log for the job's output.
+func typeFailure(err error) *buildgraph.Failure {
 	var f *buildgraph.Failure
 	if !errors.As(err, &f) {
 		f = &buildgraph.Failure{Kind: buildgraph.KindToolFailed, Detail: "graph", Log: err.Error()}
@@ -199,7 +211,6 @@ func asFailure(err error) *buildgraph.Failure {
 	if f.Log != "" {
 		fmt.Fprintln(os.Stderr, f.Log)
 	}
-	fmt.Fprintf(os.Stderr, "%s: no build graph: %s\n", brand.Name, f.Cause())
 	return f
 }
 

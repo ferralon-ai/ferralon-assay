@@ -176,8 +176,8 @@ func TestGradleIncomplete(t *testing.T) {
 
 func TestMavenIncomplete(t *testing.T) {
 	const pom = `<project><groupId>com.example</groupId><artifactId>app</artifactId></project>`
-	effective := func(build string) string {
-		return `<project><groupId>com.example</groupId><artifactId>app</artifactId><build>` + build + `</build></project>`
+	effective := func(version, build string) string {
+		return `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>` + version + `</version><build>` + build + `</build></project>`
 	}
 	plugin := func(coord, body string) string {
 		g, a, _ := strings.Cut(coord, ":")
@@ -194,13 +194,41 @@ func TestMavenIncomplete(t *testing.T) {
 		}
 		return s + `</goals></execution></executions>`
 	}
+	const dirs = `<directory>$ROOT/target</directory><outputDirectory>$ROOT/target/classes</outputDirectory>`
+	assembly := func(config string) string {
+		return dirs + plugin("org.apache.maven.plugins:maven-assembly-plugin", `<executions><execution><id>main</id><phase>package</phase><goals><goal>single</goal></goals><configuration>`+config+`</configuration></execution></executions>`)
+	}
+	descriptor := func(body string) map[string]string {
+		return map[string]string{"src/assembly/dist.xml": `<?xml version="1.0"?><assembly xmlns="http://maven.apache.org/ASSEMBLY/2.0.0"><id>dist</id><formats><format>tar.gz</format></formats>` + body + `</assembly>`}
+	}
+	const dist = `<descriptors><descriptor>src/assembly/dist.xml</descriptor></descriptors>`
+	fileSet := func(dir string) string {
+		return `<fileSets><fileSet><directory>` + dir + `</directory></fileSet></fileSets>`
+	}
+	const copyEntry = "maven-dependency-plugin execution agent"
+	item := func(coord, version, typ, classifier string) string {
+		g, a, _ := strings.Cut(coord, ":")
+		return `<artifactItem><groupId>` + g + `</groupId><artifactId>` + a + `</artifactId><version>` + version + `</version><type>` + typ + `</type><classifier>` + classifier + `</classifier></artifactItem>`
+	}
+	unpack := func(items ...string) string {
+		return plugin("org.apache.maven.plugins:maven-dependency-plugin", `<executions><execution><id>agent</id><phase>package</phase><goals><goal>unpack</goal></goals><configuration><artifactItems>`+strings.Join(items, "")+`</artifactItems></configuration></execution></executions>`)
+	}
 	for _, tc := range []struct {
 		name    string
 		build   string
 		files   map[string]string
 		reactor string // the module's POM; "" is the root's
 		repo    bool   // the graph holds an artifact from a local repository at .m2/repository
-		want    string
+		version string // the effective POM's version; "" is 1.0
+		// unlisted and targets are the module's Unlisted and UnlistedTargets, as unlistedInPOM
+		// records them.
+		unlisted []string
+		targets  map[string][]string
+		link     string    // a symlink at this checkout path to a directory outside the checkout
+		linkFile string    // a symlink at this checkout path to a file outside the checkout, or to linkTo
+		linkTo   string    // linkFile's target, relative to the checkout
+		linkDir  [2]string // a symlink at the first checkout path to the directory at the second
+		want     string
 	}{
 		{name: "core lifecycle", build: plugin("org.apache.maven.plugins:maven-compiler-plugin", exec("default-compile", "compile", "compile"))},
 		{name: "plugin off the list", build: plugin("org.apache.maven.plugins:maven-antrun-plugin", exec("fetch", "generate-resources", "run")), want: "maven-antrun-plugin execution fetch"},
@@ -231,13 +259,102 @@ func TestMavenIncomplete(t *testing.T) {
 		{name: "POM under build output", files: map[string]string{"target/classes/META-INF/maven/pom.xml": pom}},
 		{name: "POM under a directory named target that no module builds into", files: map[string]string{"tools/target/pom.xml": pom}, want: "tools/target/pom.xml is a POM the reactor does not read"},
 		{name: "POM under a build directory the effective POM names", build: `<directory>$ROOT/out</directory>`, files: map[string]string{"out/classes/META-INF/maven/pom.xml": pom}},
+		{name: "buildnumber create", build: plugin("org.codehaus.mojo:buildnumber-maven-plugin", exec("", "validate", "create"))},
+		{name: "buildnumber create-metadata", build: plugin("org.codehaus.mojo:buildnumber-maven-plugin", exec("meta", "generate-resources", "create-metadata")), want: "buildnumber-maven-plugin:create-metadata"},
+		{name: "central publishing", build: plugin("org.sonatype.central:central-publishing-maven-plugin", exec("injected-central-publishing", "deploy", "publish"))},
+		{name: "central publishing goal off the list", build: plugin("org.sonatype.central:central-publishing-maven-plugin", exec("stage", "deploy", "stage")), want: "central-publishing-maven-plugin:stage"},
+		{name: "copy goal of another plugin beside resolved items", build: plugin("org.codehaus.mojo:build-helper-maven-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.h2database:h2"}}, want: "build-helper-maven-plugin:copy (execution agent)"},
+		{name: "unknown plugin", build: plugin("com.acme:fetch-maven-plugin", exec("fetch", "package", "fetch")), want: "com.acme:fetch-maven-plugin execution fetch is not a plugin"},
+		{name: "dependency copy with every item resolved", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.h2database:h2"}}},
+		{name: "dependency unpack of a reactor module at its version", build: unpack(item("com.example:app", "1.0", "zip", "lib")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.example:app"}}},
+		{name: "dependency unpack of a jar outside the reactor", build: unpack(item("com.acme:agent-bundle", "2.0", "jar", "")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.acme:agent-bundle"}}, want: "maven-dependency-plugin:unpack (execution agent)"},
+		{name: "dependency unpack of a reactor module beside an outside jar", build: unpack(item("com.example:app", "1.0", "zip", "lib"), item("com.acme:agent-bundle", "2.0", "jar", "")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.acme:agent-bundle", "com.example:app"}}, want: "maven-dependency-plugin:unpack (execution agent)"},
+		{name: "dependency unpack of another release of a reactor module", build: unpack(item("com.example:app", "0.9", "jar", "")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.example:app"}}, want: "maven-dependency-plugin:unpack (execution agent)"},
+		{name: "dependency copy with an unresolved item", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry}, want: "maven-dependency-plugin:copy (execution agent)"},
+		{name: "dependency copy beside another execution's resolved items", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry, "maven-dependency-plugin execution other"}, targets: map[string][]string{"maven-dependency-plugin execution other": {"com.h2database:h2"}}, want: "maven-dependency-plugin:copy (execution agent)"},
+		{name: "dependency get beside resolved copy items", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "copy", "get")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.h2database:h2"}}, want: "maven-dependency-plugin:get (execution agent)"},
+		{name: "assembly reading build output and the checkout", build: assembly(dist), files: descriptor(fileSet("${project.build.directory}/t2/setup-${project.version}/lib") + fileSet("${project.build.outputDirectory}") + fileSet("") + `<files><file><source>${project.basedir}/src/main/etc/ca.json</source></file><file><source>${project.build.directory}/t2/webapps/ca.war</source></file></files><dependencySets><dependencySet><scope>runtime</scope></dependencySet></dependencySets>`)},
+		{name: "assembly of dependencySets", build: assembly(dist), files: descriptor(`<dependencySets><dependencySet><useProjectArtifact>true</useProjectArtifact><outputFileNameMapping>${artifact.artifactId}.${artifact.extension}</outputFileNameMapping></dependencySet></dependencySets>`)},
+		{name: "assembly descriptors at plugin level", build: dirs + plugin("org.apache.maven.plugins:maven-assembly-plugin", `<configuration>`+dist+`</configuration>`+exec("main", "package", "single")), files: descriptor(fileSet("${project.build.outputDirectory}"))},
+		{name: "assembly fileSet outside", build: assembly(dist), files: descriptor(fileSet("/opt/agent")), want: "reads /opt/agent, outside the checkout"},
+		{name: "assembly file source outside", build: assembly(dist), files: descriptor(`<files><file><source>/opt/agent.jar</source></file></files>`), want: "reads /opt/agent.jar, outside the checkout"},
+		{name: "assembly fileSet uninterpolated", build: assembly(dist), files: descriptor(fileSet("${agent.dir}/lib")), want: "reads ${agent.dir}/lib, which is not interpolated"},
+		{name: "assembly fileSet escaping the build directory", build: assembly(dist), files: descriptor(fileSet("${project.build.directory}/../../../../opt")), want: "outside the checkout"},
+		{name: "assembly version escaping the build directory", version: "1/../../../../../../opt", build: assembly(dist), files: descriptor(fileSet("${project.build.directory}/t2/setup-${project.version}")), want: "outside the checkout"},
+		{name: "assembly version naming a root", version: "/opt", build: assembly(dist), files: descriptor(fileSet("${project.version}/lib")), want: "reads /opt/lib, outside the checkout"},
+		{name: "assembly fileSet through a symlink out", link: "target/t2/ext", build: assembly(dist), files: descriptor(fileSet("${project.build.directory}/t2/ext")), want: "outside the checkout"},
+		{name: "assembly fileSet in the local repository", repo: true, build: assembly(dist), files: descriptor(fileSet(".m2/repository/com/oracle")), want: "in the local repository"},
+		{name: "assembly dependencySet that unpacks", build: assembly(dist), files: descriptor(`<dependencySets><dependencySet><unpack>true</unpack></dependencySet></dependencySets>`), want: "has a dependencySet that unpacks"},
+		{name: "assembly dependencySet that unpacks by property", build: assembly(dist), files: descriptor(`<dependencySets><dependencySet><unpack>${unpack}</unpack></dependencySet></dependencySets>`), want: "has a dependencySet that unpacks"},
+		{name: "assembly dependencySet that does not unpack", build: assembly(dist), files: descriptor(`<dependencySets><dependencySet><unpack>false</unpack></dependencySet></dependencySets>`)},
+		{name: "assembly fileSet over a symlink into the local repository", repo: true, linkFile: "lib/ojdbc8.jar", linkTo: ".m2/repository/com/oracle/ojdbc8/19.3/ojdbc8-19.3.jar", build: assembly(dist), files: descriptor(fileSet("lib")), want: "into the local repository"},
+		{name: "assembly fileSet over a linked directory holding a file symlink out", linkFile: "vendor/agent.jar", linkDir: [2]string{"lib/vendor", "vendor"}, build: assembly(dist), files: descriptor(fileSet("lib")), want: "agent.jar outside the checkout"},
+		{name: "assembly fileSet over a symlink cycle", linkFile: "lib/up", linkTo: ".", build: assembly(dist), files: descriptor(fileSet("lib")), want: "lib/up links"},
+		{name: "assembly archiveBaseDirectory", build: assembly(dist + `<archiveBaseDirectory>/opt/vendor</archiveBaseDirectory>`), files: descriptor(fileSet("lib")), want: "sets archiveBaseDirectory"},
+		{name: "assembly fileSet holding the local repository", repo: true, build: assembly(dist), files: descriptor(fileSet("")), want: "holds the local repository"},
+		{name: "assembly fileSet over a symlink out", link: "lib/ext", build: assembly(dist), files: descriptor(fileSet("lib")), want: "outside the checkout"},
+		{name: "assembly fileSet over a file symlink out", linkFile: "lib/agent.jar", build: assembly(dist), files: descriptor(fileSet("lib")), want: "agent.jar outside the checkout"},
+		{name: "assembly build directory outside the checkout", build: `<directory>/opt/build</directory>` + plugin("org.apache.maven.plugins:maven-assembly-plugin", `<executions><execution><id>main</id><phase>package</phase><goals><goal>single</goal></goals><configuration>`+dist+`</configuration></execution></executions>`), files: descriptor(fileSet("${project.build.directory}/lib")), want: "reads /opt/build/lib, outside the checkout"},
+		{name: "assembly build directory above the checkout", build: `<directory>$ROOT/..</directory>` + plugin("org.apache.maven.plugins:maven-assembly-plugin", `<executions><execution><id>main</id><phase>package</phase><goals><goal>single</goal></goals><configuration>`+dist+`</configuration></execution></executions>`), files: descriptor(fileSet("${project.build.directory}/sibling")), want: "outside the checkout"},
+		{name: "assembly moduleSets", build: assembly(dist), files: descriptor(`<moduleSets><moduleSet><useAllReactorProjects>true</useAllReactorProjects></moduleSet></moduleSets>`), want: "has moduleSets"},
+		{name: "assembly repositories", build: assembly(dist), files: descriptor(`<repositories><repository><outputDirectory>repo</outputDirectory></repository></repositories>`), want: "has repositories"},
+		{name: "assembly componentDescriptors", build: assembly(dist), files: descriptor(`<componentDescriptors><componentDescriptor>/opt/c.xml</componentDescriptor></componentDescriptors>`), want: "has componentDescriptors"},
+		{name: "assembly descriptorRefs", build: assembly(`<descriptorRefs><descriptorRef>jar-with-dependencies</descriptorRef></descriptorRefs>`), want: "sets descriptorRefs"},
+		{name: "assembly descriptorRefs beside a descriptor", build: assembly(dist + `<descriptorRefs><descriptorRef>jar-with-dependencies</descriptorRef></descriptorRefs>`), files: descriptor(fileSet("${project.build.outputDirectory}")), want: "sets descriptorRefs"},
+		{name: "assembly inline descriptor", build: assembly(`<inlineDescriptors><inlineDescriptor><id>x</id></inlineDescriptor></inlineDescriptors>`), want: "sets inlineDescriptors"},
+		{name: "assembly descriptor missing", build: assembly(dist), want: "cannot be read"},
+		{name: "assembly descriptor outside the checkout", build: assembly(`<descriptors><descriptor>/opt/dist.xml</descriptor></descriptors>`), want: "is not a file in the checkout"},
+		{name: "assembly descriptor uninterpolated", build: assembly(`<descriptors><descriptor>${dist.dir}/dist.xml</descriptor></descriptors>`), want: "is not a file in the checkout"},
+		{name: "assembly with no descriptor", build: assembly(`<attach>false</attach>`), want: "has no descriptor"},
+		{name: "assembly goal off the list", build: dirs + plugin("org.apache.maven.plugins:maven-assembly-plugin", exec("main", "package", "attached")), want: "goal attached is not one"},
+		{name: "assembly at phase none", build: dirs + plugin("org.apache.maven.plugins:maven-assembly-plugin", exec("main", "none", "single"))},
 		{name: "POM under target beside a build directory the effective POM names", build: `<directory>$ROOT/out</directory>`, files: map[string]string{"target/classes/META-INF/maven/pom.xml": pom}, want: "target/classes/META-INF/maven/pom.xml is a POM"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			writeFiles(t, dir, map[string]string{"pom.xml": pom})
 			writeFiles(t, dir, tc.files)
-			eff, err := parseEffectivePOM([]byte(effective(strings.ReplaceAll(tc.build, "$ROOT", dir))))
+			version := tc.version
+			if version == "" {
+				version = "1.0"
+			}
+			if tc.link != "" {
+				link := filepath.Join(dir, filepath.FromSlash(tc.link))
+				if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(t.TempDir(), link); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.repo {
+				writeFiles(t, dir, map[string]string{".m2/repository/com/oracle/ojdbc8/19.3/ojdbc8-19.3.jar": ""})
+			}
+			if tc.linkFile != "" {
+				target := filepath.Join(t.TempDir(), "agent.jar")
+				if tc.linkTo != "" {
+					target = filepath.Join(dir, filepath.FromSlash(tc.linkTo))
+				} else {
+					writeFiles(t, filepath.Dir(target), map[string]string{"agent.jar": ""})
+				}
+				link := filepath.Join(dir, filepath.FromSlash(tc.linkFile))
+				if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, link); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.linkDir[0] != "" {
+				link := filepath.Join(dir, filepath.FromSlash(tc.linkDir[0]))
+				if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(dir, filepath.FromSlash(tc.linkDir[1])), link); err != nil {
+					t.Fatal(err)
+				}
+			}
+			eff, err := parseEffectivePOM([]byte(effective(version, strings.ReplaceAll(tc.build, "$ROOT", dir))))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -251,6 +368,10 @@ func TestMavenIncomplete(t *testing.T) {
 				jar := filepath.Join(dir, ".m2", "repository", "com", "oracle", "ojdbc8", "19.3", "ojdbc8-19.3.jar")
 				modules = []Module{{Nodes: []Node{{Group: "com.oracle", Artifact: "ojdbc8", Version: "19.3", File: &File{Path: jar}}}}}
 				writeFiles(t, dir, map[string]string{".m2/repository/com/oracle/ojdbc8/19.3/ojdbc8-19.3.jar": ""})
+			}
+			if tc.unlisted != nil {
+				root := "com.example:app:jar:" + version
+				modules = append(modules, Module{ID: "com.example:app", Root: root, Nodes: []Node{{ID: root, Group: "com.example", Artifact: "app", Version: version}}, Unlisted: tc.unlisted, UnlistedTargets: tc.targets})
 			}
 			reasons, err := mavenIncomplete(dir, mavenOutputs(dir, reactor, eff, modules), modules, reactor, eff)
 			if err != nil {

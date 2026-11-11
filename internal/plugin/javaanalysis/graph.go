@@ -59,11 +59,46 @@ func AbsentFromBuild(g *buildgraph.Graph, buildDir, coordinate string) bool {
 // list (Unlisted), and the checkout carries no archive g does not hold. A walk that fails leaves
 // that unknown, which counts as there being one.
 func listsEveryInstall(g *buildgraph.Graph, buildDir string) bool {
-	if !g.Complete || unlisted(g) {
-		return false
+	return g.Complete && !unlisted(g) && noCheckedInArchives(g, buildDir)
+}
+
+// installListing reports listsEveryInstall, and whether g lists every install of coordinate: as
+// listsEveryInstall, except that an unlisted install bounded to other coordinates
+// (buildgraph.Module.UnlistedTargets) does not count. Such an install copies a reactor module at
+// its own version, which carries what g resolves for that module, or the plain jar of its own
+// coordinate (withUnlistedInstall's bound). The checkout is walked once for both.
+func installListing(g *buildgraph.Graph, buildDir, coordinate string) (listed, coordinateListed bool) {
+	if !g.Complete || unlistedCovers(g, coordinate) || !noCheckedInArchives(g, buildDir) {
+		return false, false
 	}
+	return !unlisted(g), true
+}
+
+// noCheckedInArchives reports whether the checkout carries no archive g does not hold. A walk that
+// fails leaves that unknown, which counts as there being one.
+func noCheckedInArchives(g *buildgraph.Graph, buildDir string) bool {
 	archives, err := buildgraph.CheckedInArchives(buildDir, g)
 	return err == nil && len(archives) == 0
+}
+
+// unlistedCovers reports whether an unlisted install of g could install coordinate: one that names
+// no coordinates, one that names a target that is not a coordinate, or one that names coordinate.
+func unlistedCovers(g *buildgraph.Graph, coordinate string) bool {
+	want := strings.TrimSpace(coordinate)
+	for _, m := range g.Modules {
+		for _, u := range m.Unlisted {
+			coords := m.UnlistedTargets[u]
+			if len(coords) == 0 {
+				return true
+			}
+			for _, c := range coords {
+				if mavenPURLNoVersion(c) == "" || strings.EqualFold(strings.TrimSpace(c), want) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // RuntimeListed reports whether g lists every JAR its build puts on the runtime classpath:
@@ -295,8 +330,10 @@ func graphInventory(g *buildgraph.Graph, uncovered bool) plugin.DependencyInvent
 // build not-affected. The graph holds every version the build resolved, so the copies are
 // complete when listed (listsEveryInstall) and not uncovered: a build of the other tool beside it
 // can resolve another. For the same reason All then lists every coordinate the build installs, so
-// one absent from it is not installed by the build (Exhaustive).
-func graphVersions(g *buildgraph.Graph, coordinate string, uncovered, listed bool) plugin.DependencyVersionResult {
+// one absent from it is not installed by the build (Exhaustive). The copies of coordinate alone are
+// complete when matchesListed (installListing), which an install bounded to other coordinates
+// leaves true.
+func graphVersions(g *buildgraph.Graph, coordinate string, uncovered, listed, matchesListed bool) plugin.DependencyVersionResult {
 	// A module's own coordinate is first-party: the build ships it, though no module resolves it
 	// as a dependency.
 	res := plugin.DependencyVersionResult{Partiality: coverage(uncovered), Exhaustive: !uncovered && listed && !isRootCoordinate(g, coordinate)}
@@ -335,7 +372,7 @@ func graphVersions(g *buildgraph.Graph, coordinate string, uncovered, listed boo
 		}
 	}
 	// What the build installs unlisted can be another version of the coordinate.
-	res.MatchesComplete = !uncovered && listed
+	res.MatchesComplete = !uncovered && matchesListed
 	return res
 }
 

@@ -393,6 +393,11 @@ var mavenPlugins = map[string]map[string]bool{
 	"org.codehaus.mojo:build-helper-maven-plugin": setOf("add-source", "add-test-source", "add-resource", "add-test-resource",
 		"parse-version", "regex-property", "regex-properties", "timestamp-property", "uptodate-property", "uptodate-properties",
 		"cpu-count", "local-ip", "reserve-network-port", "rootlocation", "maven-version", "released-version"),
+	// create, create-timestamp and hgchangeset set build properties from the SCM and the clock;
+	// create-metadata, left out, can add a properties file to the resources it writes.
+	"org.codehaus.mojo:buildnumber-maven-plugin": setOf("create", "create-timestamp", "hgchangeset", "help"),
+	// publish bundles and uploads the artifacts the build already made, in place of deploy.
+	"org.sonatype.central:central-publishing-maven-plugin":      setOf("publish"),
 	"org.codehaus.mojo:versions-maven-plugin":                   nil,
 	"org.codehaus.mojo:license-maven-plugin":                    nil,
 	"org.jacoco:jacoco-maven-plugin":                            nil,
@@ -426,6 +431,16 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 		reasons = append(reasons, ".mvn/extensions.xml loads build extensions")
 	}
 	repos := mavenRepos(modules)
+	byCoord := map[string]*Module{}
+	reactorVersions := map[string]string{} // group:artifact -> the module's version
+	for i := range modules {
+		for _, n := range modules[i].Nodes {
+			if n.ID == modules[i].Root {
+				byCoord[n.Group+":"+n.Artifact] = &modules[i]
+				reactorVersions[n.Group+":"+n.Artifact] = n.Version
+			}
+		}
+	}
 	moduleDir := map[string]string{}
 	for _, rp := range reactor {
 		moduleDir[rp.key] = filepath.Join(dir, filepath.FromSlash(path.Dir(rp.file)))
@@ -466,6 +481,17 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 		for _, pl := range p.Build.Plugins.Plugin {
 			key := pl.key()
 			goals, listed := mavenPlugins[key]
+			if key == "org.apache.maven.plugins:maven-assembly-plugin" {
+				for _, ex := range pl.Executions.Execution {
+					if !ex.bound() {
+						continue
+					}
+					if why := assemblyUnlisted(dir, base, repos, p, pl, ex); why != "" {
+						reasons = append(reasons, who+": "+key+" execution "+ex.ID+": "+why)
+					}
+				}
+				continue
+			}
 			if !listed {
 				for _, ex := range pl.Executions.Execution {
 					if ex.bound() {
@@ -492,7 +518,7 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 					continue
 				}
 				for _, g := range ex.Goals.Goal {
-					if g = strings.TrimSpace(g); goals != nil && !goals[g] {
+					if g = strings.TrimSpace(g); goals != nil && !goals[g] && !boundedCopy(byCoord[who], p, reactorVersions, pl, ex, g) {
 						reasons = append(reasons, who+": "+key+":"+g+" (execution "+ex.ID+") installs what the graph does not list")
 					}
 				}
@@ -503,6 +529,25 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 		}
 	}
 	return sortedUnique(reasons), nil
+}
+
+// boundedCopy reports whether goal g of ex is a maven-dependency-plugin copy or unpack that
+// unlistedInPOM recorded on m with every artifactItem resolved to a coordinate: what it installs
+// is then bounded to coordinates the graph names, and checked per coordinate. An unpack also
+// extracts the archives nested in what it unpacks, so it is bounded only when every item is a
+// reactor module at its own version, whose contents the graph resolves for that module.
+func boundedCopy(m *Module, p effectiveProject, reactor map[string]string, pl effectivePlugin, ex effectiveExecution, g string) bool {
+	if m == nil || pl.ArtifactID != "maven-dependency-plugin" || len(m.UnlistedTargets["maven-dependency-plugin execution "+ex.ID]) == 0 {
+		return false
+	}
+	switch g {
+	case "copy":
+		return true
+	case "unpack":
+		_, ok := itemCoordinates(p, reactor, true, ex.Configuration, pl.Configuration)
+		return ok
+	}
+	return false
 }
 
 // key is the plugin's groupId:artifactId; an effective POM may leave out Maven's own group.

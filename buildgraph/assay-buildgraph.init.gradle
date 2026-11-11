@@ -82,9 +82,31 @@ def failureText = { Throwable top ->
     lines.join('\n')
 }
 
+// resolutionOrigin is the code that asked for a resolution: the nearest frame on the resolving
+// thread outside Gradle, the JDK, Groovy's runtime and this script, with the file its class was
+// loaded from. A resolution Gradle asks for itself has none, and neither does one on a JVM
+// without StackWalker (Java 8), which is looked up by name so this script still compiles there.
+def selfName = getClass().name
+def runtimes = ['org.gradle.', 'java.', 'javax.', 'jdk.', 'sun.', 'com.sun.', 'groovy.', 'org.codehaus.groovy.', 'kotlin.']
+def resolutionOrigin = { ->
+    try {
+        def option = Class.forName('java.lang.StackWalker$Option').getField('RETAIN_CLASS_REFERENCE').get(null)
+        def walker = Class.forName('java.lang.StackWalker').getMethod('getInstance', option.getClass()).invoke(null, option)
+        def outside = { f -> !f.className.startsWith(selfName) && !runtimes.any { f.className.startsWith(it) } }
+        def f = walker.walk({ s -> s.filter(outside as java.util.function.Predicate).findFirst().orElse(null) } as java.util.function.Function)
+        if (f == null) {
+            return null
+        }
+        def location = f.declaringClass.protectionDomain?.codeSource?.location
+        return [frame: f.className + '.' + f.methodName, source: location == null ? '' : new File(location.toURI()).absolutePath]
+    } catch (Throwable ignored) {
+        return null
+    }
+}
+
 // Every resolution the root build makes, with the files it resolved: a configuration's, a build
 // script classpath's (marked script, or path "classpath" when no project's), and a detached
-// configuration's, which no project lists.
+// configuration's, which no project lists. Each carries the origin of the code that asked for it.
 // The producer finds each file it resolved among the graph's own; one that is not was installed
 // from outside the configurations it collected. An included build's resolutions are its build
 // logic's, and its own listener never records them.
@@ -102,7 +124,7 @@ if (gradle.parent == null) {
     gradle.addListener(new DependencyResolutionListener() {
         void beforeResolve(ResolvableDependencies d) {}
         void afterResolve(ResolvableDependencies d) {
-            def doc = [path: d.path, script: scriptResolutions.contains(d)]
+            def doc = [path: d.path, script: scriptResolutions.contains(d), origin: resolutionOrigin()]
             def files = { set ->
                 set.collect { a ->
                     def c = a.id.componentIdentifier

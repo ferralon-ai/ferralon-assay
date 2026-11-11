@@ -308,3 +308,62 @@ func TestGraphInventoryUnlistedIsPartial(t *testing.T) {
 		t.Fatalf("partiality = %+v, want %s", inv.Partiality, PartialReasonUnlistedInstall)
 	}
 }
+
+// TestGraphInventoryUnlistedBound: when every unlisted install names the coordinates it installs,
+// the inventory's limit is bounded to them, one scoped limit per module. An install that names
+// none, in any module, leaves the limit unbounded.
+func TestGraphInventoryUnlistedBound(t *testing.T) {
+	const copyJars, gradleCfg = "maven-dependency-plugin execution copy-jars", "gradle configuration agent"
+	module := func(path string, unlisted []string, targets map[string][]string) buildgraph.Module {
+		m := testModule(t, path, path)
+		m.Unlisted, m.UnlistedTargets = unlisted, targets
+		return m
+	}
+	bounded := module("setup", []string{copyJars}, map[string][]string{copyJars: {"com.h2database:h2", "org.example:module-c"}})
+	for _, tc := range []struct {
+		name    string
+		modules []buildgraph.Module
+		want    plugin.Partiality
+	}{
+		{name: "every install bounded", modules: []buildgraph.Module{bounded, module("qa", []string{copyJars}, map[string][]string{copyJars: {"org.example:dummy"}})},
+			want: plugin.Partiality{Scoped: []plugin.ScopedReason{
+				{Reason: PartialReasonUnlistedInstall, Path: "setup", Targets: []string{"pkg:maven/com.h2database/h2", "pkg:maven/org.example/module-c"}},
+				{Reason: PartialReasonUnlistedInstall, Path: "qa", Targets: []string{"pkg:maven/org.example/dummy"}},
+			}}},
+		{name: "an install with no targets", modules: []buildgraph.Module{bounded, module("qa", []string{copyJars}, nil)},
+			want: plugin.Partial(PartialReasonUnlistedInstall)},
+		{name: "a gradle configuration", modules: []buildgraph.Module{bounded, module("app", []string{gradleCfg}, nil)},
+			want: plugin.Partial(PartialReasonUnlistedInstall)},
+		{name: "a target that is not a coordinate", modules: []buildgraph.Module{module("setup", []string{copyJars}, map[string][]string{copyJars: {"h2"}})},
+			want: plugin.Partial(PartialReasonUnlistedInstall)},
+		{name: "a bounded and an unbounded install in one module",
+			modules: []buildgraph.Module{module("setup", []string{copyJars, "maven-dependency-plugin execution unpack-dist"}, map[string][]string{copyJars: {"com.h2database:h2"}})},
+			want:    plugin.Partial(PartialReasonUnlistedInstall)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inv := graphInventory(&buildgraph.Graph{Modules: tc.modules}, false)
+			if !reflect.DeepEqual(inv.Partiality, tc.want) {
+				t.Fatalf("partiality = %+v, want %+v", inv.Partiality, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithUnlistedInstallKeepsScoped: an unbounded install widens the limit run-wide without
+// dropping the scoped limits already recorded, or writing into the caller's reasons.
+func TestWithUnlistedInstallKeepsScoped(t *testing.T) {
+	prior := plugin.ScopedReason{Reason: "other", Path: "lib", Targets: []string{"pkg:maven/org.example/lib"}}
+	reasons := make([]string, 1, 4)
+	reasons[0] = "earlier"
+	part := plugin.Partiality{Reasons: reasons, Scoped: []plugin.ScopedReason{prior}}
+	m := testModule(t, "setup", "setup")
+	m.Unlisted = []string{"maven-dependency-plugin execution copy-jars"}
+	got := withUnlistedInstall(&buildgraph.Graph{Modules: []buildgraph.Module{m}}, part)
+	want := plugin.Partiality{Reasons: []string{"earlier", PartialReasonUnlistedInstall}, Scoped: []plugin.ScopedReason{prior}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("partiality = %+v, want %+v", got, want)
+	}
+	if extra := reasons[:2][1]; extra != "" {
+		t.Fatalf("caller's reasons backing array written: %q", extra)
+	}
+}

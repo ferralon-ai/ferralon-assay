@@ -532,6 +532,111 @@ func TestMavenDependencyPluginArtifactItems(t *testing.T) {
 	}
 }
 
+// TestMavenArtifactItemTargets: an execution whose every artifactItem resolves to a coordinate,
+// with a version and nothing installed beside it, is bounded to those coordinates. Any item that
+// does not leaves the execution unbounded.
+func TestMavenArtifactItemTargets(t *testing.T) {
+	item := func(g, a, v, extra string) string {
+		s := "<artifactItem><groupId>" + g + "</groupId><artifactId>" + a + "</artifactId>"
+		if v != "" {
+			s += "<version>" + v + "</version>"
+		}
+		return s + extra + "</artifactItem>"
+	}
+	const managed = "<dependencyManagement><dependencies><dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><version>2.3.232</version></dependency></dependencies></dependencyManagement>"
+	plugin := func(config, executions string) string {
+		return "<plugin><artifactId>maven-dependency-plugin</artifactId>" + config + "<executions>" + executions + "</executions></plugin>"
+	}
+	execution := func(id, goal, config string) string {
+		return "<execution><id>" + id + "</id><goals><goal>" + goal + "</goal></goals>" + config + "</execution>"
+	}
+	items := func(s string) string {
+		return "<configuration><artifactItems>" + s + "</artifactItems></configuration>"
+	}
+	h2 := item("com.h2database", "h2", "2.3.232", "")
+	for _, tc := range []struct {
+		name    string
+		items   string
+		plugins string // replaces the single copy-jars execution of items
+		extra   string // beside <build> in module-a's effective POM
+		stated  map[string]string
+		env     string
+		config  string // .mvn/maven.config
+		want    []string
+	}{
+		{name: "outside jar with a version", items: item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", ""), want: []string{"org.mariadb.jdbc:mariadb-java-client"}},
+		{name: "outside jar versioned by dependencyManagement", items: item("com.h2database", "h2", "", ""), extra: managed, want: []string{"com.h2database:h2"}},
+		{name: "reactor module archive with a classifier", items: item("com.example", "module-c", "1.0.0", "<type>zip</type><classifier>lib</classifier>"), want: []string{"com.example:module-c"}},
+		{name: "xipki's shape", extra: managed,
+			items: item("com.h2database", "h2", "", "") + item("com.example", "module-c", "1.0.0", "<type>war</type>") + item("org.xipki.util", "servlet-common", "6.5.4", ""),
+			want:  []string{"com.example:module-c", "com.h2database:h2", "org.xipki.util:servlet-common"}},
+		{name: "no version anywhere", items: item("com.h2database", "h2", "", "")},
+		{name: "unresolved property", items: item("org.xipki.util", "servlet-common", "${xiutil.version}", "")},
+		{name: "unresolved groupId", items: item("${agent.group}", "agent", "1.0", "")},
+		{name: "outside features zip", items: item("org.apache.karaf.features", "standard", "4.4.6", "<type>xml</type><classifier>features</classifier>")},
+		{name: "outside zip", items: item("org.example", "bundle", "1.0", "<type>zip</type>")},
+		{name: "outside classified jar", items: item("org.example", "app", "1.0", "<classifier>all</classifier>")},
+		{name: "one unresolved item unbounds the rest", items: item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", "") + item("org.example", "bundle", "1.0", "<type>tar.gz</type>")},
+		{name: "empty artifactItems"},
+		{name: "another release of a reactor module is an outside archive", items: item("com.example", "module-c", "0.9.0", "<type>zip</type>")},
+		{name: "another release of a reactor module as a plain jar", items: item("com.example", "module-c", "0.9.0", ""), want: []string{"com.example:module-c"}},
+		{name: "plugin-level and execution-level items",
+			plugins: plugin(items(h2), execution("copy-jars", "copy", items(item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", "")))),
+			want:    []string{"com.h2database:h2", "org.mariadb.jdbc:mariadb-java-client"}},
+		{name: "plugin-level items only", plugins: plugin(items(h2), execution("copy-jars", "copy", "")), want: []string{"com.h2database:h2"}},
+		{name: "unpack goal", plugins: plugin("", execution("copy-jars", "unpack", items(h2))), want: []string{"com.h2database:h2"}},
+		{name: "artifact parameter alone", plugins: plugin("", execution("copy-jars", "copy", "<configuration><artifact>org.example:dist:1.0:zip</artifact></configuration>"))},
+		{name: "artifact parameter beside items", plugins: plugin("", execution("copy-jars", "copy", "<configuration><artifact>org.example:dist:1.0:zip</artifact><artifactItems>"+h2+"</artifactItems></configuration>"))},
+		{name: "artifact parameter at plugin level", plugins: plugin("<configuration><artifact>org.example:dist:1.0:zip</artifact></configuration>", execution("copy-jars", "copy", items(h2)))},
+		{name: "artifact property", items: h2, extra: "<properties><artifact>org.example:dist:1.0:zip</artifact></properties>"},
+		{name: "one execution id in two plugin entries",
+			plugins: plugin("", execution("copy-jars", "copy", items(h2))) + plugin("", execution("copy-jars", "copy", items(item("org.example", "bundle", "1.0", "<type>zip</type>"))))},
+		{name: "one execution id in two plugin entries, unbounded first",
+			plugins: plugin("", execution("copy-jars", "copy", items(item("org.example", "bundle", "1.0", "<type>zip</type>")))) + plugin("", execution("copy-jars", "copy", items(h2)))},
+		{name: "artifact among the stated properties", items: h2, stated: map[string]string{"artifact": "org.example:dist:1.0:zip"}},
+		{name: "artifact in MAVEN_OPTS", items: h2, env: "MAVEN_OPTS=-Xmx1g -Dartifact=org.example:dist:1.0:zip"},
+		{name: "artifact in maven.config", items: h2, config: "-ntp\n-Dartifact=org.example:dist:1.0:zip\n"},
+		{name: "artifact set outside the POM, execution with no items", plugins: plugin("", execution("copy-jars", "copy", "")), env: "MAVEN_ARGS=--define=artifact=org.example:dist:1.0:zip"},
+		{name: "a property named like artifact is not it", items: h2, env: "MAVEN_OPTS=-Dartifact.version=1", want: []string{"com.h2database:h2"}},
+		{name: "one execution id in two plugin entries, both bounded",
+			plugins: plugin("", execution("copy-jars", "copy", items(h2))) + plugin("", execution("copy-jars", "copy", items(item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", ""))))},
+	} {
+		plugins := tc.plugins
+		if plugins == "" {
+			plugins = plugin("", execution("copy-jars", "copy", items(tc.items)))
+		}
+		pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    "+tc.extra+"<build><plugins>"+plugins+"</plugins></build>", 1)
+		var repo map[string]string
+		if tc.config != "" {
+			repo = map[string]string{".mvn/maven.config": tc.config}
+		}
+		r := newFakeMavenRepo(t, "", "", map[string]string{"effective-pom.txt": pom}, repo)
+		if tc.env != "" {
+			r.env = append(r.env, tc.env)
+		}
+		g, err := r.resolve(t, ToolMaven, Conditions{Properties: tc.stated})
+		if err != nil {
+			t.Fatalf("%s: resolve: %v", tc.name, cause(err))
+		}
+		found := false
+		for _, m := range g.Modules {
+			if m.ID != "com.example:module-a" {
+				continue
+			}
+			found = true
+			if !reflect.DeepEqual(m.Unlisted, []string{"maven-dependency-plugin execution copy-jars"}) {
+				t.Errorf("%s: unlisted %q", tc.name, m.Unlisted)
+			}
+			if got := m.UnlistedTargets["maven-dependency-plugin execution copy-jars"]; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("%s: targets %q, want %q", tc.name, got, tc.want)
+			}
+		}
+		if !found {
+			t.Fatalf("%s: no module-a in %d modules", tc.name, len(g.Modules))
+		}
+	}
+}
+
 func TestMavenReactorPaths(t *testing.T) {
 	r := newFakeMaven(t, "", "", map[string]string{"tree.log": mavenTreeLogBefore388})
 	g, err := r.resolve(t, ToolMaven, Conditions{Profiles: []string{"extra"}})

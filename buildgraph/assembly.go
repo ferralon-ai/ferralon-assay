@@ -25,9 +25,12 @@ var assemblyConfigOpaque = []string{"archiveBaseDirectory", "descriptor", "descr
 var assemblyTopLevel = setOf("id", "formats", "includeBaseDirectory", "baseDirectory", "fileSets", "files", "dependencySets")
 
 // assemblyDescriptor is what assemblyUnlisted reads from an assembly descriptor. A dependencySet
-// draws only from the project's own artifact and its resolved dependencies, which the graph lists,
-// so its contents are not read.
+// draws only from the project's own artifact and its resolved dependencies, which the graph lists;
+// only whether it unpacks them is read, since unpacking extracts the archives nested in each.
 type assemblyDescriptor struct {
+	DependencySets []struct {
+		Unpack string `xml:"unpack"`
+	} `xml:"dependencySets>dependencySet"`
 	FileSets []struct {
 		Directory string `xml:"directory"`
 	} `xml:"fileSets>fileSet"`
@@ -102,6 +105,11 @@ func assemblyDescriptorUnlisted(dir, base string, repos []string, file string, v
 	for _, e := range top.Any {
 		if !assemblyTopLevel[e.XMLName.Local] {
 			return "has " + e.XMLName.Local
+		}
+	}
+	for _, ds := range desc.DependencySets {
+		if u := strings.TrimSpace(ds.Unpack); u != "" && !strings.EqualFold(u, "false") {
+			return "has a dependencySet that unpacks what it draws"
 		}
 	}
 	var paths []string

@@ -225,7 +225,8 @@ func TestMavenIncomplete(t *testing.T) {
 		unlisted []string
 		targets  map[string][]string
 		link     string // a symlink at this checkout path to a directory outside the checkout
-		linkFile string // a symlink at this checkout path to a file outside the checkout
+		linkFile string // a symlink at this checkout path to a file outside the checkout, or to linkTo
+		linkTo   string // linkFile's target, relative to the checkout
 		want     string
 	}{
 		{name: "core lifecycle", build: plugin("org.apache.maven.plugins:maven-compiler-plugin", exec("default-compile", "compile", "compile"))},
@@ -282,6 +283,11 @@ func TestMavenIncomplete(t *testing.T) {
 		{name: "assembly version naming a root", version: "/opt", build: assembly(dist), files: descriptor(fileSet("${project.version}/lib")), want: "reads /opt/lib, outside the checkout"},
 		{name: "assembly fileSet through a symlink out", link: "target/t2/ext", build: assembly(dist), files: descriptor(fileSet("${project.build.directory}/t2/ext")), want: "outside the checkout"},
 		{name: "assembly fileSet in the local repository", repo: true, build: assembly(dist), files: descriptor(fileSet(".m2/repository/com/oracle")), want: "in the local repository"},
+		{name: "assembly dependencySet that unpacks", build: assembly(dist), files: descriptor(`<dependencySets><dependencySet><unpack>true</unpack></dependencySet></dependencySets>`), want: "has a dependencySet that unpacks"},
+		{name: "assembly dependencySet that unpacks by property", build: assembly(dist), files: descriptor(`<dependencySets><dependencySet><unpack>${unpack}</unpack></dependencySet></dependencySets>`), want: "has a dependencySet that unpacks"},
+		{name: "assembly dependencySet that does not unpack", build: assembly(dist), files: descriptor(`<dependencySets><dependencySet><unpack>false</unpack></dependencySet></dependencySets>`)},
+		{name: "assembly fileSet over a symlink into the local repository", repo: true, linkFile: "lib/ojdbc8.jar", linkTo: ".m2/repository/com/oracle/ojdbc8/19.3/ojdbc8-19.3.jar", build: assembly(dist), files: descriptor(fileSet("lib")), want: "into the local repository"},
+		{name: "assembly fileSet over a symlink cycle", linkFile: "lib/up", linkTo: ".", build: assembly(dist), files: descriptor(fileSet("lib")), want: "lib/up links"},
 		{name: "assembly archiveBaseDirectory", build: assembly(dist + `<archiveBaseDirectory>/opt/vendor</archiveBaseDirectory>`), files: descriptor(fileSet("lib")), want: "sets archiveBaseDirectory"},
 		{name: "assembly fileSet holding the local repository", repo: true, build: assembly(dist), files: descriptor(fileSet("")), want: "holds the local repository"},
 		{name: "assembly fileSet over a symlink out", link: "lib/ext", build: assembly(dist), files: descriptor(fileSet("lib")), want: "outside the checkout"},
@@ -319,10 +325,17 @@ func TestMavenIncomplete(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if tc.repo {
+				writeFiles(t, dir, map[string]string{".m2/repository/com/oracle/ojdbc8/19.3/ojdbc8-19.3.jar": ""})
+			}
 			if tc.linkFile != "" {
 				target := filepath.Join(t.TempDir(), "agent.jar")
+				if tc.linkTo != "" {
+					target = filepath.Join(dir, filepath.FromSlash(tc.linkTo))
+				} else {
+					writeFiles(t, filepath.Dir(target), map[string]string{"agent.jar": ""})
+				}
 				link := filepath.Join(dir, filepath.FromSlash(tc.linkFile))
-				writeFiles(t, filepath.Dir(target), map[string]string{"agent.jar": ""})
 				if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
 					t.Fatal(err)
 				}

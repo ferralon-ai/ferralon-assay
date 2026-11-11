@@ -87,6 +87,12 @@ type reachClosure struct {
 	shadowed bool
 	// jdk is the feature release the classes were indexed for.
 	jdk int
+	// referenced holds every class a loaded class's constant pool names, simpleNames the
+	// simple name of every loaded class, and kotlin is set when a loaded class carries
+	// Kotlin metadata: what absent reads for another route a sink's code can take.
+	referenced  map[string]bool
+	simpleNames map[string]bool
+	kotlin      bool
 }
 
 // gav is one loaded dependency JAR: a coordinate at a version, and its classifier when the
@@ -374,11 +380,22 @@ func (rc *reachClosure) concrete(ref classfile.MethodRef) bool {
 	return ok && !m.Abstract && !m.Native
 }
 
-// absent reports whether ref's owner is provably not on the classpath: the loaded classes are
-// every class it defines (Listed), none is the owner, and the owner is no JDK class.
+// absent reports whether ref's owner is provably not on the classpath, nor its code by another
+// route: the loaded classes are every class it defines (Listed), none is the owner, and the owner
+// is no JDK class; no loaded class names the owner, which code compiled against it does and
+// which a JAR outside the listed tree (a sibling's shaded artifact, a provided or optional
+// dependency) then supplies; no loaded class shares its simple name, as a relocated copy does;
+// and nothing loaded is Kotlin, whose inline functions copy a callee's body into the caller
+// without naming the callee's class.
 func (rc *reachClosure) absent(ref classfile.MethodRef) bool {
 	_, loaded := rc.classes[ref.Owner]
-	return rc.Listed && !loaded && !depreach.IsPlatformClass(ref.Owner) && !depreach.BootOnly(ref.Owner, rc.jdk)
+	return rc.Listed && !loaded && !depreach.IsPlatformClass(ref.Owner) && !depreach.BootOnly(ref.Owner, rc.jdk) &&
+		!rc.referenced[ref.Owner] && !rc.simpleNames[simpleClassName(ref.Owner)] && !rc.kotlin
+}
+
+// simpleClassName is name without its package.
+func simpleClassName(name string) string {
+	return name[strings.LastIndex(name, "/")+1:]
 }
 
 // index records the classes and methods of all that run on feature release jdk, as the engine
@@ -387,7 +404,17 @@ func (rc *reachClosure) index(all []classfile.Class, jdk int) {
 	rc.jdk = jdk
 	rc.methods = make(map[string]classfile.Method)
 	rc.classes = make(map[string]*classfile.Class, len(all))
+	rc.referenced = map[string]bool{}
+	rc.simpleNames = make(map[string]bool, len(all))
+	rc.kotlin = false
 	for i := range all {
+		for _, n := range all[i].Refs {
+			rc.referenced[n] = true
+		}
+		rc.simpleNames[simpleClassName(all[i].Name)] = true
+		if all[i].KotlinMetadata != nil {
+			rc.kotlin = true
+		}
 		if depreach.BootOnly(all[i].Name, jdk) {
 			continue
 		}

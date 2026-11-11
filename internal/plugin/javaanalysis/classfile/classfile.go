@@ -14,6 +14,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 )
 
 // Constant-pool tags (JVMS §4.4).
@@ -225,6 +227,10 @@ type Class struct {
 	// KotlinMetadata is the class's @kotlin.Metadata in full (kotlinmeta.go); nil when the
 	// class carries none, as a javac-compiled class does.
 	KotlinMetadata *KotlinMetadata
+	// Refs are the internal names of the other classes the constant pool names (JVMS §4.4.1),
+	// an array's element class in place of the array, sorted: every class whose code or
+	// members this class's bytecode can reach by name.
+	Refs []string
 }
 
 // Annotation is one decoded RuntimeVisibleAnnotations entry: the annotation type as a
@@ -546,7 +552,34 @@ func ParseClass(data []byte) (Class, error) {
 		Public:   classAcc&accClassPublic != 0,
 		Fields:   fields, Methods: methods, Annotations: classAnnos,
 		KotlinMetadata: kmeta,
+		Refs:           classRefs(cp, thisClass),
 	}, nil
+}
+
+// classRefs returns the classes cp names other than self, as Class.Refs records them.
+func classRefs(cp constPool, self string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range cp {
+		if !e.valid || e.tag != cpClass {
+			continue
+		}
+		n := cp.utf8(e.ref1)
+		if strings.HasPrefix(n, "[") {
+			n = strings.TrimLeft(n, "[")
+			if len(n) < 3 || n[0] != 'L' || n[len(n)-1] != ';' {
+				continue // an array of a primitive type
+			}
+			n = n[1 : len(n)-1]
+		}
+		if n == "" || n == self || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // indySite locates one invokedynamic edge in a method's edge list and the

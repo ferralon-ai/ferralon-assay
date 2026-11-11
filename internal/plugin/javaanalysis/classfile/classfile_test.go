@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -165,6 +166,24 @@ func TestParseClass_ExtractsInvokeEdges(t *testing.T) {
 		if edges[i] != w {
 			t.Errorf("edge %d = %+v, want %+v", i, edges[i], w)
 		}
+	}
+}
+
+// Refs names every other class the constant pool holds, an array's element class in its place,
+// once each and sorted; an array of a primitive type names no class, nor does the class itself.
+func TestParseClass_Refs(t *testing.T) {
+	b := newClassBuilder()
+	b.class("com/z/Later")
+	b.class("[[Lcom/a/Elem;")
+	b.class("[I")
+	b.class("com/a/Elem")
+	b.class("com/example/app/App")
+	cls, err := ParseClass(b.build("com/example/app/App", "java/lang/Object", "handle", "()V", []byte{0xB1}))
+	if err != nil {
+		t.Fatalf("ParseClass: %v", err)
+	}
+	if want := []string{"com/a/Elem", "com/z/Later", "java/lang/Object"}; !slices.Equal(cls.Refs, want) {
+		t.Errorf("Refs = %v, want %v", cls.Refs, want)
 	}
 }
 

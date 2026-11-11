@@ -118,14 +118,35 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 	}{
 		// Only app one resolves netkit; the path through the shared library is app one's.
 		"path in the unit carrying the sink JAR": {one: callSharedLib, two: justReturn, lib: callFetch, oneNetkit: true, want: want{path: traceStart("one")}},
-		// App two calls the sink but never resolved netkit; app one's JAR is not linked into it,
-		// and two's listed classpath, which defines no UrlFetcher, cannot run the call.
-		"no cross-unit linking": {one: justReturn, two: callFetch, lib: justReturn, oneNetkit: true, want: want{searched: true}},
+		// App two calls the sink but never resolved netkit. Code compiled against UrlFetcher had it
+		// on some path two's listed tree does not show, so two's search withholds.
+		"no cross-unit linking": {one: justReturn, two: callFetch, lib: justReturn, oneNetkit: true},
 		"every unit clean":      {one: justReturn, two: callSharedLib, lib: justReturn, oneNetkit: true, twoNk: true, want: want{searched: true}},
 		// App two's search is undetermined, so the build is not Searched though app one is clean.
 		"one unclean unit withholds Searched": {one: justReturn, two: callUnloaded, lib: justReturn, oneNetkit: true, twoNk: true},
 		// App two's runtime classpath is fully listed and holds no netkit: it cannot carry the sink.
 		"a listed unit without the sink JAR is searched": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true, want: want{searched: true}},
+		// A library class no root reaches names UrlFetcher: a JAR outside two's tree supplied it
+		// at compile time and may at run time, so two's absence proves nothing.
+		"a loaded class naming the absent sink withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true,
+			libExtra: func(a *appFixture) {
+				a.class("lib/target/classes", "com/acme/lib/Unused", func(b *cpb) []xmethod {
+					return []xmethod{{"run", "()V", accPublicStatic, callFetch(b)}}
+				})
+			}},
+		// A relocated copy of the sink's class (a shaded package) is the sink's code under another name.
+		"a loaded class sharing the sink's simple name withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true,
+			libExtra: func(a *appFixture) {
+				a.class("lib/target/classes", "com/acme/lib/shaded/UrlFetcher", func(b *cpb) []xmethod {
+					return []xmethod{{"fetch", fetchDesc, accPublic, ret}}
+				})
+			}},
+		// Kotlin inline functions copy a callee's body without naming its class.
+		"loaded Kotlin withholds an absent sink": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true,
+			libExtra: func(a *appFixture) {
+				a.classA("lib/target/classes", "com/acme/lib/Inline", "java/lang/Object", nil, 0x0021, []string{"Lkotlin/Metadata;"},
+					func(*cpb) []xmethod { return nil })
+			}},
 		// App two lists a dependency it has no JAR for, so netkit may be on its classpath unseen.
 		"an unlisted unit without the sink JAR withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true, twoUnlisted: true},
 		// A library's code generator main is no root of the apps that load the library.
@@ -187,6 +208,48 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 			}
 			if got := len(res.Searched) == 1 && res.Searched[0] == netkitSinkID; got != c.want.searched {
 				t.Errorf("Searched = %v, want searched %v (partiality %+v)", res.Searched, c.want.searched, res.Partiality)
+			}
+		})
+	}
+}
+
+// A sibling that shades an optional netkit into its own JAR puts UrlFetcher on its consumers'
+// runtime classpath though none of their trees lists netkit: app one, which calls the library,
+// is never Searched, listed or not.
+func TestUnitsReach_ShadedSiblingWithholds(t *testing.T) {
+	for name, listed := range map[string]bool{"listed": true, "unlisted": false} {
+		t.Run(name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.reactorRoot()
+			a.appModule("one", "one", callSharedLib)
+			a.appModule("two", "two", justReturn)
+			a.libModule("lib", callFetch)
+			writeFileT(t, filepath.Join(a.build, "lib", "pom.xml"), `<project><modelVersion>4.0.0</modelVersion>
+  <parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>
+  <artifactId>lib</artifactId>
+  <dependencies><dependency><groupId>com.evil</groupId><artifactId>netkit</artifactId><version>1.0.0</version><optional>true</optional></dependency></dependencies>
+  <build><plugins><plugin><artifactId>maven-shade-plugin</artifactId>
+    <executions><execution><phase>package</phase><goals><goal>shade</goal></goals></execution></executions>
+  </plugin></plugins></build>
+</project>`)
+			data, err := os.ReadFile(netkitJarPath(a.build))
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFileT(t, filepath.Join(a.build, "lib", "target", "lib-1.jar"), string(data))
+			nk := netkitDep(a.build)
+			nk.scope = "compile"
+			lib := testModule(t, "lib", "lib", nk)
+			mods := []buildgraph.Module{testModule(t, ".", "parent"),
+				sibling(testModule(t, "one", "one"), lib, "compile"), sibling(testModule(t, "two", "two"), lib, "compile"), lib}
+			if listed {
+				a.graph = listedGraph(t, mods...)
+			} else {
+				a.graph = graphOption(t, "maven", mods...)
+			}
+			res := a.reach(netkitSinkID)
+			if len(res.Searched) != 0 {
+				t.Errorf("Searched = %v, want none: the shaded sibling carries the sink (partiality %+v)", res.Searched, res.Partiality)
 			}
 		})
 	}

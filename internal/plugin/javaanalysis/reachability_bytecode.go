@@ -100,17 +100,16 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 	var searched []string
 	for _, id := range sinks {
 		sink, _ := parseDepEdgeSymbol(id)
-		// A reactor unit whose loaded classes are its whole runtime classpath, launched as the
-		// build names it with nothing else to add to that classpath, never runs a sink its
-		// classpath does not define: searched, and absent.
-		if fp.unit != nil && entry.licenses() && fp.complete() && len(rc.Reasons) == 0 && rc.absent(sink) {
-			searched = append(searched, id)
-			continue
-		}
 		clean := true
+		absent := fp.unit != nil && rc.absent(sink)
 		var found *plugin.ReachPath
 		for _, root := range roots {
-			res := rc.Engine.Reach(root.ref, sink)
+			var res depreach.Result
+			if absent {
+				res = rc.Engine.ReachNone(root.ref)
+			} else {
+				res = rc.Engine.Reach(root.ref, sink)
+			}
 			if res.Verdict == depreach.ReachableCandidate {
 				p := reachPathFromBytecode(id, root, res.Path)
 				found = &p
@@ -129,8 +128,13 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 				reasons[plugin.PartialReasonNoIngress] = true // reached from a main, not an attacker-facing ingress
 			}
 			paths = append(paths, *found)
-		case clean && entry.licenses() && fp.complete() && !unmapped && len(rc.Reasons) == 0 && rc.concrete(sink) &&
-			!classfile.KotlinInlineWithheld(sink, rc.class):
+		// A reactor unit whose loaded classes are its whole runtime classpath, launched as the
+		// build names it with nothing else to add to that classpath, and searched clean, never
+		// runs a sink that classpath provably lacks (absent): searched, and absent. The search
+		// still runs, so a call into a class nothing loaded defines withholds as it does for
+		// any sink.
+		case clean && entry.licenses() && fp.complete() && !unmapped && len(rc.Reasons) == 0 &&
+			(absent || rc.concrete(sink) && !classfile.KotlinInlineWithheld(sink, rc.class)):
 			searched = append(searched, id)
 		default:
 			reasons[plugin.PartialReasonNoIngress] = true

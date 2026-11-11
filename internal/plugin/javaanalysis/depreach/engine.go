@@ -1910,6 +1910,21 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 	return res
 }
 
+// ReachNone is the verdict of the whole search from ingress with no sink to stop at:
+// NotExploitable only when nothing on the closure's frontier left it open, which is what
+// a sink no loaded class declares needs before its absence means the closure cannot run it.
+func (e *Engine) ReachNone(ingress classfile.MethodRef) Result {
+	c := e.closures[ingress]
+	if c == nil {
+		c = &closure{}
+		c.miss = e.search(ingress, classfile.MethodRef{}, c)
+		e.closures[ingress] = c
+	}
+	res := c.miss
+	res.HazardKinds = append([]string(nil), c.miss.HazardKinds...)
+	return res
+}
+
 // search is Reach's BFS from ingress, stopping once it meets sink. With c it marks every
 // method it enqueues in c.enqueued; a zero sink never stops it.
 func (e *Engine) search(ingress, sink classfile.MethodRef, c *closure) Result {

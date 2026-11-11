@@ -224,9 +224,10 @@ func TestMavenIncomplete(t *testing.T) {
 		// records them.
 		unlisted []string
 		targets  map[string][]string
-		link     string // a symlink at this checkout path to a directory outside the checkout
-		linkFile string // a symlink at this checkout path to a file outside the checkout, or to linkTo
-		linkTo   string // linkFile's target, relative to the checkout
+		link     string    // a symlink at this checkout path to a directory outside the checkout
+		linkFile string    // a symlink at this checkout path to a file outside the checkout, or to linkTo
+		linkTo   string    // linkFile's target, relative to the checkout
+		linkDir  [2]string // a symlink at the first checkout path to the directory at the second
 		want     string
 	}{
 		{name: "core lifecycle", build: plugin("org.apache.maven.plugins:maven-compiler-plugin", exec("default-compile", "compile", "compile"))},
@@ -287,6 +288,7 @@ func TestMavenIncomplete(t *testing.T) {
 		{name: "assembly dependencySet that unpacks by property", build: assembly(dist), files: descriptor(`<dependencySets><dependencySet><unpack>${unpack}</unpack></dependencySet></dependencySets>`), want: "has a dependencySet that unpacks"},
 		{name: "assembly dependencySet that does not unpack", build: assembly(dist), files: descriptor(`<dependencySets><dependencySet><unpack>false</unpack></dependencySet></dependencySets>`)},
 		{name: "assembly fileSet over a symlink into the local repository", repo: true, linkFile: "lib/ojdbc8.jar", linkTo: ".m2/repository/com/oracle/ojdbc8/19.3/ojdbc8-19.3.jar", build: assembly(dist), files: descriptor(fileSet("lib")), want: "into the local repository"},
+		{name: "assembly fileSet over a linked directory holding a file symlink out", linkFile: "vendor/agent.jar", linkDir: [2]string{"lib/vendor", "vendor"}, build: assembly(dist), files: descriptor(fileSet("lib")), want: "agent.jar outside the checkout"},
 		{name: "assembly fileSet over a symlink cycle", linkFile: "lib/up", linkTo: ".", build: assembly(dist), files: descriptor(fileSet("lib")), want: "lib/up links"},
 		{name: "assembly archiveBaseDirectory", build: assembly(dist + `<archiveBaseDirectory>/opt/vendor</archiveBaseDirectory>`), files: descriptor(fileSet("lib")), want: "sets archiveBaseDirectory"},
 		{name: "assembly fileSet holding the local repository", repo: true, build: assembly(dist), files: descriptor(fileSet("")), want: "holds the local repository"},
@@ -340,6 +342,15 @@ func TestMavenIncomplete(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.Symlink(target, link); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.linkDir[0] != "" {
+				link := filepath.Join(dir, filepath.FromSlash(tc.linkDir[0]))
+				if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(dir, filepath.FromSlash(tc.linkDir[1])), link); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -624,10 +624,12 @@ type effectiveExecution struct {
 type effectiveProject struct {
 	GroupID    string      `xml:"groupId"`
 	ArtifactID string      `xml:"artifactId"`
+	Version    string      `xml:"version"`
 	Properties xmlChildren `xml:"properties"`
 	Build      struct {
-		Directory  string `xml:"directory"`
-		Extensions struct {
+		Directory       string `xml:"directory"`
+		OutputDirectory string `xml:"outputDirectory"`
+		Extensions      struct {
 			Extension []struct {
 				GroupID    string `xml:"groupId"`
 				ArtifactID string `xml:"artifactId"`

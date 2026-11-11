@@ -136,6 +136,9 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 			libExtra: func(a *appFixture) { a.generatorPOM("lib"); a.generator("lib", justReturn) }},
 		"a sibling's POM main is its own unit, reaching": {one: justReturn, two: callSharedLib, lib: justReturn, oneNetkit: true, twoNk: true, want: want{path: mainTrace("com/acme/lib/Generator")},
 			libExtra: func(a *appFixture) { a.generatorPOM("lib"); a.generator("lib", callFetch) }},
+		// The unit's own POM names a library class as its main: that main is the unit's root.
+		"the unit's POM naming a sibling's main": {one: justReturn, two: justReturn, lib: justReturn, oneNetkit: true, twoNk: true, want: want{path: mainTrace("com/acme/lib/Generator")},
+			libExtra: func(a *appFixture) { a.generatorPOM("one"); a.generator("lib", callFetch) }},
 		"a sibling's manifest is its own unit, reaching": {one: justReturn, two: callSharedLib, lib: justReturn, oneNetkit: true, twoNk: true, want: want{path: mainTrace("com/acme/lib/Generator")},
 			libExtra: func(a *appFixture) {
 				writeFileT(a.t, filepath.Join(a.build, "lib", "target", "classes", "META-INF", "MANIFEST.MF"), "Manifest-Version: 1.0\nMain-Class: com.acme.lib.Generator\n")
@@ -373,6 +376,19 @@ func TestReactorUnits_SingleModuleUnchanged(t *testing.T) {
 	}
 }
 
+// Searched-and-absent is a unit-mode answer: a single module whose listed classpath holds no
+// sink class keeps the single-module answer, which does not list the sink.
+func TestSingleModule_AbsentSinkUnchanged(t *testing.T) {
+	a := newApp(t, "", false)
+	a.source("src/main/java/com/acme/App.java", appSource)
+	a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+	a.graph = listedGraph(t, testModule(t, ".", "app"))
+	res := a.reach(netkitSinkID)
+	if len(res.Searched) != 0 {
+		t.Errorf("single module listed an absent sink Searched: %v (partiality %+v)", res.Searched, res.Partiality)
+	}
+}
+
 // writeNetkitAt writes com.evil:netkit:<ver> holding UrlFetcher.fetch, the sink, and Api.safe,
 // which calls the sink when safeCalls, and returns the JAR's path.
 func (a *appFixture) writeNetkitAt(ver string, safeCalls bool) string {
@@ -492,6 +508,11 @@ func TestPlanUnits_LaunchEvidencePromotes(t *testing.T) {
 		"a parent profile naming a main": {func(a *appFixture) {
 			a.oneFile("pom.xml", pom("", ""))
 			writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(`<profiles><profile><id>tool</id><build><plugins><plugin><artifactId>exec-maven-plugin</artifactId><configuration><mainClass>com.acme.one.Core</mainClass></configuration></plugin></plugins></build></profile></profiles>`))
+		}, true},
+		// The profile wires the Boot start class the parent itself never sets.
+		"a parent profile wiring the Boot start class": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", ""))
+			writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(`<profiles><profile><id>jar</id><build><plugins><plugin><artifactId>maven-jar-plugin</artifactId><configuration><archive><manifest><mainClass>${start-class}</mainClass></manifest></archive></configuration></plugin></plugins></build></profile></profiles>`))
 		}, true},
 		"a parent not read": {func(a *appFixture) {
 			a.oneFile("pom.xml", strings.Replace(pom("", ""), "<artifactId>parent</artifactId>", "<artifactId>absent-parent</artifactId>", 1))

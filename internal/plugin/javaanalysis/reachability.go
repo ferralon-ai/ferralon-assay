@@ -66,7 +66,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest, opts ...O
 	outputs := readClassOutputs(req.BuildDir)
 	fp := assembleFirstParty(req.BuildDir, outputs, prog.files)
 	plan, multi, why := reactorUnits(req.BuildDir, opts...)
-	if dirs := fp.projectDirs(); plan == nil && !multi && len(dirs) > 1 {
+	if dirs := fp.projectDirs(); (plan == nil || plan.byTool()) && !multi && len(dirs) > 1 {
 		multi, why = true, "class output in "+strings.Join(relSlashAll(req.BuildDir, dirs), ", ")
 	}
 	if multi || len(fp.roots) == 0 {

@@ -53,8 +53,9 @@ const (
 
 // BuildManifest derives the flat build manifest for one JVM BuildDir from its build graph. lang
 // selects the runtime Name ("java" | "kotlin"). The runtime is the JDK the build tool ran on,
-// which is the job's own (ambient), exact. A missing or unreadable build dir is a hard error
-// (inv.4); without a graph the result names build_graph_absent and nothing else is known.
+// exact: the job's own, or the provided JDK the graph names in jvm.provided. A missing or
+// unreadable build dir is a hard error (inv.4); without a graph the result names
+// build_graph_absent and nothing else is known.
 func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang string, opts ...Option) (plugin.BuildManifestResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {

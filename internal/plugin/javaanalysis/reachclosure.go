@@ -171,22 +171,29 @@ func cachedClosure(key string) (closureEntry, bool) {
 // dependency class with the same binary name is skipped, since the build output is what the
 // build packaged. Without a graph only firstParty is loaded, and the closure says so run-wide.
 // The engine runs on the JDK the graph's run conditions state. A per-unit search (withUnit) loads
-// the unit module's runtime classpath only; the launch options, the JDK and the graph's
+// the unit module's runtime classpath only, and a whole-tool search (withTool) the modules that
+// build tool resolved; the launch options, the JDK and the graph's
 // completeness stay the whole graph's.
 func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath depreach.Classpath, opts ...Option) (*reachClosure, error) {
 	g := BuildGraph(opts...)
 	reasons := LaunchOptionReasons(buildDir, g)
-	unit := resolveOptions(opts).unit
+	unit, tool := resolveOptions(opts).unit, resolveOptions(opts).tool
 	var mods []buildgraph.Module
 	if g != nil {
 		mods = g.Modules
-		if unit != "" {
+		switch {
+		case unit != "":
 			mods = unitModules(g, unit)
+		case tool != "":
+			mods = toolModules(g, tool)
 		}
 	}
 	cacheKey := buildDir
 	if unit != "" {
 		cacheKey += "\x00" + unit
+	}
+	if tool != "" {
+		cacheKey += "\x00tool:" + tool
 	}
 
 	targetsMemo := map[string][]string{}
@@ -214,7 +221,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	var cp depreach.Classpath
 	cp.Merge(fpClasspath)
 	fp := sha256.New()
-	whole := g != nil && (unit == "" || len(mods) > 0) && runtimeListed(g, mods, buildDir) && g.RuntimeJDK() > 8
+	whole := g != nil && ((unit == "" && tool == "") || len(mods) > 0) && runtimeListed(g, mods, buildDir) && g.RuntimeJDK() > 8
 	if g == nil {
 		cp.Unlisted = true
 		reasons = append([]string{PartialReasonBuildGraphAbsent}, reasons...)

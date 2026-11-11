@@ -61,6 +61,10 @@ type Tool struct {
 type JVM struct {
 	Version string `json:"version"`
 	Vendor  string `json:"vendor,omitempty"`
+	// Provided names the job-provided JDK (its JAVA_HOME_<feature>_<arch> variable) the producer
+	// ran the build tool on because the job's own JDK is newer than the tool runs on; empty when
+	// the tool ran on the job's JDK.
+	Provided string `json:"provided,omitempty"`
 }
 
 // Conditions are the run conditions the producer was handed, recorded verbatim.

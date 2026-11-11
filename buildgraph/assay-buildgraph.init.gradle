@@ -23,6 +23,26 @@ import org.gradle.api.artifacts.result.ResolvedDependencyResult
 import org.gradle.api.artifacts.result.UnresolvedDependencyResult
 
 def assayOut = System.getProperty('assay.out')
+
+// rootOf and artifactsOf defer a configuration's resolution to when the task runs. Gradle 7.4
+// added the lazy rootComponent and resolvedArtifacts; before it the eager root and artifacts are
+// read inside the closure instead.
+def rootOf = { cfg ->
+    def rr = cfg.incoming.resolutionResult
+    if (rr.metaClass.respondsTo(rr, 'getRootComponent')) {
+        def root = rr.rootComponent
+        return { -> root.get() }
+    }
+    return { -> rr.root }
+}
+def artifactsOf = { cfg ->
+    def view = cfg.incoming.artifactView { lenient(false) }.artifacts
+    if (view.metaClass.respondsTo(view, 'getResolvedArtifacts')) {
+        def artifacts = view.resolvedArtifacts
+        return { -> artifacts.get() }
+    }
+    return { -> view.artifacts }
+}
 def gradleVersion = gradle.gradleVersion
 def javaVersion = System.getProperty('java.version')
 def javaVendor = System.getProperty('java.vendor')
@@ -353,8 +373,8 @@ allprojects { p ->
                 return [:]
             }
             [(name): [
-                root     : cfg.incoming.resolutionResult.rootComponent,
-                artifacts: cfg.incoming.artifactView { lenient(false) }.artifacts.resolvedArtifacts,
+                root     : rootOf(cfg),
+                artifacts: artifactsOf(cfg),
             ]]
         }
         def classpaths = names.collectEntries(capture)
@@ -385,7 +405,7 @@ allprojects { p ->
                 def edges = []
                 def unresolved = []
                 def seen = [] as Set
-                def queue = [cp.root.get()]
+                def queue = [cp.root()]
                 while (!queue.isEmpty()) {
                     def c = queue.remove(0)
                     def key = c.id.displayName
@@ -404,7 +424,7 @@ allprojects { p ->
                 }
                 def files = []
                 if (unresolved.isEmpty()) {
-                    cp.artifacts.get().each { a ->
+                    cp.artifacts().each { a ->
                         // The published file name, not the cache's, carries the classifier.
                         def fileName = a.id.metaClass.respondsTo(a.id, 'getFileName') ? a.id.fileName : a.file.name
                         files << [component: a.id.componentIdentifier.displayName, file: a.file.absolutePath, name: fileName]

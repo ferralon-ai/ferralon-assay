@@ -77,16 +77,17 @@ func TestBytecodeReach_BootMainDetection(t *testing.T) {
 			a.bootApp(boot)
 			a.cachedParent(starterParentWiring(""))
 		}},
-		{name: "parent sets start-class: launch_entry_unnamed", setup: func(a *appFixture) {
+		// A main the parent names is the module's: here no first-party main, so unmapped.
+		{name: "parent sets start-class: launch_entry_unmapped", setup: func(a *appFixture) {
 			a.bootApp(boot)
 			a.cachedParent(starterParentWiring(`<start-class>com.acme.Tool</start-class>`))
-		}, reason: reasonLaunchEntryUnnamed},
-		{name: "parent configures a literal mainClass: launch_entry_unnamed", setup: func(a *appFixture) {
+		}, reason: reasonLaunchEntryUnmapped},
+		{name: "parent configures a literal mainClass: launch_entry_unmapped", setup: func(a *appFixture) {
 			a.bootApp(boot)
 			a.cachedParent(`<build><pluginManagement><plugins><plugin><artifactId>maven-jar-plugin</artifactId>` +
 				`<configuration><archive><manifest><mainClass>com.acme.Tool</mainClass></manifest></archive></configuration>` +
 				`</plugin></plugins></pluginManagement></build>`)
-		}, reason: reasonLaunchEntryUnnamed},
+		}, reason: reasonLaunchEntryUnmapped},
 		{name: "jar plugin manifestFile: launch_entry_unnamed", setup: func(a *appFixture) {
 			a.bootApp(boot)
 			a.editPOM(`</plugins>`, `<plugin><artifactId>maven-jar-plugin</artifactId><configuration><archive>`+

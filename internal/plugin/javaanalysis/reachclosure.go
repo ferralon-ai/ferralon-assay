@@ -55,6 +55,10 @@ const (
 // spots loading the dependencies incurred.
 type reachClosure struct {
 	Engine *depreach.Engine
+	// mu serialises searches over Engine, whose link mode and per-root search memo every search
+	// sets. A cache hit copies the closure and shares Engine, and Reachability is a library
+	// entry point a caller may run concurrently, so the copies share mu as well.
+	mu *sync.Mutex
 	// key fingerprints the inputs the engine was built from (loadReachClosure).
 	key    string
 	Scoped []plugin.ScopedReason
@@ -88,11 +92,13 @@ type reachClosure struct {
 	// jdk is the feature release the classes were indexed for.
 	jdk int
 	// referenced holds every class a loaded class's constant pool names, simpleNames the
-	// simple name of every loaded class, and kotlin is set when a loaded class carries
-	// Kotlin metadata: what absent reads for another route a sink's code can take.
-	referenced  map[string]bool
-	simpleNames map[string]bool
-	kotlin      bool
+	// simple name of every loaded class, kotlinPkgs the package of every loaded class carrying
+	// Kotlin metadata and kotlinRefPkgs the package of every class those name: what absent reads
+	// for another route a sink's code can take.
+	referenced    map[string]bool
+	simpleNames   map[string]bool
+	kotlinPkgs    map[string]bool
+	kotlinRefPkgs map[string]bool
 }
 
 // gav is one loaded dependency JAR: a coordinate at a version, and its classifier when the
@@ -264,7 +270,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	for _, c := range firstParty {
 		isFirstParty[c.Name] = true
 	}
-	built := &reachClosure{Loaded: map[string]string{}}
+	built := &reachClosure{Loaded: map[string]string{}, mu: &sync.Mutex{}}
 	definedBy := map[string]gav{}
 	shadowReported := map[string]bool{}
 	all := append([]classfile.Class{}, firstParty...)
@@ -412,12 +418,25 @@ func (rc *reachClosure) concrete(ref classfile.MethodRef) bool {
 // is no JDK class; no loaded class names the owner, which code compiled against it does and
 // which a JAR outside the listed tree (a sibling's shaded artifact, a provided or optional
 // dependency) then supplies; no loaded class shares its simple name, as a relocated copy does;
-// and nothing loaded is Kotlin, whose inline functions copy a callee's body into the caller
-// without naming the callee's class.
-func (rc *reachClosure) absent(ref classfile.MethodRef) bool {
+// and no Kotlin compile may have copied the sink's body into a caller without naming its class,
+// as an inline function's call does. That copy is in code compiled against the sink's owner:
+// first-party code, when any of it is Kotlin (firstPartyKotlin), or a Kotlin dependency that
+// shares or names the owner's package. A Kotlin library compiled against other code
+// (kotlin-stdlib, okio) is no such caller.
+func (rc *reachClosure) absent(ref classfile.MethodRef, firstPartyKotlin bool) bool {
 	_, loaded := rc.classes[ref.Owner]
+	pkg := classPackage(ref.Owner)
 	return rc.Listed && !loaded && !depreach.IsPlatformClass(ref.Owner) && !depreach.BootOnly(ref.Owner, rc.jdk) &&
-		!rc.referenced[ref.Owner] && !rc.simpleNames[simpleClassName(ref.Owner)] && !rc.kotlin
+		!rc.referenced[ref.Owner] && !rc.simpleNames[simpleClassName(ref.Owner)] &&
+		!firstPartyKotlin && !rc.kotlinPkgs[pkg] && !rc.kotlinRefPkgs[pkg]
+}
+
+// classPackage is name's package, slash-separated, "" for the default package.
+func classPackage(name string) string {
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		return name[:i]
+	}
+	return ""
 }
 
 // simpleClassName is name without its package.
@@ -433,14 +452,19 @@ func (rc *reachClosure) index(all []classfile.Class, jdk int) {
 	rc.classes = make(map[string]*classfile.Class, len(all))
 	rc.referenced = map[string]bool{}
 	rc.simpleNames = make(map[string]bool, len(all))
-	rc.kotlin = false
+	rc.kotlinPkgs = map[string]bool{}
+	rc.kotlinRefPkgs = map[string]bool{}
 	for i := range all {
+		kotlin := all[i].KotlinMetadata != nil
 		for _, n := range all[i].Refs {
 			rc.referenced[n] = true
+			if kotlin {
+				rc.kotlinRefPkgs[classPackage(n)] = true
+			}
 		}
 		rc.simpleNames[simpleClassName(all[i].Name)] = true
-		if all[i].KotlinMetadata != nil {
-			rc.kotlin = true
+		if kotlin {
+			rc.kotlinPkgs[classPackage(all[i].Name)] = true
 		}
 		if depreach.BootOnly(all[i].Name, jdk) {
 			continue

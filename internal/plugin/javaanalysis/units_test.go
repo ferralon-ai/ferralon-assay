@@ -1,11 +1,13 @@
 package javaanalysis
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
@@ -35,10 +37,14 @@ func (a *appFixture) appModule(dir, pkg string, code func(b *cpb) []byte) {
 	a.class(dir+"/target/classes", "com/acme/"+pkg+"/Main", mainCalling(code))
 }
 
-// libModule writes a reactor library module at dir holding com.acme.lib.Lib, whose static run()
-// runs code.
+// libModule writes a reactor library module at dir: a POM applying no plugin, and
+// com.acme.lib.Lib, whose static run() runs code.
 func (a *appFixture) libModule(dir string, code func(b *cpb) []byte) {
 	a.t.Helper()
+	writeFileT(a.t, filepath.Join(a.build, dir, "pom.xml"), `<project><modelVersion>4.0.0</modelVersion>
+  <parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>
+  <artifactId>`+dir+`</artifactId>
+</project>`)
 	a.source(dir+"/src/main/java/com/acme/lib/Lib.java", "package com.acme.lib;\npublic class Lib {\n    public static void run() {}\n}\n")
 	a.class(dir+"/target/classes", "com/acme/lib/Lib", func(b *cpb) []xmethod {
 		return []xmethod{{"run", "()V", accPublicStatic, code(b)}}
@@ -112,8 +118,9 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 		one, two         func(b *cpb) []byte // each app's main
 		lib              func(b *cpb) []byte
 		oneNetkit, twoNk bool
-		twoUnlisted      bool                // two resolves a dependency whose JAR is not on disk
-		libExtra         func(a *appFixture) // more in the library module
+		twoUnlisted      bool                           // two resolves a dependency whose JAR is not on disk
+		twoKotlin        map[string]func(b *cpb) []byte // two's Kotlin dependency: classes by name, each method's code
+		libExtra         func(a *appFixture)            // more in the library module
 		want             want
 	}{
 		// Only app one resolves netkit; the path through the shared library is app one's.
@@ -136,6 +143,13 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 					return []xmethod{{"run", "()V", accPublicStatic, callFetch(b)}}
 				})
 			}},
+		// Naming it only in a method descriptor is compiling against it as well.
+		"a loaded descriptor naming the absent sink withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true,
+			libExtra: func(a *appFixture) {
+				a.class("lib/target/classes", "com/acme/lib/Holder", func(b *cpb) []xmethod {
+					return []xmethod{{"take", "(Lcom/evil/netkit/UrlFetcher;)V", accPublicStatic, ret}}
+				})
+			}},
 		// A relocated copy of the sink's class (a shaded package) is the sink's code under another name.
 		"a loaded class sharing the sink's simple name withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true,
 			libExtra: func(a *appFixture) {
@@ -149,6 +163,15 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 				a.classA("lib/target/classes", "com/acme/lib/Inline", "java/lang/Object", nil, 0x0021, []string{"Lkotlin/Metadata;"},
 					func(*cpb) []xmethod { return nil })
 			}},
+		// A Kotlin library compiled against other code than the sink's (mall-admin's kotlin-stdlib
+		// and okio, through okhttp) holds no inlined copy of it.
+		"a Kotlin dependency elsewhere leaves the sink absent": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true, want: want{searched: true},
+			twoKotlin: map[string]func(b *cpb) []byte{"kotlin/collections/CollectionsKt": justReturn, "okio/Buffer": callStatic("kotlin/collections/CollectionsKt", "run")}},
+		// A Kotlin library in the sink's package, or compiled against it, may hold an inlined copy.
+		"a Kotlin dependency in the sink's package withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true,
+			twoKotlin: map[string]func(b *cpb) []byte{"com/evil/netkit/Inline": justReturn}},
+		"a Kotlin dependency naming the sink's package withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true,
+			twoKotlin: map[string]func(b *cpb) []byte{"okio/Bridge": callStatic("com/evil/netkit/Session", "run")}},
 		// App two lists a dependency it has no JAR for, so netkit may be on its classpath unseen.
 		"an unlisted unit without the sink JAR withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true, twoUnlisted: true},
 		// A library's code generator main is no root of the apps that load the library.
@@ -188,6 +211,9 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 			if c.twoUnlisted {
 				twoDeps = append(twoDeps, graphDep{group: "com.other", artifact: "gone", version: "1", jar: filepath.Join(a.build, "gone-1.jar")})
 			}
+			if c.twoKotlin != nil {
+				twoDeps = append(twoDeps, kotlinDep(a, c.twoKotlin))
+			}
 			lib := testModule(t, "lib", "lib", netkitDep(a.build))
 			one := sibling(testModule(t, "one", "one", oneDeps...), lib, "compile")
 			two := sibling(testModule(t, "two", "two", twoDeps...), lib, "compile")
@@ -215,45 +241,113 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 	}
 }
 
-// A sibling that shades an optional netkit into its own JAR puts UrlFetcher on its consumers'
-// runtime classpath though none of their trees lists netkit: app one, which calls the library,
-// is never Searched, listed or not.
-func TestUnitsReach_ShadedSiblingWithholds(t *testing.T) {
-	for name, listed := range map[string]bool{"listed": true, "unlisted": false} {
-		t.Run(name, func(t *testing.T) {
-			a := newApp(t, "", false)
-			a.reactorRoot()
-			a.appModule("one", "one", callSharedLib)
-			a.appModule("two", "two", justReturn)
-			a.libModule("lib", callFetch)
-			writeFileT(t, filepath.Join(a.build, "lib", "pom.xml"), `<project><modelVersion>4.0.0</modelVersion>
+// kotlinDep writes com.example.kt:kt:1, a JAR of Kotlin-compiled classes each with a static run()
+// running its code, and returns it as a graph dependency.
+func kotlinDep(a *appFixture, classes map[string]func(b *cpb) []byte) graphDep {
+	a.t.Helper()
+	entries := map[string][]byte{}
+	for name, code := range classes {
+		b := &cpb{}
+		entries[name+".class"] = emitClassA(b, name, "java/lang/Object", nil, 0x0021,
+			[]xmethod{{"run", "()V", accPublicStatic, code(b)}}, []string{"Lkotlin/Metadata;"})
+	}
+	dir := filepath.Join(a.build, ".m2", "repository", "com", "example", "kt", "kt", "1")
+	writeJarEntries(a.t, filepath.Join(dir, "kt-1.jar"), entries)
+	writeFileT(a.t, filepath.Join(dir, "kt-1.pom"), `<project><modelVersion>4.0.0</modelVersion>
+  <groupId>com.example.kt</groupId><artifactId>kt</artifactId><version>1</version></project>`)
+	return graphDep{group: "com.example.kt", artifact: "kt", version: "1", jar: filepath.Join(dir, "kt-1.jar")}
+}
+
+// libPOM is the library module's POM with an optional netkit dependency, packaging and build
+// after its artifactId.
+func libPOM(packaging, build string) string {
+	if packaging != "" {
+		packaging = "<packaging>" + packaging + "</packaging>"
+	}
+	return `<project><modelVersion>4.0.0</modelVersion>
   <parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>
-  <artifactId>lib</artifactId>
+  <artifactId>lib</artifactId>` + packaging + `
   <dependencies><dependency><groupId>com.evil</groupId><artifactId>netkit</artifactId><version>1.0.0</version><optional>true</optional></dependency></dependencies>
-  <build><plugins><plugin><artifactId>maven-shade-plugin</artifactId>
-    <executions><execution><phase>package</phase><goals><goal>shade</goal></goals></execution></executions>
-  </plugin></plugins></build>
-</project>`)
-			data, err := os.ReadFile(netkitJarPath(a.build))
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeFileT(t, filepath.Join(a.build, "lib", "target", "lib-1.jar"), string(data))
-			nk := netkitDep(a.build)
-			nk.scope = "compile"
-			lib := testModule(t, "lib", "lib", nk)
-			mods := []buildgraph.Module{testModule(t, ".", "parent"),
-				sibling(testModule(t, "one", "one"), lib, "compile"), sibling(testModule(t, "two", "two"), lib, "compile"), lib}
-			if listed {
-				a.graph = listedGraph(t, mods...)
-			} else {
-				a.graph = graphOption(t, "maven", mods...)
-			}
-			res := a.reach(netkitSinkID)
-			if len(res.Searched) != 0 {
-				t.Errorf("Searched = %v, want none: the shaded sibling carries the sink (partiality %+v)", res.Searched, res.Partiality)
-			}
-		})
+  ` + build + `
+</project>`
+}
+
+// plugins is a <build> applying one plugin with an execution of goal.
+func plugins(plugin, goal string) string {
+	return `<build><plugins><plugin>` + plugin + `
+    <executions><execution><phase>package</phase><goals><goal>` + goal + `</goal></goals></execution></executions>
+  </plugin></plugins></build>`
+}
+
+// callDriverManager is aconst_null; invokestatic DriverManager.getConnection(String); pop;
+// return: a JDBC lookup, which loads whatever driver the classpath registers.
+func callDriverManager(b *cpb) []byte {
+	idx := b.mref("java/sql/DriverManager", "getConnection", "(Ljava/lang/String;)Ljava/sql/Connection;")
+	return append([]byte{0x01, 0xB8}, append(be2(idx), 0x57, 0xB1)...)
+}
+
+// A reactor sibling that repackages its dependencies publishes an artifact carrying classes its
+// class output does not, the optional netkit here: a unit that loads it runs those classes,
+// however it reaches them, so its empty search is not Searched. App two loads lib, whose tree
+// does not list netkit; its route to the sink is lib naming it at compile time, or a JDBC lookup
+// that loads whatever driver the shaded jar registers, which no class names.
+func TestUnitsReach_RepackagingSiblingWithholds(t *testing.T) {
+	cases := map[string]struct {
+		lib, two func(b *cpb) []byte
+		libPOM   string
+		root     string // more of the reactor root POM
+		searched bool
+	}{
+		"a shaded sibling naming the sink":       {lib: callFetch, two: justReturn, libPOM: libPOM("", plugins(shadePluginXML, "shade"))},
+		"a JDBC lookup through a shaded sibling": {lib: justReturn, two: callDriverManager, libPOM: libPOM("", plugins(shadePluginXML, "shade"))},
+		"an assembly":                            {lib: justReturn, two: callDriverManager, libPOM: libPOM("", plugins(`<artifactId>maven-assembly-plugin</artifactId>`, "single"))},
+		"a Boot repackage":                       {lib: justReturn, two: callDriverManager, libPOM: libPOM("", plugins(bootPluginXML, "repackage"))},
+		"dependencies unpacked into the output":  {lib: justReturn, two: callDriverManager, libPOM: libPOM("", plugins(`<artifactId>maven-dependency-plugin</artifactId>`, "unpack-dependencies"))},
+		"a bundle":                               {lib: justReturn, two: callDriverManager, libPOM: libPOM("bundle", "")},
+		"a profile that shades":                  {lib: justReturn, two: callDriverManager, libPOM: libPOM("", "<profiles><profile><id>fat</id>"+plugins(shadePluginXML, "shade")+"</profile></profiles>")},
+		"shading inherited from the root":        {lib: justReturn, two: callDriverManager, libPOM: libPOM("", ""), root: plugins(shadePluginXML, "shade")},
+		"a parent that cannot be read": {lib: justReturn, two: callDriverManager,
+			libPOM: strings.Replace(libPOM("", ""), "<artifactId>parent</artifactId>", "<artifactId>unknown</artifactId>", 1)},
+		// Shading managed for children that do not apply it builds nothing.
+		"shading managed, not applied": {lib: justReturn, two: callDriverManager, libPOM: libPOM("", ""),
+			root: `<build><pluginManagement><plugins><plugin>` + shadePluginXML + `</plugin></plugins></pluginManagement></build>`, searched: true},
+		"a plain library": {lib: justReturn, two: callDriverManager, libPOM: libPOM("", ""), searched: true},
+	}
+	for name, c := range cases {
+		for _, listed := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/listed=%v", name, listed), func(t *testing.T) {
+				a := newApp(t, "", false)
+				a.reactorRoot()
+				if c.root != "" {
+					writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(c.root))
+				}
+				a.appModule("one", "one", callSharedLib)
+				a.appModule("two", "two", c.two)
+				a.libModule("lib", c.lib)
+				writeFileT(t, filepath.Join(a.build, "lib", "pom.xml"), c.libPOM)
+				data, err := os.ReadFile(netkitJarPath(a.build))
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeFileT(t, filepath.Join(a.build, "lib", "target", "lib-1.jar"), string(data))
+				nk := netkitDep(a.build)
+				nk.scope = "compile"
+				lib := testModule(t, "lib", "lib", nk)
+				mods := []buildgraph.Module{testModule(t, ".", "parent"),
+					sibling(testModule(t, "one", "one", netkitDep(a.build)), lib, "compile"), sibling(testModule(t, "two", "two"), lib, "compile"), lib}
+				if listed {
+					a.graph = listedGraph(t, mods...)
+				} else {
+					a.graph = graphOption(t, "maven", mods...)
+				}
+				res := a.reach(netkitSinkID)
+				// Unlisted, no sink is absent: two, whose classpath lacks the sink, never clears it.
+				want := c.searched && listed
+				if got := len(res.Searched) != 0; got != want {
+					t.Errorf("Searched = %v, want searched %v (paths %d, partiality %+v)", res.Searched, want, len(res.Paths), res.Partiality)
+				}
+			})
+		}
 	}
 }
 
@@ -340,6 +434,7 @@ func TestPomChain_CheckoutParent(t *testing.T) {
 		cached       bool   // whether the Maven cache holds com.acme:parent:1.0.0
 		complete     bool
 		fromCheckout bool
+		link         string // "inside" or "outside": the checkout's pom.xml is a symlink to a matching parent there
 	}{
 		"matching coordinate":           {parentGAV: "com.acme:parent:1.0.0", unit: true, complete: true, fromCheckout: true},
 		"explicit relativePath":         {parentGAV: "com.acme:parent:1.0.0", relativePath: "<relativePath>../pom.xml</relativePath>", unit: true, complete: true, fromCheckout: true},
@@ -352,6 +447,10 @@ func TestPomChain_CheckoutParent(t *testing.T) {
 		"not a unit":                    {parentGAV: "com.acme:parent:1.0.0"},
 		"not a unit, cached":            {parentGAV: "com.acme:parent:1.0.0", cached: true, complete: true},
 		"checkout preferred over cache": {parentGAV: "com.acme:parent:1.0.0", unit: true, cached: true, complete: true, fromCheckout: true},
+		// Maven reads the linked file; the cache copy may not be it.
+		"parent links outside checkout": {parentGAV: "com.acme:parent:1.0.0", unit: true, cached: true, link: "outside"},
+		"parent links inside checkout":  {parentGAV: "com.acme:parent:1.0.0", unit: true, cached: true, link: "inside", complete: true, fromCheckout: true},
+		"parent dir links outside":      {parentGAV: "com.acme:parent:1.0.0", relativePath: "<relativePath>../pdir</relativePath>", unit: true, cached: true, link: "dir"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -364,6 +463,28 @@ func TestPomChain_CheckoutParent(t *testing.T) {
 			writeFileT(t, filepath.Join(outer, "pom.xml"), parentPOM(""))
 			if c.cached {
 				writeFileT(t, filepath.Join(build, ".m2", "repository", "com", "acme", "parent", "1.0.0", "parent-1.0.0.pom"), parentPOM(""))
+			}
+			if c.link == "dir" {
+				writeFileT(t, filepath.Join(outer, "pdir", "pom.xml"), parentPOM(""))
+				if err := os.Symlink(filepath.Join(outer, "pdir"), filepath.Join(build, "pdir")); err != nil {
+					t.Fatal(err)
+				}
+			} else if c.link != "" {
+				target := filepath.Join(outer, "linked", "pom.xml")
+				if c.link == "inside" {
+					target = filepath.Join(build, "linked", "pom.xml")
+				}
+				data, err := os.ReadFile(filepath.Join(build, "pom.xml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeFileT(t, target, string(data))
+				if err := os.Remove(filepath.Join(build, "pom.xml")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, filepath.Join(build, "pom.xml")); err != nil {
+					t.Fatal(err)
+				}
 			}
 			child := filepath.Join(build, "one", "pom.xml")
 			writeFileT(t, child, strings.Replace(childPOM, "%s", c.relativePath, 1))
@@ -562,6 +683,18 @@ func TestPlanUnits_LaunchEvidencePromotes(t *testing.T) {
 			a.oneFile("pom.xml", pom("", ""))
 			writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(`<build><pluginManagement><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></pluginManagement></build>`))
 		}, false},
+		// A plugin a profile applies, whatever its activation, runs whenever the profile does.
+		"Boot plugin in its own profile": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", effProfilePlugin(bootPluginXML, false)))
+		}, true},
+		"Boot plugin in a parent profile active by default": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", ""))
+			writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(effProfilePlugin(bootPluginXML, true)))
+		}, true},
+		"a managed main for a plugin its profile applies": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", effProfilePlugin(`<artifactId>exec-maven-plugin</artifactId>`, false)))
+			writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(effManagedExec))
+		}, true},
 		"war packaging": {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>war</packaging>", "")) }, true},
 		"ear packaging": {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>ear</packaging>", "")) }, true},
 		// Every packaging but a plain jar ships on its own, a value a property supplies included.
@@ -647,28 +780,109 @@ func shadeMain(main string) string {
 		main + `</mainClass></transformer></transformers></configuration>`
 }
 
-// A module without code that names a launch and loads reactor siblings packages their classes as
-// a program: it is a unit of its own. One that names none, or loads no sibling, is not.
+// rootPOM is the reactor root com.acme:parent:1.0.0 with body added.
+func rootPOM(body string) string {
+	return `<project><modelVersion>4.0.0</modelVersion>
+  <groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version><packaging>pom</packaging>` + body + `
+</project>`
+}
+
+// startClassRoot sets start-class to the library's Generator and manages the Boot plugin with
+// starter-parent's ${start-class} wiring, applying it to no module.
+const startClassRoot = `<properties><start-class>com.acme.lib.Generator</start-class></properties>
+  <build><pluginManagement><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>
+    <executions><execution><goals><goal>repackage</goal></goals></execution></executions>
+    <configuration><mainClass>${start-class}</mainClass></configuration>
+  </plugin></plugins></pluginManagement></build>`
+
+// inertPOM is a code-free aggregator dist loading lib and applying no plugin.
+var inertPOM = strings.Replace(launcherPOM("pom", jacocoPluginXML, ""), "<build><plugins><plugin>"+jacocoPluginXML+"</plugin></plugins></build>", "", 1)
+
+// writeLaunchJar writes dist/target/dist-1.0.0.jar with the library's Generator as its Main-Class,
+// as a step outside Maven builds it.
+func writeLaunchJar(t *testing.T, build string) {
+	t.Helper()
+	writeJarEntries(t, filepath.Join(build, "dist", "target", "dist-1.0.0.jar"), map[string][]byte{
+		"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\r\nMain-Class: com.acme.lib.Generator\r\n\r\n")})
+}
+
+// startClassOnly sets start-class to the library's Generator and nothing else.
+const startClassOnly = `<properties><start-class>com.acme.lib.Generator</start-class></properties>`
+
+// shadeRoot manages the shade plugin with the library's Generator as Main-Class, applying it to
+// no module.
+var shadeRoot = `<build><pluginManagement><plugins><plugin><artifactId>maven-shade-plugin</artifactId>
+    <executions><execution><phase>package</phase><goals><goal>shade</goal></goals>` + shadeMain("com.acme.lib.Generator") + `</execution></executions>
+  </plugin></plugins></pluginManagement></build>`
+
+// bootRoot applies the Boot plugin to every module, naming no main.
+const bootRoot = `<build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>`
+
+const (
+	bootPluginXML   = `<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>`
+	shadePluginXML  = `<artifactId>maven-shade-plugin</artifactId>`
+	jacocoPluginXML = `<groupId>org.jacoco</groupId><artifactId>jacoco-maven-plugin</artifactId>`
+)
+
+// launcherPOM is a code-free module dist's POM loading lib and applying plugin, with packaging
+// and extra after its artifactId.
+func launcherPOM(packaging, plugin, extra string) string {
+	if packaging != "" {
+		packaging = "<packaging>" + packaging + "</packaging>"
+	}
+	return `<project><modelVersion>4.0.0</modelVersion>
+  <parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>
+  <artifactId>dist</artifactId>` + packaging + extra + `
+  <dependencies><dependency><groupId>com.acme</groupId><artifactId>lib</artifactId><version>1.0.0</version></dependency></dependencies>
+  <build><plugins><plugin>` + plugin + `</plugin></plugins></build>
+</project>`
+}
+
+// A module without code that loads reactor siblings is a unit of its own unless it is provably
+// inert: a launch it names is searched from, and one it does not name (or names where the reader
+// does not look) withholds. One that loads no sibling, or is inert, is not a unit.
 func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 	cases := map[string]struct {
 		pom      string
 		loadsLib bool
 		rootBody string // more of the reactor root POM
+		jar      bool   // dist/target holds a JAR whose Main-Class is the library's Generator
 		units    string
 	}{
 		"a shaded main":                 {pom: distPOM(shadeMain("com.acme.lib.Generator")), loadsLib: true, units: "dist one two"},
-		"shading with no main":          {pom: distPOM(""), loadsLib: true, units: "one two"},
+		"shading with no main":          {pom: distPOM(""), loadsLib: true, units: "dist one two"},
 		"a named main, no sibling":      {pom: distPOM(shadeMain("com.acme.lib.Generator")), units: "one two"},
-		"an exec plugin naming no main": {pom: strings.Replace(distPOM(""), "maven-shade-plugin", "exec-maven-plugin", 1) + "", loadsLib: true, units: "one two"},
+		"an exec plugin naming no main": {pom: strings.Replace(distPOM(""), "maven-shade-plugin", "exec-maven-plugin", 1) + "", loadsLib: true, units: "dist one two"},
 		"assembly packaging, a main":    {pom: strings.Replace(distPOM(shadeMain("com.acme.lib.Generator")), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "dist one two"},
 		"an unresolved packaging":       {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>${p}</packaging>", 1), loadsLib: true, units: "dist one two"},
 		"a profile naming a main":       {pom: strings.Replace(distPOM(""), "</dependencies>", "</dependencies><profiles><profile><id>tool</id><build><plugins><plugin><artifactId>exec-maven-plugin</artifactId><configuration><mainClass>com.acme.lib.Generator</mainClass></configuration></plugin></plugins></build></profile></profiles>", 1), loadsLib: true, units: "dist one two"},
 		// A parent's profile can launch any child, the code-free one included.
-		"a parent profile naming a main": {pom: distPOM(""), loadsLib: true, units: "dist one two",
+		"a parent profile naming a main": {pom: distPOM(""), loadsLib: true, units: "dist lib one two",
 			rootBody: `<profiles><profile><id>tool</id><build><plugins><plugin><artifactId>exec-maven-plugin</artifactId><configuration><mainClass>com.acme.lib.Generator</mainClass></configuration></plugin></plugins></build></profile></profiles>`},
-		// An aggregator that also gathers dependencies names no launch: it ships nothing of its own.
-		"pom packaging, no main":              {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "one two"},
-		"the Boot plugin, no main of its own": {pom: strings.Replace(distPOM(""), "<artifactId>maven-shade-plugin</artifactId>", "<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>", 1), loadsLib: true, units: "one two"},
+		// A parent's plain configuration launches a child as its profiles do: start-class for the
+		// Boot plugin the child applies, a managed plugin's main for the plugin the child applies.
+		// The library inherits the same root, which may hand it a launch, so it is a unit too.
+		"an inherited start-class, the Boot plugin":        {pom: launcherPOM("", bootPluginXML, ""), loadsLib: true, rootBody: startClassRoot, units: "dist lib one two"},
+		"an inherited start-class, pom packaging":          {pom: launcherPOM("pom", bootPluginXML, ""), loadsLib: true, rootBody: startClassRoot, units: "dist lib one two"},
+		"a managed shade main, shade applied":              {pom: launcherPOM("", shadePluginXML, ""), loadsLib: true, rootBody: shadeRoot, units: "dist lib one two"},
+		"a start-class of its own, the Boot plugin":        {pom: launcherPOM("", bootPluginXML, "<properties><start-class>com.acme.lib.Generator</start-class></properties>"), loadsLib: true, units: "dist one two"},
+		"an inherited start-class, the Boot plugin unused": {pom: launcherPOM("", jacocoPluginXML, ""), loadsLib: true, rootBody: startClassRoot, units: "dist lib one two"},
+		"a managed shade main, shade unused":               {pom: launcherPOM("", jacocoPluginXML, ""), loadsLib: true, rootBody: shadeRoot, units: "dist lib one two"},
+		// A coverage aggregator under a parent applying the Boot plugin with no main named.
+		"a Boot parent, a coverage aggregator": {pom: launcherPOM("pom", jacocoPluginXML, ""), loadsLib: true, rootBody: bootRoot, units: "dist lib one two"},
+		// Packaging, inheriting or applying any plugin, the module may ship the classes it loads.
+		"pom packaging, no main":                          {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "dist one two"},
+		"an assembly manifest file":                       {pom: launcherPOM("", `<artifactId>maven-assembly-plugin</artifactId><configuration><archive><manifestFile>src/assembly/MANIFEST.MF</manifestFile></archive></configuration>`, ""), loadsLib: true, units: "dist one two"},
+		"pom packaging, an assembly, its parent not read": {pom: strings.Replace(launcherPOM("pom", `<artifactId>maven-assembly-plugin</artifactId>`, ""), "<version>1.0.0</version></parent>", "<version>9.9.9</version></parent>", 1), loadsLib: true, units: "dist one two"},
+		"pom packaging, a plugin a parent profile applies": {pom: inertPOM, loadsLib: true, units: "dist one two",
+			rootBody: effProfilePlugin(`<artifactId>exec-maven-plugin</artifactId>`, false)},
+		// An aggregator applying and inheriting no plugin ships nothing but its POM, unless the
+		// readers find launch evidence: inertness only adds units. A managed main is named in its
+		// POM; a JAR built outside Maven names one on disk.
+		"an inert aggregator":                             {pom: inertPOM, loadsLib: true, units: "one two"},
+		"an inert aggregator, a managed main":             {pom: strings.Replace(inertPOM, "</dependencies>", "</dependencies>"+effManagedExec, 1), loadsLib: true, units: "dist one two"},
+		"an inert aggregator, a launchable JAR in target": {pom: inertPOM, loadsLib: true, jar: true, units: "dist one two"},
+		"the Boot plugin, no main of its own":             {pom: strings.Replace(distPOM(""), "<artifactId>maven-shade-plugin</artifactId>", "<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>", 1), loadsLib: true, units: "dist one two"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -679,10 +893,11 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 			a.libModule("lib", justReturn)
 			a.generator("lib", justReturn)
 			writeFileT(t, filepath.Join(a.build, "dist", "pom.xml"), c.pom)
+			if c.jar {
+				writeLaunchJar(t, a.build)
+			}
 			if c.rootBody != "" {
-				writeFileT(t, filepath.Join(a.build, "pom.xml"), `<project><modelVersion>4.0.0</modelVersion>
-  <groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version><packaging>pom</packaging>`+c.rootBody+`
-</project>`)
+				writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(c.rootBody))
 			}
 			lib := testModule(t, "lib", "lib")
 			dist := testModule(t, "dist", "dist")
@@ -707,17 +922,57 @@ func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
 		path     string
 		searched bool
 	}
+	reaches := map[bool]want{true: {path: mainTrace("com/acme/lib/Generator")}, false: {path: mainTrace("com/acme/lib/Generator")}}
+	withheld := map[bool]want{true: {}, false: {}}
 	cases := map[string]struct {
 		gen  func(b *cpb) []byte
 		main string
+		root string        // more of the reactor root POM
+		dist string        // dist's POM, distPOM(shadeMain(main)) when ""
+		jar  bool          // dist/target holds a JAR whose Main-Class is the library's Generator
 		want map[bool]want // by listed
 	}{
-		"the main reaches the sink": {gen: callFetch, main: "com.acme.lib.Generator",
-			want: map[bool]want{true: {path: mainTrace("com/acme/lib/Generator")}, false: {path: mainTrace("com/acme/lib/Generator")}}},
+		"the main reaches the sink": {gen: callFetch, main: "com.acme.lib.Generator", want: reaches},
+		// The main the launcher inherits is its root, as one it names itself is.
+		"an inherited start-class reaches the sink":        {gen: callFetch, root: startClassRoot, dist: launcherPOM("", bootPluginXML, ""), want: reaches},
+		"an inherited start-class, pom packaging, reaches": {gen: callFetch, root: startClassRoot, dist: launcherPOM("pom", bootPluginXML, ""), want: reaches},
+		"a managed shade main reaches the sink":            {gen: callFetch, root: shadeRoot, dist: launcherPOM("", shadePluginXML, ""), want: reaches},
+		"its own start-class reaches the sink": {gen: callFetch, want: reaches,
+			dist: launcherPOM("", bootPluginXML, "<properties><start-class>com.acme.lib.Generator</start-class></properties>")},
 		"the main is clean": {gen: justReturn, main: "com.acme.lib.Generator",
 			want: map[bool]want{true: {searched: true}, false: {searched: true}}},
 		"a main nothing loaded defines": {gen: justReturn, main: "com.other.Tool",
 			want: map[bool]want{true: {}, false: {}}},
+		// A plugin a profile applies, active by default or not, launches the library's main only
+		// under that profile: the launcher is a unit, its path is found, and it withholds.
+		"the Boot plugin in its profile, an inherited start-class": {gen: callFetch, root: startClassOnly, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, effProfilePlugin(bootPluginXML, false))},
+		"the Boot plugin managed by its parent, applied in its profile": {gen: callFetch, root: startClassRoot, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, effProfilePlugin(bootPluginXML, false))},
+		"a managed shade main, shade applied in its profile": {gen: callFetch, root: shadeRoot, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, effProfilePlugin(shadePluginXML, false))},
+		"the Boot plugin in an active-by-default profile": {gen: callFetch, root: startClassOnly, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, effProfilePlugin(bootPluginXML, true))},
+		"its own start-class, the Boot plugin in its profile": {gen: callFetch, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, startClassOnly+effProfilePlugin(bootPluginXML, false))},
+		"its own start-class, the Boot plugin in an active-by-default profile": {gen: callFetch, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, startClassOnly+effProfilePlugin(bootPluginXML, true))},
+		"its own managed shade main, shade applied in its profile": {gen: callFetch, want: reaches,
+			dist: strings.Replace(launcherPOM("", jacocoPluginXML, effProfilePlugin(shadePluginXML, false)), "<build><plugins><plugin>"+jacocoPluginXML, strings.TrimSuffix(shadeRoot, "</build>")+"<plugins><plugin>"+jacocoPluginXML, 1)},
+		// The assembly descriptor's Main-Class is in a manifest file the reader does not open.
+		"an assembly manifest file": {gen: callFetch, want: withheld,
+			dist: launcherPOM("", `<artifactId>maven-assembly-plugin</artifactId><configuration><archive><manifestFile>src/assembly/MANIFEST.MF</manifestFile></archive></configuration>`, "")},
+		// An assembly under a parent the reader does not have may be handed its main there.
+		"pom packaging, an assembly, its parent not read": {gen: callFetch, want: withheld,
+			dist: strings.Replace(launcherPOM("pom", `<artifactId>maven-assembly-plugin</artifactId>`, ""), "<version>1.0.0</version></parent>", "<version>9.9.9</version></parent>", 1)},
+		// An aggregator applying no plugin and inheriting none ships nothing but its POM, whatever
+		// it loads: the library's own units are what the reactor runs.
+		"an inert aggregator": {gen: callFetch, want: map[bool]want{true: {searched: true}, false: {searched: true}}, dist: inertPOM},
+		// The same aggregator naming a main is a unit all the same: one it manages, or the
+		// Main-Class of a JAR built outside Maven.
+		"an inert aggregator, a managed main": {gen: callFetch, want: withheld,
+			dist: strings.Replace(inertPOM, "</dependencies>", "</dependencies>"+effManagedExec, 1)},
+		"an inert aggregator, a launchable JAR in target": {gen: callFetch, jar: true, want: reaches, dist: inertPOM},
 	}
 	for name, c := range cases {
 		for _, listed := range []bool{true, false} {
@@ -728,7 +983,17 @@ func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
 				a.appModule("two", "two", justReturn)
 				a.libModule("lib", justReturn)
 				a.generator("lib", c.gen)
-				writeFileT(t, filepath.Join(a.build, "dist", "pom.xml"), distPOM(shadeMain(c.main)))
+				dist := c.dist
+				if dist == "" {
+					dist = distPOM(shadeMain(c.main))
+				}
+				writeFileT(t, filepath.Join(a.build, "dist", "pom.xml"), dist)
+				if c.jar {
+					writeLaunchJar(t, a.build)
+				}
+				if c.root != "" {
+					writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(c.root))
+				}
 				lib := testModule(t, "lib", "lib", netkitDep(a.build))
 				mods := []buildgraph.Module{testModule(t, ".", "parent"),
 					sibling(testModule(t, "one", "one", netkitDep(a.build)), lib, "compile"),
@@ -739,6 +1004,7 @@ func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
 				} else {
 					a.graph = graphOption(t, "maven", mods...)
 				}
+				writeFileT(t, filepath.Join(a.build, "dist", "src", "assembly", "MANIFEST.MF"), "Manifest-Version: 1.0\nMain-Class: com.acme.lib.Generator\n")
 				res := a.reach(netkitSinkID)
 				w := c.want[listed]
 				if w.path == "" && len(res.Paths) != 0 {
@@ -860,6 +1126,64 @@ func TestUnitsReach_RootAppBesideUnloadedLib(t *testing.T) {
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Errorf("reasons = %v, want %v", got, want)
+	}
+}
+
+// Reachability is a library entry point: concurrent runs over one build share its cached engine,
+// and each answers as a run alone does. Run under -race this also checks the engine is not
+// searched by two runs at once.
+func TestReachability_ConcurrentOnCachedEngine(t *testing.T) {
+	cases := map[string]struct {
+		one, lib func(b *cpb) []byte
+	}{
+		"a path in one unit":           {one: callSharedLib, lib: callFetch},
+		"every unit clean, two absent": {one: callSharedLib, lib: justReturn},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.reactorRoot()
+			a.appModule("one", "one", c.one)
+			a.appModule("two", "two", callSharedLib)
+			a.libModule("lib", c.lib)
+			lib := testModule(t, "lib", "lib", netkitDep(a.build))
+			a.graph = listedGraph(t, testModule(t, ".", "parent"),
+				sibling(testModule(t, "one", "one", netkitDep(a.build)), lib, "compile"), sibling(testModule(t, "two", "two"), lib, "compile"), lib)
+			want := a.reach(netkitSinkID)
+			const rounds, runs = 4, 32
+			for round := range rounds {
+				// Each round's runs hit the engines that run cached, with every search memo emptied
+				// so the runs fill it again, and start together so their searches overlap.
+				closureCache.Lock()
+				for _, e := range closureCache.m {
+					e.rc.Engine.SetLinked(true)
+					e.rc.Engine.SetLinked(false)
+				}
+				closureCache.Unlock()
+				got := make([]plugin.ReachabilityResult, runs)
+				start := make(chan struct{})
+				var wg sync.WaitGroup
+				for i := range runs {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						<-start
+						res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: a.build, Symbols: []string{netkitSinkID}}, a.graph)
+						if err != nil {
+							t.Errorf("Reachability: %v", err)
+						}
+						got[i] = res
+					}()
+				}
+				close(start)
+				wg.Wait()
+				for i, res := range got {
+					if len(res.Paths) != len(want.Paths) || !slices.Equal(res.Searched, want.Searched) {
+						t.Errorf("round %d run %d: paths %d searched %v, want paths %d searched %v", round, i, len(res.Paths), res.Searched, len(want.Paths), want.Searched)
+					}
+				}
+			}
+		})
 	}
 }
 

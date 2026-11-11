@@ -289,7 +289,7 @@ func TestMavenIncomplete(t *testing.T) {
 		{name: "assembly dependencySet that does not unpack", build: assembly(dist), files: descriptor(`<dependencySets><dependencySet><unpack>false</unpack></dependencySet></dependencySets>`)},
 		{name: "assembly fileSet over a symlink into the local repository", repo: true, linkFile: "lib/ojdbc8.jar", linkTo: ".m2/repository/com/oracle/ojdbc8/19.3/ojdbc8-19.3.jar", build: assembly(dist), files: descriptor(fileSet("lib")), want: "into the local repository"},
 		{name: "assembly fileSet over a linked directory holding a file symlink out", linkFile: "vendor/agent.jar", linkDir: [2]string{"lib/vendor", "vendor"}, build: assembly(dist), files: descriptor(fileSet("lib")), want: "agent.jar outside the checkout"},
-		{name: "assembly fileSet over a symlink cycle", linkFile: "lib/up", linkTo: ".", build: assembly(dist), files: descriptor(fileSet("lib")), want: "lib/up links"},
+		{name: "assembly fileSet over a symlink cycle", linkDir: [2]string{"lib/loop", "lib"}, build: assembly(dist), files: descriptor(fileSet("lib"))},
 		{name: "assembly archiveBaseDirectory", build: assembly(dist + `<archiveBaseDirectory>/opt/vendor</archiveBaseDirectory>`), files: descriptor(fileSet("lib")), want: "sets archiveBaseDirectory"},
 		{name: "assembly fileSet holding the local repository", repo: true, build: assembly(dist), files: descriptor(fileSet("")), want: "holds the local repository"},
 		{name: "assembly fileSet over a symlink out", link: "lib/ext", build: assembly(dist), files: descriptor(fileSet("lib")), want: "outside the checkout"},

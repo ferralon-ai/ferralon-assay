@@ -20,7 +20,8 @@ import (
 // versions; a deployable module another loads is searched on its own versions as well. Each unit
 // is searched over its own class output plus that of every reactor sibling on its runtime
 // classpath, with the dependency JARs its own module resolved. A module has code when it has
-// main sources under its src/ or main class output; a test-only module has none.
+// main sources under its src/ or main class output; a test-only module has none. A module
+// without code that loads a sibling at runtime is a unit too, unless it is provably inert.
 //
 // The plan is built from the build graph alone, and any code it cannot place leaves the build
 // with the run-wide multiple_projects_unsupported answer: a module with code no unit loads, a
@@ -35,6 +36,8 @@ type reactorUnit struct {
 	dir  string   // its module directory
 	dirs []string // dir plus each reactor sibling on its runtime classpath, sorted
 	tool string   // for a whole-tool unit, the build tool whose graph it is; "" for a reactor module
+	// loads is the directory of every reactor sibling on its runtime classpath, code or none.
+	loads []string
 }
 
 // whole reports whether u is one build tool's whole graph over the checkout's first-party
@@ -180,8 +183,8 @@ func reactorUnits(buildDir string, opts ...Option) (plan *reactorPlan, multi boo
 
 // planUnits places every module with code of g as a unit or as a reactor sibling a unit loads.
 // sources are the build's .java files, outputs the project directories of its class output, and
-// launch reports whether a module directory, with code of its own or not, carries launch evidence
-// of its own. On failure the plan is nil and failure says what could not be placed.
+// launch reports whether a module directory with code carries launch evidence of its own, and
+// whether one without code is other than provably inert. On failure the plan is nil and failure says what could not be placed.
 func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string, launch func(dir string, code bool) bool) (plan *reactorPlan, failure string) {
 	if tools := g.Tools(); len(tools) != 1 || tools[0] != "maven" {
 		return nil, "not a Maven reactor (" + strings.Join(tools, ", ") + ")"
@@ -237,10 +240,12 @@ func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string, 
 		}
 	}
 
-	// A module without code that names a launch and loads reactor siblings (a dist, assembly or
-	// shading module) ships their classes as a program: it is a unit of those classes on its own
-	// classpath. One that loads none, an aggregator whose profile its children inherit, ships no
-	// first-party code; the children carry that evidence themselves.
+	// A module without code that loads reactor siblings (a dist, assembly or shading module) may
+	// ship their classes as a program, in more ways than launch evidence can list: it is a unit of
+	// those classes on its own classpath unless it is provably inert (launch reports false), and
+	// a unit with no main it can resolve withholds. One that loads none, an aggregator whose
+	// profile its children inherit, ships no first-party code; the children carry that evidence
+	// themselves.
 	packs := make([]bool, len(mods))
 	referenced := make([]bool, len(mods))
 	siblings := make([][]int, len(mods))
@@ -295,6 +300,7 @@ func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string, 
 		covered[i] = true
 		for _, j := range siblings[i] {
 			covered[j] = true
+			u.loads = append(u.loads, dirs[j])
 			if code[j] && !slices.Contains(u.dirs, dirs[j]) {
 				u.dirs = append(u.dirs, dirs[j])
 			}
@@ -336,6 +342,10 @@ type unitOutput struct {
 	dir     string
 	roots   []string
 	classes []classfile.Class
+	// siblingRepackages is set when a reactor sibling the unit loads may publish an artifact
+	// carrying classes besides its own (mavenRepackages): the unit's runtime classpath then holds
+	// classes its loaded closure, read from the sibling's class output, does not.
+	siblingRepackages bool
 }
 
 // unitBytecode is the first-party view of unit u: the class output of its directories, checked
@@ -353,6 +363,11 @@ func unitBytecode(buildDir string, u reactorUnit, outputs []classOutput, files [
 		if d == u.dir {
 			own.roots = append(own.roots, o.root)
 			own.classes = append(own.classes, o.classes...)
+		}
+	}
+	for _, d := range u.loads {
+		if mavenRepackages(buildDir, d) {
+			own.siblingRepackages = true
 		}
 	}
 	fp := assembleFirstParty(buildDir, kept, files)

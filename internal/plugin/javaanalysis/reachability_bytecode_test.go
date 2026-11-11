@@ -631,14 +631,16 @@ func TestBytecodeReach_StaleClassesAreNotSearched(t *testing.T) {
 	}
 }
 
-// Two modules — in the build graph, or two class output trees — are not traced at all.
+// Two modules — in the build graph with code no application unit loads, or two class output
+// trees with no graph modules — are not traced at all.
 func TestBytecodeReach_TwoModulesAreUnsupported(t *testing.T) {
 	cases := map[string]func(a *appFixture){
 		"graph modules": func(a *appFixture) {
 			a.source("src/main/java/com/acme/App.java", appSource)
 			a.source("lib/src/main/java/com/acme/Lib.java", "package com.acme;\npublic class Lib {}\n")
 			a.class("target/classes", "com/acme/App", mainCalling(justReturn))
-			a.graph = graphOption(t, "maven", testModule(t, ".", "app", netkitDep(a.build)), testModule(t, "lib", "lib"))
+			lib := testModule(t, "lib", "lib")
+			a.graph = graphOption(t, "maven", sibling(testModule(t, ".", "app", netkitDep(a.build)), lib, "test"), lib)
 		},
 		"two class outputs": func(a *appFixture) {
 			a.source("app/src/main/java/com/acme/App.java", appSource)
@@ -980,6 +982,13 @@ func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
 			a.editPOM(pomMainClass, "")
 			writeFileT(t, filepath.Join(a.build, "src/main/resources/META-INF/MANIFEST.MF"),
 				"Manifest-Version: 1.0\nMain-Class: org.springframework.boot.loader.JarLauncher\n")
+		}, reasonLaunchEntryUnmapped},
+		// The JAR's Main-Class is in a manifest file the reader does not open, whatever main
+		// another plugin names; a file name with no directory is no class name.
+		{"manifest file beside an exec main: launch_entry_unmapped", func(a *appFixture) {
+			a.editPOM(`<manifest>`+pomMainClass+`</manifest>`, `<manifestFile>MANIFEST.MF</manifestFile>`)
+			a.editPOM(`</plugins>`, `<plugin><artifactId>exec-maven-plugin</artifactId><configuration>`+pomMainClass+`</configuration></plugin></plugins>`)
+			writeFileT(t, filepath.Join(a.build, "MANIFEST.MF"), "Manifest-Version: 1.0\nMain-Class: com.acme.Other\n")
 		}, reasonLaunchEntryUnmapped},
 		{"unresolved property: launch_entry_unmapped", func(a *appFixture) {
 			a.editPOM(pomMainClass, `<mainClass>${start.class}</mainClass>`)

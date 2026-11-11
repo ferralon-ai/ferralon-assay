@@ -2,6 +2,7 @@ package javaanalysis
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 
@@ -51,7 +52,7 @@ type bytecodeRoot struct {
 }
 
 // bytecodeReachability searches each sink from every main and mapped ingress.
-func bytecodeReachability(ctx context.Context, buildDir string, prog *program, fp *firstPartyBytecode, sinks []string, opts ...Option) ([]plugin.ReachPath, []string, map[string]bool, []plugin.ScopedReason, error) {
+func bytecodeReachability(ctx context.Context, buildDir string, files []fileParse, fp *firstPartyBytecode, sinks []string, opts ...Option) ([]plugin.ReachPath, []string, map[string]bool, []plugin.ScopedReason, error) {
 	reasons := map[string]bool{}
 	var scoped []plugin.ScopedReason
 
@@ -83,9 +84,11 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 	// is the loaded one, the build's own, which a licensed launch runs on. The engine is the
 	// cached one, so this is set on every run, never left from the last.
 	linked := rc.Listed && len(rc.Reasons) == 0 && fp.complete() && entry.licenses()
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 	rc.Engine.SetLinked(linked)
-	mains := mainRoots(fp.classes)
-	ingresses, unmapped := ingressRoots(prog, fp.classes)
+	mains := mainRoots(rootClasses(fp, entry))
+	ingresses, unmapped := ingressRoots(files, fp.classes)
 	if len(mains) == 0 {
 		reasons[reasonNoWholeProgramRoot] = true
 	}
@@ -95,14 +98,21 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 		store.load(rc.Engine, root.ref)
 	}
 
+	firstPartyKotlin := slices.ContainsFunc(fp.classes, func(c classfile.Class) bool { return c.KotlinMetadata != nil })
 	var paths []plugin.ReachPath
 	var searched []string
 	for _, id := range sinks {
 		sink, _ := parseDepEdgeSymbol(id)
 		clean := true
+		absent := fp.unit != nil && !fp.unit.siblingRepackages && rc.absent(sink, firstPartyKotlin)
 		var found *plugin.ReachPath
 		for _, root := range roots {
-			res := rc.Engine.Reach(root.ref, sink)
+			var res depreach.Result
+			if absent {
+				res = rc.Engine.ReachNone(root.ref)
+			} else {
+				res = rc.Engine.Reach(root.ref, sink)
+			}
 			if res.Verdict == depreach.ReachableCandidate {
 				p := reachPathFromBytecode(id, root, res.Path)
 				found = &p
@@ -121,8 +131,14 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 				reasons[plugin.PartialReasonNoIngress] = true // reached from a main, not an attacker-facing ingress
 			}
 			paths = append(paths, *found)
-		case clean && entry.licenses() && fp.complete() && !unmapped && len(rc.Reasons) == 0 && rc.concrete(sink) &&
-			!classfile.KotlinInlineWithheld(sink, rc.class):
+		// A reactor unit whose loaded classes are its whole runtime classpath, launched as the
+		// build names it with nothing else to add to that classpath, and searched clean, never
+		// runs a sink that classpath provably lacks (absent), unless a sibling it loads publishes
+		// classes besides its own (siblingRepackages): searched, and absent. The search
+		// still runs, so a call into a class nothing loaded defines withholds as it does for
+		// any sink.
+		case clean && entry.licenses() && fp.complete() && !unmapped && len(rc.Reasons) == 0 &&
+			(absent || rc.concrete(sink) && !classfile.KotlinInlineWithheld(sink, rc.class)):
 			searched = append(searched, id)
 		default:
 			reasons[plugin.PartialReasonNoIngress] = true
@@ -136,6 +152,27 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 		reasons[plugin.PartialReasonReachabilityUndetermined] = true
 	}
 	return paths, searched, reasons, scoped, nil
+}
+
+// rootClasses are the first-party classes whose mains are roots. For a reactor unit they are its
+// own module's classes and any launch main it names in a sibling: a sibling's other main (a code
+// generator, a tool) runs only when something calls it, and the search then reaches it from a
+// root.
+func rootClasses(fp *firstPartyBytecode, entry launchEntry) []classfile.Class {
+	if fp.unit == nil {
+		return fp.classes
+	}
+	own := map[string]bool{}
+	out := append([]classfile.Class{}, fp.unit.classes...)
+	for _, c := range fp.unit.classes {
+		own[c.Name] = true
+	}
+	for _, c := range fp.classes {
+		if !own[c.Name] && slices.Contains(entry.mains, c.Name) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // mainRoots returns every concrete main(String[]) in the compiled classes, sorted.
@@ -156,13 +193,13 @@ func mainRoots(classes []classfile.Class) []bytecodeRoot {
 // binary class (package path + '$'-joined enclosing chain), same name, same parameter
 // count. unmapped is true when some marker has no compiled counterpart, so a framework
 // entry exists that the search cannot start from.
-func ingressRoots(prog *program, classes []classfile.Class) (roots []bytecodeRoot, unmapped bool) {
+func ingressRoots(files []fileParse, classes []classfile.Class) (roots []bytecodeRoot, unmapped bool) {
 	byName := make(map[string]*classfile.Class, len(classes))
 	for i := range classes {
 		byName[classes[i].Name] = &classes[i]
 	}
 	seen := map[string]bool{}
-	for _, f := range prog.files {
+	for _, f := range files {
 		pkgPath := strings.ReplaceAll(f.pkg, ".", "/")
 		for _, in := range f.ingresses {
 			owner := strings.Join(in.enclosing, "$")

@@ -2,7 +2,9 @@ package javaanalysis
 
 import (
 	"archive/zip"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,10 +26,11 @@ import (
 // below and resolves to a first-party class declaring main(String[]); every other launch
 // shape withholds Searched with a named reason, because an entry the reader does not know is
 // not an entry that is absent:
-//   - Maven: a <mainClass>, <start-class>, <Main-Class> or <Start-Class> element in a
-//     project's pom.xml (jar/shade/assembly/exec/spring-boot plugin configuration, manifest
-//     entries, the Boot property), with ${...} resolved from that POM's own <properties>;
-//     packaging jar (or none);
+//   - Maven: a <mainClass>, <start-class>, <Main-Class> or <Start-Class> element that applies
+//     to the module over its effective POM (effectivepom.go: the module's pom.xml and every
+//     parent it inherits from, a parent's <pluginManagement> entry counting for a plugin the
+//     module applies, start-class for the Boot plugin), with ${...} resolved through the chain's
+//     merged properties; packaging jar (or none);
 //   - Gradle: mainClass = / mainClass.set(...) / mainClassName = and a 'Main-Class' manifest
 //     attribute in the project's build.gradle(.kts), with no war plugin;
 //   - a manifest the project ships or built (src/main/resources/META-INF/MANIFEST.MF, the
@@ -125,12 +128,18 @@ var springBootLaunchers = map[string]bool{
 	"org.springframework.boot.loader.launch.WarLauncher": true,
 }
 
-// findLaunchEntry reads the launch entry of the projects whose class output fp read.
-// lookup returns a loaded class (first-party or dependency) by binary name.
+// findLaunchEntry reads the launch entry of the projects whose class output fp read; for a
+// reactor unit, of the unit module alone, whose reactor parent POMs may be read from the
+// checkout. lookup returns a loaded class (first-party or dependency) by binary name.
 func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string) (*classfile.Class, bool)) launchEntry {
 	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir)}
-	for _, dir := range fp.projectDirs() {
-		r.maven(filepath.Join(dir, "pom.xml"))
+	dirs, roots, bootClasses := fp.projectDirs(), fp.roots, fp.classes
+	if fp.unit != nil {
+		dirs, roots, bootClasses = []string{fp.unit.dir}, fp.unit.roots, fp.unit.classes
+		r.checkout = buildDir
+	}
+	for _, dir := range dirs {
+		r.maven(modulePOM(dir))
 		for _, n := range []string{"build.gradle", "build.gradle.kts"} {
 			r.gradle(filepath.Join(dir, n))
 		}
@@ -139,7 +148,7 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 			r.archives(filepath.Join(dir, out))
 		}
 	}
-	for _, root := range fp.roots {
+	for _, root := range roots {
 		r.manifestFile(filepath.Join(root, "META-INF", "MANIFEST.MF"))
 	}
 	if r.bootPlugin {
@@ -166,7 +175,7 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 		e.mains = append(e.mains, bin)
 	}
 	if len(r.named) == 0 {
-		if main, ok := r.bootMain(fp); ok {
+		if main, ok := r.bootMain(bootClasses, roots); ok {
 			e.mains = append(e.mains, main)
 		} else {
 			r.reasons[reasonLaunchEntryUnnamed] = true
@@ -186,6 +195,32 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 	return e
 }
 
+// launchSignal reports whether the Maven module at dir carries launch evidence of its own, so it
+// ships as a program and not only as a library another module loads. The evidence is what
+// findLaunchEntry reads for a unit, met at all, whether or not it resolves: the Boot plugin
+// applied by its POM or one it inherits; a launch class named in its POM, its source manifest, a
+// JAR under its target/ or the manifest of one of its class output roots; war or ear packaging, or
+// a built .war; a POM, manifest or built JAR that cannot be read; or a POM chain that may name
+// what it does not show: a parent not read, or a profile naming a launch class or plugin.
+//
+// A module with no code of its own (code false) ships a program only by packaging other modules'
+// classes, in more ways than evidence can list, so the burden is inverted: it carries evidence
+// unless it is provably inert (provablyInert), and an inert one still carries what the readers
+// find on disk.
+func launchSignal(buildDir, dir string, roots []string, code bool) bool {
+	if !code && !provablyInert(buildDir, dir) {
+		return true
+	}
+	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir), checkout: buildDir}
+	r.maven(modulePOM(dir))
+	r.manifestFile(filepath.Join(dir, "src", "main", "resources", "META-INF", "MANIFEST.MF"))
+	r.archives(filepath.Join(dir, "target"))
+	for _, root := range roots {
+		r.manifestFile(filepath.Join(root, "META-INF", "MANIFEST.MF"))
+	}
+	return r.launched || r.bootPlugin || r.bootBlocked || r.reasons[reasonLaunchEntryProfilePlugin]
+}
+
 func declaresMain(c *classfile.Class) bool {
 	for _, m := range c.Methods {
 		if m.Ref.Name == "main" && m.Ref.Descriptor == mainDescriptor && !m.Abstract && !m.Native {
@@ -203,11 +238,11 @@ const springBootApplication = "Lorg/springframework/boot/autoconfigure/SpringBoo
 //
 // This lane reads the Maven plugin only. A Gradle build applying org.springframework.boot with no
 // main named keeps launch_entry_unnamed here; the Kotlin lane reads the Gradle plugin.
-func (r *entryReader) bootMain(fp *firstPartyBytecode) (string, bool) {
+func (r *entryReader) bootMain(classes []classfile.Class, roots []string) (string, bool) {
 	if !r.bootPlugin || r.bootBlocked {
 		return "", false
 	}
-	return BootMainClass(fp.classes, fp.roots)
+	return BootMainClass(classes, roots)
 }
 
 // BootMainClass is the main Spring Boot's MainClassFinder picks from classes, the first-party
@@ -259,8 +294,7 @@ func MavenBootPlugin(buildDir, path string) (plugin, blocked, cliProperty bool) 
 		return false, true, false
 	}
 	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir)}
-	chain, files, complete := r.pomChain(pom, path)
-	r.bootMaven(chain, files, complete)
+	r.bootMaven(r.effective(pom, path))
 	if !r.bootPlugin {
 		return false, r.bootBlocked, false
 	}
@@ -339,9 +373,14 @@ type entryReader struct {
 	named    map[string]bool
 	propKeys map[string]bool // POM properties a launch entry resolved through
 	cache    *mavenCache
+	// checkout is the build dir a parent POM may be read from at its relativePath, "" for none.
+	checkout string
 
 	bootPlugin  bool // a POM in the chain applies spring-boot-maven-plugin
 	bootBlocked bool // the build may hand the Boot plugin a main bootMain does not see
+	// launched is set when the reader meets a launch-naming form, resolved or not, an
+	// unreadable POM, manifest or built JAR, war or ear packaging, or a built .war (launchSignal).
+	launched bool
 }
 
 var (
@@ -357,6 +396,7 @@ var (
 )
 
 func (r *entryReader) name(v string) {
+	r.launched = true
 	v = strings.TrimSpace(v)
 	if v == "" || !javaBinaryNamePattern.MatchString(v) {
 		r.reasons[reasonLaunchEntryUnmapped] = true
@@ -368,17 +408,24 @@ func (r *entryReader) name(v string) {
 var javaBinaryNamePattern = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)*$`)
 
 func (r *entryReader) maven(path string) {
-	data, err := os.ReadFile(path)
+	_, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
+			r.launched = true
 			r.reasons[reasonLaunchEntryUnmapped] = true
 		}
 		return
 	}
 	pom, ok := parseMavenPOM(path)
 	if !ok {
+		r.launched = true
 		r.reasons[reasonLaunchEntryUnmapped] = true
 		return
+	}
+	// Every packaging but a plain jar or an aggregator ships the module as something of its own
+	// (war, ear, an OSGi bundle, a plugin, or a value only a property resolves).
+	if pom.Packaging != "" && pom.Packaging != "jar" && pom.Packaging != "pom" {
+		r.launched = true
 	}
 	switch pom.Packaging {
 	case "", "jar":
@@ -387,52 +434,68 @@ func (r *entryReader) maven(path string) {
 	default:
 		r.reasons[reasonLaunchEntryUnmapped] = true
 	}
-	// A profile can be switched on from outside the POM (-P, settings.xml), so a profile that
-	// sets a property or names a launch class counts whatever its activation says.
-	chain, files, complete := r.pomChain(pom, path)
-	profileProps := map[string]bool{}
-	for i, p := range chain {
-		for _, pr := range p.Profiles {
-			for k := range pr.Properties {
-				profileProps[k] = true
-			}
-		}
-		if profileNamesLaunch(files[i]) {
-			r.reasons[reasonLaunchEntryProfilePlugin] = true
-		}
+	eff := r.effective(pom, path)
+	if eff.profileLaunch {
+		r.reasons[reasonLaunchEntryProfilePlugin] = true
 	}
-	r.bootMaven(chain, files, complete)
-	text := xmlComment.ReplaceAllString(string(data), "")
-	for _, m := range pomEntryElement.FindAllStringSubmatch(text, -1) {
-		if m[1] == "Main-Verticle" {
-			r.reasons[reasonLaunchEntryUnmapped] = true
-			continue
-		}
-		v := pomPropertyRef.ReplaceAllStringFunc(m[2], func(ref string) string {
-			key := ref[2 : len(ref)-1]
-			val, ok := pom.Properties[key]
-			if !ok || strings.Contains(val, "${") {
-				return ref
-			}
-			if !complete || profileProps[key] {
-				r.reasons[reasonLaunchEntryProfileProperty] = true
-			}
-			r.propKeys[key] = true
-			return val
-		})
-		r.name(v)
+	if eff.unread {
+		r.launched = true
+		r.reasons[reasonLaunchEntryUnmapped] = true
+	}
+	// A parent not read may name a launch class for any plugin the module runs; an aggregator
+	// runs none that packages a program.
+	if !eff.complete && pom.Packaging != "pom" {
+		r.launched = true
+	}
+	r.bootMaven(eff)
+	for _, e := range eff.entries {
+		r.entry(eff, e)
+	}
+	// The Boot plugin's main defaults to start-class; without the plugin the property launches
+	// only through an entry that names it, read above.
+	if v, ok := eff.startClass(); ok && r.bootPlugin {
+		r.entry(eff, pomEntry{elem: "start-class", value: v})
 	}
 }
 
-// bootMaven records whether a POM in the chain applies spring-boot-maven-plugin in its
-// <build><plugins>, and blocks bootMain when the chain is not all read, or when a POM in it names
-// a launch class any way but starter-parent's ${start-class} wiring (a <start-class> property
-// is one such way) or points spring-boot.run.main-class anywhere but ${start-class}.
-func (r *entryReader) bootMaven(chain []*mvnPOM, files []string, complete bool) {
-	if !complete {
+// entry records one launch-naming element of eff, its ${...} resolved against eff's merged
+// properties.
+func (r *entryReader) entry(eff *pomEffective, e pomEntry) {
+	// A verticle launches through Vert.x's own main; a manifest file names its Main-Class in a
+	// file the reader does not open.
+	if e.elem == "Main-Verticle" || e.elem == "manifestFile" {
+		r.launched = true
+		r.reasons[reasonLaunchEntryUnmapped] = true
+		return
+	}
+	v := eff.resolve(e.value, func(key string) {
+		if !eff.complete || eff.profileProps[key] {
+			r.reasons[reasonLaunchEntryProfileProperty] = true
+		}
+		r.propKeys[key] = true
+	})
+	if m := pomWholeRef.FindStringSubmatch(v); m != nil && bootMainKeys[m[1]] {
+		return
+	}
+	r.name(v)
+}
+
+// bootMainKeys are the properties spring-boot-starter-parent wires to the Boot plugin's main: a
+// value that resolves to nothing but one of them, unset, leaves the main to the plugin.
+var bootMainKeys = map[string]bool{"start-class": true, "spring-boot.run.main-class": true}
+
+var pomWholeRef = regexp.MustCompile(`^\$\{([^}]*)\}$`)
+
+// bootMaven records whether the module applies spring-boot-maven-plugin, and blocks bootMain when
+// the chain is not all read, or when a POM in it names a launch class any way but starter-parent's
+// ${start-class} wiring (a <start-class> property is one such way) or points
+// spring-boot.run.main-class anywhere but ${start-class}.
+func (r *entryReader) bootMaven(eff *pomEffective) {
+	r.bootPlugin = r.bootPlugin || eff.applied[bootPluginKey]
+	if !eff.complete || eff.unread {
 		r.bootBlocked = true
 	}
-	for i, p := range chain {
+	for _, p := range eff.chain {
 		props := []map[string]string{p.Properties}
 		for _, pr := range p.Profiles {
 			props = append(props, pr.Properties)
@@ -442,55 +505,115 @@ func (r *entryReader) bootMaven(chain []*mvnPOM, files []string, complete bool) 
 				r.bootBlocked = true
 			}
 		}
-		data, err := readRegular(files[i])
-		if err != nil {
-			r.bootBlocked = true
-			continue
-		}
-		text := xmlComment.ReplaceAllString(string(data), "")
+	}
+	for _, text := range eff.texts {
 		if len(pomEntryWord.FindAllStringIndex(text, -1)) != len(bootStartClassRef.FindAllStringIndex(text, -1)) {
 			r.bootBlocked = true
-		}
-		var xp struct {
-			Plugins []struct {
-				GroupID    string `xml:"groupId"`
-				ArtifactID string `xml:"artifactId"`
-			} `xml:"build>plugins>plugin"`
-		}
-		if err := unmarshalPOM(data, &xp); err != nil {
-			r.bootBlocked = true
-			continue
-		}
-		for _, pl := range xp.Plugins {
-			if strings.TrimSpace(pl.GroupID) == "org.springframework.boot" && strings.TrimSpace(pl.ArtifactID) == "spring-boot-maven-plugin" {
-				r.bootPlugin = true
-			}
 		}
 	}
 }
 
-// pomChain returns pom (read from path) and the parents it inherits from, nearest first, read
-// from the Maven cache, with the file each was read from. complete is false when a parent is not
-// there: its profiles are unknown, not absent. A parent inside the checkout is a second project,
-// which multiple_projects_unsupported withholds already.
+// pomChain returns pom (read from path) and the parents it inherits from, nearest first, with
+// the file each was read from. complete is false when a parent is not there: its profiles are
+// unknown, not absent. A parent comes from the Maven cache; when r reads a reactor unit, first
+// from the checkout at its relativePath, as Maven takes it, when that POM's coordinate matches.
 func (r *entryReader) pomChain(pom *mvnPOM, path string) ([]*mvnPOM, []string, bool) {
 	chain, files := []*mvnPOM{pom}, []string{path}
 	seen := map[string]bool{}
-	for cur := pom; len(chain) <= 20; {
+	for cur, curFile := pom, path; len(chain) <= 20; {
 		p := cur.Parent
 		if p.ArtifactID == "" {
 			return chain, files, true
 		}
 		key := gavKey(p.GroupID, p.ArtifactID, p.Version)
-		next, ok := r.cache.get(p.GroupID, p.ArtifactID, p.Version)
-		if !ok || seen[key] {
+		if seen[key] {
+			return chain, files, false
+		}
+		next, file, ok, escaped := r.checkoutParent(curFile, p)
+		if escaped {
+			return chain, files, false
+		}
+		parentFile := file
+		if !ok {
+			// A cached POM's relativePath points into the repository, never the checkout.
+			next, ok = r.cache.get(p.GroupID, p.ArtifactID, p.Version)
+			file, parentFile = r.cache.pomFile(p.GroupID, p.ArtifactID, p.Version), ""
+		}
+		if !ok {
 			return chain, files, false
 		}
 		seen[key] = true
-		chain, files = append(chain, next), append(files, r.cache.pomFile(p.GroupID, p.ArtifactID, p.Version))
-		cur = next
+		chain, files = append(chain, next), append(files, file)
+		cur, curFile = next, parentFile
 	}
 	return chain, files, false
+}
+
+// mavenExtensions reports whether a .mvn/extensions.xml in dir or a directory above it, up to
+// buildDir, registers core extensions for the build, or may: one that cannot be checked counts.
+func mavenExtensions(buildDir, dir string) bool {
+	for d := filepath.Clean(dir); within(buildDir, d); d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".mvn", "extensions.xml")); !errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+		if d == filepath.Clean(buildDir) || d == filepath.Dir(d) {
+			break
+		}
+	}
+	return false
+}
+
+// parentOutside reports whether the checkout POM at child would have Maven look for its parent p
+// outside the checkout: at p's relativePath, ../pom.xml when it names none. An empty one turns the
+// lookup off, naming child's own directory.
+func parentOutside(buildDir, child string, p mvnParent) bool {
+	relPath := "../pom.xml"
+	if p.RelativePath != nil {
+		relPath = *p.RelativePath
+	}
+	return !within(buildDir, filepath.Join(filepath.Dir(child), filepath.FromSlash(relPath)))
+}
+
+// modulePOM is the POM of the Maven module at dir. This file and launchoptions.go are the JVM
+// lane's readers of build inputs (buildgraph's TestJVMPluginsReadNoBuildInputs); the POM
+// reads elsewhere in the lane locate it here.
+func modulePOM(dir string) string { return filepath.Join(dir, "pom.xml") }
+
+// checkoutParent reads parent p of the checkout POM at child from the checkout, at p's
+// relativePath, ../pom.xml when it names none; a directory names its pom.xml and an empty one
+// turns the lookup off. It is found only when r has a checkout, the file lies inside it, and the
+// POM there has p's coordinate. escaped reports a file at that path that resolves outside the
+// checkout, or cannot be judged: Maven reads it, and the repository copy may not be what it reads.
+func (r *entryReader) checkoutParent(child string, p mvnParent) (pom *mvnPOM, file string, ok, escaped bool) {
+	relPath := "../pom.xml"
+	if p.RelativePath != nil {
+		relPath = *p.RelativePath
+	}
+	if r.checkout == "" || relPath == "" || child == "" {
+		return nil, "", false, false
+	}
+	candidate := filepath.Join(filepath.Dir(child), filepath.FromSlash(relPath))
+	if !within(r.checkout, candidate) {
+		return nil, "", false, false
+	}
+	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+		candidate = filepath.Join(candidate, "pom.xml")
+	}
+	rel, err := filepath.Rel(r.checkout, candidate)
+	if err != nil {
+		return nil, "", false, false
+	}
+	switch _, st := inCache(r.checkout, rel); st {
+	case cacheEscape:
+		return nil, "", false, true
+	case cacheMiss:
+		return nil, "", false, false
+	}
+	pom, ok = parseMavenPOM(candidate)
+	if !ok || pom.GroupID != p.GroupID || pom.ArtifactID != p.ArtifactID || pom.Version != p.Version {
+		return nil, "", false, false
+	}
+	return pom, candidate, true, false
 }
 
 // pomFile returns the cache file mavenCache.get reads g:a:v's POM from, or "" when there is none;
@@ -510,30 +633,6 @@ func (c *mavenCache) pomFile(g, a, v string) string {
 		}
 	}
 	return ""
-}
-
-// profileNamesLaunch reports whether any <profile> in the POM at path carries a launch-naming
-// element (a plugin's mainClass, a manifest Main-Class, the Boot start-class). A POM that cannot
-// be re-read counts as naming one.
-func profileNamesLaunch(path string) bool {
-	data, err := readRegular(path)
-	if err != nil {
-		return true
-	}
-	var xp struct {
-		Profiles []struct {
-			Inner string `xml:",innerxml"`
-		} `xml:"profiles>profile"`
-	}
-	if err := unmarshalPOM(data, &xp); err != nil {
-		return true
-	}
-	for _, pr := range xp.Profiles {
-		if pomEntryElement.MatchString(xmlComment.ReplaceAllString(pr.Inner, "")) {
-			return true
-		}
-	}
-	return false
 }
 
 var (
@@ -570,6 +669,7 @@ func (r *entryReader) manifestFile(path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
+			r.launched = true
 			r.reasons[reasonLaunchEntryUnmapped] = true
 		}
 		return
@@ -588,6 +688,7 @@ func (r *entryReader) archives(dir string) {
 		switch {
 		case d.IsDir():
 		case strings.HasSuffix(lower, ".war"):
+			r.launched = true
 			r.reasons[reasonWarPackaging] = true
 		case strings.HasSuffix(lower, ".jar"):
 			r.archiveManifest(filepath.Join(dir, d.Name()))
@@ -598,6 +699,7 @@ func (r *entryReader) archives(dir string) {
 func (r *entryReader) archiveManifest(path string) {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
+		r.launched = true
 		r.reasons[reasonLaunchEntryUnmapped] = true
 		return
 	}
@@ -608,12 +710,14 @@ func (r *entryReader) archiveManifest(path string) {
 		}
 		rc, err := f.Open()
 		if err != nil {
+			r.launched = true
 			r.reasons[reasonLaunchEntryUnmapped] = true
 			return
 		}
 		data, err := io.ReadAll(io.LimitReader(rc, launchTextLimit))
 		rc.Close()
 		if err != nil {
+			r.launched = true
 			r.reasons[reasonLaunchEntryUnmapped] = true
 			return
 		}
@@ -632,6 +736,7 @@ func (r *entryReader) manifest(data []byte) {
 		}
 	}
 	if _, ok := attrs["main-verticle"]; ok {
+		r.launched = true
 		r.reasons[reasonLaunchEntryUnmapped] = true
 	}
 	main, hasMain := attrs["main-class"]

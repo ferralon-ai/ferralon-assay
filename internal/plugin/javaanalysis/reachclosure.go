@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -54,6 +55,10 @@ const (
 // spots loading the dependencies incurred.
 type reachClosure struct {
 	Engine *depreach.Engine
+	// mu serialises searches over Engine, whose link mode and per-root search memo every search
+	// sets. A cache hit copies the closure and shares Engine, and Reachability is a library
+	// entry point a caller may run concurrently, so the copies share mu as well.
+	mu *sync.Mutex
 	// key fingerprints the inputs the engine was built from (loadReachClosure).
 	key    string
 	Scoped []plugin.ScopedReason
@@ -84,6 +89,16 @@ type reachClosure struct {
 	unread bool
 	// shadowed is set when two JARs define the same class.
 	shadowed bool
+	// jdk is the feature release the classes were indexed for.
+	jdk int
+	// referenced holds every class a loaded class's constant pool names, simpleNames the
+	// simple name of every loaded class, kotlinPkgs the package of every loaded class carrying
+	// Kotlin metadata and kotlinRefPkgs the package of every class those name: what absent reads
+	// for another route a sink's code can take.
+	referenced    map[string]bool
+	simpleNames   map[string]bool
+	kotlinPkgs    map[string]bool
+	kotlinRefPkgs map[string]bool
 }
 
 // gav is one loaded dependency JAR: a coordinate at a version, and its classifier when the
@@ -98,28 +113,81 @@ func (g gav) String() string {
 	return s
 }
 
-// closureCache keeps the last engine built per build dir. The pipeline asks Reachability
-// once per advisory, and every ask would otherwise rebuild the hierarchy over the whole
-// closure. The key fingerprints every input (JAR paths and digests; the first-party classes in
-// full; the classpath), so any change rebuilds.
+// closureCache keeps the last engine built per build dir, and per reactor unit within it. The
+// pipeline asks Reachability once per advisory, and every ask would otherwise rebuild the
+// hierarchy over the whole closure. The key fingerprints every input (JAR paths and digests; the first-party classes in
+// full; the classpath), so any change rebuilds. It holds at most closureCacheCap entries, and
+// drops the least recently used first.
 var closureCache = struct {
 	sync.Mutex
-	m map[string]closureEntry
+	m    map[string]closureEntry
+	tick uint64
 }{m: map[string]closureEntry{}}
 
 type closureEntry struct {
-	key string
-	rc  *reachClosure
+	key  string
+	rc   *reachClosure
+	used uint64 // closureCache.tick when last stored or looked up
+}
+
+// closureCacheCap bounds the engines closureCache holds: a long-lived process searching many
+// builds, or a reactor of many units, keeps at most this many.
+const closureCacheCap = 16
+
+// cacheClosure stores e under key, first dropping the least recently used other entry when the
+// cache is full.
+func cacheClosure(key string, e closureEntry) {
+	closureCache.Lock()
+	defer closureCache.Unlock()
+	if _, ok := closureCache.m[key]; !ok && len(closureCache.m) >= closureCacheCap {
+		var lru string
+		for k, v := range closureCache.m {
+			if lru == "" || v.used < closureCache.m[lru].used {
+				lru = k
+			}
+		}
+		delete(closureCache.m, lru)
+	}
+	closureCache.tick++
+	e.used = closureCache.tick
+	closureCache.m[key] = e
+}
+
+// cachedClosure returns the entry under key, marking it used.
+func cachedClosure(key string) (closureEntry, bool) {
+	closureCache.Lock()
+	defer closureCache.Unlock()
+	e, ok := closureCache.m[key]
+	if ok {
+		closureCache.tick++
+		e.used = closureCache.tick
+		closureCache.m[key] = e
+	}
+	return e, ok
 }
 
 // loadReachClosure loads every runtime JAR the build graph names. firstParty is the build's
 // compiled output and fpClasspath what its directories define: it goes into the engine, and a
 // dependency class with the same binary name is skipped, since the build output is what the
 // build packaged. Without a graph only firstParty is loaded, and the closure says so run-wide.
-// The engine runs on the JDK the graph's run conditions state.
+// The engine runs on the JDK the graph's run conditions state. A per-unit search (withUnit) loads
+// the unit module's runtime classpath only; the launch options, the JDK and the graph's
+// completeness stay the whole graph's.
 func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath depreach.Classpath, opts ...Option) (*reachClosure, error) {
 	g := BuildGraph(opts...)
 	reasons := LaunchOptionReasons(buildDir, g)
+	unit := resolveOptions(opts).unit
+	var mods []buildgraph.Module
+	if g != nil {
+		mods = g.Modules
+		if unit != "" {
+			mods = unitModules(g, unit)
+		}
+	}
+	cacheKey := buildDir
+	if unit != "" {
+		cacheKey += "\x00" + unit
+	}
 
 	targetsMemo := map[string][]string{}
 	targets := func(coord string) []string {
@@ -128,7 +196,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 		}
 		var t []string
 		if g != nil {
-			t = BlindSpotTargets(g, coord)
+			t = blindSpotTargets(mods, coord)
 		}
 		targetsMemo[coord] = t
 		return t
@@ -146,7 +214,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	var cp depreach.Classpath
 	cp.Merge(fpClasspath)
 	fp := sha256.New()
-	whole := g != nil && RuntimeListed(g, buildDir) && g.RuntimeJDK() > 8
+	whole := g != nil && (unit == "" || len(mods) > 0) && runtimeListed(g, mods, buildDir) && g.RuntimeJDK() > 8
 	if g == nil {
 		cp.Unlisted = true
 		reasons = append([]string{PartialReasonBuildGraphAbsent}, reasons...)
@@ -155,7 +223,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 		if OtherToolBuild(g, buildDir) {
 			reasons = append([]string{PartialReasonOtherToolBuild}, reasons...)
 		}
-		load, miss := RuntimeSelection(g)
+		load, miss := runtimeSelection(g, mods)
 		for _, m := range miss {
 			cp.Unlisted = true // no JAR is listed for it
 			reason := reasonNoDependencyArtifact
@@ -182,9 +250,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	fmt.Fprintln(fp, classpathFingerprint(cp))
 	fingerprint := hex.EncodeToString(fp.Sum(nil))
 
-	closureCache.Lock()
-	hit, ok := closureCache.m[buildDir]
-	closureCache.Unlock()
+	hit, ok := cachedClosure(cacheKey)
 	if ok && hit.key == fingerprint {
 		out := *hit.rc
 		out.Scoped = append(rc.Scoped, hit.rc.Scoped...)
@@ -197,7 +263,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	for _, c := range firstParty {
 		isFirstParty[c.Name] = true
 	}
-	built := &reachClosure{Loaded: map[string]string{}}
+	built := &reachClosure{Loaded: map[string]string{}, mu: &sync.Mutex{}}
 	definedBy := map[string]gav{}
 	shadowReported := map[string]bool{}
 	all := append([]classfile.Class{}, firstParty...)
@@ -240,9 +306,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	built.key = fingerprint
 	built.index(all, cp.JDK)
 
-	closureCache.Lock()
-	closureCache.m[buildDir] = closureEntry{key: fingerprint, rc: built}
-	closureCache.Unlock()
+	cacheClosure(cacheKey, closureEntry{key: fingerprint, rc: built})
 
 	out := *built
 	out.Scoped = append(rc.Scoped, built.Scoped...)
@@ -342,12 +406,59 @@ func (rc *reachClosure) concrete(ref classfile.MethodRef) bool {
 	return ok && !m.Abstract && !m.Native
 }
 
+// absent reports whether ref's owner is provably not on the classpath, nor its code by another
+// route: the loaded classes are every class it defines (Listed), none is the owner, and the owner
+// is no JDK class; no loaded class names the owner, which code compiled against it does and
+// which a JAR outside the listed tree (a sibling's shaded artifact, a provided or optional
+// dependency) then supplies; no loaded class shares its simple name, as a relocated copy does;
+// and no Kotlin compile may have copied the sink's body into a caller without naming its class,
+// as an inline function's call does. That copy is in code compiled against the sink's owner:
+// first-party code, when any of it is Kotlin (firstPartyKotlin), or a Kotlin dependency that
+// shares or names the owner's package. A Kotlin library compiled against other code
+// (kotlin-stdlib, okio) is no such caller.
+func (rc *reachClosure) absent(ref classfile.MethodRef, firstPartyKotlin bool) bool {
+	_, loaded := rc.classes[ref.Owner]
+	pkg := classPackage(ref.Owner)
+	return rc.Listed && !loaded && !depreach.IsPlatformClass(ref.Owner) && !depreach.BootOnly(ref.Owner, rc.jdk) &&
+		!rc.referenced[ref.Owner] && !rc.simpleNames[simpleClassName(ref.Owner)] &&
+		!firstPartyKotlin && !rc.kotlinPkgs[pkg] && !rc.kotlinRefPkgs[pkg]
+}
+
+// classPackage is name's package, slash-separated, "" for the default package.
+func classPackage(name string) string {
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		return name[:i]
+	}
+	return ""
+}
+
+// simpleClassName is name without its package.
+func simpleClassName(name string) string {
+	return name[strings.LastIndex(name, "/")+1:]
+}
+
 // index records the classes and methods of all that run on feature release jdk, as the engine
 // does: a classpath copy of a class the JVM may load from the JDK instead is left out.
 func (rc *reachClosure) index(all []classfile.Class, jdk int) {
+	rc.jdk = jdk
 	rc.methods = make(map[string]classfile.Method)
 	rc.classes = make(map[string]*classfile.Class, len(all))
+	rc.referenced = map[string]bool{}
+	rc.simpleNames = make(map[string]bool, len(all))
+	rc.kotlinPkgs = map[string]bool{}
+	rc.kotlinRefPkgs = map[string]bool{}
 	for i := range all {
+		kotlin := all[i].KotlinMetadata != nil
+		for _, n := range all[i].Refs {
+			rc.referenced[n] = true
+			if kotlin {
+				rc.kotlinRefPkgs[classPackage(n)] = true
+			}
+		}
+		rc.simpleNames[simpleClassName(all[i].Name)] = true
+		if kotlin {
+			rc.kotlinPkgs[classPackage(all[i].Name)] = true
+		}
 		if depreach.BootOnly(all[i].Name, jdk) {
 			continue
 		}

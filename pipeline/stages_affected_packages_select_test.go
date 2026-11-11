@@ -44,10 +44,7 @@ func (s multipkgSelectSource) Lookup(string) (AdvisoryFacts, bool) {
 		PURL:           "pkg:golang/example.com/a",
 		AffectedRanges: []Range{{Fixed: "v9.9.9", FixedVersion: "v9.9.9"}},
 		Symbols:        []string{"example.com/a.Sink"},
-		// first_party trust is required for the version axis to be allowed to disqualify (inv.5
-		// refute-gate); without it disqualify() always fails open and the patched-secondary case
-		// could not demonstrate the axis engaging.
-		Provenance: Provenance{Source: "synthetic", TrustTier: TrustFirstParty},
+		Provenance:     Provenance{Source: "synthetic", TrustTier: TrustFirstParty},
 	}
 	if s.withArray {
 		facts.AffectedPackages = []AffectedPackage{

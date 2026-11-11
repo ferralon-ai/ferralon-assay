@@ -86,13 +86,13 @@ func TestCountedReachPaths(t *testing.T) {
 			want:     []string{"Get"},
 		},
 		{
-			name:      "untrusted advisory keeps the path",
+			name:      "advisory with no trust tier drops the out-of-range path too",
 			selected:  "golang.org/x/net",
 			present:   []map[string]any{stdlibAt(true, "go1.26.7")},
 			packages:  []map[string]any{xnet, stdlib},
 			untrusted: true,
 			paths:     []plugin.ReachPath{reachTo("net/http", "Get")},
-			want:      []string{"Get"},
+			want:      nil,
 		},
 		{
 			name:      "toolchain floor below an introduced bound keeps the path",

@@ -186,7 +186,13 @@ func (s *bundleSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 	if err := json.Unmarshal(rec.bytes, &doc); err != nil {
 		return AdvisoryFacts{}, false
 	}
-	return doc.toFacts(vulnID)
+	facts, ok := doc.toFacts(vulnID)
+	if !ok {
+		return AdvisoryFacts{}, false
+	}
+	// Stamp where the fact was served from, so a refute it drives can name the record.
+	facts.Provenance.Corpus, facts.Provenance.Record = s.fileDigest, rec.outputDigest
+	return facts, true
 }
 
 // Validate is the STARTUP-ONLY bundle preflight (implements CorpusValidator). It triggers the load

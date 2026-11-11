@@ -550,3 +550,45 @@ func TestHazardKind(t *testing.T) {
 		}
 	}
 }
+
+// ReachNone answers for the whole closure from an ingress, whatever sink is asked about: a
+// clean closure is NotExploitable, one with a hazard on its frontier Undetermined. It answers
+// the same before and after Reach fills the memo, and for an ingress whose closure misses the
+// sink, the same as Reach.
+func TestReachNone(t *testing.T) {
+	sink := mref("com/evil/netkit/UrlFetcher", "fetch", sinkDesc)
+	cases := []struct {
+		name      string
+		ingress   classfile.MethodRef
+		want      Verdict
+		reachSame bool // Reach to the sink gives the same verdict
+	}{
+		{"a closure reaching only the int overload", mref("com/acme/app/App", "unreachable", "()V"), NotExploitable, true},
+		{"a closure that reaches the sink, with nothing left open", mref("com/acme/app/App", "reachable", "()V"), NotExploitable, false},
+		{"reflection on the frontier", mref("com/acme/app/App", "dynamic", "()V"), Undetermined, true},
+		{"an ingress the classpath does not define", mref("com/acme/app/Missing", "run", "()V"), Undetermined, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cold := NewEngine(c7Classes())
+			first := cold.ReachNone(tc.ingress)
+			if first.Verdict != tc.want {
+				t.Fatalf("ReachNone = %s, want %s (hazard=%q)", first.Verdict, tc.want, first.HazardWhy)
+			}
+			warm := NewEngine(c7Classes())
+			r := warm.Reach(tc.ingress, sink)
+			if got := warm.ReachNone(tc.ingress); got.Verdict != tc.want {
+				t.Errorf("ReachNone after Reach = %s, want %s", got.Verdict, tc.want)
+			}
+			if (r.Verdict == tc.want) != tc.reachSame {
+				t.Errorf("Reach = %s beside ReachNone %s, want same=%v", r.Verdict, tc.want, tc.reachSame)
+			}
+			if len(first.HazardKinds) > 0 {
+				first.HazardKinds[0] = "overwritten"
+				if again := cold.ReachNone(tc.ingress); again.HazardKinds[0] == "overwritten" {
+					t.Error("ReachNone hands out the memo's hazard kinds")
+				}
+			}
+		})
+	}
+}

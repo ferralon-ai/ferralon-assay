@@ -115,7 +115,7 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	if err != nil {
 		return nil, err
 	}
-	if err := unlistedInPOM(modules, effective); err != nil {
+	if err := unlistedInPOM(modules, effective, artifactOverride(c, r.env, r.dir)); err != nil {
 		return nil, err
 	}
 	if err := resolveMavenFiles(ctx, r, base, modules, effective); err != nil {
@@ -439,14 +439,44 @@ func (c xmlChildren) has(local string) bool {
 	return false
 }
 
+// artifactParam finds the dependency plugin's artifact parameter set as a property on a command or
+// JVM option line.
+var artifactParam = regexp.MustCompile(`(?:^|[\s'"])(?:-D\s*|--define[=\s]\s*)artifact(?:[=\s]|$)`)
+
+// artifactOverride reports whether the stated properties, Maven or JVM options, or .mvn
+// configuration set the artifact property, which the dependency plugin's copy and unpack goals
+// read in place of artifactItems.
+func artifactOverride(c Conditions, env []string, dir string) bool {
+	if _, ok := c.Properties["artifact"]; ok {
+		return true
+	}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if treeShapingEnv[k] && artifactParam.MatchString(v) {
+			return true
+		}
+	}
+	for _, name := range []string{"maven.config", "jvm.config"} {
+		if b, err := os.ReadFile(filepath.Join(dir, ".mvn", name)); err == nil && artifactParam.Match(b) {
+			return true
+		}
+	}
+	return false
+}
+
 // unlistedInPOM records on each module the maven-dependency-plugin copy and unpack executions its
-// effective POM binds with artifactItems: they install artifacts dependency:tree never lists.
-func unlistedInPOM(modules []Module, effective []effectiveProject) error {
+// effective POM binds with artifactItems or a single artifact (in the POM, or set outside it when
+// overridden): they install artifacts dependency:tree never lists. An execution whose every item
+// resolves to a coordinate (itemCoordinates) also records those coordinates in UnlistedTargets,
+// unless another execution of the module records under the same entry.
+func unlistedInPOM(modules []Module, effective []effectiveProject, overridden bool) error {
 	byCoord := map[string]*Module{}
+	reactor := map[string]string{} // group:artifact -> the module's version
 	for i := range modules {
 		for _, n := range modules[i].Nodes {
 			if n.ID == modules[i].Root {
 				byCoord[n.Group+":"+n.Artifact] = &modules[i]
+				reactor[n.Group+":"+n.Artifact] = n.Version
 			}
 		}
 	}
@@ -459,18 +489,114 @@ func unlistedInPOM(modules []Module, effective []effectiveProject) error {
 				if !slices.ContainsFunc(ex.Goals.Goal, func(g string) bool { g = strings.TrimSpace(g); return g == "copy" || g == "unpack" }) {
 					continue
 				}
-				if !ex.Configuration.has("artifactItems") && !pl.Configuration.has("artifactItems") {
+				single := overridden || ex.Configuration.has("artifact") || pl.Configuration.has("artifact") || p.Properties.has("artifact")
+				if !single && !ex.Configuration.has("artifactItems") && !pl.Configuration.has("artifactItems") {
 					continue
 				}
 				m := byCoord[p.GroupID+":"+p.ArtifactID]
 				if m == nil {
 					return &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "effective POM of " + p.GroupID + ":" + p.ArtifactID + " matches no module"}
 				}
-				m.Unlisted = append(m.Unlisted, "maven-dependency-plugin execution "+ex.ID)
+				entry := "maven-dependency-plugin execution " + ex.ID
+				if slices.Contains(m.Unlisted, entry) {
+					delete(m.UnlistedTargets, entry)
+					continue
+				}
+				m.Unlisted = append(m.Unlisted, entry)
+				// The plugin's artifact parameter replaces artifactItems with one artifact of any
+				// type, which is left unbounded.
+				if single {
+					continue
+				}
+				if coords, ok := itemCoordinates(p, reactor, ex.Configuration, pl.Configuration); ok {
+					if m.UnlistedTargets == nil {
+						m.UnlistedTargets = map[string][]string{}
+					}
+					m.UnlistedTargets[entry] = coords
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// artifactItem is one maven-dependency-plugin artifactItems entry as an effective POM gives it.
+type artifactItem struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Type       string `xml:"type"`
+	Classifier string `xml:"classifier"`
+}
+
+// itemCoordinates returns the group:artifact coordinates the artifactItems of configs install,
+// read from both the execution's and the plugin's configuration since Maven merges the two. ok is
+// false, leaving the execution unbounded, unless every item names its coordinate and a version, in
+// the item or in p's dependencies or dependencyManagement, and installs nothing beside itself.
+// A reactor module's item at the module's own version does: that module's dependencies are already
+// in the graph, whatever its type. Any other item, including another release of a reactor module,
+// does only as a plain JAR with no classifier; an archive or a classified JAR (a Karaf features
+// zip, a shaded jar, a previous release's distribution) can carry other packages.
+func itemCoordinates(p effectiveProject, reactor map[string]string, configs ...xmlChildren) ([]string, bool) {
+	var coords []string
+	for _, c := range configs {
+		if !c.has("artifactItems") {
+			continue
+		}
+		var cfg struct {
+			Items struct {
+				Item []artifactItem `xml:"artifactItem"`
+			} `xml:"artifactItems"`
+		}
+		if err := xml.Unmarshal([]byte("<configuration>"+c.Inner+"</configuration>"), &cfg); err != nil || len(cfg.Items.Item) == 0 {
+			return nil, false
+		}
+		for _, it := range cfg.Items.Item {
+			g, a := strings.TrimSpace(it.GroupID), strings.TrimSpace(it.ArtifactID)
+			v := itemVersion(p, g, a, strings.TrimSpace(it.Version))
+			if !concrete(g) || !concrete(a) || !concrete(v) {
+				return nil, false
+			}
+			coord := g + ":" + a
+			if mv, ok := reactor[coord]; !ok || mv != v {
+				typ, cls := strings.TrimSpace(it.Type), strings.TrimSpace(it.Classifier)
+				if (typ != "" && typ != "jar" && typ != "bundle") || cls != "" {
+					return nil, false
+				}
+			}
+			coords = append(coords, coord)
+		}
+	}
+	if len(coords) == 0 {
+		return nil, false
+	}
+	slices.Sort(coords)
+	return slices.Compact(coords), true
+}
+
+// itemVersion is an artifactItem's version: its own, else the one p's dependencies or
+// dependencyManagement give its coordinate, as the plugin resolves it.
+func itemVersion(p effectiveProject, group, artifact, version string) string {
+	if version != "" {
+		return version
+	}
+	for _, d := range p.Dependencies.Dependency {
+		if d.GroupID == group && d.ArtifactID == artifact && concrete(d.Version) {
+			return d.Version
+		}
+	}
+	for _, d := range p.DependencyManagement.Dependencies.Dependency {
+		if d.GroupID == group && d.ArtifactID == artifact && concrete(d.Version) {
+			return d.Version
+		}
+	}
+	return ""
+}
+
+// concrete reports whether an effective-POM value is set and carries no property left unresolved.
+func concrete(v string) bool {
+	v = strings.TrimSpace(v)
+	return v != "" && !strings.Contains(v, "${")
 }
 
 // effectivePlugin is a plugin's configuration as an effective POM gives it.
@@ -532,10 +658,20 @@ type effectiveProject struct {
 		Dependency []struct {
 			GroupID    string `xml:"groupId"`
 			ArtifactID string `xml:"artifactId"`
+			Version    string `xml:"version"`
 			Scope      string `xml:"scope"`
 			SystemPath string `xml:"systemPath"`
 		} `xml:"dependency"`
 	} `xml:"dependencies"`
+	DependencyManagement struct {
+		Dependencies struct {
+			Dependency []struct {
+				GroupID    string `xml:"groupId"`
+				ArtifactID string `xml:"artifactId"`
+				Version    string `xml:"version"`
+			} `xml:"dependency"`
+		} `xml:"dependencies"`
+	} `xml:"dependencyManagement"`
 }
 
 type effectiveResource struct {

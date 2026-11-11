@@ -123,6 +123,9 @@ type Module struct {
 	// Gradle configuration that failed to resolve, a dependency-plugin execution's artifactItems.
 	// A coordinate's absence from such a graph is not its absence from the build.
 	Unlisted []string `json:"unlisted,omitempty"`
+	// UnlistedTargets bounds an Unlisted entry to the group:artifact coordinates it installs, when
+	// every one is known. An entry with no key here may install anything.
+	UnlistedTargets map[string][]string `json:"unlisted_targets,omitempty"`
 	// Aliases are other group:artifact coordinates the module publishes under: a Gradle project's
 	// archives name or a publication's own artifactId.
 	Aliases []string `json:"aliases,omitempty"`

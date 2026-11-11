@@ -544,11 +544,22 @@ func TestMavenArtifactItemTargets(t *testing.T) {
 		return s + extra + "</artifactItem>"
 	}
 	const managed = "<dependencyManagement><dependencies><dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><version>2.3.232</version></dependency></dependencies></dependencyManagement>"
+	plugin := func(config, executions string) string {
+		return "<plugin><artifactId>maven-dependency-plugin</artifactId>" + config + "<executions>" + executions + "</executions></plugin>"
+	}
+	execution := func(id, goal, config string) string {
+		return "<execution><id>" + id + "</id><goals><goal>" + goal + "</goal></goals>" + config + "</execution>"
+	}
+	items := func(s string) string {
+		return "<configuration><artifactItems>" + s + "</artifactItems></configuration>"
+	}
+	h2 := item("com.h2database", "h2", "2.3.232", "")
 	for _, tc := range []struct {
-		name  string
-		items string
-		extra string // beside <build> in module-a's effective POM
-		want  []string
+		name    string
+		items   string
+		plugins string // replaces the single copy-jars execution of items
+		extra   string // beside <build> in module-a's effective POM
+		want    []string
 	}{
 		{name: "outside jar with a version", items: item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", ""), want: []string{"org.mariadb.jdbc:mariadb-java-client"}},
 		{name: "outside jar versioned by dependencyManagement", items: item("com.h2database", "h2", "", ""), extra: managed, want: []string{"com.h2database:h2"}},
@@ -564,24 +575,47 @@ func TestMavenArtifactItemTargets(t *testing.T) {
 		{name: "outside classified jar", items: item("org.example", "app", "1.0", "<classifier>all</classifier>")},
 		{name: "one unresolved item unbounds the rest", items: item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", "") + item("org.example", "bundle", "1.0", "<type>tar.gz</type>")},
 		{name: "empty artifactItems"},
+		{name: "another release of a reactor module is an outside archive", items: item("com.example", "module-c", "0.9.0", "<type>zip</type>")},
+		{name: "another release of a reactor module as a plain jar", items: item("com.example", "module-c", "0.9.0", ""), want: []string{"com.example:module-c"}},
+		{name: "plugin-level and execution-level items",
+			plugins: plugin(items(h2), execution("copy-jars", "copy", items(item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", "")))),
+			want:    []string{"com.h2database:h2", "org.mariadb.jdbc:mariadb-java-client"}},
+		{name: "plugin-level items only", plugins: plugin(items(h2), execution("copy-jars", "copy", "")), want: []string{"com.h2database:h2"}},
+		{name: "unpack goal", plugins: plugin("", execution("copy-jars", "unpack", items(h2))), want: []string{"com.h2database:h2"}},
+		{name: "artifact parameter alone", plugins: plugin("", execution("copy-jars", "copy", "<configuration><artifact>org.example:dist:1.0:zip</artifact></configuration>"))},
+		{name: "artifact parameter beside items", plugins: plugin("", execution("copy-jars", "copy", "<configuration><artifact>org.example:dist:1.0:zip</artifact><artifactItems>"+h2+"</artifactItems></configuration>"))},
+		{name: "artifact parameter at plugin level", plugins: plugin("<configuration><artifact>org.example:dist:1.0:zip</artifact></configuration>", execution("copy-jars", "copy", items(h2)))},
+		{name: "artifact property", items: h2, extra: "<properties><artifact>org.example:dist:1.0:zip</artifact></properties>"},
+		{name: "one execution id in two plugin entries",
+			plugins: plugin("", execution("copy-jars", "copy", items(h2))) + plugin("", execution("copy-jars", "copy", items(item("org.example", "bundle", "1.0", "<type>zip</type>"))))},
+		{name: "one execution id in two plugin entries, both bounded",
+			plugins: plugin("", execution("copy-jars", "copy", items(h2))) + plugin("", execution("copy-jars", "copy", items(item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", ""))))},
 	} {
-		build := "<plugins><plugin><artifactId>maven-dependency-plugin</artifactId><executions><execution><id>copy-jars</id><goals><goal>copy</goal></goals><configuration><artifactItems>" + tc.items + "</artifactItems></configuration></execution></executions></plugin></plugins>"
-		pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    "+tc.extra+"<build>"+build+"</build>", 1)
+		plugins := tc.plugins
+		if plugins == "" {
+			plugins = plugin("", execution("copy-jars", "copy", items(tc.items)))
+		}
+		pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    "+tc.extra+"<build><plugins>"+plugins+"</plugins></build>", 1)
 		r := newFakeMaven(t, "", "", map[string]string{"effective-pom.txt": pom})
 		g, err := r.resolve(t, ToolMaven, Conditions{})
 		if err != nil {
 			t.Fatalf("%s: resolve: %v", tc.name, cause(err))
 		}
+		found := false
 		for _, m := range g.Modules {
 			if m.ID != "com.example:module-a" {
 				continue
 			}
+			found = true
 			if !reflect.DeepEqual(m.Unlisted, []string{"maven-dependency-plugin execution copy-jars"}) {
 				t.Errorf("%s: unlisted %q", tc.name, m.Unlisted)
 			}
 			if got := m.UnlistedTargets["maven-dependency-plugin execution copy-jars"]; !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("%s: targets %q, want %q", tc.name, got, tc.want)
 			}
+		}
+		if !found {
+			t.Fatalf("%s: no module-a in %d modules", tc.name, len(g.Modules))
 		}
 	}
 }

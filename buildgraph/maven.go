@@ -440,18 +440,22 @@ func (c xmlChildren) has(local string) bool {
 }
 
 // unlistedInPOM records on each module the maven-dependency-plugin copy and unpack executions its
-// effective POM binds with artifactItems: they install artifacts dependency:tree never lists. An
-// execution whose every item resolves to a coordinate (itemCoordinates) also records those
-// coordinates in UnlistedTargets.
+// effective POM binds with artifactItems or a single artifact: they install artifacts
+// dependency:tree never lists. An execution whose every item resolves to a coordinate
+// (itemCoordinates) also records those coordinates in UnlistedTargets, unless another execution
+// of the module records under the same entry.
 func unlistedInPOM(modules []Module, effective []effectiveProject) error {
 	byCoord := map[string]*Module{}
+	reactor := map[string]string{} // group:artifact -> the module's version
 	for i := range modules {
 		for _, n := range modules[i].Nodes {
 			if n.ID == modules[i].Root {
 				byCoord[n.Group+":"+n.Artifact] = &modules[i]
+				reactor[n.Group+":"+n.Artifact] = n.Version
 			}
 		}
 	}
+	shared := map[*Module]map[string]bool{} // entries more than one execution of a module records
 	for _, p := range effective {
 		for _, pl := range p.Build.Plugins.Plugin {
 			if pl.ArtifactID != "maven-dependency-plugin" {
@@ -461,7 +465,8 @@ func unlistedInPOM(modules []Module, effective []effectiveProject) error {
 				if !slices.ContainsFunc(ex.Goals.Goal, func(g string) bool { g = strings.TrimSpace(g); return g == "copy" || g == "unpack" }) {
 					continue
 				}
-				if !ex.Configuration.has("artifactItems") && !pl.Configuration.has("artifactItems") {
+				single := ex.Configuration.has("artifact") || pl.Configuration.has("artifact") || p.Properties.has("artifact")
+				if !single && !ex.Configuration.has("artifactItems") && !pl.Configuration.has("artifactItems") {
 					continue
 				}
 				m := byCoord[p.GroupID+":"+p.ArtifactID]
@@ -469,8 +474,21 @@ func unlistedInPOM(modules []Module, effective []effectiveProject) error {
 					return &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "effective POM of " + p.GroupID + ":" + p.ArtifactID + " matches no module"}
 				}
 				entry := "maven-dependency-plugin execution " + ex.ID
+				if slices.Contains(m.Unlisted, entry) {
+					if shared[m] == nil {
+						shared[m] = map[string]bool{}
+					}
+					shared[m][entry] = true
+					delete(m.UnlistedTargets, entry)
+					continue
+				}
 				m.Unlisted = append(m.Unlisted, entry)
-				if coords, ok := itemCoordinates(p, byCoord, ex.Configuration, pl.Configuration); ok {
+				// The plugin's artifact parameter replaces artifactItems with one artifact of any
+				// type, which is left unbounded.
+				if single || shared[m][entry] {
+					continue
+				}
+				if coords, ok := itemCoordinates(p, reactor, ex.Configuration, pl.Configuration); ok {
 					if m.UnlistedTargets == nil {
 						m.UnlistedTargets = map[string][]string{}
 					}
@@ -495,10 +513,11 @@ type artifactItem struct {
 // read from both the execution's and the plugin's configuration since Maven merges the two. ok is
 // false, leaving the execution unbounded, unless every item names its coordinate and a version, in
 // the item or in p's dependencies or dependencyManagement, and installs nothing beside itself.
-// A reactor module's item does: the module's own dependencies are already in the graph, whatever
-// its type. An outside item does only as a plain JAR with no classifier; an archive or a
-// classified JAR (a Karaf features zip, a shaded jar) can carry other packages.
-func itemCoordinates(p effectiveProject, reactor map[string]*Module, configs ...xmlChildren) ([]string, bool) {
+// A reactor module's item at the module's own version does: that module's dependencies are already
+// in the graph, whatever its type. Any other item, including another release of a reactor module,
+// does only as a plain JAR with no classifier; an archive or a classified JAR (a Karaf features
+// zip, a shaded jar, a previous release's distribution) can carry other packages.
+func itemCoordinates(p effectiveProject, reactor map[string]string, configs ...xmlChildren) ([]string, bool) {
 	var coords []string
 	for _, c := range configs {
 		if !c.has("artifactItems") {
@@ -514,11 +533,12 @@ func itemCoordinates(p effectiveProject, reactor map[string]*Module, configs ...
 		}
 		for _, it := range cfg.Items.Item {
 			g, a := strings.TrimSpace(it.GroupID), strings.TrimSpace(it.ArtifactID)
-			if !concrete(g) || !concrete(a) || !concrete(itemVersion(p, g, a, strings.TrimSpace(it.Version))) {
+			v := itemVersion(p, g, a, strings.TrimSpace(it.Version))
+			if !concrete(g) || !concrete(a) || !concrete(v) {
 				return nil, false
 			}
 			coord := g + ":" + a
-			if reactor[coord] == nil {
+			if mv, ok := reactor[coord]; !ok || mv != v {
 				typ, cls := strings.TrimSpace(it.Type), strings.TrimSpace(it.Classifier)
 				if (typ != "" && typ != "jar" && typ != "bundle") || cls != "" {
 					return nil, false

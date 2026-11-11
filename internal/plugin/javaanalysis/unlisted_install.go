@@ -16,18 +16,19 @@ func withUnlistedInstall(g *buildgraph.Graph, part plugin.Partiality) plugin.Par
 	if !unlisted(g) {
 		return part
 	}
+	unbounded := plugin.Partiality{Reasons: append(slices.Clone(part.Reasons), PartialReasonUnlistedInstall), Scoped: part.Scoped}
 	var scoped []plugin.ScopedReason
 	for _, m := range g.Modules {
 		var targets []string
 		for _, u := range m.Unlisted {
 			coords := m.UnlistedTargets[u]
 			if len(coords) == 0 {
-				return plugin.Partial(append(part.Reasons, PartialReasonUnlistedInstall)...)
+				return unbounded
 			}
 			for _, c := range coords {
 				purl := mavenPURLNoVersion(c)
 				if purl == "" {
-					return plugin.Partial(append(part.Reasons, PartialReasonUnlistedInstall)...)
+					return unbounded
 				}
 				targets = append(targets, purl)
 			}

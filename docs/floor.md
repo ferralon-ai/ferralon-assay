@@ -126,3 +126,112 @@ The job summary (and `floor-summary.md` in the artifact) starts with **PASS** or
 
 `floor-summary.json` holds the same data in machine-readable form (`schema:
 ferralon.floor-summary.v1`), and the artifact includes every `report.json` and `meta.json`.
+
+## The caveat tally
+
+The language capability matrix names the caveats that stop Assay from reaching a verdict in each
+language, such as `JS-UNINSPECTABLE-RUNWIDE` or `JAVA-GRAPH-PRECONDITION`. The matrix is
+`docs/capabilities/`, one page per language, added by
+[#246](https://github.com/ferralon-ai/ferralon-assay/pull/246) and shipped with the v0.6.0 release
+([#184](https://github.com/ferralon-ai/ferralon-assay/pull/184)). The floor run measures
+which of its caveats fire on each demo repository, every night, so the matrix's prevalence figures
+come from real scans instead of estimates. [Caveat ids](#caveat-ids) lists the ids the tally uses.
+
+**What it counts.** `floorcheck check` reads every machine-readable reason a readable
+`report.json` carries:
+
+- each `partiality[].reason`. A note that names no `package` and no `path` is **run-wide**;
+- each `advisories[].undetermined_reason`;
+- each package's `partial_reason`, on a finding or in the SBOM.
+
+It looks each reason up in `floor/caveats.json` for the repository's language. Per repository,
+`floor-summary.json` lists under `caveats` each caveat that fired, with:
+
+- `findings`: how many findings it affected;
+- `run_wide`: whether a reason behind it was declared for the whole run;
+- `reasons`: the raw reason codes behind it.
+
+A finding is affected when it names the reason itself, as its `undetermined_reason` or as its
+package's `partial_reason`. A did-not-run partiality note whose reason is no finding's
+`undetermined_reason` keeps the run's refutations from standing, so it affects every finding left `undetermined` with
+`analysis_did_not_run`. The report doesn't say which limit held which of those findings, so each
+such caveat counts all of them. Read that number as an upper bound. This holds for a note that
+names a `package` too. That package is where the blind spot is, not which findings it held: the
+analyzer also records the packages the hidden code could reach, and the trigger counts the limit
+against a finding on that package or any of those, or on every finding when the list is empty.
+`report.json` doesn't carry that list, so counting only the findings on the note's `package` could
+leave out findings the limit held. A methodology note (`class: inherent_limit`) holds no verdict
+and affects no finding.
+
+Under `caveats` at the top level, the summary rolls the tally up per language: for each caveat, how
+many of that language's targets it fired on (`repos`, `fired_on`) and the findings it affected
+across them. The job summary shows the same roll-up under **Caveats by language**, with one table
+per language that has a target. Caveats that hold for every scan of a language and have no reason
+code (`JS-NO-CLEAR-GROUNDS`, `PYTHON-NO-CLEAR-PRODUCER`) are listed as **always applies**.
+
+**Unmapped reasons are shown raw.** A reason with no mapping for the repository's language is
+never dropped. It appears as `unmapped:<reason>`, both per repository and in the roll-up. The
+same goes for the scoped form of a reason that is mapped only run-wide.
+
+**Caveats are informational.** They never fail a repository, never change the run's result and
+never reach the Slack alert. If `floor/caveats.json` can't be read, `floorcheck` logs the error,
+records it as `caveat_mapping_error`, and shows every reason unmapped. The run's result is
+unaffected.
+
+### Caveat ids
+
+These are the caveat ids `floor/caveats.json` may name, and where each is defined. A matrix page is
+a page of `docs/capabilities/`, one page per language, added by
+[#246](https://github.com/ferralon-ai/ferralon-assay/pull/246) and shipped with the v0.6.0 release
+([#184](https://github.com/ferralon-ai/ferralon-assay/pull/184)).
+`TestShippedCaveatIDs` fails if a mapping's `caveat` or a `structural` caveat is not in this
+table, so a misspelt id fails the tests.
+
+| Caveat | Language | Defined in |
+|---|---|---|
+| `JS-UNINSPECTABLE-RUNWIDE` | js | matrix, `javascript.md` |
+| `JS-LOADTIME-CODEGEN` | js | matrix, `javascript.md` |
+| `JS-UNLISTED-RESIDUE` | js | matrix, `javascript.md` |
+| `JS-NO-CLEAR-GROUNDS` | js | matrix, `javascript.md` (structural) |
+| `JAVA-GRAPH-PRECONDITION` | java | matrix, `java.md` |
+| `JAVA-LAUNCH-ENTRY-UNLICENSED` | java | matrix, `java.md` |
+| `JAVA-OTHER-TOOL-BUILD` | java | matrix, `java.md` |
+| `JAVA-INSTALL-UNLISTED` | java | matrix, `java.md` |
+| `JAVA-FRAMEWORK-HAZARD` | java | matrix, `java.md` |
+| `JAVA-FIRST-PARTY-BYTECODE-ABSENT` | java | this tally, named after `first_party_bytecode_absent`; not a matrix id |
+| `PYTHON-DYNAMIC-IMPORT-RUNWIDE` | python | matrix, `python.md` |
+| `PYTHON-NO-CLEAR-PRODUCER` | python | matrix, `python.md` (structural) |
+| `SCAN-CUT-SHORT` | any | this tally, for `scan_cut_short`; not a matrix id |
+
+### Adding a mapping
+
+Add an entry to `mappings` in `floor/caveats.json`:
+
+```json
+{
+  "reason": "tool_failure:build_graph_absent",
+  "language": "java",
+  "run_wide": true,
+  "caveat": "JAVA-GRAPH-PRECONDITION",
+  "defined_in": "internal/plugin/javaanalysis/graph.go",
+  "note": "every Java op without a build graph declares it"
+}
+```
+
+- `reason` (required): the code exactly as the report carries it, suffix included.
+- `language` (required): one of the target languages, or `any`. A language's own mapping wins over
+  an `any` mapping.
+- `run_wide`: set it to `true` when the caveat is only the run-wide form of the reason. Scoped
+  notes, finding reasons and package reasons then don't fire it. Set it to `false` to fire the
+  caveat on every occurrence. One reason can have one mapping of each kind per language.
+- `caveat` (required): the matrix's caveat id, in upper case with hyphens. A new id needs a row
+  under [Caveat ids](#caveat-ids).
+- `defined_in` (required): the non-test Go file that declares the reason's constant.
+  `TestShippedCaveatReasons` evaluates that file's string constants (literals, `plugin.X`,
+  `report.X`, same-package names and `+`) and fails if none has the reason's value, so the mapping
+  can't drift away from the code.
+- `note` (optional): what emits the reason, for the next reader.
+
+A caveat with no reason code, one that holds for every scan of a language, goes under
+`structural` as `{ "caveat": "...", "language": "..." }`. Run `go test ./cmd/floorcheck` after
+any change. It checks the file with the same parser `floorcheck` uses.

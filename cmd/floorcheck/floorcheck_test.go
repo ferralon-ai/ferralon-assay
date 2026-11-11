@@ -326,19 +326,22 @@ func TestCheckSmoke(t *testing.T) {
 	write("results/floor-scan-good/report.json", reportJSON(neGrounded+","+disqIntake+","+undetA, ""))
 	write("results/floor-scan-bad/meta.json", `{"repo":"o/bad","policy":"published-24h","assay_commit":"0123456789abcdef","outcome":"success","exit_code":0,"duration_seconds":9}`)
 	write("results/floor-scan-bad/report.json", reportJSON(neUngrounded, ""))
+	write("caveats.json", testCaveats)
 
 	out := func(name string) string { return filepath.Join(dir, name) }
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"check", "-targets", out("targets.json"), "-results", out("results"),
-		"-summary", out("s.json"), "-markdown", out("s.md"), "-alert", out("a.txt"),
+		"-summary", out("s.json"), "-markdown", out("s.md"), "-alert", out("a.txt"), "-caveats", out("caveats.json"),
 		"-assay-commit", "0123456789abcdef", "-run-url", "https://example.test/run/9"}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit %d, want 1; stdout %s stderr %s", code, stdout.String(), stderr.String())
 	}
 	for name, want := range map[string][]string{
-		"s.json": {`"schema": "ferralon.floor-summary.v1"`, `"pass": false`, `"ungrounded_not_exploitable"`, `"no_result"`, `"unverifiable"`},
+		"s.json": {`"schema": "ferralon.floor-summary.v1"`, `"pass": false`, `"ungrounded_not_exploitable"`, `"no_result"`, `"unverifiable"`,
+			`"caveat": "unmapped:advisory_symbol_absent"`, `"language": "python"`},
 		"s.md": {"FAIL — 2 of 3 repos failed", "| dotnet | **no target** |", "| good | go | `0123456789ab` | published-24h | not_exploitable 1 · disqualified 1 · undetermined 1 | 0 | `advisory_symbol_absent` 1 | no | 1m15s | pass |",
-			"**bad** — `ungrounded_not_exploitable`: 1 not_exploitable without grounds: GO-2", "o/skip: no build files"},
+			"**bad** — `ungrounded_not_exploitable`: 1 not_exploitable without grounds: GO-2", "o/skip: no build files",
+			"### Caveats by language", "| `unmapped:advisory_symbol_absent` | 1 (good) | 1 |"},
 		"a.txt": {"failed on 2 of 3 demo repos", "• Run: https://example.test/run/9"},
 	} {
 		data, err := os.ReadFile(out(name))
@@ -352,15 +355,21 @@ func TestCheckSmoke(t *testing.T) {
 		}
 	}
 
-	// The same run with the failing repos dropped passes and writes no alert.
+	// The same run with the failing repos dropped passes and writes no alert, though caveats fired
+	// and the caveat mapping is malformed: the tally is informational.
 	write("targets.json", `{"policy":"published-24h","targets":[{"repo":"o/good","language":"go"}]}`)
+	write("caveats.json", `{"mappings":[`)
 	stdout.Reset()
 	if code := run([]string{"check", "-targets", out("targets.json"), "-results", out("results"),
-		"-summary", out("s.json"), "-markdown", out("s.md"), "-alert", out("b.txt")}, &stdout, &stderr); code != 0 {
+		"-summary", out("s.json"), "-markdown", out("s.md"), "-alert", out("b.txt"), "-caveats", out("caveats.json")}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d, want 0; stdout %s", code, stdout.String())
 	}
 	if _, err := os.Stat(out("b.txt")); !os.IsNotExist(err) {
 		t.Errorf("a passing run wrote an alert (stat err %v)", err)
+	}
+	if data, _ := os.ReadFile(out("s.json")); !strings.Contains(string(data), `"caveat_mapping_error"`) ||
+		!strings.Contains(string(data), `"caveat": "unmapped:advisory_symbol_absent"`) {
+		t.Errorf("s.json lacks the mapping error or the raw reason:\n%s", data)
 	}
 }
 

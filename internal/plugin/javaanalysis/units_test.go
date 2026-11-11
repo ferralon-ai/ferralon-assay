@@ -116,8 +116,9 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 		one, two         func(b *cpb) []byte // each app's main
 		lib              func(b *cpb) []byte
 		oneNetkit, twoNk bool
-		twoUnlisted      bool                // two resolves a dependency whose JAR is not on disk
-		libExtra         func(a *appFixture) // more in the library module
+		twoUnlisted      bool                           // two resolves a dependency whose JAR is not on disk
+		twoKotlin        map[string]func(b *cpb) []byte // two's Kotlin dependency: classes by name, each method's code
+		libExtra         func(a *appFixture)            // more in the library module
 		want             want
 	}{
 		// Only app one resolves netkit; the path through the shared library is app one's.
@@ -153,6 +154,15 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 				a.classA("lib/target/classes", "com/acme/lib/Inline", "java/lang/Object", nil, 0x0021, []string{"Lkotlin/Metadata;"},
 					func(*cpb) []xmethod { return nil })
 			}},
+		// A Kotlin library compiled against other code than the sink's (mall-admin's kotlin-stdlib
+		// and okio, through okhttp) holds no inlined copy of it.
+		"a Kotlin dependency elsewhere leaves the sink absent": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true, want: want{searched: true},
+			twoKotlin: map[string]func(b *cpb) []byte{"kotlin/collections/CollectionsKt": justReturn, "okio/Buffer": callStatic("kotlin/collections/CollectionsKt", "run")}},
+		// A Kotlin library in the sink's package, or compiled against it, may hold an inlined copy.
+		"a Kotlin dependency in the sink's package withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true,
+			twoKotlin: map[string]func(b *cpb) []byte{"com/evil/netkit/Inline": justReturn}},
+		"a Kotlin dependency naming the sink's package withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true,
+			twoKotlin: map[string]func(b *cpb) []byte{"okio/Bridge": callStatic("com/evil/netkit/Session", "run")}},
 		// App two lists a dependency it has no JAR for, so netkit may be on its classpath unseen.
 		"an unlisted unit without the sink JAR withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true, twoUnlisted: true},
 		// A library's code generator main is no root of the apps that load the library.
@@ -192,6 +202,9 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 			if c.twoUnlisted {
 				twoDeps = append(twoDeps, graphDep{group: "com.other", artifact: "gone", version: "1", jar: filepath.Join(a.build, "gone-1.jar")})
 			}
+			if c.twoKotlin != nil {
+				twoDeps = append(twoDeps, kotlinDep(a, c.twoKotlin))
+			}
 			lib := testModule(t, "lib", "lib", netkitDep(a.build))
 			one := sibling(testModule(t, "one", "one", oneDeps...), lib, "compile")
 			two := sibling(testModule(t, "two", "two", twoDeps...), lib, "compile")
@@ -217,6 +230,23 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 			}
 		})
 	}
+}
+
+// kotlinDep writes com.example.kt:kt:1, a JAR of Kotlin-compiled classes each with a static run()
+// running its code, and returns it as a graph dependency.
+func kotlinDep(a *appFixture, classes map[string]func(b *cpb) []byte) graphDep {
+	a.t.Helper()
+	entries := map[string][]byte{}
+	for name, code := range classes {
+		b := &cpb{}
+		entries[name+".class"] = emitClassA(b, name, "java/lang/Object", nil, 0x0021,
+			[]xmethod{{"run", "()V", accPublicStatic, code(b)}}, []string{"Lkotlin/Metadata;"})
+	}
+	dir := filepath.Join(a.build, ".m2", "repository", "com", "example", "kt", "kt", "1")
+	writeJarEntries(a.t, filepath.Join(dir, "kt-1.jar"), entries)
+	writeFileT(a.t, filepath.Join(dir, "kt-1.pom"), `<project><modelVersion>4.0.0</modelVersion>
+  <groupId>com.example.kt</groupId><artifactId>kt</artifactId><version>1</version></project>`)
+	return graphDep{group: "com.example.kt", artifact: "kt", version: "1", jar: filepath.Join(dir, "kt-1.jar")}
 }
 
 // libPOM is the library module's POM with an optional netkit dependency, packaging and build

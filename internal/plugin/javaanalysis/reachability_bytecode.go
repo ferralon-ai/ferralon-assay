@@ -96,12 +96,13 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 		store.load(rc.Engine, root.ref)
 	}
 
+	firstPartyKotlin := slices.ContainsFunc(fp.classes, func(c classfile.Class) bool { return c.KotlinMetadata != nil })
 	var paths []plugin.ReachPath
 	var searched []string
 	for _, id := range sinks {
 		sink, _ := parseDepEdgeSymbol(id)
 		clean := true
-		absent := fp.unit != nil && !fp.unit.siblingRepackages && rc.absent(sink)
+		absent := fp.unit != nil && !fp.unit.siblingRepackages && rc.absent(sink, firstPartyKotlin)
 		var found *plugin.ReachPath
 		for _, root := range roots {
 			var res depreach.Result

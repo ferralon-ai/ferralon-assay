@@ -1046,6 +1046,14 @@ func TestReachability_ConcurrentOnCachedEngine(t *testing.T) {
 			a.graph = listedGraph(t, testModule(t, ".", "parent"),
 				sibling(testModule(t, "one", "one", netkitDep(a.build)), lib, "compile"), sibling(testModule(t, "two", "two"), lib, "compile"), lib)
 			want := a.reach(netkitSinkID)
+			// The runs below hit the engines that run cached, with every search memo emptied so
+			// each run fills it again.
+			closureCache.Lock()
+			for _, e := range closureCache.m {
+				e.rc.Engine.SetLinked(true)
+				e.rc.Engine.SetLinked(false)
+			}
+			closureCache.Unlock()
 			const runs = 8
 			got := make([]plugin.ReachabilityResult, runs)
 			var wg sync.WaitGroup

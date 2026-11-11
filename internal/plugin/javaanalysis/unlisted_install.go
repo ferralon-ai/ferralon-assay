@@ -38,5 +38,5 @@ func withUnlistedInstall(g *buildgraph.Graph, part plugin.Partiality) plugin.Par
 			scoped = append(scoped, plugin.ScopedReason{Reason: PartialReasonUnlistedInstall, Path: m.Path, Targets: slices.Compact(targets)})
 		}
 	}
-	return plugin.Partiality{Reasons: part.Reasons, Scoped: append(part.Scoped, scoped...)}
+	return plugin.Partiality{Reasons: part.Reasons, Scoped: append(slices.Clone(part.Scoped), scoped...)}
 }

@@ -466,9 +466,9 @@ func artifactOverride(c Conditions, env []string, dir string) bool {
 
 // unlistedInPOM records on each module the maven-dependency-plugin copy and unpack executions its
 // effective POM binds with artifactItems or a single artifact (in the POM, or set outside it when
-// overridden): they install artifacts dependency:tree never lists. An execution whose every item resolves to a coordinate
-// (itemCoordinates) also records those coordinates in UnlistedTargets, unless another execution
-// of the module records under the same entry.
+// overridden): they install artifacts dependency:tree never lists. An execution whose every item
+// resolves to a coordinate (itemCoordinates) also records those coordinates in UnlistedTargets,
+// unless another execution of the module records under the same entry.
 func unlistedInPOM(modules []Module, effective []effectiveProject, overridden bool) error {
 	byCoord := map[string]*Module{}
 	reactor := map[string]string{} // group:artifact -> the module's version
@@ -480,7 +480,6 @@ func unlistedInPOM(modules []Module, effective []effectiveProject, overridden bo
 			}
 		}
 	}
-	shared := map[*Module]map[string]bool{} // entries more than one execution of a module records
 	for _, p := range effective {
 		for _, pl := range p.Build.Plugins.Plugin {
 			if pl.ArtifactID != "maven-dependency-plugin" {
@@ -500,10 +499,6 @@ func unlistedInPOM(modules []Module, effective []effectiveProject, overridden bo
 				}
 				entry := "maven-dependency-plugin execution " + ex.ID
 				if slices.Contains(m.Unlisted, entry) {
-					if shared[m] == nil {
-						shared[m] = map[string]bool{}
-					}
-					shared[m][entry] = true
 					delete(m.UnlistedTargets, entry)
 					continue
 				}

@@ -33,6 +33,8 @@ type reactorUnit struct {
 	path string   // its module path, slash-separated
 	dir  string   // its module directory
 	dirs []string // dir plus each reactor sibling on its runtime classpath, sorted
+	// loads is the directory of every reactor sibling on its runtime classpath, code or none.
+	loads []string
 }
 
 // reactorPlan is the units a reactor is searched as, and every module directory, by which a
@@ -219,6 +221,7 @@ func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string, 
 		covered[i] = true
 		for _, j := range siblings[i] {
 			covered[j] = true
+			u.loads = append(u.loads, dirs[j])
 			if code[j] && !slices.Contains(u.dirs, dirs[j]) {
 				u.dirs = append(u.dirs, dirs[j])
 			}
@@ -260,6 +263,10 @@ type unitOutput struct {
 	dir     string
 	roots   []string
 	classes []classfile.Class
+	// siblingRepackages is set when a reactor sibling the unit loads may publish an artifact
+	// carrying classes besides its own (mavenRepackages): the unit's runtime classpath then holds
+	// classes its loaded closure, read from the sibling's class output, does not.
+	siblingRepackages bool
 }
 
 // unitBytecode is the first-party view of unit u: the class output of its directories, checked
@@ -277,6 +284,11 @@ func unitBytecode(buildDir string, u reactorUnit, outputs []classOutput, files [
 		if d == u.dir {
 			own.roots = append(own.roots, o.root)
 			own.classes = append(own.classes, o.classes...)
+		}
+	}
+	for _, d := range u.loads {
+		if mavenRepackages(buildDir, d) {
+			own.siblingRepackages = true
 		}
 	}
 	fp := assembleFirstParty(buildDir, kept, files)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"io"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -70,6 +71,14 @@ var packagingPlugins = map[string][]string{
 	"ear": {mavenPluginsGrp + ":maven-ear-plugin"},
 }
 
+// pluginPaths are where a POM declares a plugin walkPOM reads: applied, managed, and applied by
+// a profile.
+var pluginPaths = [][]string{
+	{"project", "build", "plugins", "plugin"},
+	{"project", "build", "pluginManagement", "plugins", "plugin"},
+	{"project", "profiles", "profile", "build", "plugins", "plugin"},
+}
+
 // launchElements are the element names that can name a launch class.
 var launchElements = map[string]bool{
 	"mainClass": true, "start-class": true, "Main-Class": true, "Start-Class": true, "Main-Verticle": true,
@@ -92,6 +101,7 @@ type pomProfile struct {
 	activeByDefault bool
 	props           map[string]string
 	entries         []pomEntry
+	plugins         []string // the groupId:artifactId of each plugin in its <build><plugins>
 }
 
 // effective reads the chain of pom, read from path, into its merged launch view.
@@ -197,6 +207,14 @@ func walkPOM(data []byte) (pomWalk, bool) {
 		profile *pomProfile
 	)
 	at := func(path ...string) bool { return slices.Equal(stack, path) }
+	atPlugin := func(child ...string) bool {
+		for _, p := range pluginPaths {
+			if at(append(slices.Clip(p), child...)...) {
+				return true
+			}
+		}
+		return false
+	}
 	under := func(path ...string) bool {
 		return len(stack) > len(path) && slices.Equal(stack[:len(path)], path)
 	}
@@ -210,7 +228,7 @@ func walkPOM(data []byte) (pomWalk, bool) {
 			stack = append(stack, t.Name.Local)
 			text.Reset()
 			switch {
-			case at("project", "build", "plugins", "plugin"), at("project", "build", "pluginManagement", "plugins", "plugin"):
+			case atPlugin():
 				plugin, group = &pomPlugin{}, ""
 			case at("project", "profiles", "profile"):
 				profile = &pomProfile{props: map[string]string{}}
@@ -220,9 +238,9 @@ func walkPOM(data []byte) (pomWalk, bool) {
 		case xml.EndElement:
 			name, val := t.Name.Local, javaTrim(text.String())
 			switch {
-			case plugin != nil && (at("project", "build", "plugins", "plugin", "groupId") || at("project", "build", "pluginManagement", "plugins", "plugin", "groupId")):
+			case plugin != nil && atPlugin("groupId"):
 				group = val
-			case plugin != nil && (at("project", "build", "plugins", "plugin", "artifactId") || at("project", "build", "pluginManagement", "plugins", "plugin", "artifactId")):
+			case plugin != nil && atPlugin("artifactId"):
 				plugin.key = val
 			case profile != nil && at("project", "profiles", "profile", "activation", "activeByDefault"):
 				profile.activeByDefault = val == "true"
@@ -241,14 +259,17 @@ func walkPOM(data []byte) (pomWalk, bool) {
 				w.other = append(w.other, pomEntry{name, val})
 			}
 			switch {
-			case at("project", "build", "plugins", "plugin"), at("project", "build", "pluginManagement", "plugins", "plugin"):
+			case atPlugin():
 				if group == "" {
 					group = mavenPluginsGrp
 				}
 				plugin.key = group + ":" + plugin.key
-				if stack[2] == "plugins" {
+				switch {
+				case stack[1] == "profiles":
+					profile.plugins = append(profile.plugins, plugin.key)
+				case stack[2] == "plugins":
 					w.plugins = append(w.plugins, *plugin)
-				} else {
+				default:
 					w.managed = append(w.managed, *plugin)
 				}
 				plugin = nil
@@ -260,4 +281,56 @@ func walkPOM(data []byte) (pomWalk, bool) {
 			text.Reset()
 		}
 	}
+}
+
+// repackagers are the plugins, by artifactId, that can build a module's artifact with other
+// artifacts' classes inside it: shading, assembly, Boot's repackage, unpacking dependencies into
+// the class output, one-jar and jarjar builds, and an OSGi bundle's embedded dependencies.
+var repackagers = map[string]bool{
+	"maven-shade-plugin": true, "maven-assembly-plugin": true, "spring-boot-maven-plugin": true,
+	"maven-dependency-plugin": true, "onejar-maven-plugin": true, "jarjar-maven-plugin": true,
+	"maven-jarjar-plugin": true, "maven-bundle-plugin": true,
+}
+
+// mavenRepackages reports whether the Maven module at dir, inside the checkout buildDir, may
+// publish an artifact that carries classes besides its own: its POM chain applies a repackaging
+// plugin in <build><plugins> or in any profile, its packaging is other than jar or pom, or its
+// POM or a parent cannot be read.
+func mavenRepackages(buildDir, dir string) bool {
+	path := filepath.Join(dir, "pom.xml")
+	pom, ok := parseMavenPOM(path)
+	if !ok {
+		return true
+	}
+	if pom.Packaging != "" && pom.Packaging != "jar" && pom.Packaging != "pom" {
+		return true
+	}
+	r := &entryReader{cache: newMavenCache(buildDir), checkout: buildDir}
+	chain, files, complete := r.pomChain(pom, path)
+	if !complete {
+		return true
+	}
+	for i := range chain {
+		data, err := readRegular(files[i])
+		if err != nil {
+			return true
+		}
+		w, ok := walkPOM(data)
+		if !ok {
+			return true
+		}
+		keys := []string{}
+		for _, pl := range w.plugins {
+			keys = append(keys, pl.key)
+		}
+		for _, pr := range w.profiles {
+			keys = append(keys, pr.plugins...)
+		}
+		for _, k := range keys {
+			if repackagers[k[strings.LastIndex(k, ":")+1:]] {
+				return true
+			}
+		}
+	}
+	return false
 }

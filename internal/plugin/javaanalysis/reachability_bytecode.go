@@ -101,7 +101,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 	for _, id := range sinks {
 		sink, _ := parseDepEdgeSymbol(id)
 		clean := true
-		absent := fp.unit != nil && rc.absent(sink)
+		absent := fp.unit != nil && !fp.unit.siblingRepackages && rc.absent(sink)
 		var found *plugin.ReachPath
 		for _, root := range roots {
 			var res depreach.Result
@@ -130,7 +130,8 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 			paths = append(paths, *found)
 		// A reactor unit whose loaded classes are its whole runtime classpath, launched as the
 		// build names it with nothing else to add to that classpath, and searched clean, never
-		// runs a sink that classpath provably lacks (absent): searched, and absent. The search
+		// runs a sink that classpath provably lacks (absent), unless a sibling it loads publishes
+		// classes besides its own (siblingRepackages): searched, and absent. The search
 		// still runs, so a call into a class nothing loaded defines withholds as it does for
 		// any sink.
 		case clean && entry.licenses() && fp.complete() && !unmapped && len(rc.Reasons) == 0 &&

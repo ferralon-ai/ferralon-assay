@@ -34,6 +34,15 @@ func TestGradleIncomplete(t *testing.T) {
 	module := func(path, file string) gradleResolution {
 		return gradleResolution{Path: path, Artifacts: []gradleResolved{{File: file, Module: true}}}
 	}
+	dmJar := "/home/u/.gradle/caches/modules-2/files-2.1/io.spring.gradle/dependency-management-plugin/1.1.6/x/dependency-management-plugin-1.1.6.jar"
+	protobuf := "/home/u/.gradle/caches/modules-2/files-2.1/com.google.protobuf/protobuf-java/3.11.4/x/protobuf-java-3.11.4.jar"
+	from := func(frame, source string, r gradleResolution) gradleResolution {
+		r.Origin = &gradleOrigin{Frame: frame, Source: source}
+		return r
+	}
+	exclusions := func(source string) gradleResolution {
+		return from(dependencyManagementExclusions, source, module(":detachedConfiguration36", protobuf))
+	}
 	for _, tc := range []struct {
 		name        string
 		tasks       []gradleTask
@@ -110,6 +119,24 @@ func TestGradleIncomplete(t *testing.T) {
 		{name: "outside input under a build directory outside the checkout", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/repo/app/build/libs/agent.jar"}}}, want: "reads /repo/app/build/libs/agent.jar"},
 		{name: "resolution from the transforms cache", resolved: []gradleResolution{resolution(":detachedConfiguration4", "/home/u/.gradle/caches/transforms-3/9a/transformed/agent.jar")}, want: "resolved /home/u/.gradle/caches/transforms-3/9a/transformed/agent.jar"},
 		{name: "resolution of a file named like a POM", resolved: []gradleResolution{resolution(":detachedConfiguration5", "/cache/agent-1.0.pom.jar")}, want: "resolved /cache/agent-1.0.pom.jar"},
+		{name: "dependency-management exclusion pass", resolved: []gradleResolution{exclusions(dmJar)}},
+		{name: "dependency-management exclusion pass, 1.0 line", resolved: []gradleResolution{exclusions("/home/u/.gradle/caches/modules-2/files-2.1/io.spring.gradle/dependency-management-plugin/1.0.11.RELEASE/x/dependency-management-plugin-1.0.11.RELEASE.jar")}},
+		{name: "dependency-management exclusion pass sharing a file a task reads", tasks: []gradleTask{{Path: ":bootJar", Type: "org.springframework.boot.gradle.tasks.bundling.BootJar", Outside: []string{jar}}}, resolved: []gradleResolution{from(dependencyManagementExclusions, dmJar, gradleResolution{Path: ":detachedConfiguration36", Artifacts: []gradleResolved{{File: jar, Module: true}, {File: protobuf, Module: true}}})}},
+		{name: "dependency-management exclusion pass a task reads", tasks: []gradleTask{{Path: ":bootJar", Type: "org.springframework.boot.gradle.tasks.bundling.BootJar", Outside: []string{protobuf}}}, resolved: []gradleResolution{exclusions(dmJar)}, want: "resolution of :detachedConfiguration36 resolved " + protobuf},
+		{name: "dependency-management exclusion pass from another major line", resolved: []gradleResolution{exclusions("/cache/dependency-management-plugin-2.0.0.jar")}, want: "resolved " + protobuf},
+		{name: "dependency-management exclusion pass from an unread minor line", resolved: []gradleResolution{exclusions("/cache/dependency-management-plugin-1.2.0.jar")}, want: "resolved " + protobuf},
+		{name: "dependency-management exclusion pass from an instrumented jar", resolved: []gradleResolution{exclusions("/home/u/.gradle/caches/9.8.2/transforms/x/transformed/instrumented/instrumented-dependency-management-plugin-1.1.6.jar")}, want: "resolved " + protobuf},
+		{name: "dependency-management exclusion pass from a jar named like the plugin's", resolved: []gradleResolution{exclusions("/cache/my-dependency-management-plugin-1.1.6.jar")}, want: "resolved " + protobuf},
+		{name: "dependency-management exclusion pass from a jar with a suffix", resolved: []gradleResolution{exclusions("/cache/dependency-management-plugin-1.1.6.jar.orig")}, want: "resolved " + protobuf},
+		{name: "dependency-management exclusion frame from a build's own classes", resolved: []gradleResolution{exclusions("$ROOT/buildSrc/build/classes/groovy/main")}, want: "resolved " + protobuf},
+		{name: "dependency-management exclusion frame with no source", resolved: []gradleResolution{exclusions("")}, want: "resolved " + protobuf},
+		{name: "another dependency-management frame", resolved: []gradleResolution{from("io.spring.gradle.dependencymanagement.internal.maven.MavenPomResolver.resolvePoms", dmJar, module(":detachedConfiguration37", protobuf))}, want: "resolved " + protobuf},
+		{name: "build script asking for a detached configuration", resolved: []gradleResolution{from("build_abc$_run_closure1.doCall", "/home/u/.gradle/caches/7.3.1/scripts/abc/cp_proj", module(":detachedConfiguration2", protobuf))}, want: "resolved " + protobuf},
+		{name: "failed dependency-management exclusion pass", resolved: []gradleResolution{func() gradleResolution {
+			r := exclusions(dmJar)
+			r.Failure = "Could not resolve"
+			return r
+		}()}, want: "resolution of :detachedConfiguration36 failed"},
 		{name: "run alias not observed", tasks: []gradleTask{task(":run", "org.gradle.api.tasks.JavaExec"), {Path: ":go", Type: "org.gradle.api.DefaultTask", Depends: []string{":run"}, Failure: "boom"}}, want: "task :run runs a program"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -130,6 +157,9 @@ func TestGradleIncomplete(t *testing.T) {
 				r.Artifacts = slices.Clone(r.Artifacts)
 				for j := range r.Artifacts {
 					r.Artifacts[j].File = sub(r.Artifacts[j].File)
+				}
+				if r.Origin != nil {
+					r.Origin = &gradleOrigin{Frame: r.Origin.Frame, Source: sub(r.Origin.Source)}
 				}
 				resolved[i] = r
 			}

@@ -562,6 +562,12 @@ func TestPlanUnits_LaunchEvidencePromotes(t *testing.T) {
 		}, false},
 		"war packaging": {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>war</packaging>", "")) }, true},
 		"ear packaging": {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>ear</packaging>", "")) }, true},
+		// Every packaging but a plain jar ships on its own, a value a property supplies included.
+		"bundle packaging":       {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>bundle</packaging>", "")) }, true},
+		"hpi packaging":          {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>hpi</packaging>", "")) }, true},
+		"maven-plugin packaging": {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>maven-plugin</packaging>", "")) }, true},
+		"property packaging":     {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>${packaging.type}</packaging>", "")) }, true},
+		"jar packaging":          {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>jar</packaging>", "")) }, false},
 		"an unresolved mainClass": {func(a *appFixture) {
 			a.oneFile("pom.xml", pom("", `<build><plugins><plugin><artifactId>maven-jar-plugin</artifactId><configuration><archive><manifest><mainClass>${start.class}</mainClass></manifest></archive></configuration></plugin></plugins></build>`))
 		}, true},
@@ -617,6 +623,121 @@ func TestPlanUnits_LaunchEvidencePromotes(t *testing.T) {
 				t.Errorf("units = %v (refused %v: %q), want [%s]", got, multi, why, want)
 			}
 		})
+	}
+}
+
+// distPOM is a code-free module dist's POM loading lib and shading it with build as the rest of
+// the shade configuration.
+func distPOM(build string) string {
+	return `<project><modelVersion>4.0.0</modelVersion>
+  <parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>
+  <artifactId>dist</artifactId>
+  <dependencies><dependency><groupId>com.acme</groupId><artifactId>lib</artifactId><version>1.0.0</version></dependency></dependencies>
+  <build><plugins><plugin><artifactId>maven-shade-plugin</artifactId>
+    <executions><execution><phase>package</phase><goals><goal>shade</goal></goals>` + build + `</execution></executions>
+  </plugin></plugins></build>
+</project>`
+}
+
+// shadeMain is shade configuration naming main as the packaged JAR's Main-Class.
+func shadeMain(main string) string {
+	return `<configuration><transformers><transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer"><mainClass>` +
+		main + `</mainClass></transformer></transformers></configuration>`
+}
+
+// A module without code that names a launch and loads reactor siblings packages their classes as
+// a program: it is a unit of its own. One that names none, or loads no sibling, is not.
+func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
+	cases := map[string]struct {
+		pom      string
+		loadsLib bool
+		units    string
+	}{
+		"a shaded main":                       {pom: distPOM(shadeMain("com.acme.lib.Generator")), loadsLib: true, units: "dist one two"},
+		"shading with no main":                {pom: distPOM(""), loadsLib: true, units: "one two"},
+		"a named main, no sibling":            {pom: distPOM(shadeMain("com.acme.lib.Generator")), units: "one two"},
+		"an exec plugin naming no main":       {pom: strings.Replace(distPOM(""), "maven-shade-plugin", "exec-maven-plugin", 1) + "", loadsLib: true, units: "one two"},
+		"assembly packaging, a main":          {pom: strings.Replace(distPOM(shadeMain("com.acme.lib.Generator")), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "dist one two"},
+		"an unresolved packaging":             {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>${p}</packaging>", 1), loadsLib: true, units: "dist one two"},
+		"the Boot plugin, no main of its own": {pom: strings.Replace(distPOM(""), "<artifactId>maven-shade-plugin</artifactId>", "<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>", 1), loadsLib: true, units: "one two"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.reactorRoot()
+			a.appModule("one", "one", justReturn)
+			a.appModule("two", "two", justReturn)
+			a.libModule("lib", justReturn)
+			a.generator("lib", justReturn)
+			writeFileT(t, filepath.Join(a.build, "dist", "pom.xml"), c.pom)
+			lib := testModule(t, "lib", "lib")
+			dist := testModule(t, "dist", "dist")
+			if c.loadsLib {
+				dist = sibling(dist, lib, "compile")
+			}
+			mods := []buildgraph.Module{testModule(t, ".", "parent"),
+				sibling(testModule(t, "one", "one"), lib, "compile"), sibling(testModule(t, "two", "two"), lib, "compile"), lib, dist}
+			plan, multi, why := reactorUnits(a.build, graphOption(t, "maven", mods...))
+			if got := strings.Join(unitPaths(plan), " "); multi || got != c.units {
+				t.Errorf("units = %q (refused %v: %q), want %q", got, multi, why, c.units)
+			}
+		})
+	}
+}
+
+// A code-free dist module launching a library's main is searched on its own classpath from that
+// main, listed or not (every unit loads netkit, so no absence is relied on); a main nothing loaded
+// defines withholds.
+func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
+	type want struct {
+		path     string
+		searched bool
+	}
+	cases := map[string]struct {
+		gen  func(b *cpb) []byte
+		main string
+		want map[bool]want // by listed
+	}{
+		"the main reaches the sink": {gen: callFetch, main: "com.acme.lib.Generator",
+			want: map[bool]want{true: {path: mainTrace("com/acme/lib/Generator")}, false: {path: mainTrace("com/acme/lib/Generator")}}},
+		"the main is clean": {gen: justReturn, main: "com.acme.lib.Generator",
+			want: map[bool]want{true: {searched: true}, false: {searched: true}}},
+		"a main nothing loaded defines": {gen: justReturn, main: "com.other.Tool",
+			want: map[bool]want{true: {}, false: {}}},
+	}
+	for name, c := range cases {
+		for _, listed := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/listed=%v", name, listed), func(t *testing.T) {
+				a := newApp(t, "", false)
+				a.reactorRoot()
+				a.appModule("one", "one", justReturn)
+				a.appModule("two", "two", justReturn)
+				a.libModule("lib", justReturn)
+				a.generator("lib", c.gen)
+				writeFileT(t, filepath.Join(a.build, "dist", "pom.xml"), distPOM(shadeMain(c.main)))
+				lib := testModule(t, "lib", "lib", netkitDep(a.build))
+				mods := []buildgraph.Module{testModule(t, ".", "parent"),
+					sibling(testModule(t, "one", "one", netkitDep(a.build)), lib, "compile"),
+					sibling(testModule(t, "two", "two", netkitDep(a.build)), lib, "compile"),
+					lib, sibling(testModule(t, "dist", "dist", netkitDep(a.build)), lib, "compile")}
+				if listed {
+					a.graph = listedGraph(t, mods...)
+				} else {
+					a.graph = graphOption(t, "maven", mods...)
+				}
+				res := a.reach(netkitSinkID)
+				w := c.want[listed]
+				if w.path == "" && len(res.Paths) != 0 {
+					t.Errorf("want no path, got %+v", res.Paths)
+				}
+				if w.path != "" && (len(res.Paths) != 1 || res.Paths[0].Trace[0].SCIP != w.path) {
+					t.Errorf("want one path from %q, got %+v (partiality %+v)", w.path, res.Paths, res.Partiality)
+				}
+				if got := len(res.Searched) == 1; got != w.searched {
+					t.Errorf("Searched = %v, want searched %v (partiality %+v)", res.Searched, w.searched, res.Partiality)
+				}
+			})
+		}
 	}
 }
 

@@ -199,13 +199,20 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 // JAR under its target/ or the manifest of one of its class output roots; war or ear packaging, or
 // a built .war; a POM, manifest or built JAR that cannot be read; or a POM chain that may name
 // what it does not show: a parent not read, or a profile naming a launch class or plugin.
-func launchSignal(buildDir, dir string, roots []string) bool {
+//
+// A module with no code of its own (code false) ships a program only by packaging other modules'
+// classes: its evidence is a launch class it names, a launching packaging or archive, or a profile
+// naming one. The Boot plugin alone, which finds its main among the module's own classes, is none.
+func launchSignal(buildDir, dir string, roots []string, code bool) bool {
 	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir), checkout: buildDir}
 	r.maven(filepath.Join(dir, "pom.xml"))
 	r.manifestFile(filepath.Join(dir, "src", "main", "resources", "META-INF", "MANIFEST.MF"))
 	r.archives(filepath.Join(dir, "target"))
 	for _, root := range roots {
 		r.manifestFile(filepath.Join(root, "META-INF", "MANIFEST.MF"))
+	}
+	if !code {
+		return r.launched || r.reasons[reasonLaunchEntryProfilePlugin]
 	}
 	return r.launched || r.bootPlugin || r.bootBlocked || r.reasons[reasonLaunchEntryProfilePlugin]
 }
@@ -412,7 +419,9 @@ func (r *entryReader) maven(path string) {
 		r.reasons[reasonLaunchEntryUnmapped] = true
 		return
 	}
-	if pom.Packaging == "war" || pom.Packaging == "ear" {
+	// Every packaging but a plain jar or an aggregator ships the module as something of its own
+	// (war, ear, an OSGi bundle, a plugin, or a value only a property resolves).
+	if pom.Packaging != "" && pom.Packaging != "jar" && pom.Packaging != "pom" {
 		r.launched = true
 	}
 	switch pom.Packaging {

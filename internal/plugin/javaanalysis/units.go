@@ -86,14 +86,14 @@ func reactorUnits(buildDir string, opts ...Option) (plan *reactorPlan, multi boo
 		return nil, true, why + ": " + err.Error()
 	}
 	roots := classOutputRoots(buildDir)
-	launch := func(dir string) bool {
+	launch := func(dir string, code bool) bool {
 		var own []string
 		for _, r := range roots {
 			if classOutputProject(r) == dir {
 				own = append(own, r)
 			}
 		}
-		return launchSignal(buildDir, dir, own)
+		return launchSignal(buildDir, dir, own, code)
 	}
 	plan, failure := planUnits(g, buildDir, sources, classOutputProjects(roots), launch)
 	if plan == nil {
@@ -104,9 +104,9 @@ func reactorUnits(buildDir string, opts ...Option) (plan *reactorPlan, multi boo
 
 // planUnits places every module with code of g as a unit or as a reactor sibling a unit loads.
 // sources are the build's .java files, outputs the project directories of its class output, and
-// launch reports whether a module directory carries launch evidence of its own. On failure the
-// plan is nil and failure says what could not be placed.
-func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string, launch func(dir string) bool) (plan *reactorPlan, failure string) {
+// launch reports whether a module directory, with code of its own or not, carries launch evidence
+// of its own. On failure the plan is nil and failure says what could not be placed.
+func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string, launch func(dir string, code bool) bool) (plan *reactorPlan, failure string) {
 	if tools := g.Tools(); len(tools) != 1 || tools[0] != "maven" {
 		return nil, "not a Maven reactor (" + strings.Join(tools, ", ") + ")"
 	}
@@ -161,12 +161,18 @@ func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string, 
 		}
 	}
 
+	// A module without code that names a launch and loads reactor siblings (a dist, assembly or
+	// shading module) ships their classes as a program: it is a unit of those classes on its own
+	// classpath. One that loads none, an aggregator whose profile its children inherit, ships no
+	// first-party code; the children carry that evidence themselves.
+	packs := make([]bool, len(mods))
 	referenced := make([]bool, len(mods))
 	siblings := make([][]int, len(mods))
 	for i, m := range mods {
-		if !code[i] {
+		if !code[i] && !launch(dirs[i], false) {
 			continue
 		}
+		var refs []int
 		for _, n := range m.Nodes {
 			if n.ID == m.Root {
 				continue
@@ -187,10 +193,18 @@ func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string, 
 			if j == i {
 				continue
 			}
-			referenced[j] = true
+			refs = append(refs, j)
 			if isRoot && runtimeScope(n.Scope) {
 				siblings[i] = append(siblings[i], j)
 			}
+		}
+		if !code[i] {
+			if packs[i] = len(siblings[i]) > 0; !packs[i] {
+				continue
+			}
+		}
+		for _, j := range refs {
+			referenced[j] = true
 		}
 	}
 
@@ -198,7 +212,7 @@ func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string, 
 	for i, m := range mods {
 		// A module another loads is a unit too when it also ships on its own: it runs there on
 		// its own resolved versions, which mediation in the loading module may not share.
-		if !code[i] || (referenced[i] && !launch(dirs[i])) {
+		if !packs[i] && (!code[i] || referenced[i] && !launch(dirs[i], true)) {
 			continue
 		}
 		u := reactorUnit{id: m.ID, path: m.Path, dir: dirs[i], dirs: []string{dirs[i]}}

@@ -202,18 +202,18 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 // what it does not show: a parent not read, or a profile naming a launch class or plugin.
 //
 // A module with no code of its own (code false) ships a program only by packaging other modules'
-// classes: its evidence is a launch class it names, a launching packaging or archive, or a profile
-// naming one. The Boot plugin alone, which finds its main among the module's own classes, is none.
+// classes, in more ways than evidence can list, so the burden is inverted: it carries evidence
+// unless it is provably inert (provablyInert).
 func launchSignal(buildDir, dir string, roots []string, code bool) bool {
+	if !code {
+		return !provablyInert(buildDir, dir)
+	}
 	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir), checkout: buildDir}
 	r.maven(modulePOM(dir))
 	r.manifestFile(filepath.Join(dir, "src", "main", "resources", "META-INF", "MANIFEST.MF"))
 	r.archives(filepath.Join(dir, "target"))
 	for _, root := range roots {
 		r.manifestFile(filepath.Join(root, "META-INF", "MANIFEST.MF"))
-	}
-	if !code {
-		return r.launched || r.reasons[reasonLaunchEntryProfilePlugin]
 	}
 	return r.launched || r.bootPlugin || r.bootBlocked || r.reasons[reasonLaunchEntryProfilePlugin]
 }
@@ -458,7 +458,9 @@ func (r *entryReader) maven(path string) {
 // entry records one launch-naming element of eff, its ${...} resolved against eff's merged
 // properties.
 func (r *entryReader) entry(eff *pomEffective, e pomEntry) {
-	if e.elem == "Main-Verticle" {
+	// A verticle launches through Vert.x's own main; a manifest file names its Main-Class in a
+	// file the reader does not open.
+	if e.elem == "Main-Verticle" || e.elem == "manifestFile" {
 		r.launched = true
 		r.reasons[reasonLaunchEntryUnmapped] = true
 		return

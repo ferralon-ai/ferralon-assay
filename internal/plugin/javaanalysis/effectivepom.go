@@ -15,11 +15,12 @@ import (
 // one rule. Every launch-entry check (entryReader.maven, bootMaven, launchSignal through them)
 // reads this view, never a single POM's text.
 //
-// A launch-naming element (mainClass, start-class, Main-Class, Start-Class, Main-Verticle) in any
-// POM of the chain applies to the module when it sits in:
+// A launch-naming element (mainClass, start-class, Main-Class, Start-Class, Main-Verticle,
+// manifestFile) in any POM of the chain applies to the module when it sits in:
 //   - a plugin the chain applies in <build><plugins> (inherited by every child);
-//   - a <pluginManagement> entry for a plugin the module applies, in its chain's <build><plugins>
-//     or by its packaging's default lifecycle (maven-jar-plugin for jar, and so on);
+//   - a <pluginManagement> entry for a plugin the module applies, in its chain's <build><plugins>,
+//     by its packaging's default lifecycle (maven-jar-plugin for jar, and so on) or by a profile;
+//     applied only by a profile, it withholds as a profile's own element does;
 //   - a <profile>, whatever its activation, since -P or settings.xml can switch it on: it names a
 //     launch class and also withholds (launch_entry_profile_plugin);
 //   - anywhere else but <properties> and an unapplied plugin's <pluginManagement> entry, read as
@@ -45,10 +46,12 @@ type pomEffective struct {
 	// keys any profile in the chain sets, whatever its activation.
 	props        map[string]string
 	profileProps map[string]bool
-	// profileLaunch is set when a profile in the chain carries a launch-naming element.
+	// profileLaunch is set when a profile in the chain carries a launch-naming element, applies
+	// a managed plugin that carries one, or applies the Boot plugin.
 	profileLaunch bool
-	// applied holds the groupId:artifactId of every plugin the module runs.
-	applied map[string]bool
+	// applied holds the groupId:artifactId of every plugin the module runs, by any profile too;
+	// profileOnly those it runs only when a profile is active.
+	applied, profileOnly map[string]bool
 	// entries are the launch-naming elements that apply to the module, nearest POM first.
 	entries []pomEntry
 }
@@ -81,6 +84,7 @@ var pluginPaths = [][]string{
 // launchElements are the element names that can name a launch class.
 var launchElements = map[string]bool{
 	"mainClass": true, "start-class": true, "Main-Class": true, "Start-Class": true, "Main-Verticle": true,
+	"manifestFile": true,
 }
 
 // pomWalk is what one POM file says, located by section.
@@ -107,7 +111,7 @@ type pomProfile struct {
 func (r *entryReader) effective(pom *mvnPOM, path string) *pomEffective {
 	chain, files, complete := r.pomChain(pom, path)
 	eff := &pomEffective{chain: chain, files: files, complete: complete, texts: make([]string, len(chain)),
-		props: map[string]string{}, profileProps: map[string]bool{}, applied: map[string]bool{}}
+		props: map[string]string{}, profileProps: map[string]bool{}, applied: map[string]bool{}, profileOnly: map[string]bool{}}
 	walks := make([]pomWalk, len(chain))
 	for i := range chain {
 		data, err := readRegular(files[i])
@@ -143,6 +147,21 @@ func (r *entryReader) effective(pom *mvnPOM, path string) *pomEffective {
 			eff.applied[pl.key] = true
 		}
 	}
+	for _, w := range walks {
+		for _, pr := range w.profiles {
+			for _, k := range pr.plugins {
+				if !eff.applied[k] {
+					eff.profileOnly[k] = true
+				}
+			}
+		}
+	}
+	for k := range eff.profileOnly {
+		eff.applied[k] = true
+	}
+	if eff.profileOnly[bootPluginKey] {
+		eff.profileLaunch = true
+	}
 	for i := range chain {
 		w := walks[i]
 		for _, pl := range w.plugins {
@@ -150,6 +169,7 @@ func (r *entryReader) effective(pom *mvnPOM, path string) *pomEffective {
 		}
 		for _, pl := range w.managed {
 			if eff.applied[pl.key] {
+				eff.profileLaunch = eff.profileLaunch || eff.profileOnly[pl.key] && len(pl.entries) > 0
 				eff.entries = append(eff.entries, pl.entries...)
 			}
 		}
@@ -332,4 +352,38 @@ func mavenRepackages(buildDir, dir string) bool {
 		}
 	}
 	return false
+}
+
+// provablyInert reports whether the code-free Maven module at dir, inside the checkout buildDir,
+// can ship nothing but its POM: its packaging is pom, every POM of its chain is there, is read and
+// parses, and no POM of the chain applies a plugin in <build><plugins> or in any profile, whatever
+// its activation. A <pluginManagement> entry alone applies nothing. Anything the reader does not
+// know leaves the module not inert.
+func provablyInert(buildDir, dir string) bool {
+	path := modulePOM(dir)
+	pom, ok := parseMavenPOM(path)
+	if !ok || pom.Packaging != "pom" {
+		return false
+	}
+	r := &entryReader{cache: newMavenCache(buildDir), checkout: buildDir}
+	chain, files, complete := r.pomChain(pom, path)
+	if !complete {
+		return false
+	}
+	for i := range chain {
+		data, err := readRegular(files[i])
+		if err != nil {
+			return false
+		}
+		w, ok := walkPOM(data)
+		if !ok || len(w.plugins) > 0 {
+			return false
+		}
+		for _, pr := range w.profiles {
+			if len(pr.plugins) > 0 {
+				return false
+			}
+		}
+	}
+	return true
 }

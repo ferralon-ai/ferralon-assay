@@ -656,6 +656,18 @@ func TestPlanUnits_LaunchEvidencePromotes(t *testing.T) {
 			a.oneFile("pom.xml", pom("", ""))
 			writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(`<build><pluginManagement><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></pluginManagement></build>`))
 		}, false},
+		// A plugin a profile applies, whatever its activation, runs whenever the profile does.
+		"Boot plugin in its own profile": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", effProfilePlugin(bootPluginXML, false)))
+		}, true},
+		"Boot plugin in a parent profile active by default": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", ""))
+			writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(effProfilePlugin(bootPluginXML, true)))
+		}, true},
+		"a managed main for a plugin its profile applies": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", effProfilePlugin(`<artifactId>exec-maven-plugin</artifactId>`, false)))
+			writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(effManagedExec))
+		}, true},
 		"war packaging": {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>war</packaging>", "")) }, true},
 		"ear packaging": {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>ear</packaging>", "")) }, true},
 		// Every packaging but a plain jar ships on its own, a value a property supplies included.
@@ -756,6 +768,12 @@ const startClassRoot = `<properties><start-class>com.acme.lib.Generator</start-c
     <configuration><mainClass>${start-class}</mainClass></configuration>
   </plugin></plugins></pluginManagement></build>`
 
+// inertPOM is a code-free aggregator dist loading lib and applying no plugin.
+var inertPOM = strings.Replace(launcherPOM("pom", jacocoPluginXML, ""), "<build><plugins><plugin>"+jacocoPluginXML+"</plugin></plugins></build>", "", 1)
+
+// startClassOnly sets start-class to the library's Generator and nothing else.
+const startClassOnly = `<properties><start-class>com.acme.lib.Generator</start-class></properties>`
+
 // shadeRoot manages the shade plugin with the library's Generator as Main-Class, applying it to
 // no module.
 var shadeRoot = `<build><pluginManagement><plugins><plugin><artifactId>maven-shade-plugin</artifactId>
@@ -785,8 +803,9 @@ func launcherPOM(packaging, plugin, extra string) string {
 </project>`
 }
 
-// A module without code that names a launch and loads reactor siblings packages their classes as
-// a program: it is a unit of its own. One that names none, or loads no sibling, is not.
+// A module without code that loads reactor siblings is a unit of its own unless it is provably
+// inert: a launch it names is searched from, and one it does not name (or names where the reader
+// does not look) withholds. One that loads no sibling, or is inert, is not a unit.
 func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 	cases := map[string]struct {
 		pom      string
@@ -795,9 +814,9 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 		units    string
 	}{
 		"a shaded main":                 {pom: distPOM(shadeMain("com.acme.lib.Generator")), loadsLib: true, units: "dist one two"},
-		"shading with no main":          {pom: distPOM(""), loadsLib: true, units: "one two"},
+		"shading with no main":          {pom: distPOM(""), loadsLib: true, units: "dist one two"},
 		"a named main, no sibling":      {pom: distPOM(shadeMain("com.acme.lib.Generator")), units: "one two"},
-		"an exec plugin naming no main": {pom: strings.Replace(distPOM(""), "maven-shade-plugin", "exec-maven-plugin", 1) + "", loadsLib: true, units: "one two"},
+		"an exec plugin naming no main": {pom: strings.Replace(distPOM(""), "maven-shade-plugin", "exec-maven-plugin", 1) + "", loadsLib: true, units: "dist one two"},
 		"assembly packaging, a main":    {pom: strings.Replace(distPOM(shadeMain("com.acme.lib.Generator")), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "dist one two"},
 		"an unresolved packaging":       {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>${p}</packaging>", 1), loadsLib: true, units: "dist one two"},
 		"a profile naming a main":       {pom: strings.Replace(distPOM(""), "</dependencies>", "</dependencies><profiles><profile><id>tool</id><build><plugins><plugin><artifactId>exec-maven-plugin</artifactId><configuration><mainClass>com.acme.lib.Generator</mainClass></configuration></plugin></plugins></build></profile></profiles>", 1), loadsLib: true, units: "dist one two"},
@@ -811,13 +830,20 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 		"an inherited start-class, pom packaging":          {pom: launcherPOM("pom", bootPluginXML, ""), loadsLib: true, rootBody: startClassRoot, units: "dist lib one two"},
 		"a managed shade main, shade applied":              {pom: launcherPOM("", shadePluginXML, ""), loadsLib: true, rootBody: shadeRoot, units: "dist lib one two"},
 		"a start-class of its own, the Boot plugin":        {pom: launcherPOM("", bootPluginXML, "<properties><start-class>com.acme.lib.Generator</start-class></properties>"), loadsLib: true, units: "dist one two"},
-		"an inherited start-class, the Boot plugin unused": {pom: launcherPOM("", jacocoPluginXML, ""), loadsLib: true, rootBody: startClassRoot, units: "lib one two"},
-		"a managed shade main, shade unused":               {pom: launcherPOM("", jacocoPluginXML, ""), loadsLib: true, rootBody: shadeRoot, units: "lib one two"},
+		"an inherited start-class, the Boot plugin unused": {pom: launcherPOM("", jacocoPluginXML, ""), loadsLib: true, rootBody: startClassRoot, units: "dist lib one two"},
+		"a managed shade main, shade unused":               {pom: launcherPOM("", jacocoPluginXML, ""), loadsLib: true, rootBody: shadeRoot, units: "dist lib one two"},
 		// A coverage aggregator under a parent applying the Boot plugin with no main named.
-		"a Boot parent, a coverage aggregator": {pom: launcherPOM("pom", jacocoPluginXML, ""), loadsLib: true, rootBody: bootRoot, units: "lib one two"},
-		// An aggregator that also gathers dependencies names no launch: it ships nothing of its own.
-		"pom packaging, no main":              {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "one two"},
-		"the Boot plugin, no main of its own": {pom: strings.Replace(distPOM(""), "<artifactId>maven-shade-plugin</artifactId>", "<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>", 1), loadsLib: true, units: "one two"},
+		"a Boot parent, a coverage aggregator": {pom: launcherPOM("pom", jacocoPluginXML, ""), loadsLib: true, rootBody: bootRoot, units: "dist lib one two"},
+		// Packaging, inheriting or applying any plugin, the module may ship the classes it loads.
+		"pom packaging, no main":                          {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "dist one two"},
+		"an assembly manifest file":                       {pom: launcherPOM("", `<artifactId>maven-assembly-plugin</artifactId><configuration><archive><manifestFile>src/assembly/MANIFEST.MF</manifestFile></archive></configuration>`, ""), loadsLib: true, units: "dist one two"},
+		"pom packaging, an assembly, its parent not read": {pom: strings.Replace(launcherPOM("pom", `<artifactId>maven-assembly-plugin</artifactId>`, ""), "<version>1.0.0</version></parent>", "<version>9.9.9</version></parent>", 1), loadsLib: true, units: "dist one two"},
+		"pom packaging, a plugin a parent profile applies": {pom: inertPOM, loadsLib: true, units: "dist one two",
+			rootBody: effProfilePlugin(`<artifactId>exec-maven-plugin</artifactId>`, false)},
+		// An aggregator applying and inheriting no plugin ships nothing but its POM.
+		"an inert aggregator":                 {pom: inertPOM, loadsLib: true, units: "one two"},
+		"an inert aggregator, a managed main": {pom: strings.Replace(inertPOM, "</dependencies>", "</dependencies>"+effManagedExec, 1), loadsLib: true, units: "one two"},
+		"the Boot plugin, no main of its own": {pom: strings.Replace(distPOM(""), "<artifactId>maven-shade-plugin</artifactId>", "<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>", 1), loadsLib: true, units: "dist one two"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -855,6 +881,7 @@ func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
 		searched bool
 	}
 	reaches := map[bool]want{true: {path: mainTrace("com/acme/lib/Generator")}, false: {path: mainTrace("com/acme/lib/Generator")}}
+	withheld := map[bool]want{true: {}, false: {}}
 	cases := map[string]struct {
 		gen  func(b *cpb) []byte
 		main string
@@ -873,6 +900,32 @@ func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
 			want: map[bool]want{true: {searched: true}, false: {searched: true}}},
 		"a main nothing loaded defines": {gen: justReturn, main: "com.other.Tool",
 			want: map[bool]want{true: {}, false: {}}},
+		// A plugin a profile applies, active by default or not, launches the library's main only
+		// under that profile: the launcher is a unit, its path is found, and it withholds.
+		"the Boot plugin in its profile, an inherited start-class": {gen: callFetch, root: startClassOnly, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, effProfilePlugin(bootPluginXML, false))},
+		"the Boot plugin managed by its parent, applied in its profile": {gen: callFetch, root: startClassRoot, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, effProfilePlugin(bootPluginXML, false))},
+		"a managed shade main, shade applied in its profile": {gen: callFetch, root: shadeRoot, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, effProfilePlugin(shadePluginXML, false))},
+		"the Boot plugin in an active-by-default profile": {gen: callFetch, root: startClassOnly, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, effProfilePlugin(bootPluginXML, true))},
+		"its own start-class, the Boot plugin in its profile": {gen: callFetch, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, startClassOnly+effProfilePlugin(bootPluginXML, false))},
+		"its own start-class, the Boot plugin in an active-by-default profile": {gen: callFetch, want: reaches,
+			dist: launcherPOM("", jacocoPluginXML, startClassOnly+effProfilePlugin(bootPluginXML, true))},
+		"its own managed shade main, shade applied in its profile": {gen: callFetch, want: reaches,
+			dist: strings.Replace(launcherPOM("", jacocoPluginXML, effProfilePlugin(shadePluginXML, false)), "<build><plugins><plugin>"+jacocoPluginXML, strings.TrimSuffix(shadeRoot, "</build>")+"<plugins><plugin>"+jacocoPluginXML, 1)},
+		// The assembly descriptor's Main-Class is in a manifest file the reader does not open.
+		"an assembly manifest file": {gen: callFetch, want: withheld,
+			dist: launcherPOM("", `<artifactId>maven-assembly-plugin</artifactId><configuration><archive><manifestFile>src/assembly/MANIFEST.MF</manifestFile></archive></configuration>`, "")},
+		// An assembly under a parent the reader does not have may be handed its main there.
+		"pom packaging, an assembly, its parent not read": {gen: callFetch, want: withheld,
+			dist: strings.Replace(launcherPOM("pom", `<artifactId>maven-assembly-plugin</artifactId>`, ""), "<version>1.0.0</version></parent>", "<version>9.9.9</version></parent>", 1)},
+		// An aggregator applying no plugin and inheriting none ships nothing but its POM, whatever
+		// it loads: the library's own units are what the reactor runs.
+		"an inert aggregator": {gen: callFetch, want: map[bool]want{true: {searched: true}, false: {searched: true}},
+			dist: strings.Replace(inertPOM, "</dependencies>", "</dependencies>"+effManagedExec, 1)},
 	}
 	for name, c := range cases {
 		for _, listed := range []bool{true, false} {
@@ -901,6 +954,7 @@ func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
 				} else {
 					a.graph = graphOption(t, "maven", mods...)
 				}
+				writeFileT(t, filepath.Join(a.build, "dist", "src", "assembly", "MANIFEST.MF"), "Manifest-Version: 1.0\nMain-Class: com.acme.lib.Generator\n")
 				res := a.reach(netkitSinkID)
 				w := c.want[listed]
 				if w.path == "" && len(res.Paths) != 0 {

@@ -28,6 +28,18 @@ const (
 	effChild  = `<project><parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1</version></parent><artifactId>app</artifactId>`
 )
 
+// effManagedExec manages exec-maven-plugin with a main, applying it nowhere.
+const effManagedExec = `<build><pluginManagement><plugins><plugin><artifactId>exec-maven-plugin</artifactId><configuration><mainClass>com.acme.Managed</mainClass></configuration></plugin></plugins></pluginManagement></build>`
+
+// effProfilePlugin is a <profiles> section whose one profile applies plugin.
+func effProfilePlugin(plugin string, activeByDefault bool) string {
+	activation := ""
+	if activeByDefault {
+		activation = `<activation><activeByDefault>true</activeByDefault></activation>`
+	}
+	return `<profiles><profile><id>p</id>` + activation + `<build><plugins><plugin>` + plugin + `</plugin></plugins></build></profile></profiles>`
+}
+
 // effective merges the chain as Maven does: the nearest POM's property wins, an active-by-default
 // profile's over its own POM's, ${...} resolves through properties naming others, and every
 // launch-naming element that applies is read, profiles and unplaced elements included.
@@ -65,6 +77,33 @@ func TestEffectivePOM(t *testing.T) {
 			parent:  effParent + `<reporting><mainClass>com.acme.Elsewhere</mainClass></reporting></project>`,
 			child:   effChild + `</project>`,
 			entries: []string{"com.acme.Elsewhere"}, complete: true, resolve: "${main}",
+		},
+		// A plugin a profile applies takes the main its parent manages for it, withholding as the
+		// profile's own element does; applied outside the profile too, it is plain configuration.
+		"a managed main for a plugin a profile applies": {
+			parent:  effParent + effManagedExec + `</project>`,
+			child:   effChild + effProfilePlugin(`<artifactId>exec-maven-plugin</artifactId>`, false) + `</project>`,
+			entries: []string{"com.acme.Managed"}, profileLaunch: true, complete: true, resolve: "${main}",
+		},
+		"a managed main for a plugin applied by its build and a profile": {
+			parent:  effParent + effManagedExec + `</project>`,
+			child:   effChild + `<build><plugins><plugin><artifactId>exec-maven-plugin</artifactId></plugin></plugins></build>` + effProfilePlugin(`<artifactId>exec-maven-plugin</artifactId>`, false) + `</project>`,
+			entries: []string{"com.acme.Managed"}, complete: true, resolve: "${main}",
+		},
+		"a managed main for a plugin nothing applies": {
+			parent:   effParent + effManagedExec + `</project>`,
+			child:    effChild + `</project>`,
+			complete: true, resolve: "${main}",
+		},
+		"the Boot plugin applied by a profile active by default": {
+			parent:        effParent + `</project>`,
+			child:         effChild + effProfilePlugin(bootPluginXML, true) + `</project>`,
+			profileLaunch: true, complete: true, resolve: "${main}",
+		},
+		"a parent profile applying a managed plugin with no main": {
+			parent:   effParent + effProfilePlugin(`<artifactId>exec-maven-plugin</artifactId>`, false) + `</project>`,
+			child:    effChild + `</project>`,
+			complete: true, resolve: "${main}",
 		},
 		"a property naming others resolves through them": {
 			parent:   effParent + `<properties><main>${inner}</main><inner>${leaf}</inner><leaf>com.acme.Leaf</leaf></properties></project>`,
@@ -111,27 +150,47 @@ func TestEffectivePOM(t *testing.T) {
 	}
 }
 
-// A code-free module whose POM chain cannot be read in full may name a launch class in what is
-// missing: it carries launch evidence, unless it is an aggregator.
-func TestLaunchSignal_CodeFreeChainNotRead(t *testing.T) {
+// A code-free module is inert, shipping nothing but its POM, only when its packaging is pom, its
+// whole chain is read, and no POM of the chain applies a plugin, in its build or in any profile;
+// launchSignal reports evidence for every code-free module that is not.
+func TestProvablyInert(t *testing.T) {
+	agg := effChild + `<packaging>pom</packaging>`
+	exec := `<artifactId>exec-maven-plugin</artifactId>`
 	cases := map[string]struct {
 		parent, child string
 		want          bool
 	}{
-		"a parent read in full":                   {parent: effParent + `</project>`, child: effChild + `</project>`},
-		"a parent not there":                      {child: effChild + `</project>`, want: true},
-		"an aggregator, no parent":                {child: effChild + `<packaging>pom</packaging></project>`},
-		"a parent that does not parse to the end": {parent: effParent + `</project><`, child: effChild + `</project>`, want: true},
+		"an aggregator, its parent read":      {parent: effParent + `</project>`, child: agg + `</project>`, want: true},
+		"an aggregator, no parent":            {child: `<project><groupId>com.acme</groupId><artifactId>app</artifactId><version>1</version><packaging>pom</packaging></project>`, want: true},
+		"an aggregator, plugins managed only": {parent: effParent + effManagedExec + `</project>`, child: agg + effManagedExec + `</project>`, want: true},
+		"jar packaging":                       {parent: effParent + `</project>`, child: effChild + `<packaging>jar</packaging></project>`},
+		"packaging unset":                     {parent: effParent + `</project>`, child: effChild + `</project>`},
+		"packaging a property sets":           {parent: effParent + `</project>`, child: effChild + `<packaging>${p}</packaging></project>`},
+		"an aggregator applying a plugin":     {parent: effParent + `</project>`, child: agg + `<build><plugins><plugin>` + exec + `</plugin></plugins></build></project>`},
+		"a parent applying a plugin":          {parent: effParent + `<build><plugins><plugin>` + exec + `</plugin></plugins></build></project>`, child: agg + `</project>`},
+		"an aggregator's profile, a plugin":   {parent: effParent + `</project>`, child: agg + effProfilePlugin(exec, false) + `</project>`},
+		"a parent's profile, a plugin":        {parent: effParent + effProfilePlugin(exec, false) + `</project>`, child: agg + `</project>`},
+		"a parent not there":                  {child: agg + `</project>`},
+		"a parent that does not parse":        {parent: effParent + `</project><`, child: agg + `</project>`},
+		"an aggregator that does not parse":   {parent: effParent + `</project>`, child: agg + `</project><`},
+		"no POM":                              {parent: effParent + `</project>`},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			poms := map[string]string{"app": c.child}
+			poms := map[string]string{}
+			if c.child != "" {
+				poms["app"] = c.child
+			}
 			if c.parent != "" {
 				poms["."] = c.parent
 			}
 			root := writePOMs(t, poms)
-			if got := launchSignal(root, filepath.Join(root, "app"), nil, false); got != c.want {
-				t.Errorf("launchSignal = %v, want %v", got, c.want)
+			dir := filepath.Join(root, "app")
+			if got := provablyInert(root, dir); got != c.want {
+				t.Errorf("provablyInert = %v, want %v", got, c.want)
+			}
+			if got := launchSignal(root, dir, nil, false); got == c.want {
+				t.Errorf("launchSignal = %v, want %v", got, !c.want)
 			}
 		})
 	}

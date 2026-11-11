@@ -653,12 +653,15 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 		loadsLib bool
 		units    string
 	}{
-		"a shaded main":                       {pom: distPOM(shadeMain("com.acme.lib.Generator")), loadsLib: true, units: "dist one two"},
-		"shading with no main":                {pom: distPOM(""), loadsLib: true, units: "one two"},
-		"a named main, no sibling":            {pom: distPOM(shadeMain("com.acme.lib.Generator")), units: "one two"},
-		"an exec plugin naming no main":       {pom: strings.Replace(distPOM(""), "maven-shade-plugin", "exec-maven-plugin", 1) + "", loadsLib: true, units: "one two"},
-		"assembly packaging, a main":          {pom: strings.Replace(distPOM(shadeMain("com.acme.lib.Generator")), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "dist one two"},
-		"an unresolved packaging":             {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>${p}</packaging>", 1), loadsLib: true, units: "dist one two"},
+		"a shaded main":                 {pom: distPOM(shadeMain("com.acme.lib.Generator")), loadsLib: true, units: "dist one two"},
+		"shading with no main":          {pom: distPOM(""), loadsLib: true, units: "one two"},
+		"a named main, no sibling":      {pom: distPOM(shadeMain("com.acme.lib.Generator")), units: "one two"},
+		"an exec plugin naming no main": {pom: strings.Replace(distPOM(""), "maven-shade-plugin", "exec-maven-plugin", 1) + "", loadsLib: true, units: "one two"},
+		"assembly packaging, a main":    {pom: strings.Replace(distPOM(shadeMain("com.acme.lib.Generator")), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "dist one two"},
+		"an unresolved packaging":       {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>${p}</packaging>", 1), loadsLib: true, units: "dist one two"},
+		"a profile naming a main":       {pom: strings.Replace(distPOM(""), "</dependencies>", "</dependencies><profiles><profile><id>tool</id><build><plugins><plugin><artifactId>exec-maven-plugin</artifactId><configuration><mainClass>com.acme.lib.Generator</mainClass></configuration></plugin></plugins></build></profile></profiles>", 1), loadsLib: true, units: "dist one two"},
+		// An aggregator that also gathers dependencies names no launch: it ships nothing of its own.
+		"pom packaging, no main":              {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "one two"},
 		"the Boot plugin, no main of its own": {pom: strings.Replace(distPOM(""), "<artifactId>maven-shade-plugin</artifactId>", "<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>", 1), loadsLib: true, units: "one two"},
 	}
 	for name, c := range cases {

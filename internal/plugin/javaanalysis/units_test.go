@@ -450,6 +450,7 @@ func TestPomChain_CheckoutParent(t *testing.T) {
 		// Maven reads the linked file; the cache copy may not be it.
 		"parent links outside checkout": {parentGAV: "com.acme:parent:1.0.0", unit: true, cached: true, link: "outside"},
 		"parent links inside checkout":  {parentGAV: "com.acme:parent:1.0.0", unit: true, cached: true, link: "inside", complete: true, fromCheckout: true},
+		"parent dir links outside":      {parentGAV: "com.acme:parent:1.0.0", relativePath: "<relativePath>../pdir</relativePath>", unit: true, cached: true, link: "dir"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -463,7 +464,12 @@ func TestPomChain_CheckoutParent(t *testing.T) {
 			if c.cached {
 				writeFileT(t, filepath.Join(build, ".m2", "repository", "com", "acme", "parent", "1.0.0", "parent-1.0.0.pom"), parentPOM(""))
 			}
-			if c.link != "" {
+			if c.link == "dir" {
+				writeFileT(t, filepath.Join(outer, "pdir", "pom.xml"), parentPOM(""))
+				if err := os.Symlink(filepath.Join(outer, "pdir"), filepath.Join(build, "pdir")); err != nil {
+					t.Fatal(err)
+				}
+			} else if c.link != "" {
 				target := filepath.Join(outer, "linked", "pom.xml")
 				if c.link == "inside" {
 					target = filepath.Join(build, "linked", "pom.xml")

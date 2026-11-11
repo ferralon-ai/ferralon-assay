@@ -287,7 +287,8 @@ func TestListsEveryInstall(t *testing.T) {
 			if got := AbsentFromBuild(g, dir, coord); got != tc.absent {
 				t.Errorf("AbsentFromBuild = %v, want %v", got, tc.absent)
 			}
-			res := graphVersions(g, coord, false, listsEveryInstall(g, dir))
+			listed := listsEveryInstall(g, dir)
+			res := graphVersions(g, coord, false, listed, listed)
 			if want := tc.absent && !tc.wantRoot; res.Exhaustive != want {
 				t.Errorf("Exhaustive = %v, want %v", res.Exhaustive, want)
 			}
@@ -365,5 +366,67 @@ func TestWithUnlistedInstallKeepsScoped(t *testing.T) {
 	}
 	if extra := reasons[:2][1]; extra != "" {
 		t.Fatalf("caller's reasons backing array written: %q", extra)
+	}
+}
+
+// TestGraphVersionsUnlistedBound: an unlisted install bounded to other coordinates leaves a
+// coordinate's copies complete, so the version axis can rule on them. One bounded to the
+// coordinate, one that names nothing, or one whose target is not a coordinate leaves them
+// incomplete, and Exhaustive stays false whenever any install is unlisted.
+func TestGraphVersionsUnlistedBound(t *testing.T) {
+	const copyJars = "maven-dependency-plugin execution copy-jars"
+	bc := graphDep{group: "org.bouncycastle", artifact: "bcprov-lts8on", version: "2.73.13", jar: filepath.Join(t.TempDir(), "bcprov-lts8on-2.73.13.jar")}
+	h2 := graphDep{group: "com.h2database", artifact: "h2", version: "2.2.224", jar: filepath.Join(t.TempDir(), "h2-2.2.224.jar")}
+	for _, tc := range []struct {
+		name    string
+		targets map[string][]string
+		other   bool // a second module with an unbounded unlisted install
+		files   map[string]string
+		coord   string
+		want    bool
+	}{
+		{name: "install bounded to another coordinate", targets: map[string][]string{copyJars: {"com.h2database:h2", "org.example:ca-servlet"}}, coord: "org.bouncycastle:bcprov-lts8on", want: true},
+		{name: "install bounded to the coordinate", targets: map[string][]string{copyJars: {"com.h2database:h2"}}, coord: "com.h2database:h2"},
+		{name: "install bounded to the coordinate in another case", targets: map[string][]string{copyJars: {"COM.H2DATABASE:H2"}}, coord: "com.h2database:h2"},
+		{name: "install bounded to the coordinate padded", targets: map[string][]string{copyJars: {" com.h2database:h2 "}}, coord: "com.h2database:h2"},
+		{name: "install with no targets", coord: "org.bouncycastle:bcprov-lts8on"},
+		{name: "target that is not a coordinate", targets: map[string][]string{copyJars: {"h2"}}, coord: "org.bouncycastle:bcprov-lts8on"},
+		{name: "bounded install beside an unbounded one in another module", targets: map[string][]string{copyJars: {"com.h2database:h2"}}, other: true, coord: "org.bouncycastle:bcprov-lts8on"},
+		{name: "bounded install beside a checked-in archive", targets: map[string][]string{copyJars: {"com.h2database:h2"}}, files: map[string]string{"libs/agent.jar": "x"}, coord: "org.bouncycastle:bcprov-lts8on"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for rel, body := range tc.files {
+				p := filepath.Join(dir, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m := testModule(t, ".", "app", bc, h2)
+			m.Unlisted, m.UnlistedTargets = []string{copyJars}, tc.targets
+			mods := []buildgraph.Module{m}
+			if tc.other {
+				o := testModule(t, "assembly", "assembly")
+				o.Unlisted = []string{"maven-dependency-plugin execution copy-all"}
+				mods = append(mods, o)
+			}
+			g := &buildgraph.Graph{Tool: buildgraph.Tool{Name: "maven"}, Complete: true, Modules: mods}
+			res, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: dir, Coordinate: tc.coord}, writeGraph(t, *g))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !res.Found || !res.Match.Resolved {
+				t.Fatalf("match = %+v, want a resolved copy", res.Match)
+			}
+			if res.MatchesComplete != tc.want {
+				t.Errorf("MatchesComplete = %v, want %v", res.MatchesComplete, tc.want)
+			}
+			if res.Exhaustive {
+				t.Error("Exhaustive = true with an unlisted install")
+			}
+		})
 	}
 }

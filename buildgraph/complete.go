@@ -432,10 +432,12 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 	}
 	repos := mavenRepos(modules)
 	byCoord := map[string]*Module{}
+	reactorVersions := map[string]string{} // group:artifact -> the module's version
 	for i := range modules {
 		for _, n := range modules[i].Nodes {
 			if n.ID == modules[i].Root {
 				byCoord[n.Group+":"+n.Artifact] = &modules[i]
+				reactorVersions[n.Group+":"+n.Artifact] = n.Version
 			}
 		}
 	}
@@ -516,7 +518,7 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 					continue
 				}
 				for _, g := range ex.Goals.Goal {
-					if g = strings.TrimSpace(g); goals != nil && !goals[g] && !boundedCopy(byCoord[who], pl, ex, g) {
+					if g = strings.TrimSpace(g); goals != nil && !goals[g] && !boundedCopy(byCoord[who], p, reactorVersions, pl, ex, g) {
 						reasons = append(reasons, who+": "+key+":"+g+" (execution "+ex.ID+") installs what the graph does not list")
 					}
 				}
@@ -531,12 +533,21 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 
 // boundedCopy reports whether goal g of ex is a maven-dependency-plugin copy or unpack that
 // unlistedInPOM recorded on m with every artifactItem resolved to a coordinate: what it installs
-// is then bounded to coordinates the graph names, and checked per coordinate.
-func boundedCopy(m *Module, pl effectivePlugin, ex effectiveExecution, g string) bool {
-	if m == nil || pl.ArtifactID != "maven-dependency-plugin" || (g != "copy" && g != "unpack") {
+// is then bounded to coordinates the graph names, and checked per coordinate. An unpack also
+// extracts the archives nested in what it unpacks, so it is bounded only when every item is a
+// reactor module at its own version, whose contents the graph resolves for that module.
+func boundedCopy(m *Module, p effectiveProject, reactor map[string]string, pl effectivePlugin, ex effectiveExecution, g string) bool {
+	if m == nil || pl.ArtifactID != "maven-dependency-plugin" || len(m.UnlistedTargets["maven-dependency-plugin execution "+ex.ID]) == 0 {
 		return false
 	}
-	return len(m.UnlistedTargets["maven-dependency-plugin execution "+ex.ID]) > 0
+	switch g {
+	case "copy":
+		return true
+	case "unpack":
+		_, ok := itemCoordinates(p, reactor, true, ex.Configuration, pl.Configuration)
+		return ok
+	}
+	return false
 }
 
 // key is the plugin's groupId:artifactId; an effective POM may leave out Maven's own group.

@@ -206,6 +206,13 @@ func TestMavenIncomplete(t *testing.T) {
 		return `<fileSets><fileSet><directory>` + dir + `</directory></fileSet></fileSets>`
 	}
 	const copyEntry = "maven-dependency-plugin execution agent"
+	item := func(coord, version, typ, classifier string) string {
+		g, a, _ := strings.Cut(coord, ":")
+		return `<artifactItem><groupId>` + g + `</groupId><artifactId>` + a + `</artifactId><version>` + version + `</version><type>` + typ + `</type><classifier>` + classifier + `</classifier></artifactItem>`
+	}
+	unpack := func(items ...string) string {
+		return plugin("org.apache.maven.plugins:maven-dependency-plugin", `<executions><execution><id>agent</id><phase>package</phase><goals><goal>unpack</goal></goals><configuration><artifactItems>`+strings.Join(items, "")+`</artifactItems></configuration></execution></executions>`)
+	}
 	for _, tc := range []struct {
 		name    string
 		build   string
@@ -256,7 +263,10 @@ func TestMavenIncomplete(t *testing.T) {
 		{name: "copy goal of another plugin beside resolved items", build: plugin("org.codehaus.mojo:build-helper-maven-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.h2database:h2"}}, want: "build-helper-maven-plugin:copy (execution agent)"},
 		{name: "unknown plugin", build: plugin("com.acme:fetch-maven-plugin", exec("fetch", "package", "fetch")), want: "com.acme:fetch-maven-plugin execution fetch is not a plugin"},
 		{name: "dependency copy with every item resolved", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.h2database:h2"}}},
-		{name: "dependency unpack with every item resolved", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "unpack")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.example:cli"}}},
+		{name: "dependency unpack of a reactor module at its version", build: unpack(item("com.example:app", "1.0", "zip", "lib")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.example:app"}}},
+		{name: "dependency unpack of a jar outside the reactor", build: unpack(item("com.acme:agent-bundle", "2.0", "jar", "")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.acme:agent-bundle"}}, want: "maven-dependency-plugin:unpack (execution agent)"},
+		{name: "dependency unpack of a reactor module beside an outside jar", build: unpack(item("com.example:app", "1.0", "zip", "lib"), item("com.acme:agent-bundle", "2.0", "jar", "")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.acme:agent-bundle", "com.example:app"}}, want: "maven-dependency-plugin:unpack (execution agent)"},
+		{name: "dependency unpack of another release of a reactor module", build: unpack(item("com.example:app", "0.9", "jar", "")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.example:app"}}, want: "maven-dependency-plugin:unpack (execution agent)"},
 		{name: "dependency copy with an unresolved item", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry}, want: "maven-dependency-plugin:copy (execution agent)"},
 		{name: "dependency copy beside another execution's resolved items", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry, "maven-dependency-plugin execution other"}, targets: map[string][]string{"maven-dependency-plugin execution other": {"com.h2database:h2"}}, want: "maven-dependency-plugin:copy (execution agent)"},
 		{name: "dependency get beside resolved copy items", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "copy", "get")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.h2database:h2"}}, want: "maven-dependency-plugin:get (execution agent)"},
@@ -271,12 +281,17 @@ func TestMavenIncomplete(t *testing.T) {
 		{name: "assembly version naming a root", version: "/opt", build: assembly(dist), files: descriptor(fileSet("${project.version}/lib")), want: "reads /opt/lib, outside the checkout"},
 		{name: "assembly fileSet through a symlink out", link: "target/t2/ext", build: assembly(dist), files: descriptor(fileSet("${project.build.directory}/t2/ext")), want: "outside the checkout"},
 		{name: "assembly fileSet in the local repository", repo: true, build: assembly(dist), files: descriptor(fileSet(".m2/repository/com/oracle")), want: "in the local repository"},
+		{name: "assembly archiveBaseDirectory", build: assembly(dist + `<archiveBaseDirectory>/opt/vendor</archiveBaseDirectory>`), files: descriptor(fileSet("lib")), want: "sets archiveBaseDirectory"},
+		{name: "assembly fileSet holding the local repository", repo: true, build: assembly(dist), files: descriptor(fileSet("")), want: "holds the local repository"},
+		{name: "assembly fileSet over a symlink out", link: "lib/ext", build: assembly(dist), files: descriptor(fileSet("lib")), want: "outside the checkout"},
+		{name: "assembly build directory outside the checkout", build: `<directory>/opt/build</directory>` + plugin("org.apache.maven.plugins:maven-assembly-plugin", `<executions><execution><id>main</id><phase>package</phase><goals><goal>single</goal></goals><configuration>`+dist+`</configuration></execution></executions>`), files: descriptor(fileSet("${project.build.directory}/lib")), want: "reads /opt/build/lib, outside the checkout"},
+		{name: "assembly build directory above the checkout", build: `<directory>$ROOT/..</directory>` + plugin("org.apache.maven.plugins:maven-assembly-plugin", `<executions><execution><id>main</id><phase>package</phase><goals><goal>single</goal></goals><configuration>`+dist+`</configuration></execution></executions>`), files: descriptor(fileSet("${project.build.directory}/sibling")), want: "outside the checkout"},
 		{name: "assembly moduleSets", build: assembly(dist), files: descriptor(`<moduleSets><moduleSet><useAllReactorProjects>true</useAllReactorProjects></moduleSet></moduleSets>`), want: "has moduleSets"},
 		{name: "assembly repositories", build: assembly(dist), files: descriptor(`<repositories><repository><outputDirectory>repo</outputDirectory></repository></repositories>`), want: "has repositories"},
 		{name: "assembly componentDescriptors", build: assembly(dist), files: descriptor(`<componentDescriptors><componentDescriptor>/opt/c.xml</componentDescriptor></componentDescriptors>`), want: "has componentDescriptors"},
-		{name: "assembly descriptorRefs", build: assembly(`<descriptorRefs><descriptorRef>jar-with-dependencies</descriptorRef></descriptorRefs>`), want: "descriptorRefs names a descriptor"},
-		{name: "assembly descriptorRefs beside a descriptor", build: assembly(dist + `<descriptorRefs><descriptorRef>jar-with-dependencies</descriptorRef></descriptorRefs>`), files: descriptor(fileSet("${project.build.outputDirectory}")), want: "descriptorRefs names a descriptor"},
-		{name: "assembly inline descriptor", build: assembly(`<inlineDescriptors><inlineDescriptor><id>x</id></inlineDescriptor></inlineDescriptors>`), want: "inlineDescriptors names a descriptor"},
+		{name: "assembly descriptorRefs", build: assembly(`<descriptorRefs><descriptorRef>jar-with-dependencies</descriptorRef></descriptorRefs>`), want: "sets descriptorRefs"},
+		{name: "assembly descriptorRefs beside a descriptor", build: assembly(dist + `<descriptorRefs><descriptorRef>jar-with-dependencies</descriptorRef></descriptorRefs>`), files: descriptor(fileSet("${project.build.outputDirectory}")), want: "sets descriptorRefs"},
+		{name: "assembly inline descriptor", build: assembly(`<inlineDescriptors><inlineDescriptor><id>x</id></inlineDescriptor></inlineDescriptors>`), want: "sets inlineDescriptors"},
 		{name: "assembly descriptor missing", build: assembly(dist), want: "cannot be read"},
 		{name: "assembly descriptor outside the checkout", build: assembly(`<descriptors><descriptor>/opt/dist.xml</descriptor></descriptors>`), want: "is not a file in the checkout"},
 		{name: "assembly descriptor uninterpolated", build: assembly(`<descriptors><descriptor>${dist.dir}/dist.xml</descriptor></descriptors>`), want: "is not a file in the checkout"},

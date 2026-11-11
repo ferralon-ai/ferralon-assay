@@ -2,6 +2,7 @@ package buildgraph
 
 import (
 	"encoding/xml"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,9 +15,9 @@ import (
 var assemblyGoals = setOf("single", "help")
 
 // assemblyConfigOpaque are maven-assembly-plugin parameters that select a descriptor this cannot
-// read from the checkout: one built into the plugin or a dependency, written inline, or found by
-// scanning a directory.
-var assemblyConfigOpaque = []string{"descriptor", "descriptorId", "descriptorRefs", "descriptorSourceDirectory", "inlineDescriptors"}
+// read from the checkout (one built into the plugin or a dependency, written inline, or found by
+// scanning a directory), or that move where the descriptor's fileSets read from.
+var assemblyConfigOpaque = []string{"archiveBaseDirectory", "descriptor", "descriptorId", "descriptorRefs", "descriptorSourceDirectory", "inlineDescriptors"}
 
 // assemblyTopLevel are the descriptor elements assemblyUnlisted reads or that add nothing; any
 // other element (moduleSets, repositories, componentDescriptors, containerDescriptorHandlers,
@@ -39,9 +40,9 @@ type assemblyDescriptor struct {
 // assemblyUnlisted returns why a bound maven-assembly-plugin execution may package what the graph
 // does not list, or "" when it cannot: every goal is in assemblyGoals, and every descriptor is a
 // file in the checkout holding only dependencySets and fileSets or files that read from inside the
-// checkout or the module's build directory. Those paths hold what the checkout carries, which
-// CheckedInArchives inspects, or what the build's other executions wrote there, each of which this
-// graph lists, records as Unlisted, or marks Incomplete. Paths interpolate only the module's
+// checkout, outside any local repository. Those paths hold what the checkout carries, which
+// CheckedInArchives inspects, or what the build's other executions wrote under it, each of which
+// this graph lists, records as Unlisted, or marks Incomplete. Paths interpolate only the module's
 // basedir, build directories and version; anything else left as ${...} withholds the bound.
 func assemblyUnlisted(dir, base string, repos []string, p effectiveProject, pl effectivePlugin, ex effectiveExecution) string {
 	for _, g := range ex.Goals.Goal {
@@ -52,7 +53,7 @@ func assemblyUnlisted(dir, base string, repos []string, p effectiveProject, pl e
 	for _, c := range []xmlChildren{ex.Configuration, pl.Configuration} {
 		for _, name := range assemblyConfigOpaque {
 			if c.has(name) {
-				return name + " names a descriptor outside the checkout"
+				return "sets " + name + ", which reads outside the descriptors in the checkout"
 			}
 		}
 	}
@@ -112,20 +113,68 @@ func assemblyDescriptorUnlisted(dir, base string, repos []string, file string, v
 		paths = append(paths, f.Source)
 		paths = append(paths, f.Sources...)
 	}
-	buildDir := vars["project.build.directory"]
-	for _, raw := range paths {
+	for i, raw := range paths {
 		v, ok := assemblyPath(raw, base, vars)
 		if !ok {
 			return "reads " + strings.TrimSpace(raw) + ", which is not interpolated"
 		}
-		if !within(dir, v) && (buildDir == "" || !within(buildDir, v)) {
-			return "reads " + v + ", outside the checkout and the build directory"
+		if !within(dir, v) {
+			return "reads " + v + ", outside the checkout"
 		}
 		if slices.ContainsFunc(repos, func(r string) bool { return within(r, v) }) {
 			return "reads " + v + " in the local repository"
 		}
+		if i < len(desc.FileSets) {
+			if why := assemblyTreeUnlisted(dir, v, repos); why != "" {
+				return "reads " + v + ", which " + why
+			}
+		}
 	}
 	return ""
+}
+
+// assemblyTreeUnlisted returns why the fileSet directory top may copy files from outside the
+// checkout or from a local repository, or "" when it cannot: no local repository lies under it,
+// and every symlink under it, followed as the assembly plugin follows them, resolves inside the
+// checkout and outside any local repository.
+func assemblyTreeUnlisted(dir, top string, repos []string) string {
+	seen := map[string]bool{}
+	var walk func(root string) string
+	walk = func(root string) string {
+		real, err := filepath.EvalSymlinks(root)
+		if err != nil || seen[real] {
+			return "" // not written yet, or already walked
+		}
+		seen[real] = true
+		for _, r := range repos {
+			if within(real, r) {
+				return "holds the local repository " + r
+			}
+		}
+		var why string
+		_ = filepath.WalkDir(real, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.Type()&fs.ModeSymlink == 0 {
+				return nil
+			}
+			t, err := filepath.EvalSymlinks(p)
+			switch {
+			case err != nil || !within(dir, t):
+				why = "links " + p + " outside the checkout"
+			case slices.ContainsFunc(repos, func(r string) bool { return within(r, t) }):
+				why = "links " + p + " into the local repository"
+			default:
+				if fi, err := os.Stat(t); err == nil && fi.IsDir() {
+					why = walk(t)
+				}
+			}
+			if why != "" {
+				return filepath.SkipAll
+			}
+			return nil
+		})
+		return why
+	}
+	return walk(top)
 }
 
 // assemblyPath interpolates vars into the descriptor path raw in one pass and resolves it against

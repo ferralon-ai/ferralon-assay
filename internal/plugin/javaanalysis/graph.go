@@ -326,7 +326,7 @@ func graphInventory(g *buildgraph.Graph, uncovered bool) plugin.DependencyInvent
 // complete when listed (listsEveryInstall) and not uncovered: a build of the other tool beside it
 // can resolve another. For the same reason All then lists every coordinate the build installs, so
 // one absent from it is not installed by the build (Exhaustive). The copies of coordinate alone are
-// complete when matchesListed (listsEveryInstallOf), which an install bounded to other coordinates
+// complete when matchesListed (installListing), which an install bounded to other coordinates
 // leaves true.
 func graphVersions(g *buildgraph.Graph, coordinate string, uncovered, listed, matchesListed bool) plugin.DependencyVersionResult {
 	// A module's own coordinate is first-party: the build ships it, though no module resolves it

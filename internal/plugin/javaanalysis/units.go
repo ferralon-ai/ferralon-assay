@@ -12,7 +12,8 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// units.go — a multi-module Maven reactor searched one application unit at a time. A unit is a
+// units.go — a multi-module Maven reactor searched one application unit at a time, and a checkout
+// two build tools each resolved searched one tool's graph at a time (toolUnits). A unit is a
 // module with code that no other module with code depends on, or one with launch evidence of its
 // own (launchSignal) however many depend on it: what the reactor deploys. A library module's code
 // runs only inside a unit that loads it, so it is searched there, on that unit's resolved
@@ -33,7 +34,12 @@ type reactorUnit struct {
 	path string   // its module path, slash-separated
 	dir  string   // its module directory
 	dirs []string // dir plus each reactor sibling on its runtime classpath, sorted
+	tool string   // for a whole-tool unit, the build tool whose graph it is; "" for a reactor module
 }
+
+// whole reports whether u is one build tool's whole graph over the checkout's first-party
+// classes, not one reactor module.
+func (u reactorUnit) whole() bool { return u.tool != "" }
 
 // reactorPlan is the units a reactor is searched as, and every module directory, by which a
 // file is attributed to the module whose directory most closely holds it.
@@ -41,6 +47,9 @@ type reactorPlan struct {
 	units      []reactorUnit
 	moduleDirs []string
 }
+
+// byTool reports whether the plan splits a dual-tool checkout into one unit per build tool.
+func (p *reactorPlan) byTool() bool { return len(p.units) > 0 && p.units[0].whole() }
 
 // owner returns the directory of the module whose directory most closely holds path, or "".
 func (p *reactorPlan) owner(path string) string {
@@ -56,6 +65,54 @@ func (p *reactorPlan) owner(path string) string {
 // withUnit scopes the dependency closure to the runtime classpath of the reactor module id.
 func withUnit(id string) Option {
 	return func(a *analyzer) { a.unit = id }
+}
+
+// withTool scopes the dependency closure to the modules the build tool resolved.
+func withTool(tool string) Option {
+	return func(a *analyzer) { a.tool = tool }
+}
+
+// toolModules returns the modules of g the build tool resolved, never a classpath copy.
+func toolModules(g *buildgraph.Graph, tool string) []buildgraph.Module {
+	var out []buildgraph.Module
+	for _, m := range g.Modules {
+		if _, isCopy := m.Project(); !isCopy && g.ModuleTool(m) == tool {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// toolUnits splits a graph two build tools resolved into one unit per tool. Each tool's graph is
+// the whole of what that build puts on the classpath, so it is searched over the checkout's
+// first-party classes as a single-tool build is; two tools disagreeing on a version is then two
+// searches, not one ambiguous classpath. A tool with more than one module with code, or with a
+// classpath copy, cannot be placed beside another tool's whole build.
+func toolUnits(g *buildgraph.Graph, buildDir string) (plan *reactorPlan, multi bool, why string) {
+	plan = &reactorPlan{}
+	for _, tool := range g.Tools() {
+		mods := toolModules(g, tool)
+		if len(mods) != len(toolGraph(g, tool).Modules) {
+			return nil, true, "classpath copy in the " + tool + " build graph"
+		}
+		if m, w := multipleModules(toolGraph(g, tool), buildDir); m {
+			return nil, true, tool + ": " + w
+		}
+		plan.units = append(plan.units, reactorUnit{id: tool, path: ".", dir: buildDir, dirs: []string{buildDir}, tool: tool})
+	}
+	return plan, false, ""
+}
+
+// toolGraph is g restricted to the modules the build tool resolved.
+func toolGraph(g *buildgraph.Graph, tool string) *buildgraph.Graph {
+	out := *g
+	out.Modules = nil
+	for _, m := range g.Modules {
+		if g.ModuleTool(m) == tool {
+			out.Modules = append(out.Modules, m)
+		}
+	}
+	return &out
 }
 
 // unitModules returns the module of g whose ID is id, never a classpath copy.
@@ -76,6 +133,9 @@ func reactorUnits(buildDir string, opts ...Option) (plan *reactorPlan, multi boo
 	g := BuildGraph(opts...)
 	if g == nil {
 		return nil, false, ""
+	}
+	if len(g.Tools()) > 1 {
+		return toolUnits(g, buildDir)
 	}
 	multi, why = multipleModules(g, buildDir)
 	if !multi {
@@ -307,9 +367,13 @@ func unitsReachability(ctx context.Context, buildDir string, prog *program, plan
 	pathFound := map[string]bool{}
 	searchedBy := map[string]int{}
 	for _, u := range plan.units {
-		files := unitFiles(plan, u, prog.files)
-		fp := unitBytecode(buildDir, u, outputs, files)
-		uopts := append(append([]Option{}, opts...), withUnit(u.id))
+		files, fp, uopt := prog.files, assembleFirstParty(buildDir, outputs, prog.files), withTool(u.tool)
+		if !u.whole() {
+			files = unitFiles(plan, u, prog.files)
+			fp = unitBytecode(buildDir, u, outputs, files)
+			uopt = withUnit(u.id)
+		}
+		uopts := append(append([]Option{}, opts...), uopt)
 		bp, searched, br, sc, err := bytecodeReachability(ctx, buildDir, files, fp, sinks, uopts...)
 		if err != nil {
 			return nil, nil, nil, nil, err

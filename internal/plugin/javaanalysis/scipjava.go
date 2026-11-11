@@ -39,6 +39,9 @@ type analyzer struct {
 	graphFile string // the build graph the host accepted; "" means none
 	// unit is the ID of the reactor module a per-unit search runs for; "" means the whole graph.
 	unit string
+	// tool is the build tool whose resolved graph a whole-tool search runs for; "" means every
+	// tool's. It is not combined with unit.
+	tool string
 }
 
 // WithAnalyzerImage opens the Prove-path gate: the ops run the given scip-java

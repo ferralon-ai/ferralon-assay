@@ -98,8 +98,8 @@ func LookupAdvisoryFacts(vulnID string) AdvisoryFacts {
 //     from one source while its symbol axis came from another, and the disqualification
 //     stages would weigh the blend as a single coherent advisory. That is exactly the laundering the
 //     seam's soundness note (inv.5) forbids.
-//   - Provenance.TrustTier gates whether facts may drive a refute. Merging would let one source's
-//     trust tier vouch for another source's fields.
+//   - A refute names the one record it relied on (Provenance.Corpus / Provenance.Record). A merged
+//     fact has no such record, so the refute could name none.
 //
 // FAIL-OPEN IS PRESERVED EXACTLY. A nil source is skipped, never dereferenced; an empty chain, and a
 // chain whose every source misses, return (zero, false) — byte-identical to today's map miss. The
@@ -318,8 +318,7 @@ type advisoryManifest struct {
 // reads it into a Lookup, a work set, or a verdict.
 //
 // It is a different object from docProv, the per-advisory `provenance` block inside each corpus
-// document, whose trust_tier gates refute eligibility. The two share a JSON key at different levels
-// and have opposite verdict-sensitivity.
+// document, which a refute names as its source. The two share a JSON key at different levels.
 type ManifestProvenance struct {
 	GeneratedAt          string `json:"generated_at,omitempty"`           // RFC 3339 as written by the producer; not parsed
 	Generator            string `json:"generator,omitempty"`              // producing tool, e.g. "ferralon-intel/enrichment"
@@ -628,13 +627,13 @@ func (s *artifactSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 	if !ok {
 		return AdvisoryFacts{}, false
 	}
-	return s.resolveEntry(entry, vulnID)
+	return s.resolveEntry(entry, vulnID, st.man.CorpusDigest)
 }
 
 // resolveEntry reads, digest-verifies, decodes, and shape-validates the one document a manifest
 // entry pins. It is Lookup's per-document half, shared with lookupEach so the single-id and bulk
 // paths apply the identical checks.
-func (s *artifactSource) resolveEntry(entry advisoryManifestEntry, vulnID string) (AdvisoryFacts, bool) {
+func (s *artifactSource) resolveEntry(entry advisoryManifestEntry, vulnID, corpus string) (AdvisoryFacts, bool) {
 	if entry.Path == "" || entry.OutputDigest == "" || !safeRelPath(entry.Path) {
 		return AdvisoryFacts{}, false
 	}
@@ -651,7 +650,13 @@ func (s *artifactSource) resolveEntry(entry advisoryManifestEntry, vulnID string
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return AdvisoryFacts{}, false
 	}
-	return doc.toFacts(vulnID)
+	facts, ok := doc.toFacts(vulnID)
+	if !ok {
+		return AdvisoryFacts{}, false
+	}
+	// Stamp where the fact was served from, so a refute it drives can name the record.
+	facts.Provenance.Corpus, facts.Provenance.Record = corpus, entry.OutputDigest
+	return facts, true
 }
 
 // KnownIDs returns the manifest's identifier set, sorted ascending (implements AdvisoryEnumerator).
@@ -682,7 +687,7 @@ func (s *artifactSource) lookupEach(ids []string, fn func(id string, facts Advis
 			fn(id, AdvisoryFacts{}, false)
 			continue
 		}
-		facts, ok := s.resolveEntry(entry, id)
+		facts, ok := s.resolveEntry(entry, id, st.man.CorpusDigest)
 		fn(id, facts, ok)
 	}
 }
@@ -1116,7 +1121,7 @@ func schemeRecognized(scheme string) bool {
 	return false
 }
 
-// trustTierRecognized allows the empty tier (zero value: untrusted, never refutes) plus the closed
+// trustTierRecognized allows the empty tier (zero value: the record declares none) plus the closed
 // TrustTier enum. Any other value fails validation → fail open.
 func trustTierRecognized(tier string) bool {
 	switch TrustTier(tier) {

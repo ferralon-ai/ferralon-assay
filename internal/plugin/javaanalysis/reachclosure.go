@@ -55,6 +55,10 @@ const (
 // spots loading the dependencies incurred.
 type reachClosure struct {
 	Engine *depreach.Engine
+	// mu serialises searches over Engine, whose link mode and per-root search memo every search
+	// sets. A cache hit copies the closure and shares Engine, and Reachability is a library
+	// entry point a caller may run concurrently, so the copies share mu as well.
+	mu *sync.Mutex
 	// key fingerprints the inputs the engine was built from (loadReachClosure).
 	key    string
 	Scoped []plugin.ScopedReason
@@ -259,7 +263,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	for _, c := range firstParty {
 		isFirstParty[c.Name] = true
 	}
-	built := &reachClosure{Loaded: map[string]string{}}
+	built := &reachClosure{Loaded: map[string]string{}, mu: &sync.Mutex{}}
 	definedBy := map[string]gav{}
 	shadowReported := map[string]bool{}
 	all := append([]classfile.Class{}, firstParty...)

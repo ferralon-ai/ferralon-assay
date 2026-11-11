@@ -84,6 +84,8 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 	// is the loaded one, the build's own, which a licensed launch runs on. The engine is the
 	// cached one, so this is set on every run, never left from the last.
 	linked := rc.Listed && len(rc.Reasons) == 0 && fp.complete() && entry.licenses()
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
 	rc.Engine.SetLinked(linked)
 	mains := mainRoots(rootClasses(fp, entry))
 	ingresses, unmapped := ingressRoots(files, fp.classes)

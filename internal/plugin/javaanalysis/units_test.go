@@ -1,11 +1,13 @@
 package javaanalysis
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
@@ -139,6 +141,13 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 			libExtra: func(a *appFixture) {
 				a.class("lib/target/classes", "com/acme/lib/Unused", func(b *cpb) []xmethod {
 					return []xmethod{{"run", "()V", accPublicStatic, callFetch(b)}}
+				})
+			}},
+		// Naming it only in a method descriptor is compiling against it as well.
+		"a loaded descriptor naming the absent sink withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true,
+			libExtra: func(a *appFixture) {
+				a.class("lib/target/classes", "com/acme/lib/Holder", func(b *cpb) []xmethod {
+					return []xmethod{{"take", "(Lcom/evil/netkit/UrlFetcher;)V", accPublicStatic, ret}}
 				})
 			}},
 		// A relocated copy of the sink's class (a shaded package) is the sink's code under another name.
@@ -1013,6 +1022,51 @@ func TestUnitsReach_RootAppBesideUnloadedLib(t *testing.T) {
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Errorf("reasons = %v, want %v", got, want)
+	}
+}
+
+// Reachability is a library entry point: concurrent runs over one build share its cached engine,
+// and each answers as a run alone does. Run under -race this also checks the engine is not
+// searched by two runs at once.
+func TestReachability_ConcurrentOnCachedEngine(t *testing.T) {
+	cases := map[string]struct {
+		one, lib func(b *cpb) []byte
+	}{
+		"a path in one unit":           {one: callSharedLib, lib: callFetch},
+		"every unit clean, two absent": {one: callSharedLib, lib: justReturn},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.reactorRoot()
+			a.appModule("one", "one", c.one)
+			a.appModule("two", "two", callSharedLib)
+			a.libModule("lib", c.lib)
+			lib := testModule(t, "lib", "lib", netkitDep(a.build))
+			a.graph = listedGraph(t, testModule(t, ".", "parent"),
+				sibling(testModule(t, "one", "one", netkitDep(a.build)), lib, "compile"), sibling(testModule(t, "two", "two"), lib, "compile"), lib)
+			want := a.reach(netkitSinkID)
+			const runs = 8
+			got := make([]plugin.ReachabilityResult, runs)
+			var wg sync.WaitGroup
+			for i := range runs {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: a.build, Symbols: []string{netkitSinkID}}, a.graph)
+					if err != nil {
+						t.Errorf("Reachability: %v", err)
+					}
+					got[i] = res
+				}()
+			}
+			wg.Wait()
+			for i, res := range got {
+				if len(res.Paths) != len(want.Paths) || !slices.Equal(res.Searched, want.Searched) {
+					t.Errorf("run %d: paths %d searched %v, want paths %d searched %v", i, len(res.Paths), res.Searched, len(want.Paths), want.Searched)
+				}
+			}
+		})
 	}
 }
 

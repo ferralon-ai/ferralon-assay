@@ -192,6 +192,24 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 	return e
 }
 
+// launchSignal reports whether the Maven module at dir carries launch evidence of its own, so it
+// ships as a program and not only as a library another module loads. The evidence is what
+// findLaunchEntry reads for a unit, met at all, whether or not it resolves: the Boot plugin
+// applied by its POM or one it inherits; a launch class named in its POM, its source manifest, a
+// JAR under its target/ or the manifest of one of its class output roots; war or ear packaging, or
+// a built .war; a POM, manifest or built JAR that cannot be read; or a POM chain that may name
+// what it does not show: a parent not read, or a profile naming a launch class or plugin.
+func launchSignal(buildDir, dir string, roots []string) bool {
+	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir), checkout: buildDir}
+	r.maven(filepath.Join(dir, "pom.xml"))
+	r.manifestFile(filepath.Join(dir, "src", "main", "resources", "META-INF", "MANIFEST.MF"))
+	r.archives(filepath.Join(dir, "target"))
+	for _, root := range roots {
+		r.manifestFile(filepath.Join(root, "META-INF", "MANIFEST.MF"))
+	}
+	return r.launched || r.bootPlugin || r.bootBlocked || r.reasons[reasonLaunchEntryProfilePlugin]
+}
+
 func declaresMain(c *classfile.Class) bool {
 	for _, m := range c.Methods {
 		if m.Ref.Name == "main" && m.Ref.Descriptor == mainDescriptor && !m.Abstract && !m.Native {
@@ -350,6 +368,9 @@ type entryReader struct {
 
 	bootPlugin  bool // a POM in the chain applies spring-boot-maven-plugin
 	bootBlocked bool // the build may hand the Boot plugin a main bootMain does not see
+	// launched is set when the reader meets a launch-naming form, resolved or not, an
+	// unreadable POM, manifest or built JAR, war or ear packaging, or a built .war (launchSignal).
+	launched bool
 }
 
 var (
@@ -365,6 +386,7 @@ var (
 )
 
 func (r *entryReader) name(v string) {
+	r.launched = true
 	v = strings.TrimSpace(v)
 	if v == "" || !javaBinaryNamePattern.MatchString(v) {
 		r.reasons[reasonLaunchEntryUnmapped] = true
@@ -379,14 +401,19 @@ func (r *entryReader) maven(path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
+			r.launched = true
 			r.reasons[reasonLaunchEntryUnmapped] = true
 		}
 		return
 	}
 	pom, ok := parseMavenPOM(path)
 	if !ok {
+		r.launched = true
 		r.reasons[reasonLaunchEntryUnmapped] = true
 		return
+	}
+	if pom.Packaging == "war" || pom.Packaging == "ear" {
+		r.launched = true
 	}
 	switch pom.Packaging {
 	case "", "jar":
@@ -413,6 +440,7 @@ func (r *entryReader) maven(path string) {
 	text := xmlComment.ReplaceAllString(string(data), "")
 	for _, m := range pomEntryElement.FindAllStringSubmatch(text, -1) {
 		if m[1] == "Main-Verticle" {
+			r.launched = true
 			r.reasons[reasonLaunchEntryUnmapped] = true
 			continue
 		}
@@ -620,6 +648,7 @@ func (r *entryReader) manifestFile(path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
+			r.launched = true
 			r.reasons[reasonLaunchEntryUnmapped] = true
 		}
 		return
@@ -638,6 +667,7 @@ func (r *entryReader) archives(dir string) {
 		switch {
 		case d.IsDir():
 		case strings.HasSuffix(lower, ".war"):
+			r.launched = true
 			r.reasons[reasonWarPackaging] = true
 		case strings.HasSuffix(lower, ".jar"):
 			r.archiveManifest(filepath.Join(dir, d.Name()))
@@ -648,6 +678,7 @@ func (r *entryReader) archives(dir string) {
 func (r *entryReader) archiveManifest(path string) {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
+		r.launched = true
 		r.reasons[reasonLaunchEntryUnmapped] = true
 		return
 	}
@@ -658,12 +689,14 @@ func (r *entryReader) archiveManifest(path string) {
 		}
 		rc, err := f.Open()
 		if err != nil {
+			r.launched = true
 			r.reasons[reasonLaunchEntryUnmapped] = true
 			return
 		}
 		data, err := io.ReadAll(io.LimitReader(rc, launchTextLimit))
 		rc.Close()
 		if err != nil {
+			r.launched = true
 			r.reasons[reasonLaunchEntryUnmapped] = true
 			return
 		}
@@ -682,6 +715,7 @@ func (r *entryReader) manifest(data []byte) {
 		}
 	}
 	if _, ok := attrs["main-verticle"]; ok {
+		r.launched = true
 		r.reasons[reasonLaunchEntryUnmapped] = true
 	}
 	main, hasMain := attrs["main-class"]

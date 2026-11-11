@@ -1,12 +1,15 @@
 package javaanalysis
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // reactorRoot replaces the fixture's POM with a code-free aggregator, com.acme:parent:1.0.0.
@@ -51,45 +54,92 @@ func sibling(m buildgraph.Module, of buildgraph.Module, scope string) buildgraph
 	return m
 }
 
+// listedGraph is a Maven reactor graph that lists each module's runtime classpath whole: every
+// module's JDK toolchains are known, the run's JDK is 21, and the class outputs and local
+// repository are the build's outputs, so they hold no unlisted archive.
+func listedGraph(t *testing.T, modules ...buildgraph.Module) Option {
+	t.Helper()
+	outputs := []string{".m2/repository"}
+	for i := range modules {
+		modules[i].JDKToolchainsKnown = true
+		outputs = append(outputs, filepath.ToSlash(filepath.Join(modules[i].Path, "target")))
+	}
+	return writeGraph(t, buildgraph.Graph{
+		Schema:     buildgraph.Schema,
+		Tool:       buildgraph.Tool{Name: "maven", Version: "test"},
+		JVM:        buildgraph.JVM{Version: "21.0.4"},
+		Conditions: buildgraph.Conditions{JDK: "21.0.4"},
+		Subject:    buildgraph.Subject{Outputs: outputs},
+		Modules:    modules,
+		Complete:   true,
+	})
+}
+
 var callSharedLib = callStatic("com/acme/lib/Lib", "run")
 
-func traceStart(pkg string) string { return "jvmref com/acme/" + pkg + "/Main#main" + mainDescriptor }
+func traceStart(pkg string) string { return mainTrace("com/acme/" + pkg + "/Main") }
+
+func mainTrace(owner string) string { return "jvmref " + owner + "#main" + mainDescriptor }
+
+// generator adds com.acme.lib.Generator, whose main runs code, to the library module at dir.
+func (a *appFixture) generator(dir string, code func(b *cpb) []byte) {
+	a.t.Helper()
+	a.source(dir+"/src/main/java/com/acme/lib/Generator.java", "package com.acme.lib;\npublic class Generator {\n    public static void main(String[] args) {}\n}\n")
+	a.class(dir+"/target/classes", "com/acme/lib/Generator", mainCalling(code))
+}
+
+// generatorPOM gives the library module at dir a POM naming com.acme.lib.Generator as its exec main.
+func (a *appFixture) generatorPOM(dir string) {
+	a.t.Helper()
+	writeFileT(a.t, filepath.Join(a.build, dir, "pom.xml"), `<project><modelVersion>4.0.0</modelVersion>
+  <parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>
+  <artifactId>`+dir+`</artifactId>
+  <build><plugins><plugin><groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId>
+    <configuration><mainClass>com.acme.lib.Generator</mainClass></configuration>
+  </plugin></plugins></build>
+</project>`)
+}
 
 // A reactor of two apps sharing a library is searched one app at a time, each over its own
-// classes, its siblings' classes and the JARs its own module resolved.
+// classes, its siblings' classes and the JARs its own module resolved. A library that names its
+// own launch entry is a unit of its own, searched on its own classpath.
 func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 	type want struct {
-		pathFrom string // the pkg whose Main a path starts at, "" for no path
+		path     string // the SCIP the one path's trace starts at, "" for no path
 		searched bool
 	}
 	cases := map[string]struct {
 		one, two         func(b *cpb) []byte // each app's main
 		lib              func(b *cpb) []byte
 		oneNetkit, twoNk bool
+		twoUnlisted      bool                // two resolves a dependency whose JAR is not on disk
 		libExtra         func(a *appFixture) // more in the library module
 		want             want
 	}{
 		// Only app one resolves netkit; the path through the shared library is app one's.
-		"path in the unit carrying the sink JAR": {one: callSharedLib, two: justReturn, lib: callFetch, oneNetkit: true, want: want{pathFrom: "one"}},
-		// App two calls the sink but never resolved netkit; app one's JAR is not linked into it.
-		"no cross-unit linking": {one: justReturn, two: callFetch, lib: justReturn, oneNetkit: true},
+		"path in the unit carrying the sink JAR": {one: callSharedLib, two: justReturn, lib: callFetch, oneNetkit: true, want: want{path: traceStart("one")}},
+		// App two calls the sink but never resolved netkit; app one's JAR is not linked into it,
+		// and two's listed classpath, which defines no UrlFetcher, cannot run the call.
+		"no cross-unit linking": {one: justReturn, two: callFetch, lib: justReturn, oneNetkit: true, want: want{searched: true}},
 		"every unit clean":      {one: justReturn, two: callSharedLib, lib: justReturn, oneNetkit: true, twoNk: true, want: want{searched: true}},
 		// App two's search is undetermined, so the build is not Searched though app one is clean.
 		"one unclean unit withholds Searched": {one: justReturn, two: callUnloaded, lib: justReturn, oneNetkit: true, twoNk: true},
-		// A unit's launch entry is its own module's: a library's code generator main is not one.
-		"a sibling's POM main is not the unit's": {one: justReturn, two: callSharedLib, lib: justReturn, oneNetkit: true, twoNk: true, want: want{searched: true},
-			libExtra: func(a *appFixture) {
-				writeFileT(a.t, filepath.Join(a.build, "lib", "pom.xml"), `<project><modelVersion>4.0.0</modelVersion>
-  <parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>
-  <artifactId>lib</artifactId>
-  <build><plugins><plugin><groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId>
-    <configuration><mainClass>com.acme.lib.Generator</mainClass></configuration>
-  </plugin></plugins></build>
-</project>`)
-			}},
-		"a sibling's manifest is not the unit's": {one: justReturn, two: callSharedLib, lib: justReturn, oneNetkit: true, twoNk: true, want: want{searched: true},
+		// App two's runtime classpath is fully listed and holds no netkit: it cannot carry the sink.
+		"a listed unit without the sink JAR is searched": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true, want: want{searched: true}},
+		// App two lists a dependency it has no JAR for, so netkit may be on its classpath unseen.
+		"an unlisted unit without the sink JAR withholds": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true, twoUnlisted: true},
+		// A library's code generator main is no root of the apps that load the library.
+		"a sibling's main is not a root": {one: justReturn, two: callSharedLib, lib: justReturn, oneNetkit: true, twoNk: true, want: want{searched: true},
+			libExtra: func(a *appFixture) { a.generator("lib", callFetch) }},
+		// A library naming its own launch entry ships on its own classpath, which carries netkit.
+		"a sibling's POM main is its own unit, clean": {one: justReturn, two: callSharedLib, lib: justReturn, oneNetkit: true, twoNk: true, want: want{searched: true},
+			libExtra: func(a *appFixture) { a.generatorPOM("lib"); a.generator("lib", justReturn) }},
+		"a sibling's POM main is its own unit, reaching": {one: justReturn, two: callSharedLib, lib: justReturn, oneNetkit: true, twoNk: true, want: want{path: mainTrace("com/acme/lib/Generator")},
+			libExtra: func(a *appFixture) { a.generatorPOM("lib"); a.generator("lib", callFetch) }},
+		"a sibling's manifest is its own unit, reaching": {one: justReturn, two: callSharedLib, lib: justReturn, oneNetkit: true, twoNk: true, want: want{path: mainTrace("com/acme/lib/Generator")},
 			libExtra: func(a *appFixture) {
 				writeFileT(a.t, filepath.Join(a.build, "lib", "target", "classes", "META-INF", "MANIFEST.MF"), "Manifest-Version: 1.0\nMain-Class: com.acme.lib.Generator\n")
+				a.generator("lib", callFetch)
 			}},
 	}
 	for name, c := range cases {
@@ -109,24 +159,27 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 			if c.twoNk {
 				twoDeps = append(twoDeps, netkitDep(a.build))
 			}
+			if c.twoUnlisted {
+				twoDeps = append(twoDeps, graphDep{group: "com.other", artifact: "gone", version: "1", jar: filepath.Join(a.build, "gone-1.jar")})
+			}
 			lib := testModule(t, "lib", "lib", netkitDep(a.build))
 			one := sibling(testModule(t, "one", "one", oneDeps...), lib, "compile")
 			two := sibling(testModule(t, "two", "two", twoDeps...), lib, "compile")
-			a.graph = graphOption(t, "maven", testModule(t, ".", "parent"), one, two, lib)
+			a.graph = listedGraph(t, testModule(t, ".", "parent"), one, two, lib)
 
 			res := a.reach(netkitSinkID)
 			if hasReason(res.Partiality, reasonMultipleProjectsUnsupported) {
 				t.Fatalf("a placeable reactor kept multiple_projects_unsupported: %+v", res.Partiality)
 			}
-			if c.want.pathFrom == "" && len(res.Paths) != 0 {
+			if c.want.path == "" && len(res.Paths) != 0 {
 				t.Errorf("want no path, got %+v", res.Paths)
 			}
-			if c.want.pathFrom != "" {
+			if c.want.path != "" {
 				if len(res.Paths) != 1 {
 					t.Fatalf("want one path, got %+v (partiality %+v)", res.Paths, res.Partiality)
 				}
-				if got := res.Paths[0].Trace[0].SCIP; got != traceStart(c.want.pathFrom) {
-					t.Errorf("trace starts at %q, want %q", got, traceStart(c.want.pathFrom))
+				if got := res.Paths[0].Trace[0].SCIP; got != c.want.path {
+					t.Errorf("trace starts at %q, want %q", got, c.want.path)
 				}
 			}
 			if got := len(res.Searched) == 1 && res.Searched[0] == netkitSinkID; got != c.want.searched {
@@ -153,19 +206,22 @@ func TestUnitsReach_UnplacedCodeFailsClosed(t *testing.T) {
 			a.source("tools/src/main/java/com/acme/Tool.java", "package com.acme;\npublic class Tool {}\n")
 			return graphOption(t, "maven", testModule(t, ".", "parent"), testModule(t, "one", "one", netkitDep(a.build)), testModule(t, "two", "two"))
 		}, "tools/src/main/java/com/acme/Tool.java is in no module the units load"},
-		"class output under a module without code": {func(a *appFixture) Option {
-			a.class("docs/target/classes", "com/acme/Doc", func(*cpb) []xmethod { return nil })
-			return graphOption(t, "maven", testModule(t, ".", "parent"), testModule(t, "one", "one", netkitDep(a.build)), testModule(t, "two", "two"), testModule(t, "docs", "docs"))
-		}, "class output in docs is in no module the units load"},
+		"class output under no module": {func(a *appFixture) Option {
+			a.class("tools/target/classes", "com/acme/Tool", func(*cpb) []xmethod { return nil })
+			return graphOption(t, "maven", testModule(t, ".", "parent"), testModule(t, "one", "one", netkitDep(a.build)), testModule(t, "two", "two"))
+		}, "class output in tools is in no module the units load"},
 		"reactor test-jar on the runtime classpath": {func(a *appFixture) Option {
 			a.libModule("lib", justReturn)
 			lib := testModule(t, "lib", "lib")
 			one := testModule(t, "one", "one", netkitDep(a.build), graphDep{group: "com.example", artifact: "lib", version: "1", classifier: "tests", jar: netkitJarPath(a.build)})
 			return graphOption(t, "maven", testModule(t, ".", "parent"), sibling(one, lib, "compile"), testModule(t, "two", "two"), lib)
 		}, "one loads reactor artifact com.example:lib:jar:tests:1, not a module's own output"},
+		// Two libraries loading each other, neither naming a launch entry: neither is outermost.
 		"modules loading each other": {func(a *appFixture) Option {
-			one, two := testModule(t, "one", "one", netkitDep(a.build)), testModule(t, "two", "two")
-			return graphOption(t, "maven", testModule(t, ".", "parent"), sibling(one, two, "compile"), sibling(two, one, "compile"))
+			a.libModule("lib", justReturn)
+			a.libModule("lib2", justReturn)
+			lib, lib2 := testModule(t, "lib", "lib", netkitDep(a.build)), testModule(t, "lib2", "lib2")
+			return graphOption(t, "maven", testModule(t, ".", "parent"), sibling(lib, lib2, "compile"), sibling(lib2, lib, "compile"))
 		}, "no module with code is an application unit"},
 		"two modules with one root": {func(a *appFixture) Option {
 			return graphOption(t, "maven", testModule(t, ".", "parent"), testModule(t, "one", "one", netkitDep(a.build)), testModule(t, "two", "one"))
@@ -314,5 +370,306 @@ func TestReactorUnits_SingleModuleUnchanged(t *testing.T) {
 	res := a.reach(netkitSinkID)
 	if len(res.Searched) != 1 || res.Searched[0] != netkitSinkID || hasReason(res.Partiality, reasonMultipleProjectsUnsupported) {
 		t.Errorf("single module: Searched %v, partiality %+v", res.Searched, res.Partiality)
+	}
+}
+
+// writeNetkitAt writes com.evil:netkit:<ver> holding UrlFetcher.fetch, the sink, and Api.safe,
+// which calls the sink when safeCalls, and returns the JAR's path.
+func (a *appFixture) writeNetkitAt(ver string, safeCalls bool) string {
+	a.t.Helper()
+	b := &cpb{}
+	uf := emitClassX(b, "com/evil/netkit/UrlFetcher", "java/lang/Object", 0x0021, []xmethod{{"fetch", fetchDesc, accPublic, ret}})
+	b2 := &cpb{}
+	body := ret
+	if safeCalls {
+		body = callFetch(b2)
+	}
+	api := emitClassX(b2, "com/evil/netkit/Api", "java/lang/Object", 0x0021, []xmethod{{"safe", "()V", accPublicStatic, body}})
+	p := filepath.Join(a.build, ".m2", "repository", "com", "evil", "netkit", ver, "netkit-"+ver+".jar")
+	writeJarEntries(a.t, p, map[string][]byte{"com/evil/netkit/UrlFetcher.class": uf, "com/evil/netkit/Api.class": api})
+	return p
+}
+
+func unitPaths(plan *reactorPlan) []string {
+	var out []string
+	if plan != nil {
+		for _, u := range plan.units {
+			out = append(out, u.path)
+		}
+	}
+	return out
+}
+
+// An application another application loads as a library still ships on its own: it is a unit,
+// searched on the versions its own module resolved, not only on those the loading module's
+// mediation picked.
+func TestUnitsReach_DeployableSiblingOwnClasspath(t *testing.T) {
+	cases := map[string]struct {
+		oneVer, twoVer       string
+		oneCalls, twoCalls   bool // whether that version's Api.safe calls the sink
+		wantPath, wantSearch bool
+	}{
+		// one ships netkit 1.0.0, whose Api.safe reaches the sink; two's 2.0.0 does not.
+		"one's own version reaches": {oneVer: "1.0.0", twoVer: "2.0.0", oneCalls: true, wantPath: true},
+		"neither version reaches":   {oneVer: "1.0.0", twoVer: "2.0.0", wantSearch: true},
+		"one version, clean":        {oneVer: "2.0.0", twoVer: "2.0.0", wantSearch: true},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.reactorRoot()
+			j1 := a.writeNetkitAt(c.oneVer, c.oneCalls)
+			j2 := j1
+			if c.twoVer != c.oneVer {
+				j2 = a.writeNetkitAt(c.twoVer, c.twoCalls)
+			}
+			a.appModule("one", "one", callStatic("com/evil/netkit/Api", "safe"))
+			a.appModule("two", "two", justReturn)
+			one := testModule(t, "one", "one", graphDep{group: "com.evil", artifact: "netkit", version: c.oneVer, jar: j1})
+			two := sibling(testModule(t, "two", "two", graphDep{group: "com.evil", artifact: "netkit", version: c.twoVer, jar: j2}), one, "compile")
+			a.graph = listedGraph(t, testModule(t, ".", "parent"), one, two)
+
+			plan, multi, why := reactorUnits(a.build, a.graph)
+			if got := unitPaths(plan); multi || strings.Join(got, " ") != "one two" {
+				t.Fatalf("units = %v (refused %v: %q), want [one two]", got, multi, why)
+			}
+			res := a.reach(netkitSinkID)
+			if c.wantPath != (len(res.Paths) == 1) || len(res.Paths) > 1 {
+				t.Fatalf("paths = %+v, want a path %v", res.Paths, c.wantPath)
+			}
+			if c.wantPath {
+				if got := res.Paths[0].Trace[0].SCIP; got != traceStart("one") {
+					t.Errorf("trace starts at %q, want %q", got, traceStart("one"))
+				}
+			}
+			if got := len(res.Searched) == 1; got != c.wantSearch {
+				t.Errorf("Searched = %v, want searched %v (partiality %+v)", res.Searched, c.wantSearch, res.Partiality)
+			}
+		})
+	}
+}
+
+// A module another module loads is a unit too when it carries any launch evidence of its own,
+// resolved or not, or when what it carries cannot be read. A Boot plugin only managed, never
+// applied, is no evidence.
+func TestPlanUnits_LaunchEvidencePromotes(t *testing.T) {
+	const parentGAV = `<groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version>`
+	pom := func(packaging, build string) string {
+		return `<project><modelVersion>4.0.0</modelVersion>
+  <parent>` + parentGAV + `</parent>
+  <artifactId>one</artifactId>` + packaging + build + `
+</project>`
+	}
+	const boot = `<build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>`
+	rootPOM := func(body string) string {
+		return `<project><modelVersion>4.0.0</modelVersion>
+  ` + parentGAV + `<packaging>pom</packaging>` + body + `
+</project>`
+	}
+	cases := map[string]struct {
+		setup    func(a *appFixture)
+		promoted bool
+	}{
+		"no launch evidence":         {func(a *appFixture) { a.oneFile("pom.xml", pom("", "")) }, false},
+		"Boot plugin in its own POM": {func(a *appFixture) { a.oneFile("pom.xml", pom("", boot)) }, true},
+		"Boot plugin from the checkout parent": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", ""))
+			writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(boot))
+		}, true},
+		// mall's shape: the aggregator manages the Boot plugin; only the apps apply it.
+		"Boot plugin only managed by the parent": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", ""))
+			writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(`<build><pluginManagement><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></pluginManagement></build>`))
+		}, false},
+		"war packaging": {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>war</packaging>", "")) }, true},
+		"ear packaging": {func(a *appFixture) { a.oneFile("pom.xml", pom("<packaging>ear</packaging>", "")) }, true},
+		"an unresolved mainClass": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", `<build><plugins><plugin><artifactId>maven-jar-plugin</artifactId><configuration><archive><manifest><mainClass>${start.class}</mainClass></manifest></archive></configuration></plugin></plugins></build>`))
+		}, true},
+		"a POM naming a manifest file": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", `<build><plugins><plugin><artifactId>maven-jar-plugin</artifactId><configuration><archive><manifestFile>src/main/MANIFEST.MF</manifestFile></archive></configuration></plugin></plugins></build>`))
+		}, true},
+		"a parent profile naming a main": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", ""))
+			writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(`<profiles><profile><id>tool</id><build><plugins><plugin><artifactId>exec-maven-plugin</artifactId><configuration><mainClass>com.acme.one.Core</mainClass></configuration></plugin></plugins></build></profile></profiles>`))
+		}, true},
+		"a parent not read": {func(a *appFixture) {
+			a.oneFile("pom.xml", strings.Replace(pom("", ""), "<artifactId>parent</artifactId>", "<artifactId>absent-parent</artifactId>", 1))
+		}, true},
+		"an unreadable POM": {func(a *appFixture) { a.oneFile("pom.xml", "<project><parent>") }, true},
+		"a source manifest": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", ""))
+			a.oneFile("src/main/resources/META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nMain-Class: com.acme.one.Core\n")
+		}, true},
+		"a class output manifest": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", ""))
+			a.oneFile("target/classes/META-INF/MANIFEST.MF", "Manifest-Version: 1.0\nMain-Class: com.acme.one.Core\n")
+		}, true},
+		"a built war": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", ""))
+			a.oneFile("target/one.war", "")
+		}, true},
+		"an unreadable built JAR": {func(a *appFixture) {
+			a.oneFile("pom.xml", pom("", ""))
+			a.oneFile("target/one.jar", "not a zip")
+		}, true},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.reactorRoot()
+			a.appModule("two", "two", justReturn)
+			a.source("one/src/main/java/com/acme/one/Core.java", "package com.acme.one;\npublic class Core {}\n")
+			a.class("one/target/classes", "com/acme/one/Core", func(*cpb) []xmethod { return nil })
+			c.setup(a)
+			one := testModule(t, "one", "one")
+			two := sibling(testModule(t, "two", "two", netkitDep(a.build)), one, "compile")
+			plan, multi, why := reactorUnits(a.build, graphOption(t, "maven", testModule(t, ".", "parent"), one, two))
+			want := "two"
+			if c.promoted {
+				want = "one two"
+			}
+			if got := unitPaths(plan); multi || strings.Join(got, " ") != want {
+				t.Errorf("units = %v (refused %v: %q), want [%s]", got, multi, why, want)
+			}
+		})
+	}
+}
+
+// oneFile writes rel under module one.
+func (a *appFixture) oneFile(rel, body string) {
+	a.t.Helper()
+	writeFileT(a.t, filepath.Join(a.build, "one", filepath.FromSlash(rel)), body)
+}
+
+// A module has code when it has main sources under its own src/ or main class output; test
+// sources, resources, and sources under a directory below it that is no module are not its code.
+func TestPlanUnits_MainCode(t *testing.T) {
+	cases := map[string]struct {
+		setup func(a *appFixture) []buildgraph.Module
+		units string // the planned units, "" when refused
+		why   string // the refusal
+	}{
+		// An integration-test module: test sources only, loading one at test scope.
+		"test sources only": {setup: func(a *appFixture) []buildgraph.Module {
+			a.source("it/src/test/java/com/acme/it/ITest.java", "package com.acme.it;\npublic class ITest {}\n")
+			return []buildgraph.Module{sibling(testModule(t, "it", "it"), testModule(t, "one", "one"), "test")}
+		}, units: "one two"},
+		"resources only": {setup: func(a *appFixture) []buildgraph.Module {
+			writeFileT(t, filepath.Join(a.build, "conf", "src", "main", "resources", "app.yml"), "a: 1\n")
+			return []buildgraph.Module{testModule(t, "conf", "conf")}
+		}, units: "one two"},
+		// Generated classes with no source: the output is the module's code, loaded by one.
+		"class output only": {setup: func(a *appFixture) []buildgraph.Module {
+			a.class("gen/target/classes", "com/acme/gen/Gen", func(*cpb) []xmethod { return nil })
+			return []buildgraph.Module{testModule(t, "gen", "gen")}
+		}, units: "one two"},
+		"main sources below a module, outside its src": {setup: func(a *appFixture) []buildgraph.Module {
+			a.source("x/tools/src/main/java/com/acme/T.java", "package com.acme;\npublic class T {}\n")
+			return []buildgraph.Module{testModule(t, "x", "x")}
+		}, why: "x/tools/src/main/java/com/acme/T.java is in no module the units load"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.reactorRoot()
+			a.appModule("one", "one", justReturn)
+			a.appModule("two", "two", justReturn)
+			extra := c.setup(a)
+			one := testModule(t, "one", "one", netkitDep(a.build))
+			for _, m := range extra {
+				if m.Path == "gen" {
+					one = sibling(one, m, "compile")
+				}
+			}
+			mods := append([]buildgraph.Module{testModule(t, ".", "parent"), one, testModule(t, "two", "two")}, extra...)
+			plan, multi, why := reactorUnits(a.build, graphOption(t, "maven", mods...))
+			if c.units != "" {
+				if got := unitPaths(plan); multi || strings.Join(got, " ") != c.units {
+					t.Errorf("units = %v (refused %v: %q), want [%s]", got, multi, why, c.units)
+				}
+				return
+			}
+			if plan != nil || !multi || !strings.HasSuffix(why, ": "+c.why) {
+				t.Errorf("reactorUnits = %v, %v, %q; want refused with %q", unitPaths(plan), multi, why, c.why)
+			}
+		})
+	}
+}
+
+// ResolveDependencySymbols leaves the run-wide multiple_projects_unsupported off a reactor the
+// units plan places, and keeps it on one the plan refuses.
+func TestResolveDependencySymbols_ReactorGate(t *testing.T) {
+	for name, tool := range map[string]string{"planned": "maven", "refused": "gradle"} {
+		t.Run(name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.reactorRoot()
+			a.appModule("one", "one", justReturn)
+			a.appModule("two", "two", justReturn)
+			graph := graphOption(t, tool, testModule(t, ".", "parent"), testModule(t, "one", "one", netkitDep(a.build)), testModule(t, "two", "two"))
+			res := resolveUnder(t, a.build, netkitPURL, graph, "com.evil.netkit.UrlFetcher.fetch")
+			if len(res.Resolved) == 0 {
+				t.Errorf("fetch not resolved: %+v", res)
+			}
+			if got := hasReason(res.Partiality, reasonMultipleProjectsUnsupported); got != (tool == "gradle") {
+				t.Errorf("multiple_projects_unsupported = %v, want %v (partiality %+v)", got, tool == "gradle", res.Partiality)
+			}
+		})
+	}
+}
+
+// An application at the checkout root beside a library nothing loads and nobody compiled: each
+// is a unit, and the uncompiled library and unnamed launch keep the sink from Searched.
+func TestUnitsReach_RootAppBesideUnloadedLib(t *testing.T) {
+	a := newApp(t, "", false)
+	a.source("src/main/java/com/acme/App.java", appSource)
+	a.source("lib/src/main/java/com/acme/Lib.java", "package com.acme;\npublic class Lib {}\n")
+	a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+	a.graph = graphOption(t, "maven", testModule(t, ".", "app", netkitDep(a.build)), testModule(t, "lib", "lib"))
+
+	plan, multi, why := reactorUnits(a.build, a.graph)
+	if got := unitPaths(plan); multi || strings.Join(got, " ") != ". lib" {
+		t.Fatalf("units = %v (refused %v: %q), want [. lib]", got, multi, why)
+	}
+	res := a.reach(netkitSinkID)
+	if len(res.Searched) != 0 || len(res.Paths) != 0 {
+		t.Errorf("Searched %v, paths %+v; want neither", res.Searched, res.Paths)
+	}
+	want := []string{reasonFirstPartyBytecodeAbsent, plugin.PartialReasonNoIngress, reasonNoWholeProgramRoot, plugin.PartialReasonReachabilityUndetermined, reasonLaunchEntryUnnamed}
+	got := slices.Clone(res.Partiality.Reasons)
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("reasons = %v, want %v", got, want)
+	}
+}
+
+// cacheClosure holds at most closureCacheCap engines and always keeps the one it stores.
+func TestCacheClosure_Bounded(t *testing.T) {
+	resetClosureCache()
+	t.Cleanup(resetClosureCache)
+	for i := range closureCacheCap * 2 {
+		key := fmt.Sprintf("build-%d", i)
+		cacheClosure(key, closureEntry{key: key})
+		closureCache.Lock()
+		n, kept := len(closureCache.m), closureCache.m[key].key == key
+		closureCache.Unlock()
+		if n > closureCacheCap || !kept {
+			t.Fatalf("after storing %s: %d entries, newest kept %v", key, n, kept)
+		}
+	}
+	// Restoring a key already held evicts nothing.
+	closureCache.Lock()
+	var held string
+	for k := range closureCache.m {
+		held = k
+		break
+	}
+	closureCache.Unlock()
+	cacheClosure(held, closureEntry{key: held})
+	closureCache.Lock()
+	defer closureCache.Unlock()
+	if len(closureCache.m) != closureCacheCap {
+		t.Errorf("re-storing a held key left %d entries, want %d", len(closureCache.m), closureCacheCap)
 	}
 }

@@ -2,6 +2,7 @@ package javaanalysis
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 
@@ -84,7 +85,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 	// cached one, so this is set on every run, never left from the last.
 	linked := rc.Listed && len(rc.Reasons) == 0 && fp.complete() && entry.licenses()
 	rc.Engine.SetLinked(linked)
-	mains := mainRoots(fp.classes)
+	mains := mainRoots(rootClasses(fp, entry))
 	ingresses, unmapped := ingressRoots(files, fp.classes)
 	if len(mains) == 0 {
 		reasons[reasonNoWholeProgramRoot] = true
@@ -99,6 +100,13 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 	var searched []string
 	for _, id := range sinks {
 		sink, _ := parseDepEdgeSymbol(id)
+		// A reactor unit whose loaded classes are its whole runtime classpath, launched as the
+		// build names it with nothing else to add to that classpath, never runs a sink its
+		// classpath does not define: searched, and absent.
+		if fp.unit != nil && entry.licenses() && fp.complete() && len(rc.Reasons) == 0 && rc.absent(sink) {
+			searched = append(searched, id)
+			continue
+		}
 		clean := true
 		var found *plugin.ReachPath
 		for _, root := range roots {
@@ -136,6 +144,27 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 		reasons[plugin.PartialReasonReachabilityUndetermined] = true
 	}
 	return paths, searched, reasons, scoped, nil
+}
+
+// rootClasses are the first-party classes whose mains are roots. For a reactor unit they are its
+// own module's classes and any launch main it names in a sibling: a sibling's other main (a code
+// generator, a tool) runs only when something calls it, and the search then reaches it from a
+// root.
+func rootClasses(fp *firstPartyBytecode, entry launchEntry) []classfile.Class {
+	if fp.unit == nil {
+		return fp.classes
+	}
+	own := map[string]bool{}
+	out := append([]classfile.Class{}, fp.unit.classes...)
+	for _, c := range fp.unit.classes {
+		own[c.Name] = true
+	}
+	for _, c := range fp.classes {
+		if !own[c.Name] && slices.Contains(entry.mains, c.Name) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // mainRoots returns every concrete main(String[]) in the compiled classes, sorted.

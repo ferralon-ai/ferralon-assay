@@ -85,6 +85,8 @@ type reachClosure struct {
 	unread bool
 	// shadowed is set when two JARs define the same class.
 	shadowed bool
+	// jdk is the feature release the classes were indexed for.
+	jdk int
 }
 
 // gav is one loaded dependency JAR: a coordinate at a version, and its classifier when the
@@ -102,7 +104,7 @@ func (g gav) String() string {
 // closureCache keeps the last engine built per build dir, and per reactor unit within it. The
 // pipeline asks Reachability once per advisory, and every ask would otherwise rebuild the
 // hierarchy over the whole closure. The key fingerprints every input (JAR paths and digests; the first-party classes in
-// full; the classpath), so any change rebuilds.
+// full; the classpath), so any change rebuilds. It holds at most closureCacheCap entries.
 var closureCache = struct {
 	sync.Mutex
 	m map[string]closureEntry
@@ -111,6 +113,23 @@ var closureCache = struct {
 type closureEntry struct {
 	key string
 	rc  *reachClosure
+}
+
+// closureCacheCap bounds the engines closureCache holds: a long-lived process searching many
+// builds, or a reactor of many units, keeps at most this many.
+const closureCacheCap = 16
+
+// cacheClosure stores e under key, first dropping some other entry when the cache is full.
+func cacheClosure(key string, e closureEntry) {
+	closureCache.Lock()
+	defer closureCache.Unlock()
+	if _, ok := closureCache.m[key]; !ok && len(closureCache.m) >= closureCacheCap {
+		for k := range closureCache.m {
+			delete(closureCache.m, k)
+			break
+		}
+	}
+	closureCache.m[key] = e
 }
 
 // loadReachClosure loads every runtime JAR the build graph names. firstParty is the build's
@@ -255,9 +274,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	built.key = fingerprint
 	built.index(all, cp.JDK)
 
-	closureCache.Lock()
-	closureCache.m[cacheKey] = closureEntry{key: fingerprint, rc: built}
-	closureCache.Unlock()
+	cacheClosure(cacheKey, closureEntry{key: fingerprint, rc: built})
 
 	out := *built
 	out.Scoped = append(rc.Scoped, built.Scoped...)
@@ -357,9 +374,17 @@ func (rc *reachClosure) concrete(ref classfile.MethodRef) bool {
 	return ok && !m.Abstract && !m.Native
 }
 
+// absent reports whether ref's owner is provably not on the classpath: the loaded classes are
+// every class it defines (Listed), none is the owner, and the owner is no JDK class.
+func (rc *reachClosure) absent(ref classfile.MethodRef) bool {
+	_, loaded := rc.classes[ref.Owner]
+	return rc.Listed && !loaded && !depreach.IsPlatformClass(ref.Owner) && !depreach.BootOnly(ref.Owner, rc.jdk)
+}
+
 // index records the classes and methods of all that run on feature release jdk, as the engine
 // does: a classpath copy of a class the JVM may load from the JDK instead is left out.
 func (rc *reachClosure) index(all []classfile.Class, jdk int) {
+	rc.jdk = jdk
 	rc.methods = make(map[string]classfile.Method)
 	rc.classes = make(map[string]*classfile.Class, len(all))
 	for i := range all {

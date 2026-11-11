@@ -2,7 +2,6 @@ package javaanalysis
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -14,10 +13,13 @@ import (
 )
 
 // units.go — a multi-module Maven reactor searched one application unit at a time. A unit is a
-// module with code that no other module with code depends on: what the reactor deploys. A
-// library module's code runs only inside a unit that loads it, so it is searched there, on that
-// unit's resolved versions. Each unit is searched over its own class output plus that of every
-// reactor sibling on its runtime classpath, with the dependency JARs its own module resolved.
+// module with code that no other module with code depends on, or one with launch evidence of its
+// own (launchSignal) however many depend on it: what the reactor deploys. A library module's code
+// runs only inside a unit that loads it, so it is searched there, on that unit's resolved
+// versions; a deployable module another loads is searched on its own versions as well. Each unit
+// is searched over its own class output plus that of every reactor sibling on its runtime
+// classpath, with the dependency JARs its own module resolved. A module has code when it has
+// main sources under its src/ or main class output; a test-only module has none.
 //
 // The plan is built from the build graph alone, and any code it cannot place leaves the build
 // with the run-wide multiple_projects_unsupported answer: a module with code no unit loads, a
@@ -83,7 +85,17 @@ func reactorUnits(buildDir string, opts ...Option) (plan *reactorPlan, multi boo
 	if err != nil {
 		return nil, true, why + ": " + err.Error()
 	}
-	plan, failure := planUnits(g, buildDir, sources, classOutputProjects(classOutputRoots(buildDir)))
+	roots := classOutputRoots(buildDir)
+	launch := func(dir string) bool {
+		var own []string
+		for _, r := range roots {
+			if classOutputProject(r) == dir {
+				own = append(own, r)
+			}
+		}
+		return launchSignal(buildDir, dir, own)
+	}
+	plan, failure := planUnits(g, buildDir, sources, classOutputProjects(roots), launch)
 	if plan == nil {
 		return nil, true, why + ": " + failure
 	}
@@ -91,9 +103,10 @@ func reactorUnits(buildDir string, opts ...Option) (plan *reactorPlan, multi boo
 }
 
 // planUnits places every module with code of g as a unit or as a reactor sibling a unit loads.
-// sources are the build's .java files and outputs the project directories of its class output.
-// On failure the plan is nil and failure says what could not be placed.
-func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string) (plan *reactorPlan, failure string) {
+// sources are the build's .java files, outputs the project directories of its class output, and
+// launch reports whether a module directory carries launch evidence of its own. On failure the
+// plan is nil and failure says what could not be placed.
+func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string, launch func(dir string) bool) (plan *reactorPlan, failure string) {
 	if tools := g.Tools(); len(tools) != 1 || tools[0] != "maven" {
 		return nil, "not a Maven reactor (" + strings.Join(tools, ", ") + ")"
 	}
@@ -127,11 +140,25 @@ func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string) 
 	}
 
 	dirs := make([]string, len(mods))
-	code := make([]bool, len(mods))
+	byDir := map[string]int{}
 	for i, m := range mods {
 		dirs[i] = filepath.Join(buildDir, filepath.FromSlash(m.Path))
-		info, err := os.Stat(filepath.Join(dirs[i], "src"))
-		code[i] = err == nil && info.IsDir()
+		byDir[dirs[i]] = i
+	}
+	plan = &reactorPlan{moduleDirs: dirs}
+	code := make([]bool, len(mods))
+	for _, s := range sources {
+		if !isMainSource(buildDir, s) {
+			continue
+		}
+		if i, ok := byDir[plan.owner(s)]; ok && within(filepath.Join(dirs[i], "src"), s) {
+			code[i] = true
+		}
+	}
+	for _, o := range outputs {
+		if i, ok := byDir[o]; ok {
+			code[i] = true
+		}
 	}
 
 	referenced := make([]bool, len(mods))
@@ -168,9 +195,10 @@ func planUnits(g *buildgraph.Graph, buildDir string, sources, outputs []string) 
 	}
 
 	covered := make([]bool, len(mods))
-	plan = &reactorPlan{moduleDirs: dirs}
 	for i, m := range mods {
-		if !code[i] || referenced[i] {
+		// A module another loads is a unit too when it also ships on its own: it runs there on
+		// its own resolved versions, which mediation in the loading module may not share.
+		if !code[i] || (referenced[i] && !launch(dirs[i])) {
 			continue
 		}
 		u := reactorUnit{id: m.ID, path: m.Path, dir: dirs[i], dirs: []string{dirs[i]}}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/xml"
 	"io"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -297,7 +296,7 @@ var repackagers = map[string]bool{
 // plugin in <build><plugins> or in any profile, its packaging is other than jar or pom, or its
 // POM or a parent cannot be read.
 func mavenRepackages(buildDir, dir string) bool {
-	path := filepath.Join(dir, "pom.xml")
+	path := modulePOM(dir)
 	pom, ok := parseMavenPOM(path)
 	if !ok {
 		return true

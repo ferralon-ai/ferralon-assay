@@ -137,7 +137,7 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 		r.checkout = buildDir
 	}
 	for _, dir := range dirs {
-		r.maven(filepath.Join(dir, "pom.xml"))
+		r.maven(modulePOM(dir))
 		for _, n := range []string{"build.gradle", "build.gradle.kts"} {
 			r.gradle(filepath.Join(dir, n))
 		}
@@ -206,7 +206,7 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 // naming one. The Boot plugin alone, which finds its main among the module's own classes, is none.
 func launchSignal(buildDir, dir string, roots []string, code bool) bool {
 	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir), checkout: buildDir}
-	r.maven(filepath.Join(dir, "pom.xml"))
+	r.maven(modulePOM(dir))
 	r.manifestFile(filepath.Join(dir, "src", "main", "resources", "META-INF", "MANIFEST.MF"))
 	r.archives(filepath.Join(dir, "target"))
 	for _, root := range roots {
@@ -540,6 +540,11 @@ func (r *entryReader) pomChain(pom *mvnPOM, path string) ([]*mvnPOM, []string, b
 	}
 	return chain, files, false
 }
+
+// modulePOM is the POM of the Maven module at dir. This file and launchoptions.go are the JVM
+// lane's readers of build inputs (buildgraph's TestJVMPluginsReadNoBuildInputs); the POM
+// reads elsewhere in the lane locate it here.
+func modulePOM(dir string) string { return filepath.Join(dir, "pom.xml") }
 
 // checkoutParent reads parent p of the checkout POM at child from the checkout, at p's
 // relativePath, ../pom.xml when it names none; a directory names its pom.xml and an empty one

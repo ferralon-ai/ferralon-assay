@@ -984,11 +984,11 @@ func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
 				"Manifest-Version: 1.0\nMain-Class: org.springframework.boot.loader.JarLauncher\n")
 		}, reasonLaunchEntryUnmapped},
 		// The JAR's Main-Class is in a manifest file the reader does not open, whatever main
-		// another plugin names.
+		// another plugin names; a file name with no directory is no class name.
 		{"manifest file beside an exec main: launch_entry_unmapped", func(a *appFixture) {
-			a.editPOM(`<manifest>`+pomMainClass+`</manifest>`, `<manifestFile>src/main/MANIFEST.MF</manifestFile>`)
+			a.editPOM(`<manifest>`+pomMainClass+`</manifest>`, `<manifestFile>MANIFEST.MF</manifestFile>`)
 			a.editPOM(`</plugins>`, `<plugin><artifactId>exec-maven-plugin</artifactId><configuration>`+pomMainClass+`</configuration></plugin></plugins>`)
-			writeFileT(t, filepath.Join(a.build, "src/main/MANIFEST.MF"), "Manifest-Version: 1.0\nMain-Class: com.acme.Other\n")
+			writeFileT(t, filepath.Join(a.build, "MANIFEST.MF"), "Manifest-Version: 1.0\nMain-Class: com.acme.Other\n")
 		}, reasonLaunchEntryUnmapped},
 		{"unresolved property: launch_entry_unmapped", func(a *appFixture) {
 			a.editPOM(pomMainClass, `<mainClass>${start.class}</mainClass>`)

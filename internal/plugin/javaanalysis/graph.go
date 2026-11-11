@@ -62,12 +62,16 @@ func listsEveryInstall(g *buildgraph.Graph, buildDir string) bool {
 	return g.Complete && !unlisted(g) && noCheckedInArchives(g, buildDir)
 }
 
-// listsEveryInstallOf reports whether g lists every install of coordinate: as listsEveryInstall,
-// except that an unlisted install bounded to other coordinates (buildgraph.Module.UnlistedTargets)
-// does not count. Such an install copies a reactor module at its own version, which carries what g
-// resolves for that module, or the plain jar of its own coordinate (withUnlistedInstall's bound).
-func listsEveryInstallOf(g *buildgraph.Graph, buildDir, coordinate string) bool {
-	return g.Complete && !unlistedCovers(g, coordinate) && noCheckedInArchives(g, buildDir)
+// installListing reports listsEveryInstall, and whether g lists every install of coordinate: as
+// listsEveryInstall, except that an unlisted install bounded to other coordinates
+// (buildgraph.Module.UnlistedTargets) does not count. Such an install copies a reactor module at
+// its own version, which carries what g resolves for that module, or the plain jar of its own
+// coordinate (withUnlistedInstall's bound). The checkout is walked once for both.
+func installListing(g *buildgraph.Graph, buildDir, coordinate string) (listed, coordinateListed bool) {
+	if !g.Complete || unlistedCovers(g, coordinate) || !noCheckedInArchives(g, buildDir) {
+		return false, false
+	}
+	return !unlisted(g), true
 }
 
 // noCheckedInArchives reports whether the checkout carries no archive g does not hold. A walk that

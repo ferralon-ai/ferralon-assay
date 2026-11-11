@@ -29,6 +29,6 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	if g == nil {
 		return absentVersions(req.Coordinate), nil
 	}
-	listed := listsEveryInstall(g, req.BuildDir)
-	return graphVersions(g, req.Coordinate, OtherToolBuild(g, req.BuildDir), listed, listed || listsEveryInstallOf(g, req.BuildDir, req.Coordinate)), nil
+	listed, coordinateListed := installListing(g, req.BuildDir, req.Coordinate)
+	return graphVersions(g, req.Coordinate, OtherToolBuild(g, req.BuildDir), listed, coordinateListed), nil
 }

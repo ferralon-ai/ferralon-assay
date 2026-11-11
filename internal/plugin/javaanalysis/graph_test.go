@@ -380,22 +380,44 @@ func TestGraphVersionsUnlistedBound(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		targets map[string][]string
+		other   bool // a second module with an unbounded unlisted install
+		files   map[string]string
 		coord   string
 		want    bool
 	}{
 		{name: "install bounded to another coordinate", targets: map[string][]string{copyJars: {"com.h2database:h2", "org.example:ca-servlet"}}, coord: "org.bouncycastle:bcprov-lts8on", want: true},
 		{name: "install bounded to the coordinate", targets: map[string][]string{copyJars: {"com.h2database:h2"}}, coord: "com.h2database:h2"},
 		{name: "install bounded to the coordinate in another case", targets: map[string][]string{copyJars: {"COM.H2DATABASE:H2"}}, coord: "com.h2database:h2"},
+		{name: "install bounded to the coordinate padded", targets: map[string][]string{copyJars: {" com.h2database:h2 "}}, coord: "com.h2database:h2"},
 		{name: "install with no targets", coord: "org.bouncycastle:bcprov-lts8on"},
 		{name: "target that is not a coordinate", targets: map[string][]string{copyJars: {"h2"}}, coord: "org.bouncycastle:bcprov-lts8on"},
+		{name: "bounded install beside an unbounded one in another module", targets: map[string][]string{copyJars: {"com.h2database:h2"}}, other: true, coord: "org.bouncycastle:bcprov-lts8on"},
+		{name: "bounded install beside a checked-in archive", targets: map[string][]string{copyJars: {"com.h2database:h2"}}, files: map[string]string{"libs/agent.jar": "x"}, coord: "org.bouncycastle:bcprov-lts8on"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
+			for rel, body := range tc.files {
+				p := filepath.Join(dir, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 			m := testModule(t, ".", "app", bc, h2)
 			m.Unlisted, m.UnlistedTargets = []string{copyJars}, tc.targets
-			g := &buildgraph.Graph{Tool: buildgraph.Tool{Name: "maven"}, Complete: true, Modules: []buildgraph.Module{m}}
-			listed := listsEveryInstall(g, dir)
-			res := graphVersions(g, tc.coord, false, listed, listed || listsEveryInstallOf(g, dir, tc.coord))
+			mods := []buildgraph.Module{m}
+			if tc.other {
+				o := testModule(t, "assembly", "assembly")
+				o.Unlisted = []string{"maven-dependency-plugin execution copy-all"}
+				mods = append(mods, o)
+			}
+			g := &buildgraph.Graph{Tool: buildgraph.Tool{Name: "maven"}, Complete: true, Modules: mods}
+			res, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: dir, Coordinate: tc.coord}, writeGraph(t, *g))
+			if err != nil {
+				t.Fatal(err)
+			}
 			if !res.Found || !res.Match.Resolved {
 				t.Fatalf("match = %+v, want a resolved copy", res.Match)
 			}

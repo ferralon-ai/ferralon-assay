@@ -1046,32 +1046,37 @@ func TestReachability_ConcurrentOnCachedEngine(t *testing.T) {
 			a.graph = listedGraph(t, testModule(t, ".", "parent"),
 				sibling(testModule(t, "one", "one", netkitDep(a.build)), lib, "compile"), sibling(testModule(t, "two", "two"), lib, "compile"), lib)
 			want := a.reach(netkitSinkID)
-			// The runs below hit the engines that run cached, with every search memo emptied so
-			// each run fills it again.
-			closureCache.Lock()
-			for _, e := range closureCache.m {
-				e.rc.Engine.SetLinked(true)
-				e.rc.Engine.SetLinked(false)
-			}
-			closureCache.Unlock()
-			const runs = 32
-			got := make([]plugin.ReachabilityResult, runs)
-			var wg sync.WaitGroup
-			for i := range runs {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: a.build, Symbols: []string{netkitSinkID}}, a.graph)
-					if err != nil {
-						t.Errorf("Reachability: %v", err)
+			const rounds, runs = 4, 32
+			for round := range rounds {
+				// Each round's runs hit the engines that run cached, with every search memo emptied
+				// so the runs fill it again, and start together so their searches overlap.
+				closureCache.Lock()
+				for _, e := range closureCache.m {
+					e.rc.Engine.SetLinked(true)
+					e.rc.Engine.SetLinked(false)
+				}
+				closureCache.Unlock()
+				got := make([]plugin.ReachabilityResult, runs)
+				start := make(chan struct{})
+				var wg sync.WaitGroup
+				for i := range runs {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						<-start
+						res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: a.build, Symbols: []string{netkitSinkID}}, a.graph)
+						if err != nil {
+							t.Errorf("Reachability: %v", err)
+						}
+						got[i] = res
+					}()
+				}
+				close(start)
+				wg.Wait()
+				for i, res := range got {
+					if len(res.Paths) != len(want.Paths) || !slices.Equal(res.Searched, want.Searched) {
+						t.Errorf("round %d run %d: paths %d searched %v, want paths %d searched %v", round, i, len(res.Paths), res.Searched, len(want.Paths), want.Searched)
 					}
-					got[i] = res
-				}()
-			}
-			wg.Wait()
-			for i, res := range got {
-				if len(res.Paths) != len(want.Paths) || !slices.Equal(res.Searched, want.Searched) {
-					t.Errorf("run %d: paths %d searched %v, want paths %d searched %v", i, len(res.Paths), res.Searched, len(want.Paths), want.Searched)
 				}
 			}
 		})

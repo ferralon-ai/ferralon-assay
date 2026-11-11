@@ -84,16 +84,22 @@ def failureText = { Throwable top ->
 
 // resolutionOrigin is the code that asked for a resolution: the nearest frame on the resolving
 // thread outside Gradle, the JDK, Groovy's runtime and this script, with the file its class was
-// loaded from. A resolution Gradle asks for itself has none, and neither does one on a JVM
-// without StackWalker (Java 8), which is looked up by name so this script still compiles there.
+// loaded from. A resolution Gradle asks for itself has none, and neither does one nested under
+// this listener or on a JVM without StackWalker (Java 8), which is looked up by name so this
+// script still compiles there.
 def selfName = getClass().name
 def runtimes = ['org.gradle.', 'java.', 'javax.', 'jdk.', 'sun.', 'com.sun.', 'groovy.', 'org.codehaus.groovy.', 'kotlin.']
 def resolutionOrigin = { ->
     try {
         def option = Class.forName('java.lang.StackWalker$Option').getField('RETAIN_CLASS_REFERENCE').get(null)
         def walker = Class.forName('java.lang.StackWalker').getMethod('getInstance', option.getClass()).invoke(null, option)
-        def outside = { f -> !f.className.startsWith(selfName) && !runtimes.any { f.className.startsWith(it) } }
-        def f = walker.walk({ s -> s.filter(outside as java.util.function.Predicate).findFirst().orElse(null) } as java.util.function.Function)
+        def frames = walker.walk({ s -> s.collect(java.util.stream.Collectors.toList()) } as java.util.function.Function)
+        // A resolution nested under this listener's own reads (a file collection backed by a
+        // configuration, say) would be credited to whoever asked for the outer one.
+        if (frames.count { it.className.startsWith(selfName) && it.methodName == 'afterResolve' } > 1) {
+            return null
+        }
+        def f = frames.find { !it.className.startsWith(selfName) && !runtimes.any { p -> it.className.startsWith(p) } }
         if (f == null) {
             return null
         }

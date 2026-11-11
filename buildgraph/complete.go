@@ -145,17 +145,18 @@ type gradleOrigin struct {
 // pass. Before a configuration resolves, the plugin copies its dependencies into a detached
 // configuration, reads that copy's component graph (never its files) for what Maven's exclusion
 // rules drop, and removes those from the configuration, whose own resolution is what installs.
-// The copy's files are fetched only because the listener reads every resolution's files. Read
-// from the plugin's 1.0.11.RELEASE and 1.1.6 bytecode; any other major line is unrecognised.
+// The copy is a local of that method and never enters the configuration container, so no task
+// packages it and no configuration extends it. Its files are fetched only because the listener
+// reads every resolution's files. Read from the plugin's 1.0.11.RELEASE and 1.1.6 bytecode, so
+// only the 1.0 and 1.1 minor lines are recognised.
 const dependencyManagementExclusions = "io.spring.gradle.dependencymanagement.internal.ExclusionConfiguringAction.findExcludedDependencies"
 
-var dependencyManagementJar = regexp.MustCompile(`^dependency-management-plugin-1\.[0-9]+\.[0-9]+(\.RELEASE)?\.jar$`)
+var dependencyManagementJar = regexp.MustCompile(`^dependency-management-plugin-1\.[01]\.[0-9]+(\.RELEASE)?\.jar$`)
 
 // exclusionPass reports whether r is the dependency-management plugin's exclusion pass, asked for
-// by the plugin's own jar. The copy repeats the configuration's dependencies, so the files it shares
-// with the graph are read wherever the configuration's are; a file only the copy resolved is one
-// nothing installs unless a task reads it. A configuration that extends the copy resolves on its
-// own and is recorded on its own.
+// by the plugin's own jar. The copy repeats the configuration's dependencies, so a file it shares
+// with the graph is accounted for by the configuration's own resolution. A file only the copy
+// resolved still counts against completeness if a task reads it.
 func exclusionPass(r gradleResolution) bool {
 	return r.Origin != nil && r.Origin.Frame == dependencyManagementExclusions && dependencyManagementJar.MatchString(filepath.Base(r.Origin.Source))
 }

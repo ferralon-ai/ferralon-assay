@@ -559,6 +559,9 @@ func TestMavenArtifactItemTargets(t *testing.T) {
 		items   string
 		plugins string // replaces the single copy-jars execution of items
 		extra   string // beside <build> in module-a's effective POM
+		stated  map[string]string
+		env     string
+		config  string // .mvn/maven.config
 		want    []string
 	}{
 		{name: "outside jar with a version", items: item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", ""), want: []string{"org.mariadb.jdbc:mariadb-java-client"}},
@@ -588,6 +591,13 @@ func TestMavenArtifactItemTargets(t *testing.T) {
 		{name: "artifact property", items: h2, extra: "<properties><artifact>org.example:dist:1.0:zip</artifact></properties>"},
 		{name: "one execution id in two plugin entries",
 			plugins: plugin("", execution("copy-jars", "copy", items(h2))) + plugin("", execution("copy-jars", "copy", items(item("org.example", "bundle", "1.0", "<type>zip</type>"))))},
+		{name: "one execution id in two plugin entries, unbounded first",
+			plugins: plugin("", execution("copy-jars", "copy", items(item("org.example", "bundle", "1.0", "<type>zip</type>")))) + plugin("", execution("copy-jars", "copy", items(h2)))},
+		{name: "artifact among the stated properties", items: h2, stated: map[string]string{"artifact": "org.example:dist:1.0:zip"}},
+		{name: "artifact in MAVEN_OPTS", items: h2, env: "MAVEN_OPTS=-Xmx1g -Dartifact=org.example:dist:1.0:zip"},
+		{name: "artifact in maven.config", items: h2, config: "-ntp\n-Dartifact=org.example:dist:1.0:zip\n"},
+		{name: "artifact set outside the POM, execution with no items", plugins: plugin("", execution("copy-jars", "copy", "")), env: "MAVEN_ARGS=--define=artifact=org.example:dist:1.0:zip"},
+		{name: "a property named like artifact is not it", items: h2, env: "MAVEN_OPTS=-Dartifact.version=1", want: []string{"com.h2database:h2"}},
 		{name: "one execution id in two plugin entries, both bounded",
 			plugins: plugin("", execution("copy-jars", "copy", items(h2))) + plugin("", execution("copy-jars", "copy", items(item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", ""))))},
 	} {
@@ -596,8 +606,15 @@ func TestMavenArtifactItemTargets(t *testing.T) {
 			plugins = plugin("", execution("copy-jars", "copy", items(tc.items)))
 		}
 		pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    "+tc.extra+"<build><plugins>"+plugins+"</plugins></build>", 1)
-		r := newFakeMaven(t, "", "", map[string]string{"effective-pom.txt": pom})
-		g, err := r.resolve(t, ToolMaven, Conditions{})
+		var repo map[string]string
+		if tc.config != "" {
+			repo = map[string]string{".mvn/maven.config": tc.config}
+		}
+		r := newFakeMavenRepo(t, "", "", map[string]string{"effective-pom.txt": pom}, repo)
+		if tc.env != "" {
+			r.env = append(r.env, tc.env)
+		}
+		g, err := r.resolve(t, ToolMaven, Conditions{Properties: tc.stated})
 		if err != nil {
 			t.Fatalf("%s: resolve: %v", tc.name, cause(err))
 		}

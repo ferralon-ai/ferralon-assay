@@ -115,7 +115,7 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	if err != nil {
 		return nil, err
 	}
-	if err := unlistedInPOM(modules, effective); err != nil {
+	if err := unlistedInPOM(modules, effective, artifactOverride(c, r.env, r.dir)); err != nil {
 		return nil, err
 	}
 	if err := resolveMavenFiles(ctx, r, base, modules, effective); err != nil {
@@ -439,12 +439,37 @@ func (c xmlChildren) has(local string) bool {
 	return false
 }
 
+// artifactParam finds the dependency plugin's artifact parameter set as a property on a command or
+// JVM option line.
+var artifactParam = regexp.MustCompile(`(?:^|[\s'"])(?:-D\s*|--define[=\s]\s*)artifact(?:[=\s]|$)`)
+
+// artifactOverride reports whether the stated properties, Maven or JVM options, or .mvn
+// configuration set the artifact property, which the dependency plugin's copy and unpack goals
+// read in place of artifactItems.
+func artifactOverride(c Conditions, env []string, dir string) bool {
+	if _, ok := c.Properties["artifact"]; ok {
+		return true
+	}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if treeShapingEnv[k] && artifactParam.MatchString(v) {
+			return true
+		}
+	}
+	for _, name := range []string{"maven.config", "jvm.config"} {
+		if b, err := os.ReadFile(filepath.Join(dir, ".mvn", name)); err == nil && artifactParam.Match(b) {
+			return true
+		}
+	}
+	return false
+}
+
 // unlistedInPOM records on each module the maven-dependency-plugin copy and unpack executions its
-// effective POM binds with artifactItems or a single artifact: they install artifacts
-// dependency:tree never lists. An execution whose every item resolves to a coordinate
+// effective POM binds with artifactItems or a single artifact (in the POM, or set outside it when
+// overridden): they install artifacts dependency:tree never lists. An execution whose every item resolves to a coordinate
 // (itemCoordinates) also records those coordinates in UnlistedTargets, unless another execution
 // of the module records under the same entry.
-func unlistedInPOM(modules []Module, effective []effectiveProject) error {
+func unlistedInPOM(modules []Module, effective []effectiveProject, overridden bool) error {
 	byCoord := map[string]*Module{}
 	reactor := map[string]string{} // group:artifact -> the module's version
 	for i := range modules {
@@ -465,7 +490,7 @@ func unlistedInPOM(modules []Module, effective []effectiveProject) error {
 				if !slices.ContainsFunc(ex.Goals.Goal, func(g string) bool { g = strings.TrimSpace(g); return g == "copy" || g == "unpack" }) {
 					continue
 				}
-				single := ex.Configuration.has("artifact") || pl.Configuration.has("artifact") || p.Properties.has("artifact")
+				single := overridden || ex.Configuration.has("artifact") || pl.Configuration.has("artifact") || p.Properties.has("artifact")
 				if !single && !ex.Configuration.has("artifactItems") && !pl.Configuration.has("artifactItems") {
 					continue
 				}
@@ -485,7 +510,7 @@ func unlistedInPOM(modules []Module, effective []effectiveProject) error {
 				m.Unlisted = append(m.Unlisted, entry)
 				// The plugin's artifact parameter replaces artifactItems with one artifact of any
 				// type, which is left unbounded.
-				if single || shared[m][entry] {
+				if single {
 					continue
 				}
 				if coords, ok := itemCoordinates(p, reactor, ex.Configuration, pl.Configuration); ok {

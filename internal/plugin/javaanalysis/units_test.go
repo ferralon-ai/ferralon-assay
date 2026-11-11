@@ -1054,7 +1054,7 @@ func TestReachability_ConcurrentOnCachedEngine(t *testing.T) {
 				e.rc.Engine.SetLinked(false)
 			}
 			closureCache.Unlock()
-			const runs = 8
+			const runs = 32
 			got := make([]plugin.ReachabilityResult, runs)
 			var wg sync.WaitGroup
 			for i := range runs {

@@ -280,9 +280,7 @@ func graphInventory(g *buildgraph.Graph, uncovered bool) plugin.DependencyInvent
 		}
 	}
 	part := coverage(uncovered)
-	if unlisted(g) {
-		part = plugin.Partial(append(part.Reasons, PartialReasonUnlistedInstall)...)
-	}
+	part = withUnlistedInstall(g, part)
 	return assembleInventory(nodes, edges, part)
 }
 

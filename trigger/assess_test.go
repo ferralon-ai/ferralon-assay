@@ -11,6 +11,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/pythonanalysis"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -904,6 +905,46 @@ func TestWithInventoryLimits_NestedModuleBound(t *testing.T) {
 		{"out of range, nested module requires something else", outOfRange, text, advisory, false},
 		{"out of range, nested module requires the row's package", outOfRange, crypto, []string{"pkg:golang/golang.org/x/net"}, true},
 		{"out of range, nested module requires another affected package", outOfRange, text, append(advisory, "pkg:golang/golang.org/x/text"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := withInventoryLimits(tc.f, tc.limits, tc.purls)
+			if blocked := got.Verdict == report.VerdictUndetermined; blocked != tc.blocked {
+				t.Fatalf("verdict = %s/%q, want blocked %v", got.Verdict, got.UndeterminedReason, tc.blocked)
+			}
+		})
+	}
+}
+
+// TestWithInventoryLimits_UnlistedInstallBound: a Maven install the build makes outside its
+// dependency list (xipki's assembly copies), bounded to the coordinates it copies, demotes only an
+// out-of-range row on one of them. Left unbounded, it demotes every inventory-grounded row.
+func TestWithInventoryLimits_UnlistedInstallBound(t *testing.T) {
+	row := func(name, version string) report.AdvisoryFinding {
+		return report.AdvisoryFinding{
+			Package:  &report.Package{Ecosystem: "Maven", Name: name, Version: version},
+			Verdict:  report.VerdictDisqualified,
+			Evidence: report.EvidenceSummary{Basis: disqualBasis(pipeline.ReasonVersionNotInRange), Detail: disqualDetail(pipeline.ReasonVersionNotInRange)},
+		}
+	}
+	copies := func(targets ...string) plugin.Partiality {
+		return plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: javaanalysis.PartialReasonUnlistedInstall, Path: "assemblies/xipki-setup", Targets: targets}}}
+	}
+	bounded := inventoryPartialityNotes(copies("pkg:maven/com.h2database/h2", "pkg:maven/org.xipki/ca-sdk"), "Maven")
+	unbounded := inventoryPartialityNotes(plugin.Partial(javaanalysis.PartialReasonUnlistedInstall), "Maven")
+	junit, bcprov, h2 := row("junit:junit", "4.13.2"), row("org.bouncycastle:bcprov-lts8on", "2.73.13"), row("com.h2database:h2", "2.3.232")
+	cases := []struct {
+		name    string
+		f       report.AdvisoryFinding
+		limits  []report.PartialityNote
+		purls   []string
+		blocked bool
+	}{
+		{"junit, not copied", junit, bounded, []string{"pkg:maven/junit/junit"}, false},
+		{"bcprov, not copied", bcprov, bounded, []string{"pkg:maven/org.bouncycastle/bcprov-lts8on"}, false},
+		{"h2, copied", h2, bounded, []string{"pkg:maven/com.h2database/h2"}, true},
+		{"junit, copies unbounded", junit, unbounded, []string{"pkg:maven/junit/junit"}, true},
+		{"junit, advisory packages unknown", junit, bounded, nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

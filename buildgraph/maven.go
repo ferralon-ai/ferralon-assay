@@ -440,7 +440,9 @@ func (c xmlChildren) has(local string) bool {
 }
 
 // unlistedInPOM records on each module the maven-dependency-plugin copy and unpack executions its
-// effective POM binds with artifactItems: they install artifacts dependency:tree never lists.
+// effective POM binds with artifactItems: they install artifacts dependency:tree never lists. An
+// execution whose every item resolves to a coordinate (itemCoordinates) also records those
+// coordinates in UnlistedTargets.
 func unlistedInPOM(modules []Module, effective []effectiveProject) error {
 	byCoord := map[string]*Module{}
 	for i := range modules {
@@ -466,11 +468,95 @@ func unlistedInPOM(modules []Module, effective []effectiveProject) error {
 				if m == nil {
 					return &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "effective POM of " + p.GroupID + ":" + p.ArtifactID + " matches no module"}
 				}
-				m.Unlisted = append(m.Unlisted, "maven-dependency-plugin execution "+ex.ID)
+				entry := "maven-dependency-plugin execution " + ex.ID
+				m.Unlisted = append(m.Unlisted, entry)
+				if coords, ok := itemCoordinates(p, byCoord, ex.Configuration, pl.Configuration); ok {
+					if m.UnlistedTargets == nil {
+						m.UnlistedTargets = map[string][]string{}
+					}
+					m.UnlistedTargets[entry] = coords
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// artifactItem is one maven-dependency-plugin artifactItems entry as an effective POM gives it.
+type artifactItem struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Type       string `xml:"type"`
+	Classifier string `xml:"classifier"`
+}
+
+// itemCoordinates returns the group:artifact coordinates the artifactItems of configs install,
+// read from both the execution's and the plugin's configuration since Maven merges the two. ok is
+// false, leaving the execution unbounded, unless every item names its coordinate and a version, in
+// the item or in p's dependencies or dependencyManagement, and installs nothing beside itself.
+// A reactor module's item does: the module's own dependencies are already in the graph, whatever
+// its type. An outside item does only as a plain JAR with no classifier; an archive or a
+// classified JAR (a Karaf features zip, a shaded jar) can carry other packages.
+func itemCoordinates(p effectiveProject, reactor map[string]*Module, configs ...xmlChildren) ([]string, bool) {
+	var coords []string
+	for _, c := range configs {
+		if !c.has("artifactItems") {
+			continue
+		}
+		var cfg struct {
+			Items struct {
+				Item []artifactItem `xml:"artifactItem"`
+			} `xml:"artifactItems"`
+		}
+		if err := xml.Unmarshal([]byte("<configuration>"+c.Inner+"</configuration>"), &cfg); err != nil || len(cfg.Items.Item) == 0 {
+			return nil, false
+		}
+		for _, it := range cfg.Items.Item {
+			g, a := strings.TrimSpace(it.GroupID), strings.TrimSpace(it.ArtifactID)
+			if !concrete(g) || !concrete(a) || !concrete(itemVersion(p, g, a, strings.TrimSpace(it.Version))) {
+				return nil, false
+			}
+			coord := g + ":" + a
+			if reactor[coord] == nil {
+				typ, cls := strings.TrimSpace(it.Type), strings.TrimSpace(it.Classifier)
+				if (typ != "" && typ != "jar" && typ != "bundle") || cls != "" {
+					return nil, false
+				}
+			}
+			coords = append(coords, coord)
+		}
+	}
+	if len(coords) == 0 {
+		return nil, false
+	}
+	slices.Sort(coords)
+	return slices.Compact(coords), true
+}
+
+// itemVersion is an artifactItem's version: its own, else the one p's dependencies or
+// dependencyManagement give its coordinate, as the plugin resolves it.
+func itemVersion(p effectiveProject, group, artifact, version string) string {
+	if version != "" {
+		return version
+	}
+	for _, d := range p.Dependencies.Dependency {
+		if d.GroupID == group && d.ArtifactID == artifact && concrete(d.Version) {
+			return d.Version
+		}
+	}
+	for _, d := range p.DependencyManagement.Dependencies.Dependency {
+		if d.GroupID == group && d.ArtifactID == artifact && concrete(d.Version) {
+			return d.Version
+		}
+	}
+	return ""
+}
+
+// concrete reports whether an effective-POM value is set and carries no property left unresolved.
+func concrete(v string) bool {
+	v = strings.TrimSpace(v)
+	return v != "" && !strings.Contains(v, "${")
 }
 
 // effectivePlugin is a plugin's configuration as an effective POM gives it.
@@ -532,10 +618,20 @@ type effectiveProject struct {
 		Dependency []struct {
 			GroupID    string `xml:"groupId"`
 			ArtifactID string `xml:"artifactId"`
+			Version    string `xml:"version"`
 			Scope      string `xml:"scope"`
 			SystemPath string `xml:"systemPath"`
 		} `xml:"dependency"`
 	} `xml:"dependencies"`
+	DependencyManagement struct {
+		Dependencies struct {
+			Dependency []struct {
+				GroupID    string `xml:"groupId"`
+				ArtifactID string `xml:"artifactId"`
+				Version    string `xml:"version"`
+			} `xml:"dependency"`
+		} `xml:"dependencies"`
+	} `xml:"dependencyManagement"`
 }
 
 type effectiveResource struct {

@@ -532,6 +532,60 @@ func TestMavenDependencyPluginArtifactItems(t *testing.T) {
 	}
 }
 
+// TestMavenArtifactItemTargets: an execution whose every artifactItem resolves to a coordinate,
+// with a version and nothing installed beside it, is bounded to those coordinates. Any item that
+// does not leaves the execution unbounded.
+func TestMavenArtifactItemTargets(t *testing.T) {
+	item := func(g, a, v, extra string) string {
+		s := "<artifactItem><groupId>" + g + "</groupId><artifactId>" + a + "</artifactId>"
+		if v != "" {
+			s += "<version>" + v + "</version>"
+		}
+		return s + extra + "</artifactItem>"
+	}
+	const managed = "<dependencyManagement><dependencies><dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><version>2.3.232</version></dependency></dependencies></dependencyManagement>"
+	for _, tc := range []struct {
+		name  string
+		items string
+		extra string // beside <build> in module-a's effective POM
+		want  []string
+	}{
+		{name: "outside jar with a version", items: item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", ""), want: []string{"org.mariadb.jdbc:mariadb-java-client"}},
+		{name: "outside jar versioned by dependencyManagement", items: item("com.h2database", "h2", "", ""), extra: managed, want: []string{"com.h2database:h2"}},
+		{name: "reactor module archive with a classifier", items: item("com.example", "module-c", "1.0.0", "<type>zip</type><classifier>lib</classifier>"), want: []string{"com.example:module-c"}},
+		{name: "xipki's shape", extra: managed,
+			items: item("com.h2database", "h2", "", "") + item("com.example", "module-c", "1.0.0", "<type>war</type>") + item("org.xipki.util", "servlet-common", "6.5.4", ""),
+			want:  []string{"com.example:module-c", "com.h2database:h2", "org.xipki.util:servlet-common"}},
+		{name: "no version anywhere", items: item("com.h2database", "h2", "", "")},
+		{name: "unresolved property", items: item("org.xipki.util", "servlet-common", "${xiutil.version}", "")},
+		{name: "unresolved groupId", items: item("${agent.group}", "agent", "1.0", "")},
+		{name: "outside features zip", items: item("org.apache.karaf.features", "standard", "4.4.6", "<type>xml</type><classifier>features</classifier>")},
+		{name: "outside zip", items: item("org.example", "bundle", "1.0", "<type>zip</type>")},
+		{name: "outside classified jar", items: item("org.example", "app", "1.0", "<classifier>all</classifier>")},
+		{name: "one unresolved item unbounds the rest", items: item("org.mariadb.jdbc", "mariadb-java-client", "3.5.1", "") + item("org.example", "bundle", "1.0", "<type>tar.gz</type>")},
+		{name: "empty artifactItems"},
+	} {
+		build := "<plugins><plugin><artifactId>maven-dependency-plugin</artifactId><executions><execution><id>copy-jars</id><goals><goal>copy</goal></goals><configuration><artifactItems>" + tc.items + "</artifactItems></configuration></execution></executions></plugin></plugins>"
+		pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    "+tc.extra+"<build>"+build+"</build>", 1)
+		r := newFakeMaven(t, "", "", map[string]string{"effective-pom.txt": pom})
+		g, err := r.resolve(t, ToolMaven, Conditions{})
+		if err != nil {
+			t.Fatalf("%s: resolve: %v", tc.name, cause(err))
+		}
+		for _, m := range g.Modules {
+			if m.ID != "com.example:module-a" {
+				continue
+			}
+			if !reflect.DeepEqual(m.Unlisted, []string{"maven-dependency-plugin execution copy-jars"}) {
+				t.Errorf("%s: unlisted %q", tc.name, m.Unlisted)
+			}
+			if got := m.UnlistedTargets["maven-dependency-plugin execution copy-jars"]; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("%s: targets %q, want %q", tc.name, got, tc.want)
+			}
+		}
+	}
+}
+
 func TestMavenReactorPaths(t *testing.T) {
 	r := newFakeMaven(t, "", "", map[string]string{"tree.log": mavenTreeLogBefore388})
 	g, err := r.resolve(t, ToolMaven, Conditions{Profiles: []string{"extra"}})

@@ -647,6 +647,50 @@ func shadeMain(main string) string {
 		main + `</mainClass></transformer></transformers></configuration>`
 }
 
+// rootPOM is the reactor root com.acme:parent:1.0.0 with body added.
+func rootPOM(body string) string {
+	return `<project><modelVersion>4.0.0</modelVersion>
+  <groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version><packaging>pom</packaging>` + body + `
+</project>`
+}
+
+// startClassRoot sets start-class to the library's Generator and manages the Boot plugin with
+// starter-parent's ${start-class} wiring, applying it to no module.
+const startClassRoot = `<properties><start-class>com.acme.lib.Generator</start-class></properties>
+  <build><pluginManagement><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>
+    <executions><execution><goals><goal>repackage</goal></goals></execution></executions>
+    <configuration><mainClass>${start-class}</mainClass></configuration>
+  </plugin></plugins></pluginManagement></build>`
+
+// shadeRoot manages the shade plugin with the library's Generator as Main-Class, applying it to
+// no module.
+var shadeRoot = `<build><pluginManagement><plugins><plugin><artifactId>maven-shade-plugin</artifactId>
+    <executions><execution><phase>package</phase><goals><goal>shade</goal></goals>` + shadeMain("com.acme.lib.Generator") + `</execution></executions>
+  </plugin></plugins></pluginManagement></build>`
+
+// bootRoot applies the Boot plugin to every module, naming no main.
+const bootRoot = `<build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>`
+
+const (
+	bootPluginXML   = `<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>`
+	shadePluginXML  = `<artifactId>maven-shade-plugin</artifactId>`
+	jacocoPluginXML = `<groupId>org.jacoco</groupId><artifactId>jacoco-maven-plugin</artifactId>`
+)
+
+// launcherPOM is a code-free module dist's POM loading lib and applying plugin, with packaging
+// and extra after its artifactId.
+func launcherPOM(packaging, plugin, extra string) string {
+	if packaging != "" {
+		packaging = "<packaging>" + packaging + "</packaging>"
+	}
+	return `<project><modelVersion>4.0.0</modelVersion>
+  <parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>
+  <artifactId>dist</artifactId>` + packaging + extra + `
+  <dependencies><dependency><groupId>com.acme</groupId><artifactId>lib</artifactId><version>1.0.0</version></dependency></dependencies>
+  <build><plugins><plugin>` + plugin + `</plugin></plugins></build>
+</project>`
+}
+
 // A module without code that names a launch and loads reactor siblings packages their classes as
 // a program: it is a unit of its own. One that names none, or loads no sibling, is not.
 func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
@@ -667,8 +711,18 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 		"a parent profile naming a main": {pom: distPOM(""), loadsLib: true, units: "dist one two",
 			rootBody: `<profiles><profile><id>tool</id><build><plugins><plugin><artifactId>exec-maven-plugin</artifactId><configuration><mainClass>com.acme.lib.Generator</mainClass></configuration></plugin></plugins></build></profile></profiles>`},
 		// An aggregator that also gathers dependencies names no launch: it ships nothing of its own.
-		"pom packaging, no main":              {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "one two"},
-		"the Boot plugin, no main of its own": {pom: strings.Replace(distPOM(""), "<artifactId>maven-shade-plugin</artifactId>", "<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>", 1), loadsLib: true, units: "one two"},
+		// A parent's plain configuration launches a child as its profiles do: start-class for the
+		// Boot plugin the child applies, a managed plugin's main for the plugin the child applies.
+		"an inherited start-class, the Boot plugin":        {pom: launcherPOM("", bootPluginXML, ""), loadsLib: true, rootBody: startClassRoot, units: "dist one two"},
+		"an inherited start-class, pom packaging":          {pom: launcherPOM("pom", bootPluginXML, ""), loadsLib: true, rootBody: startClassRoot, units: "dist one two"},
+		"a managed shade main, shade applied":              {pom: launcherPOM("", shadePluginXML, ""), loadsLib: true, rootBody: shadeRoot, units: "dist one two"},
+		"a start-class of its own, the Boot plugin":        {pom: launcherPOM("", bootPluginXML, "<properties><start-class>com.acme.lib.Generator</start-class></properties>"), loadsLib: true, units: "dist one two"},
+		"an inherited start-class, the Boot plugin unused": {pom: launcherPOM("", jacocoPluginXML, ""), loadsLib: true, rootBody: startClassRoot, units: "one two"},
+		"a managed shade main, shade unused":               {pom: launcherPOM("", jacocoPluginXML, ""), loadsLib: true, rootBody: shadeRoot, units: "one two"},
+		// A coverage aggregator under a parent applying the Boot plugin with no main named.
+		"a Boot parent, a coverage aggregator": {pom: launcherPOM("pom", jacocoPluginXML, ""), loadsLib: true, rootBody: bootRoot, units: "one two"},
+		"pom packaging, no main":               {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "one two"},
+		"the Boot plugin, no main of its own":  {pom: strings.Replace(distPOM(""), "<artifactId>maven-shade-plugin</artifactId>", "<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>", 1), loadsLib: true, units: "one two"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -680,9 +734,7 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 			a.generator("lib", justReturn)
 			writeFileT(t, filepath.Join(a.build, "dist", "pom.xml"), c.pom)
 			if c.rootBody != "" {
-				writeFileT(t, filepath.Join(a.build, "pom.xml"), `<project><modelVersion>4.0.0</modelVersion>
-  <groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version><packaging>pom</packaging>`+c.rootBody+`
-</project>`)
+				writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(c.rootBody))
 			}
 			lib := testModule(t, "lib", "lib")
 			dist := testModule(t, "dist", "dist")
@@ -707,13 +759,21 @@ func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
 		path     string
 		searched bool
 	}
+	reaches := map[bool]want{true: {path: mainTrace("com/acme/lib/Generator")}, false: {path: mainTrace("com/acme/lib/Generator")}}
 	cases := map[string]struct {
 		gen  func(b *cpb) []byte
 		main string
+		root string        // more of the reactor root POM
+		dist string        // dist's POM, distPOM(shadeMain(main)) when ""
 		want map[bool]want // by listed
 	}{
-		"the main reaches the sink": {gen: callFetch, main: "com.acme.lib.Generator",
-			want: map[bool]want{true: {path: mainTrace("com/acme/lib/Generator")}, false: {path: mainTrace("com/acme/lib/Generator")}}},
+		"the main reaches the sink": {gen: callFetch, main: "com.acme.lib.Generator", want: reaches},
+		// The main the launcher inherits is its root, as one it names itself is.
+		"an inherited start-class reaches the sink":        {gen: callFetch, root: startClassRoot, dist: launcherPOM("", bootPluginXML, ""), want: reaches},
+		"an inherited start-class, pom packaging, reaches": {gen: callFetch, root: startClassRoot, dist: launcherPOM("pom", bootPluginXML, ""), want: reaches},
+		"a managed shade main reaches the sink":            {gen: callFetch, root: shadeRoot, dist: launcherPOM("", shadePluginXML, ""), want: reaches},
+		"its own start-class reaches the sink": {gen: callFetch, want: reaches,
+			dist: launcherPOM("", bootPluginXML, "<properties><start-class>com.acme.lib.Generator</start-class></properties>")},
 		"the main is clean": {gen: justReturn, main: "com.acme.lib.Generator",
 			want: map[bool]want{true: {searched: true}, false: {searched: true}}},
 		"a main nothing loaded defines": {gen: justReturn, main: "com.other.Tool",
@@ -728,7 +788,14 @@ func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
 				a.appModule("two", "two", justReturn)
 				a.libModule("lib", justReturn)
 				a.generator("lib", c.gen)
-				writeFileT(t, filepath.Join(a.build, "dist", "pom.xml"), distPOM(shadeMain(c.main)))
+				dist := c.dist
+				if dist == "" {
+					dist = distPOM(shadeMain(c.main))
+				}
+				writeFileT(t, filepath.Join(a.build, "dist", "pom.xml"), dist)
+				if c.root != "" {
+					writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(c.root))
+				}
 				lib := testModule(t, "lib", "lib", netkitDep(a.build))
 				mods := []buildgraph.Module{testModule(t, ".", "parent"),
 					sibling(testModule(t, "one", "one", netkitDep(a.build)), lib, "compile"),

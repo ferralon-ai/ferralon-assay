@@ -24,10 +24,11 @@ import (
 // below and resolves to a first-party class declaring main(String[]); every other launch
 // shape withholds Searched with a named reason, because an entry the reader does not know is
 // not an entry that is absent:
-//   - Maven: a <mainClass>, <start-class>, <Main-Class> or <Start-Class> element in a
-//     project's pom.xml (jar/shade/assembly/exec/spring-boot plugin configuration, manifest
-//     entries, the Boot property), with ${...} resolved from that POM's own <properties>;
-//     packaging jar (or none);
+//   - Maven: a <mainClass>, <start-class>, <Main-Class> or <Start-Class> element that applies
+//     to the module over its effective POM (effectivepom.go: the module's pom.xml and every
+//     parent it inherits from, a parent's <pluginManagement> entry counting for a plugin the
+//     module applies, start-class for the Boot plugin), with ${...} resolved through the chain's
+//     merged properties; packaging jar (or none);
 //   - Gradle: mainClass = / mainClass.set(...) / mainClassName = and a 'Main-Class' manifest
 //     attribute in the project's build.gradle(.kts), with no war plugin;
 //   - a manifest the project ships or built (src/main/resources/META-INF/MANIFEST.MF, the
@@ -290,8 +291,7 @@ func MavenBootPlugin(buildDir, path string) (plugin, blocked, cliProperty bool) 
 		return false, true, false
 	}
 	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir)}
-	chain, files, complete := r.pomChain(pom, path)
-	r.bootMaven(chain, files, complete)
+	r.bootMaven(r.effective(pom, path))
 	if !r.bootPlugin {
 		return false, r.bootBlocked, false
 	}
@@ -405,7 +405,7 @@ func (r *entryReader) name(v string) {
 var javaBinaryNamePattern = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)*$`)
 
 func (r *entryReader) maven(path string) {
-	data, err := os.ReadFile(path)
+	_, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			r.launched = true
@@ -431,53 +431,66 @@ func (r *entryReader) maven(path string) {
 	default:
 		r.reasons[reasonLaunchEntryUnmapped] = true
 	}
-	// A profile can be switched on from outside the POM (-P, settings.xml), so a profile that
-	// sets a property or names a launch class counts whatever its activation says.
-	chain, files, complete := r.pomChain(pom, path)
-	profileProps := map[string]bool{}
-	for i, p := range chain {
-		for _, pr := range p.Profiles {
-			for k := range pr.Properties {
-				profileProps[k] = true
-			}
-		}
-		if profileNamesLaunch(files[i]) {
-			r.reasons[reasonLaunchEntryProfilePlugin] = true
-		}
+	eff := r.effective(pom, path)
+	if eff.profileLaunch {
+		r.reasons[reasonLaunchEntryProfilePlugin] = true
 	}
-	r.bootMaven(chain, files, complete)
-	text := xmlComment.ReplaceAllString(string(data), "")
-	for _, m := range pomEntryElement.FindAllStringSubmatch(text, -1) {
-		if m[1] == "Main-Verticle" {
-			r.launched = true
-			r.reasons[reasonLaunchEntryUnmapped] = true
-			continue
-		}
-		v := pomPropertyRef.ReplaceAllStringFunc(m[2], func(ref string) string {
-			key := ref[2 : len(ref)-1]
-			val, ok := pom.Properties[key]
-			if !ok || strings.Contains(val, "${") {
-				return ref
-			}
-			if !complete || profileProps[key] {
-				r.reasons[reasonLaunchEntryProfileProperty] = true
-			}
-			r.propKeys[key] = true
-			return val
-		})
-		r.name(v)
+	if eff.unread {
+		r.launched = true
+		r.reasons[reasonLaunchEntryUnmapped] = true
+	}
+	// A parent not read may name a launch class for any plugin the module runs; an aggregator
+	// runs none that packages a program.
+	if !eff.complete && pom.Packaging != "pom" {
+		r.launched = true
+	}
+	r.bootMaven(eff)
+	for _, e := range eff.entries {
+		r.entry(eff, e)
+	}
+	// The Boot plugin's main defaults to start-class; without the plugin the property launches
+	// only through an entry that names it, read above.
+	if v, ok := eff.startClass(); ok && r.bootPlugin {
+		r.entry(eff, pomEntry{elem: "start-class", value: v})
 	}
 }
 
-// bootMaven records whether a POM in the chain applies spring-boot-maven-plugin in its
-// <build><plugins>, and blocks bootMain when the chain is not all read, or when a POM in it names
-// a launch class any way but starter-parent's ${start-class} wiring (a <start-class> property
-// is one such way) or points spring-boot.run.main-class anywhere but ${start-class}.
-func (r *entryReader) bootMaven(chain []*mvnPOM, files []string, complete bool) {
-	if !complete {
+// entry records one launch-naming element of eff, its ${...} resolved against eff's merged
+// properties.
+func (r *entryReader) entry(eff *pomEffective, e pomEntry) {
+	if e.elem == "Main-Verticle" {
+		r.launched = true
+		r.reasons[reasonLaunchEntryUnmapped] = true
+		return
+	}
+	v := eff.resolve(e.value, func(key string) {
+		if !eff.complete || eff.profileProps[key] {
+			r.reasons[reasonLaunchEntryProfileProperty] = true
+		}
+		r.propKeys[key] = true
+	})
+	if m := pomWholeRef.FindStringSubmatch(v); m != nil && bootMainKeys[m[1]] {
+		return
+	}
+	r.name(v)
+}
+
+// bootMainKeys are the properties spring-boot-starter-parent wires to the Boot plugin's main: a
+// value that resolves to nothing but one of them, unset, leaves the main to the plugin.
+var bootMainKeys = map[string]bool{"start-class": true, "spring-boot.run.main-class": true}
+
+var pomWholeRef = regexp.MustCompile(`^\$\{([^}]*)\}$`)
+
+// bootMaven records whether the module applies spring-boot-maven-plugin, and blocks bootMain when
+// the chain is not all read, or when a POM in it names a launch class any way but starter-parent's
+// ${start-class} wiring (a <start-class> property is one such way) or points
+// spring-boot.run.main-class anywhere but ${start-class}.
+func (r *entryReader) bootMaven(eff *pomEffective) {
+	r.bootPlugin = r.bootPlugin || eff.applied[bootPluginKey]
+	if !eff.complete || eff.unread {
 		r.bootBlocked = true
 	}
-	for i, p := range chain {
+	for _, p := range eff.chain {
 		props := []map[string]string{p.Properties}
 		for _, pr := range p.Profiles {
 			props = append(props, pr.Properties)
@@ -487,29 +500,10 @@ func (r *entryReader) bootMaven(chain []*mvnPOM, files []string, complete bool) 
 				r.bootBlocked = true
 			}
 		}
-		data, err := readRegular(files[i])
-		if err != nil {
-			r.bootBlocked = true
-			continue
-		}
-		text := xmlComment.ReplaceAllString(string(data), "")
+	}
+	for _, text := range eff.texts {
 		if len(pomEntryWord.FindAllStringIndex(text, -1)) != len(bootStartClassRef.FindAllStringIndex(text, -1)) {
 			r.bootBlocked = true
-		}
-		var xp struct {
-			Plugins []struct {
-				GroupID    string `xml:"groupId"`
-				ArtifactID string `xml:"artifactId"`
-			} `xml:"build>plugins>plugin"`
-		}
-		if err := unmarshalPOM(data, &xp); err != nil {
-			r.bootBlocked = true
-			continue
-		}
-		for _, pl := range xp.Plugins {
-			if strings.TrimSpace(pl.GroupID) == "org.springframework.boot" && strings.TrimSpace(pl.ArtifactID) == "spring-boot-maven-plugin" {
-				r.bootPlugin = true
-			}
 		}
 	}
 }
@@ -597,30 +591,6 @@ func (c *mavenCache) pomFile(g, a, v string) string {
 		}
 	}
 	return ""
-}
-
-// profileNamesLaunch reports whether any <profile> in the POM at path carries a launch-naming
-// element (a plugin's mainClass, a manifest Main-Class, the Boot start-class). A POM that cannot
-// be re-read counts as naming one.
-func profileNamesLaunch(path string) bool {
-	data, err := readRegular(path)
-	if err != nil {
-		return true
-	}
-	var xp struct {
-		Profiles []struct {
-			Inner string `xml:",innerxml"`
-		} `xml:"profiles>profile"`
-	}
-	if err := unmarshalPOM(data, &xp); err != nil {
-		return true
-	}
-	for _, pr := range xp.Profiles {
-		if pomEntryElement.MatchString(xmlComment.ReplaceAllString(pr.Inner, "")) {
-			return true
-		}
-	}
-	return false
 }
 
 var (

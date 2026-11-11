@@ -378,9 +378,11 @@ func provablyInert(buildDir, dir string) bool {
 		return false
 	}
 	for i := range chain {
-		// Maven reads a parent at its relativePath before the repository; outside the checkout
-		// that file is not seen, so the repository copy pomChain read may not be what Maven reads.
-		if within(buildDir, files[i]) && chain[i].Parent.ArtifactID != "" && parentOutside(buildDir, files[i], chain[i].Parent) {
+		// Maven reads a checkout POM's parent at its relativePath before the repository; outside
+		// the checkout that file is not seen, so the repository copy pomChain read may not be what
+		// Maven reads. A repository POM's relativePath is not followed.
+		cached := i > 0 && files[i] == r.cache.pomFile(chain[i-1].Parent.GroupID, chain[i-1].Parent.ArtifactID, chain[i-1].Parent.Version)
+		if !cached && chain[i].Parent.ArtifactID != "" && parentOutside(buildDir, files[i], chain[i].Parent) {
 			return false
 		}
 		data, err := readRegular(files[i])

@@ -562,13 +562,13 @@ func mavenExtensions(buildDir, dir string) bool {
 
 // parentOutside reports whether the checkout POM at child would have Maven look for its parent p
 // outside the checkout: at p's relativePath, ../pom.xml when it names none. An empty one turns the
-// lookup off.
+// lookup off, naming child's own directory.
 func parentOutside(buildDir, child string, p mvnParent) bool {
 	relPath := "../pom.xml"
 	if p.RelativePath != nil {
 		relPath = *p.RelativePath
 	}
-	return relPath != "" && !within(buildDir, filepath.Join(filepath.Dir(child), filepath.FromSlash(relPath)))
+	return !within(buildDir, filepath.Join(filepath.Dir(child), filepath.FromSlash(relPath)))
 }
 
 // modulePOM is the POM of the Maven module at dir. This file and launchoptions.go are the JVM

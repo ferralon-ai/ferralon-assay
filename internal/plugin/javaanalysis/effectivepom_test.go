@@ -165,6 +165,7 @@ func TestProvablyInert(t *testing.T) {
 	cases := map[string]struct {
 		parent, child string
 		files         map[string]string // more files, by path under the checkout
+		dir           string            // the module judged, "app" when ""
 		want          bool
 		evidence      bool // launch evidence the readers find besides: launchSignal holds, inert or not
 	}{
@@ -174,6 +175,12 @@ func TestProvablyInert(t *testing.T) {
 		"a parent outside the checkout, a cached copy":    {child: relPath("../../corp/pom.xml"), files: cached},
 		"a parent with no relativePath, a cached copy":    {child: relPath(""), files: cached, want: true},
 		"a parent not at its relativePath, a cached copy": {child: agg + `</project>`, files: cached, want: true},
+		// A top-level POM's default relativePath, ../pom.xml, is outside the checkout.
+		"a top-level aggregator, a cached parent": {parent: agg + `</project>`, files: cached, dir: "."},
+		// Maven does not follow a repository POM's relativePath, wherever it points.
+		"a cached parent's relativePath leaves the checkout": {child: agg + `</project>`, want: true, files: map[string]string{
+			".m2/repository/com/acme/parent/1/parent-1.pom": `<project><parent><groupId>com.acme</groupId><artifactId>corp</artifactId><version>1</version><relativePath>../../../../../../../../corp/pom.xml</relativePath></parent><artifactId>parent</artifactId><packaging>pom</packaging></project>`,
+			".m2/repository/com/acme/corp/1/corp-1.pom":     `<project><groupId>com.acme</groupId><artifactId>corp</artifactId><version>1</version><packaging>pom</packaging></project>`}},
 		"core extensions":                     {parent: effParent + `</project>`, child: agg + `</project>`, files: map[string]string{".mvn/extensions.xml": "<extensions/>"}},
 		"core extensions in the module":       {parent: effParent + `</project>`, child: agg + `</project>`, files: map[string]string{"app/.mvn/extensions.xml": "<extensions/>"}},
 		"an aggregator's build extension":     {parent: effParent + `</project>`, child: agg + ext + `</project>`},
@@ -207,6 +214,9 @@ func TestProvablyInert(t *testing.T) {
 				writeFileT(t, filepath.Join(root, filepath.FromSlash(rel)), body)
 			}
 			dir := filepath.Join(root, "app")
+			if c.dir != "" {
+				dir = filepath.Join(root, c.dir)
+			}
 			if got := provablyInert(root, dir); got != c.want {
 				t.Errorf("provablyInert = %v, want %v", got, c.want)
 			}

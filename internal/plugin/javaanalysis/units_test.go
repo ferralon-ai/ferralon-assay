@@ -771,6 +771,14 @@ const startClassRoot = `<properties><start-class>com.acme.lib.Generator</start-c
 // inertPOM is a code-free aggregator dist loading lib and applying no plugin.
 var inertPOM = strings.Replace(launcherPOM("pom", jacocoPluginXML, ""), "<build><plugins><plugin>"+jacocoPluginXML+"</plugin></plugins></build>", "", 1)
 
+// writeLaunchJar writes dist/target/dist-1.0.0.jar with the library's Generator as its Main-Class,
+// as a step outside Maven builds it.
+func writeLaunchJar(t *testing.T, build string) {
+	t.Helper()
+	writeJarEntries(t, filepath.Join(build, "dist", "target", "dist-1.0.0.jar"), map[string][]byte{
+		"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\r\nMain-Class: com.acme.lib.Generator\r\n\r\n")})
+}
+
 // startClassOnly sets start-class to the library's Generator and nothing else.
 const startClassOnly = `<properties><start-class>com.acme.lib.Generator</start-class></properties>`
 
@@ -811,6 +819,7 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 		pom      string
 		loadsLib bool
 		rootBody string // more of the reactor root POM
+		jar      bool   // dist/target holds a JAR whose Main-Class is the library's Generator
 		units    string
 	}{
 		"a shaded main":                 {pom: distPOM(shadeMain("com.acme.lib.Generator")), loadsLib: true, units: "dist one two"},
@@ -840,10 +849,13 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 		"pom packaging, an assembly, its parent not read": {pom: strings.Replace(launcherPOM("pom", `<artifactId>maven-assembly-plugin</artifactId>`, ""), "<version>1.0.0</version></parent>", "<version>9.9.9</version></parent>", 1), loadsLib: true, units: "dist one two"},
 		"pom packaging, a plugin a parent profile applies": {pom: inertPOM, loadsLib: true, units: "dist one two",
 			rootBody: effProfilePlugin(`<artifactId>exec-maven-plugin</artifactId>`, false)},
-		// An aggregator applying and inheriting no plugin ships nothing but its POM.
-		"an inert aggregator":                 {pom: inertPOM, loadsLib: true, units: "one two"},
-		"an inert aggregator, a managed main": {pom: strings.Replace(inertPOM, "</dependencies>", "</dependencies>"+effManagedExec, 1), loadsLib: true, units: "one two"},
-		"the Boot plugin, no main of its own": {pom: strings.Replace(distPOM(""), "<artifactId>maven-shade-plugin</artifactId>", "<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>", 1), loadsLib: true, units: "dist one two"},
+		// An aggregator applying and inheriting no plugin ships nothing but its POM, unless the
+		// readers find launch evidence: inertness only adds units. A managed main is named in its
+		// POM; a JAR built outside Maven names one on disk.
+		"an inert aggregator":                             {pom: inertPOM, loadsLib: true, units: "one two"},
+		"an inert aggregator, a managed main":             {pom: strings.Replace(inertPOM, "</dependencies>", "</dependencies>"+effManagedExec, 1), loadsLib: true, units: "dist one two"},
+		"an inert aggregator, a launchable JAR in target": {pom: inertPOM, loadsLib: true, jar: true, units: "dist one two"},
+		"the Boot plugin, no main of its own":             {pom: strings.Replace(distPOM(""), "<artifactId>maven-shade-plugin</artifactId>", "<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>", 1), loadsLib: true, units: "dist one two"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -854,6 +866,9 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 			a.libModule("lib", justReturn)
 			a.generator("lib", justReturn)
 			writeFileT(t, filepath.Join(a.build, "dist", "pom.xml"), c.pom)
+			if c.jar {
+				writeLaunchJar(t, a.build)
+			}
 			if c.rootBody != "" {
 				writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(c.rootBody))
 			}
@@ -887,6 +902,7 @@ func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
 		main string
 		root string        // more of the reactor root POM
 		dist string        // dist's POM, distPOM(shadeMain(main)) when ""
+		jar  bool          // dist/target holds a JAR whose Main-Class is the library's Generator
 		want map[bool]want // by listed
 	}{
 		"the main reaches the sink": {gen: callFetch, main: "com.acme.lib.Generator", want: reaches},
@@ -924,8 +940,12 @@ func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
 			dist: strings.Replace(launcherPOM("pom", `<artifactId>maven-assembly-plugin</artifactId>`, ""), "<version>1.0.0</version></parent>", "<version>9.9.9</version></parent>", 1)},
 		// An aggregator applying no plugin and inheriting none ships nothing but its POM, whatever
 		// it loads: the library's own units are what the reactor runs.
-		"an inert aggregator": {gen: callFetch, want: map[bool]want{true: {searched: true}, false: {searched: true}},
+		"an inert aggregator": {gen: callFetch, want: map[bool]want{true: {searched: true}, false: {searched: true}}, dist: inertPOM},
+		// The same aggregator naming a main is a unit all the same: one it manages, or the
+		// Main-Class of a JAR built outside Maven.
+		"an inert aggregator, a managed main": {gen: callFetch, want: withheld,
 			dist: strings.Replace(inertPOM, "</dependencies>", "</dependencies>"+effManagedExec, 1)},
+		"an inert aggregator, a launchable JAR in target": {gen: callFetch, jar: true, want: reaches, dist: inertPOM},
 	}
 	for name, c := range cases {
 		for _, listed := range []bool{true, false} {
@@ -941,6 +961,9 @@ func TestUnitsReach_CodeFreeLauncher(t *testing.T) {
 					dist = distPOM(shadeMain(c.main))
 				}
 				writeFileT(t, filepath.Join(a.build, "dist", "pom.xml"), dist)
+				if c.jar {
+					writeLaunchJar(t, a.build)
+				}
 				if c.root != "" {
 					writeFileT(t, filepath.Join(a.build, "pom.xml"), rootPOM(c.root))
 				}

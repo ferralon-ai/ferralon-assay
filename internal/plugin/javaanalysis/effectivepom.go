@@ -93,6 +93,8 @@ type pomWalk struct {
 	managed  []pomPlugin // build>pluginManagement>plugins
 	profiles []pomProfile
 	other    []pomEntry // launch elements outside plugins, profiles and properties
+	// extensions is whether the POM registers a build extension in build>extensions.
+	extensions bool
 }
 
 type pomPlugin struct {
@@ -277,6 +279,9 @@ func walkPOM(data []byte) (pomWalk, bool) {
 			case launchElements[name]:
 				w.other = append(w.other, pomEntry{name, val})
 			}
+			if at("project", "build", "extensions", "extension") {
+				w.extensions = true
+			}
 			switch {
 			case atPlugin():
 				if group == "" {
@@ -355,14 +360,16 @@ func mavenRepackages(buildDir, dir string) bool {
 }
 
 // provablyInert reports whether the code-free Maven module at dir, inside the checkout buildDir,
-// can ship nothing but its POM: its packaging is pom, every POM of its chain is there, is read and
-// parses, and no POM of the chain applies a plugin in <build><plugins> or in any profile, whatever
-// its activation. A <pluginManagement> entry alone applies nothing. Anything the reader does not
+// can ship nothing but its POM: its POM is dir's pom.xml with packaging pom, every POM of its
+// chain is there, is read and parses, no checkout POM of the chain looks for its parent outside
+// the checkout, no POM of the chain applies a plugin in <build><plugins> or in any profile,
+// whatever its activation, or a build extension, and no .mvn/extensions.xml registers core
+// extensions. A <pluginManagement> entry alone applies nothing. Anything the reader does not
 // know leaves the module not inert.
 func provablyInert(buildDir, dir string) bool {
 	path := modulePOM(dir)
 	pom, ok := parseMavenPOM(path)
-	if !ok || pom.Packaging != "pom" {
+	if !ok || pom.Packaging != "pom" || mavenExtensions(buildDir, dir) {
 		return false
 	}
 	r := &entryReader{cache: newMavenCache(buildDir), checkout: buildDir}
@@ -371,12 +378,17 @@ func provablyInert(buildDir, dir string) bool {
 		return false
 	}
 	for i := range chain {
+		// Maven reads a parent at its relativePath before the repository; outside the checkout
+		// that file is not seen, so the repository copy pomChain read may not be what Maven reads.
+		if within(buildDir, files[i]) && chain[i].Parent.ArtifactID != "" && parentOutside(buildDir, files[i], chain[i].Parent) {
+			return false
+		}
 		data, err := readRegular(files[i])
 		if err != nil {
 			return false
 		}
 		w, ok := walkPOM(data)
-		if !ok || len(w.plugins) > 0 {
+		if !ok || len(w.plugins) > 0 || w.extensions {
 			return false
 		}
 		for _, pr := range w.profiles {

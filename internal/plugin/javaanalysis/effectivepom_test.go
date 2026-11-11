@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -156,13 +157,30 @@ func TestEffectivePOM(t *testing.T) {
 func TestProvablyInert(t *testing.T) {
 	agg := effChild + `<packaging>pom</packaging>`
 	exec := `<artifactId>exec-maven-plugin</artifactId>`
+	ext := `<build><extensions><extension><groupId>com.acme</groupId><artifactId>ext</artifactId><version>1</version></extension></extensions></build>`
+	cached := map[string]string{".m2/repository/com/acme/parent/1/parent-1.pom": effParent + `</project>`}
+	relPath := func(p string) string {
+		return strings.Replace(agg, "</parent>", "<relativePath>"+p+"</relativePath></parent>", 1) + `</project>`
+	}
 	cases := map[string]struct {
 		parent, child string
+		files         map[string]string // more files, by path under the checkout
 		want          bool
+		evidence      bool // launch evidence the readers find besides: launchSignal holds, inert or not
 	}{
-		"an aggregator, its parent read":      {parent: effParent + `</project>`, child: agg + `</project>`, want: true},
+		"an aggregator, its parent read": {parent: effParent + `</project>`, child: agg + `</project>`, want: true},
+		// Maven reads a parent at its relativePath first; outside the checkout that file is not
+		// seen, so the cached copy may not be the parent Maven reads.
+		"a parent outside the checkout, a cached copy":    {child: relPath("../../corp/pom.xml"), files: cached},
+		"a parent with no relativePath, a cached copy":    {child: relPath(""), files: cached, want: true},
+		"a parent not at its relativePath, a cached copy": {child: agg + `</project>`, files: cached, want: true},
+		"core extensions":                     {parent: effParent + `</project>`, child: agg + `</project>`, files: map[string]string{".mvn/extensions.xml": "<extensions/>"}},
+		"core extensions in the module":       {parent: effParent + `</project>`, child: agg + `</project>`, files: map[string]string{"app/.mvn/extensions.xml": "<extensions/>"}},
+		"an aggregator's build extension":     {parent: effParent + `</project>`, child: agg + ext + `</project>`},
+		"a parent's build extension":          {parent: effParent + ext + `</project>`, child: agg + `</project>`},
+		"a POM not named pom.xml":             {parent: effParent + `</project>`, files: map[string]string{"app/build.xml": agg + `</project>`}},
 		"an aggregator, no parent":            {child: `<project><groupId>com.acme</groupId><artifactId>app</artifactId><version>1</version><packaging>pom</packaging></project>`, want: true},
-		"an aggregator, plugins managed only": {parent: effParent + effManagedExec + `</project>`, child: agg + effManagedExec + `</project>`, want: true},
+		"an aggregator, plugins managed only": {parent: effParent + effManagedExec + `</project>`, child: agg + effManagedExec + `</project>`, want: true, evidence: true},
 		"jar packaging":                       {parent: effParent + `</project>`, child: effChild + `<packaging>jar</packaging></project>`},
 		"packaging unset":                     {parent: effParent + `</project>`, child: effChild + `</project>`},
 		"packaging a property sets":           {parent: effParent + `</project>`, child: effChild + `<packaging>${p}</packaging></project>`},
@@ -185,12 +203,15 @@ func TestProvablyInert(t *testing.T) {
 				poms["."] = c.parent
 			}
 			root := writePOMs(t, poms)
+			for rel, body := range c.files {
+				writeFileT(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+			}
 			dir := filepath.Join(root, "app")
 			if got := provablyInert(root, dir); got != c.want {
 				t.Errorf("provablyInert = %v, want %v", got, c.want)
 			}
-			if got := launchSignal(root, dir, nil, false); got == c.want {
-				t.Errorf("launchSignal = %v, want %v", got, !c.want)
+			if got := launchSignal(root, dir, nil, false); got != (!c.want || c.evidence) {
+				t.Errorf("launchSignal = %v, want %v", got, !c.want || c.evidence)
 			}
 		})
 	}

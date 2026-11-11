@@ -2,7 +2,9 @@ package javaanalysis
 
 import (
 	"archive/zip"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -203,10 +205,11 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 //
 // A module with no code of its own (code false) ships a program only by packaging other modules'
 // classes, in more ways than evidence can list, so the burden is inverted: it carries evidence
-// unless it is provably inert (provablyInert).
+// unless it is provably inert (provablyInert), and an inert one still carries what the readers
+// find on disk.
 func launchSignal(buildDir, dir string, roots []string, code bool) bool {
-	if !code {
-		return !provablyInert(buildDir, dir)
+	if !code && !provablyInert(buildDir, dir) {
+		return true
 	}
 	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir), checkout: buildDir}
 	r.maven(modulePOM(dir))
@@ -541,6 +544,31 @@ func (r *entryReader) pomChain(pom *mvnPOM, path string) ([]*mvnPOM, []string, b
 		cur, curFile = next, parentFile
 	}
 	return chain, files, false
+}
+
+// mavenExtensions reports whether a .mvn/extensions.xml in dir or a directory above it, up to
+// buildDir, registers core extensions for the build, or may: one that cannot be checked counts.
+func mavenExtensions(buildDir, dir string) bool {
+	for d := filepath.Clean(dir); within(buildDir, d); d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".mvn", "extensions.xml")); !errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+		if d == filepath.Clean(buildDir) || d == filepath.Dir(d) {
+			break
+		}
+	}
+	return false
+}
+
+// parentOutside reports whether the checkout POM at child would have Maven look for its parent p
+// outside the checkout: at p's relativePath, ../pom.xml when it names none. An empty one turns the
+// lookup off.
+func parentOutside(buildDir, child string, p mvnParent) bool {
+	relPath := "../pom.xml"
+	if p.RelativePath != nil {
+		relPath = *p.RelativePath
+	}
+	return relPath != "" && !within(buildDir, filepath.Join(filepath.Dir(child), filepath.FromSlash(relPath)))
 }
 
 // modulePOM is the POM of the Maven module at dir. This file and launchoptions.go are the JVM

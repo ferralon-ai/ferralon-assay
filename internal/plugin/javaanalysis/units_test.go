@@ -124,6 +124,8 @@ func TestUnitsReach_SearchedPerUnit(t *testing.T) {
 		"every unit clean":      {one: justReturn, two: callSharedLib, lib: justReturn, oneNetkit: true, twoNk: true, want: want{searched: true}},
 		// App two's search is undetermined, so the build is not Searched though app one is clean.
 		"one unclean unit withholds Searched": {one: justReturn, two: callUnloaded, lib: justReturn, oneNetkit: true, twoNk: true},
+		// Absence counts only after a clean search: two's call into an unloaded class withholds.
+		"an unclean unit without the sink JAR withholds": {one: callSharedLib, two: callUnloaded, lib: justReturn, oneNetkit: true},
 		// App two's runtime classpath is fully listed and holds no netkit: it cannot carry the sink.
 		"a listed unit without the sink JAR is searched": {one: callSharedLib, two: callSharedLib, lib: justReturn, oneNetkit: true, want: want{searched: true}},
 		// A library class no root reaches names UrlFetcher: a JAR outside two's tree supplied it
@@ -651,6 +653,7 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 	cases := map[string]struct {
 		pom      string
 		loadsLib bool
+		rootBody string // more of the reactor root POM
 		units    string
 	}{
 		"a shaded main":                 {pom: distPOM(shadeMain("com.acme.lib.Generator")), loadsLib: true, units: "dist one two"},
@@ -660,6 +663,9 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 		"assembly packaging, a main":    {pom: strings.Replace(distPOM(shadeMain("com.acme.lib.Generator")), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "dist one two"},
 		"an unresolved packaging":       {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>${p}</packaging>", 1), loadsLib: true, units: "dist one two"},
 		"a profile naming a main":       {pom: strings.Replace(distPOM(""), "</dependencies>", "</dependencies><profiles><profile><id>tool</id><build><plugins><plugin><artifactId>exec-maven-plugin</artifactId><configuration><mainClass>com.acme.lib.Generator</mainClass></configuration></plugin></plugins></build></profile></profiles>", 1), loadsLib: true, units: "dist one two"},
+		// A parent's profile can launch any child, the code-free one included.
+		"a parent profile naming a main": {pom: distPOM(""), loadsLib: true, units: "dist one two",
+			rootBody: `<profiles><profile><id>tool</id><build><plugins><plugin><artifactId>exec-maven-plugin</artifactId><configuration><mainClass>com.acme.lib.Generator</mainClass></configuration></plugin></plugins></build></profile></profiles>`},
 		// An aggregator that also gathers dependencies names no launch: it ships nothing of its own.
 		"pom packaging, no main":              {pom: strings.Replace(distPOM(""), "<artifactId>dist</artifactId>", "<artifactId>dist</artifactId><packaging>pom</packaging>", 1), loadsLib: true, units: "one two"},
 		"the Boot plugin, no main of its own": {pom: strings.Replace(distPOM(""), "<artifactId>maven-shade-plugin</artifactId>", "<groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>", 1), loadsLib: true, units: "one two"},
@@ -673,6 +679,11 @@ func TestPlanUnits_CodeFreeLauncher(t *testing.T) {
 			a.libModule("lib", justReturn)
 			a.generator("lib", justReturn)
 			writeFileT(t, filepath.Join(a.build, "dist", "pom.xml"), c.pom)
+			if c.rootBody != "" {
+				writeFileT(t, filepath.Join(a.build, "pom.xml"), `<project><modelVersion>4.0.0</modelVersion>
+  <groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version><packaging>pom</packaging>`+c.rootBody+`
+</project>`)
+			}
 			lib := testModule(t, "lib", "lib")
 			dist := testModule(t, "dist", "dist")
 			if c.loadsLib {

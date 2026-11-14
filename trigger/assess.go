@@ -1290,6 +1290,7 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 		versionHeld = len(kept) < len(reasons)
 		reasons = kept
 	}
+	reasons = withoutBuildConstraintLimit(store, assessmentID, pkg, reasons)
 	switch {
 	case len(reasons) == 0:
 		return "", false
@@ -1306,6 +1307,25 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	return report.ReasonAnalysisDidNotRun, true
 }
 
+// withoutBuildConstraintLimit drops, from the limits a refutation would be withheld by, the one the
+// Go lane declares beside a refutation it kept for the scanned platform: every file the build left out
+// that may call into the module was left out by its build constraints alone
+// (plugin.PartialReasonExcludedFilesBuildConstraint). The refutation's detail names the platform and
+// tags it holds for and says other platforms were not checked, so the finding states its scope; the
+// limit still reaches the scan-level disclosure, which reads the footprint. It drops only while the
+// assessment holds that refutation on the admitted package, and every other limit stays.
+func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg *report.Package, reasons []string) []string {
+	if !slices.Contains(reasons, plugin.PartialReasonExcludedFilesBuildConstraint) {
+		return reasons
+	}
+	reach, _ := reachabilityResult(store, assessmentID)
+	admitted, _, ok := admittedPackage(store, assessmentID, pkg)
+	if r := reach.Refutation; !ok || r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
+		return reasons
+	}
+	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return r == plugin.PartialReasonExcludedFilesBuildConstraint })
+}
+
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a
 // refutation its completed search would have supported: each leaves that search intact and says code
 // it did not cover may contradict it. A limit can also be declared when its coverage check cannot run
@@ -1313,13 +1333,14 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 // not listed: it means `go env` failed, which puts the search's own build configuration in doubt, so
 // it keeps analysis_did_not_run.
 var refutationWithheldReasons = map[string]bool{
-	plugin.PartialReasonExcludedFiles:           true,
-	plugin.PartialReasonExcludedFilesAssembly:   true,
-	plugin.PartialReasonExcludedFilesLinkname:   true,
-	plugin.PartialReasonExcludedFilesCgoInclude: true,
-	plugin.PartialReasonUnsearchedMethods:       true,
-	plugin.PartialReasonLibraryEscape:           true,
-	plugin.PartialReasonReflectiveCall:          true,
+	plugin.PartialReasonExcludedFiles:                true,
+	plugin.PartialReasonExcludedFilesAssembly:        true,
+	plugin.PartialReasonExcludedFilesLinkname:        true,
+	plugin.PartialReasonExcludedFilesCgoInclude:      true,
+	plugin.PartialReasonExcludedFilesBuildConstraint: true,
+	plugin.PartialReasonUnsearchedMethods:            true,
+	plugin.PartialReasonLibraryEscape:                true,
+	plugin.PartialReasonReflectiveCall:               true,
 }
 
 // withoutVersionLimits drops, one occurrence each, the limits the inventory recorded against
@@ -1398,10 +1419,11 @@ var outsideBuildExempt = map[string]bool{
 	// The module graph does not depend on GOOS, GOARCH or build tags, and the module search reads
 	// every .go file whatever its build constraints. The assembly, linkname targets and C a left-out
 	// file reaches call only Go code compiled into the build, which comes from a listed module.
-	plugin.PartialReasonExcludedFiles:           true,
-	plugin.PartialReasonExcludedFilesAssembly:   true,
-	plugin.PartialReasonExcludedFilesLinkname:   true,
-	plugin.PartialReasonExcludedFilesCgoInclude: true,
+	plugin.PartialReasonExcludedFiles:                true,
+	plugin.PartialReasonExcludedFilesAssembly:        true,
+	plugin.PartialReasonExcludedFilesLinkname:        true,
+	plugin.PartialReasonExcludedFilesCgoInclude:      true,
+	plugin.PartialReasonExcludedFilesBuildConstraint: true,
 }
 
 // outsideBuildBlocked reports whether a step outsideBuildGrounds rests on may not have run: the

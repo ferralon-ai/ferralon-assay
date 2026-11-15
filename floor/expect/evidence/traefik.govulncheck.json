@@ -1,0 +1,2231 @@
+{
+ "schema": "ferralon.floor-govulncheck.v1",
+ "comparator": {
+  "name": "govulncheck",
+  "version": "v1.9.0",
+  "db": "https://vuln.go.dev",
+  "db_last_modified": "2026-11-11T02:51:11Z",
+  "go_version": "go1.23.12",
+  "scan_mode": "source",
+  "scan_level": "symbol",
+  "command": "GOTOOLCHAIN=go1.23.12 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 govulncheck -mode source -format json ./..."
+ },
+ "target": "traefik",
+ "upstream_sha": "020ab5f34703ea523895ab004825dbfa6f7de060",
+ "findings": [
+  {
+   "osv": "GO-2022-0635",
+   "aliases": [
+    "CVE-2020-8912",
+    "GHSA-7f33-f4f5-xwgw"
+   ],
+   "module": "github.com/aws/aws-sdk-go",
+   "version": "v1.44.327",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2022-0646",
+   "aliases": [
+    "CVE-2020-8911",
+    "GHSA-f5pg-7wfw-84q9"
+   ],
+   "module": "github.com/aws/aws-sdk-go",
+   "version": "v1.44.327",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2025-3485",
+   "aliases": [
+    "CVE-2025-27144",
+    "GHSA-c6gw-w398-hv78"
+   ],
+   "module": "github.com/go-jose/go-jose/v4",
+   "version": "v4.0.4",
+   "fixed": "v4.0.5",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-3487",
+   "aliases": [
+    "CVE-2025-22869"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.35.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-3488",
+   "aliases": [
+    "CVE-2025-22868"
+   ],
+   "module": "golang.org/x/oauth2",
+   "version": "v0.24.0",
+   "fixed": "v0.27.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-3503",
+   "aliases": [
+    "CVE-2025-22870",
+    "GHSA-qxp5-gwg8-xv66"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.36.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http/httpproxy.*config.useProxy"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service.*smartRoundTripper.RoundTrip"
+  },
+  {
+   "osv": "GO-2025-3540",
+   "aliases": [
+    "CVE-2025-29923",
+    "GHSA-92cp-5422-2mw7"
+   ],
+   "module": "github.com/redis/go-redis/v9",
+   "version": "v9.6.1",
+   "fixed": "v9.6.3",
+   "level": "symbol",
+   "symbols": [
+    "github.com/redis/go-redis/v9.*baseClient.initConn"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/kv.*storeWrapper.WatchTree"
+  },
+  {
+   "osv": "GO-2025-3553",
+   "aliases": [
+    "CVE-2025-30204",
+    "GHSA-mh63-6h87-95cp"
+   ],
+   "module": "github.com/golang-jwt/jwt/v4",
+   "version": "v4.5.1",
+   "fixed": "v4.5.2",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-3553",
+   "aliases": [
+    "CVE-2025-30204",
+    "GHSA-mh63-6h87-95cp"
+   ],
+   "module": "github.com/golang-jwt/jwt/v5",
+   "version": "v5.2.1",
+   "fixed": "v5.2.2",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-3595",
+   "aliases": [
+    "CVE-2025-22872"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.38.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-3787",
+   "aliases": [
+    "GHSA-fv92-fjc5-jj9h"
+   ],
+   "module": "github.com/go-viper/mapstructure/v2",
+   "version": "v2.2.1",
+   "fixed": "v2.3.0",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-viper/mapstructure/v2.Decode",
+    "github.com/go-viper/mapstructure/v2.init",
+    "github.com/go-viper/mapstructure/v2/internal/errors.As",
+    "github.com/go-viper/mapstructure/v2/internal/errors.Join",
+    "github.com/go-viper/mapstructure/v2/internal/errors.New",
+    "github.com/go-viper/mapstructure/v2/internal/errors.init"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/acme.*Provider.Provide"
+  },
+  {
+   "osv": "GO-2025-3847",
+   "aliases": [
+    "CVE-2025-54799",
+    "GHSA-q82r-2j7m-9rv4"
+   ],
+   "module": "github.com/go-acme/lego/v4",
+   "version": "v4.21.0",
+   "fixed": "v4.25.2",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-acme/lego/v4/acme/api/internal/sender.NewDoer"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/acme.*Provider.Provide"
+  },
+  {
+   "osv": "GO-2025-3900",
+   "aliases": [
+    "GHSA-2464-8j7c-4cjm"
+   ],
+   "module": "github.com/go-viper/mapstructure/v2",
+   "version": "v2.2.1",
+   "fixed": "v2.4.0",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-viper/mapstructure/v2.*Decoder.decodeBool",
+    "github.com/go-viper/mapstructure/v2.*Decoder.decodeFloat",
+    "github.com/go-viper/mapstructure/v2.*Decoder.decodeInt",
+    "github.com/go-viper/mapstructure/v2.*Decoder.decodeUint"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/acme.*Provider.Provide"
+  },
+  {
+   "osv": "GO-2025-4006",
+   "aliases": [
+    "CVE-2025-61725",
+    "CVE-2025-61725"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-4007",
+   "aliases": [
+    "CVE-2025-58187",
+    "CVE-2025-58187"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.9",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.CreateCertificate",
+    "crypto/x509.MarshalPKCS1PrivateKey",
+    "crypto/x509.MarshalPKIXPublicKey",
+    "crypto/x509.ParseCertificates",
+    "crypto/x509.ParsePKCS1PrivateKey",
+    "crypto/x509.ParsePKCS8PrivateKey",
+    "crypto/x509.ParsePKIXPublicKey",
+    "crypto/x509.SystemCertPool"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/tls/generate.KeyPair"
+  },
+  {
+   "osv": "GO-2025-4008",
+   "aliases": [
+    "CVE-2025-58189",
+    "CVE-2025-58189"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.Dial",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.*QUICConn.Start",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/proxy/fast.dialerFunc.Dial"
+  },
+  {
+   "osv": "GO-2025-4009",
+   "aliases": [
+    "CVE-2025-61723",
+    "CVE-2025-61723"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "encoding/pem.Decode"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/tls.*Certificate.GetCertificateFromBytes"
+  },
+  {
+   "osv": "GO-2025-4010",
+   "aliases": [
+    "CVE-2025-47912",
+    "CVE-2025-47912"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "net/url.*URL.Parse",
+    "net/url.JoinPath",
+    "net/url.Parse",
+    "net/url.ParseRequestURI"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/plugins.*Client.Check"
+  },
+  {
+   "osv": "GO-2025-4011",
+   "aliases": [
+    "CVE-2025-58185",
+    "CVE-2025-58185"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "encoding/asn1.Unmarshal"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/acme.*Account.GetPrivateKey"
+  },
+  {
+   "osv": "GO-2025-4012",
+   "aliases": [
+    "CVE-2025-58186",
+    "CVE-2025-58186"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.Do",
+    "net/http.*Client.Get",
+    "net/http.*Client.Head",
+    "net/http.*Client.Post",
+    "net/http.*Client.PostForm",
+    "net/http.*Request.Cookie",
+    "net/http.*Response.Cookies"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/cmd/healthcheck.Do"
+  },
+  {
+   "osv": "GO-2025-4013",
+   "aliases": [
+    "CVE-2025-58188",
+    "CVE-2025-58188"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/tls.VerifyPeerCertificate"
+  },
+  {
+   "osv": "GO-2025-4014",
+   "aliases": [
+    "CVE-2025-58183",
+    "CVE-2025-58183"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-4015",
+   "aliases": [
+    "CVE-2025-61724",
+    "CVE-2025-61724"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-4017",
+   "aliases": [
+    "CVE-2025-59530",
+    "GHSA-47m2-4cr7-mhcw"
+   ],
+   "module": "github.com/quic-go/quic-go",
+   "version": "v0.48.2",
+   "fixed": "v0.49.1",
+   "level": "symbol",
+   "symbols": [
+    "github.com/quic-go/quic-go.ListenAddrEarly",
+    "github.com/quic-go/quic-go.ListenEarly"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server.*http3server.Start"
+  },
+  {
+   "osv": "GO-2025-4116",
+   "aliases": [
+    "CVE-2025-47913"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.43.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2025-4134",
+   "aliases": [
+    "CVE-2025-58181",
+    "GHSA-j5w8-q4qc-rx2x"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.45.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-4135",
+   "aliases": [
+    "CVE-2025-47914",
+    "GHSA-f6x5-jh6r-wrfv"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.45.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2025-4155",
+   "aliases": [
+    "CVE-2025-61729",
+    "CVE-2025-61729"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.11",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify",
+    "crypto/x509.*Certificate.VerifyHostname"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/router/tcp.*Router.ServeTCP"
+  },
+  {
+   "osv": "GO-2025-4175",
+   "aliases": [
+    "CVE-2025-61727"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.11",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/tls.VerifyPeerCertificate"
+  },
+  {
+   "osv": "GO-2025-4233",
+   "aliases": [
+    "CVE-2025-64702",
+    "GHSA-g754-hx8w-x2g6"
+   ],
+   "module": "github.com/quic-go/quic-go",
+   "version": "v0.48.2",
+   "fixed": "v0.57.0",
+   "level": "symbol",
+   "symbols": [
+    "github.com/quic-go/quic-go/http3.*Error.Error",
+    "github.com/quic-go/quic-go/http3.*Server.Close",
+    "github.com/quic-go/quic-go/http3.*Server.Serve",
+    "github.com/quic-go/quic-go/http3.*body.Close",
+    "github.com/quic-go/quic-go/http3.*body.Read",
+    "github.com/quic-go/quic-go/http3.*responseWriter.FlushError",
+    "github.com/quic-go/quic-go/http3.*responseWriter.Write",
+    "github.com/quic-go/quic-go/http3.*responseWriter.WriteHeader"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/middlewares/customerrors.*codeModifier.Write"
+  },
+  {
+   "osv": "GO-2026-4337",
+   "aliases": [
+    "CVE-2025-68121"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.13",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.Dial",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.*QUICConn.Start",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/proxy/fast.*conn.Read"
+  },
+  {
+   "osv": "GO-2026-4340",
+   "aliases": [
+    "CVE-2025-61730",
+    "CVE-2025-61730"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.12",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.Dial",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.*QUICConn.HandleData",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/kv.*storeWrapper.WatchTree"
+  },
+  {
+   "osv": "GO-2026-4341",
+   "aliases": [
+    "CVE-2025-61726",
+    "CVE-2025-61726"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.12",
+   "level": "symbol",
+   "symbols": [
+    "net/url.*URL.Query",
+    "net/url.ParseQuery"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.*Balancer.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-4342",
+   "aliases": [
+    "CVE-2025-61728",
+    "CVE-2025-61728"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.12",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4394",
+   "aliases": [
+    "CVE-2026-24051",
+    "GHSA-9h8m-3fm2-qjrq"
+   ],
+   "module": "go.opentelemetry.io/otel/sdk",
+   "version": "v1.32.0",
+   "fixed": "v1.40.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/sdk/resource.WithProcessCommandArgs",
+    "go.opentelemetry.io/otel/sdk/trace.*recordingSpan.AddEvent",
+    "go.opentelemetry.io/otel/sdk/trace.*recordingSpan.End",
+    "go.opentelemetry.io/otel/sdk/trace.Shutdown$1",
+    "go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.IsRecording",
+    "go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.SetAttributes",
+    "go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.SetStatus",
+    "go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.TracerProvider"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/middlewares/capture.*readCounter.Read"
+  },
+  {
+   "osv": "GO-2026-4440",
+   "aliases": [
+    "CVE-2025-47911"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.45.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4441",
+   "aliases": [
+    "CVE-2025-58190"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.45.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4601",
+   "aliases": [
+    "CVE-2026-25679"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.8",
+   "level": "symbol",
+   "symbols": [
+    "net/url.*URL.Parse",
+    "net/url.JoinPath",
+    "net/url.Parse",
+    "net/url.ParseRequestURI"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/acme.*Provider.Provide"
+  },
+  {
+   "osv": "GO-2026-4602",
+   "aliases": [
+    "CVE-2026-27139"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.8",
+   "level": "symbol",
+   "symbols": [
+    "os.*File.ReadDir",
+    "os.*File.Readdir",
+    "os.ReadDir"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/file.*Provider.Provide"
+  },
+  {
+   "osv": "GO-2026-4603",
+   "aliases": [
+    "CVE-2026-27142"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.8",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.*Balancer.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-4610",
+   "aliases": [
+    "CVE-2025-15558",
+    "GHSA-p436-gjf2-799p"
+   ],
+   "module": "github.com/docker/cli",
+   "version": "v27.1.1+incompatible",
+   "fixed": "v29.2.0+incompatible",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-4762",
+   "aliases": [
+    "CVE-2026-33186",
+    "GHSA-p77j-4mvh-x3m3"
+   ],
+   "module": "google.golang.org/grpc",
+   "version": "v1.67.1",
+   "fixed": "v1.79.3",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4864",
+   "aliases": [
+    "CVE-2026-32282"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4865",
+   "aliases": [
+    "CVE-2026-32289"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Error.Error",
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate",
+    "html/template.*Template.Funcs",
+    "html/template.*Template.Parse",
+    "html/template.context.String"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.*Balancer.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-4869",
+   "aliases": [
+    "CVE-2026-32288"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4870",
+   "aliases": [
+    "CVE-2026-32283"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.Dial",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.*QUICConn.HandleData",
+    "crypto/tls.*QUICConn.Start",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/kv.*storeWrapper.WatchTree"
+  },
+  {
+   "osv": "GO-2026-4883",
+   "aliases": [
+    "CVE-2026-33997",
+    "GHSA-pxq6-2prw-chj9"
+   ],
+   "module": "github.com/docker/docker",
+   "version": "v27.1.1+incompatible",
+   "level": "symbol",
+   "symbols": [
+    "github.com/docker/docker/api.init",
+    "github.com/docker/docker/api/types/swarm/runtime.init",
+    "github.com/docker/docker/api/types/system.init",
+    "github.com/docker/docker/api/types/versions.init",
+    "github.com/docker/docker/client.*Client.Close",
+    "github.com/docker/docker/client.WithDialContext",
+    "github.com/docker/docker/errdefs.errNotFound.Unwrap",
+    "github.com/docker/docker/errdefs.errUnauthorized.Unwrap"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/docker.init"
+  },
+  {
+   "osv": "GO-2026-4887",
+   "aliases": [
+    "CVE-2026-34040",
+    "GHSA-x744-4wpc-v9h2"
+   ],
+   "module": "github.com/docker/docker",
+   "version": "v27.1.1+incompatible",
+   "level": "symbol",
+   "symbols": [
+    "github.com/docker/docker/api/types/swarm/runtime.init",
+    "github.com/docker/docker/api/types/time.GetTimestamp",
+    "github.com/docker/docker/api/types/versions.LessThan",
+    "github.com/docker/docker/client.*Client.ServiceList",
+    "github.com/docker/docker/client.WithHost",
+    "github.com/docker/docker/errdefs.errCancelled.Cause",
+    "github.com/docker/docker/errdefs.errInvalidParameter.Unwrap",
+    "github.com/docker/docker/errdefs.init"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/docker.init"
+  },
+  {
+   "osv": "GO-2026-4918",
+   "aliases": [
+    "CVE-2026-33814"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.53.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*Transport.NewClientConn",
+    "golang.org/x/net/http2.*Transport.RoundTrip",
+    "golang.org/x/net/http2.*unencryptedTransport.RoundTrip",
+    "golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service.*h2cTransportWrapper.RoundTrip"
+  },
+  {
+   "osv": "GO-2026-4918",
+   "aliases": [
+    "CVE-2026-33814"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.CloseIdleConnections",
+    "net/http.*Client.Get",
+    "net/http.*Client.Head",
+    "net/http.*Client.Post",
+    "net/http.*Client.PostForm",
+    "net/http.*Transport.CloseIdleConnections",
+    "net/http.*Transport.RoundTrip",
+    "net/http.http2noDialH2RoundTripper.RoundTrip"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/cmd/healthcheck.Do"
+  },
+  {
+   "osv": "GO-2026-4945",
+   "aliases": [
+    "CVE-2026-34986",
+    "GHSA-78h2-9frx-2jm8"
+   ],
+   "module": "github.com/go-jose/go-jose/v4",
+   "version": "v4.0.4",
+   "fixed": "v4.1.4",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-jose/go-jose/v4.*JSONWebKey.Public",
+    "github.com/go-jose/go-jose/v4.*JSONWebKey.Thumbprint",
+    "github.com/go-jose/go-jose/v4.*SignerOptions.WithHeader",
+    "github.com/go-jose/go-jose/v4.*SignerOptions.WithType",
+    "github.com/go-jose/go-jose/v4.JSONWebKey.MarshalJSON",
+    "github.com/go-jose/go-jose/v4.JSONWebSignature.FullSerialize",
+    "github.com/go-jose/go-jose/v4.NewSigner",
+    "github.com/go-jose/go-jose/v4.init"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/acme.*Provider.Provide"
+  },
+  {
+   "osv": "GO-2026-4946",
+   "aliases": [
+    "CVE-2026-32281"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/tls.VerifyPeerCertificate"
+  },
+  {
+   "osv": "GO-2026-4947",
+   "aliases": [
+    "CVE-2026-32280"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/tls.VerifyPeerCertificate"
+  },
+  {
+   "osv": "GO-2026-4950",
+   "module": "github.com/valyala/fasthttp",
+   "version": "v1.55.0",
+   "fixed": "v1.70.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4970",
+   "aliases": [
+    "CVE-2026-39822"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.12",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4971",
+   "aliases": [
+    "CVE-2026-39836"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "symbol",
+   "symbols": [
+    "net.*Dialer.DialContext",
+    "net.*Resolver.LookupHost",
+    "net.*Resolver.LookupPort",
+    "net.*Resolver.LookupSRV",
+    "net.DialTimeout",
+    "net.LookupHost",
+    "net.LookupIP",
+    "net.LookupSRV"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/proxy/fast.dialerFunc.Dial"
+  },
+  {
+   "osv": "GO-2026-4976",
+   "aliases": [
+    "CVE-2026-39825"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "symbol",
+   "symbols": [
+    "net/http/httputil.*ReverseProxy.ServeHTTP"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.*Balancer.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-4977",
+   "aliases": [
+    "CVE-2026-42499"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4980",
+   "aliases": [
+    "CVE-2026-39826"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.*Balancer.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-4981",
+   "aliases": [
+    "CVE-2026-33811"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4982",
+   "aliases": [
+    "CVE-2026-39823"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.*Balancer.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-4985",
+   "aliases": [
+    "CVE-2026-39882",
+    "GHSA-w8rr-5gcm-pp58"
+   ],
+   "module": "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp",
+   "version": "v0.8.0",
+   "fixed": "v0.19.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp.*Exporter.Export"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/types.*OTelLog.NewLoggerProvider"
+  },
+  {
+   "osv": "GO-2026-4985",
+   "aliases": [
+    "CVE-2026-39882",
+    "GHSA-w8rr-5gcm-pp58"
+   ],
+   "module": "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp",
+   "version": "v1.28.0",
+   "fixed": "v1.43.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp.*Exporter.Export"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service.*smartRoundTripper.Clone"
+  },
+  {
+   "osv": "GO-2026-4985",
+   "aliases": [
+    "CVE-2026-39882",
+    "GHSA-w8rr-5gcm-pp58"
+   ],
+   "module": "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp",
+   "version": "v1.28.0",
+   "fixed": "v1.43.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp.*client.UploadTraces"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/types.*OTelTracing.Setup"
+  },
+  {
+   "osv": "GO-2026-4986",
+   "aliases": [
+    "CVE-2026-39820"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5005",
+   "aliases": [
+    "CVE-2026-39833",
+    "GHSA-jppx-rxg9-jmrx"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5006",
+   "aliases": [
+    "CVE-2026-39832",
+    "GHSA-f5wc-c3c7-36mc"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5013",
+   "aliases": [
+    "CVE-2026-46597"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5014",
+   "aliases": [
+    "CVE-2026-39828"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5015",
+   "aliases": [
+    "CVE-2026-39835"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5016",
+   "aliases": [
+    "CVE-2026-39827"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5017",
+   "aliases": [
+    "CVE-2026-39830"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5018",
+   "aliases": [
+    "CVE-2026-39829"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5019",
+   "aliases": [
+    "CVE-2026-39831"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5020",
+   "aliases": [
+    "CVE-2026-39834"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5021",
+   "aliases": [
+    "CVE-2026-42508",
+    "GHSA-5cgq-3rg8-m6cv"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5023",
+   "aliases": [
+    "CVE-2026-46595"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5024",
+   "aliases": [
+    "CVE-2026-39824"
+   ],
+   "module": "golang.org/x/sys",
+   "version": "v0.28.0",
+   "fixed": "v0.44.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5025",
+   "aliases": [
+    "CVE-2026-42506"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.55.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5026",
+   "aliases": [
+    "CVE-2026-39821"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.55.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/idna.*Profile.ToASCII",
+    "golang.org/x/net/idna.ToASCII",
+    "golang.org/x/net/idna.ToUnicode"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service.*smartRoundTripper.RoundTrip"
+  },
+  {
+   "osv": "GO-2026-5026",
+   "aliases": [
+    "CVE-2026-39821"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.CloseIdleConnections",
+    "net/http.*Client.Do",
+    "net/http.*Client.Get",
+    "net/http.*Client.Head",
+    "net/http.*Client.Post",
+    "net/http.*Transport.CloseIdleConnections",
+    "net/http.*Transport.RoundTrip",
+    "net/http.*http2ClientConn.RoundTrip"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/proxy/httputil.*wrapper.RoundTrip"
+  },
+  {
+   "osv": "GO-2026-5027",
+   "aliases": [
+    "CVE-2026-42502"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.55.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5028",
+   "aliases": [
+    "CVE-2026-25680"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.55.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5029",
+   "aliases": [
+    "CVE-2026-25681"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.55.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5030",
+   "aliases": [
+    "CVE-2026-27136"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.55.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5033",
+   "aliases": [
+    "CVE-2026-46598"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.52.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5037",
+   "aliases": [
+    "CVE-2026-27145"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.11",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify",
+    "crypto/x509.*Certificate.VerifyHostname",
+    "crypto/x509.HostnameError.Error"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/config/runtime.*MiddlewareInfo.AddError"
+  },
+  {
+   "osv": "GO-2026-5038",
+   "aliases": [
+    "CVE-2026-42504"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.11",
+   "level": "symbol",
+   "symbols": [
+    "mime.*WordDecoder.DecodeHeader"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/kubernetes/crd/generated/clientset/versioned/typed/traefikio/v1alpha1.*serversTransportTCPs.Watch"
+  },
+  {
+   "osv": "GO-2026-5039",
+   "aliases": [
+    "CVE-2026-42507"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.11",
+   "level": "symbol",
+   "symbols": [
+    "net/textproto.*Reader.ReadMIMEHeader"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/middlewares/capture.*readCounter.Read"
+  },
+  {
+   "osv": "GO-2026-5327",
+   "aliases": [
+    "CVE-2026-2303",
+    "GHSA-cp6g-7hqx-qxhp"
+   ],
+   "module": "go.mongodb.org/mongo-driver",
+   "version": "v1.12.1",
+   "fixed": "v1.17.7",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5426",
+   "aliases": [
+    "CVE-2026-39883",
+    "GHSA-hfvc-g4fc-pqhx"
+   ],
+   "module": "go.opentelemetry.io/otel/sdk",
+   "version": "v1.32.0",
+   "fixed": "v1.43.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/sdk/resource.New"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/types.*OTelLog.NewLoggerProvider"
+  },
+  {
+   "osv": "GO-2026-5593",
+   "aliases": [
+    "CVE-2026-40611",
+    "GHSA-qqx8-2xmm-jrv8"
+   ],
+   "module": "github.com/go-acme/lego/v4",
+   "version": "v4.21.0",
+   "fixed": "v4.34.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5617",
+   "aliases": [
+    "CVE-2026-42306",
+    "GHSA-rg2x-37c3-w2rh"
+   ],
+   "module": "github.com/docker/docker",
+   "version": "v27.1.1+incompatible",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5668",
+   "aliases": [
+    "CVE-2026-41568",
+    "GHSA-vp62-88p7-qqf5"
+   ],
+   "module": "github.com/docker/docker",
+   "version": "v27.1.1+incompatible",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5676",
+   "aliases": [
+    "CVE-2026-40898",
+    "GHSA-vvgj-x9jq-8cj9"
+   ],
+   "module": "github.com/quic-go/quic-go",
+   "version": "v0.48.2",
+   "fixed": "v0.59.1",
+   "level": "symbol",
+   "symbols": [
+    "github.com/quic-go/quic-go/http3.*Error.Error",
+    "github.com/quic-go/quic-go/http3.*Server.Close",
+    "github.com/quic-go/quic-go/http3.*Server.Serve",
+    "github.com/quic-go/quic-go/http3.*body.Close",
+    "github.com/quic-go/quic-go/http3.*body.Read",
+    "github.com/quic-go/quic-go/http3.*responseWriter.FlushError",
+    "github.com/quic-go/quic-go/http3.*responseWriter.WriteHeader",
+    "github.com/quic-go/quic-go/http3.*stateTrackingStream.Read"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server.*http3server.Shutdown"
+  },
+  {
+   "osv": "GO-2026-5746",
+   "aliases": [
+    "CVE-2026-41567",
+    "GHSA-x86f-5xw2-fm2r"
+   ],
+   "module": "github.com/docker/docker",
+   "version": "v27.1.1+incompatible",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5841",
+   "aliases": [
+    "GHSA-259r-337f-4rfw"
+   ],
+   "module": "github.com/klauspost/compress",
+   "version": "v1.17.11-0.20241004063537-dbd6c381492a",
+   "fixed": "v1.18.7",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5856",
+   "aliases": [
+    "CVE-2026-42505"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.12",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.Dial",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.*QUICConn.HandleData",
+    "crypto/tls.*QUICConn.SendSessionTicket",
+    "crypto/tls.*QUICConn.Start",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/proxy/fast.dialerFunc.Dial"
+  },
+  {
+   "osv": "GO-2026-5932",
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.58.1-0.20261009181718-2f1f834330b2",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/openpgp.init",
+    "golang.org/x/crypto/openpgp/armor.init",
+    "golang.org/x/crypto/openpgp/elgamal.init",
+    "golang.org/x/crypto/openpgp/errors.init",
+    "golang.org/x/crypto/openpgp/packet.init",
+    "golang.org/x/crypto/openpgp/s2k.init"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/version.init"
+  },
+  {
+   "osv": "GO-2026-5942",
+   "aliases": [
+    "CVE-2026-46600"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.56.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5970",
+   "aliases": [
+    "CVE-2026-56852"
+   ],
+   "module": "golang.org/x/text",
+   "version": "v0.21.0",
+   "fixed": "v0.39.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/text/unicode/norm.Form.Bytes",
+    "golang.org/x/text/unicode/norm.Form.IsNormalString",
+    "golang.org/x/text/unicode/norm.Form.Properties",
+    "golang.org/x/text/unicode/norm.Form.QuickSpan",
+    "golang.org/x/text/unicode/norm.Form.String"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service.*h2cTransportWrapper.RoundTrip"
+  },
+  {
+   "osv": "GO-2026-5972",
+   "aliases": [
+    "CVE-2026-33818"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "encoding/asn1.Unmarshal"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/acme.*Account.GetPrivateKey"
+  },
+  {
+   "osv": "GO-2026-6061",
+   "aliases": [
+    "GHSA-hrxh-6v49-42gf"
+   ],
+   "module": "google.golang.org/grpc",
+   "version": "v1.67.1",
+   "fixed": "v1.82.1",
+   "level": "symbol",
+   "symbols": [
+    "google.golang.org/grpc/internal/transport.*controlBuffer.executeAndPut",
+    "google.golang.org/grpc/internal/transport.*controlBuffer.getOnceLocked",
+    "google.golang.org/grpc/internal/transport.*http2Client.Close",
+    "google.golang.org/grpc/internal/transport.*http2Client.GracefulClose",
+    "google.golang.org/grpc/internal/transport.*http2Client.NewStream",
+    "google.golang.org/grpc/internal/transport.*transportReader.Read"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/kv.*storeWrapper.Close"
+  },
+  {
+   "osv": "GO-2026-6088",
+   "aliases": [
+    "CVE-2026-56859"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "encoding/xml.*Decoder.Decode",
+    "encoding/xml.*Decoder.Skip",
+    "encoding/xml.*Decoder.Token",
+    "encoding/xml.Unmarshal"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/acme.*Provider.Provide"
+  },
+  {
+   "osv": "GO-2026-6089",
+   "aliases": [
+    "CVE-2026-56853"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Server.Serve"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server.NewTCPEntryPoint"
+  },
+  {
+   "osv": "GO-2026-6090",
+   "aliases": [
+    "CVE-2026-56862"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.Dial",
+    "crypto/tls.*QUICConn.HandleData",
+    "crypto/tls.*QUICConn.Start",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/proxy/fast.*conn.Read"
+  },
+  {
+   "osv": "GO-2026-6091",
+   "aliases": [
+    "CVE-2026-56858"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.*Balancer.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-6107",
+   "aliases": [
+    "CVE-2026-73500",
+    "GHSA-6vch-q96h-7gc3"
+   ],
+   "module": "go.etcd.io/etcd/client/pkg/v3",
+   "version": "v3.5.14",
+   "fixed": "v3.5.33",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-6179",
+   "aliases": [
+    "CVE-2026-56865"
+   ],
+   "module": "golang.org/x/mod",
+   "version": "v0.22.0",
+   "fixed": "v0.40.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-6180",
+   "aliases": [
+    "CVE-2026-56864"
+   ],
+   "module": "golang.org/x/mod",
+   "version": "v0.22.0",
+   "fixed": "v0.40.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-6218",
+   "aliases": [
+    "CVE-2026-56860"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "net/url.*URL.Parse",
+    "net/url.*URL.ResolveReference"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/provider/acme.*Provider.Provide"
+  },
+  {
+   "osv": "GO-2026-6278",
+   "aliases": [
+    "GHSA-w67g-5rqw-f597"
+   ],
+   "module": "github.com/gorilla/websocket",
+   "version": "v1.5.1",
+   "fixed": "v1.5.3",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6303",
+   "aliases": [
+    "CVE-2026-56854"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.55.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6348",
+   "aliases": [
+    "CVE-2026-84304",
+    "GHSA-vp52-pcj8-j9qc"
+   ],
+   "module": "google.golang.org/grpc",
+   "version": "v1.67.1",
+   "fixed": "v1.83.1",
+   "level": "symbol",
+   "symbols": [
+    "google.golang.org/grpc/internal/transport.*http2Client.Close",
+    "google.golang.org/grpc/internal/transport.*http2Client.NewStream",
+    "google.golang.org/grpc/internal/transport.*recvBuffer.load",
+    "google.golang.org/grpc/internal/transport.*recvBuffer.put",
+    "google.golang.org/grpc/internal/transport.*transportReader.Read",
+    "google.golang.org/grpc/mem.BufferSlice.MaterializeToBuffer",
+    "google.golang.org/grpc/mem.IsBelowBufferPoolingThreshold",
+    "google.golang.org/grpc/mem.NewBuffer"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/integration/helloworld.*greeterClient.StreamExample"
+  },
+  {
+   "osv": "GO-2026-6354",
+   "aliases": [
+    "CVE-2026-78662"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.56.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6355",
+   "aliases": [
+    "CVE-2026-56855"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.31.0",
+   "fixed": "v0.56.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6441",
+   "aliases": [
+    "CVE-2026-84303",
+    "GHSA-qc2q-p7wx-3px3"
+   ],
+   "module": "google.golang.org/grpc",
+   "version": "v1.67.1",
+   "fixed": "v1.83.1",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-6443",
+   "aliases": [
+    "CVE-2026-84445",
+    "GHSA-2v4p-qf9q-27wj"
+   ],
+   "module": "google.golang.org/grpc",
+   "version": "v1.67.1",
+   "fixed": "v1.82.2",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6505",
+   "aliases": [
+    "CVE-2026-81870",
+    "GHSA-8wmf-6v46-5gfg"
+   ],
+   "module": "go.opentelemetry.io/otel/exporters/otlp/otlptrace",
+   "version": "v1.28.0",
+   "fixed": "v1.45.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace.*Exporter.ExportSpans",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace.*Exporter.Shutdown",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace.New",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace.Shutdown$1",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace.Start$1",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace.Version",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace.init",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/internal/tracetransform.init"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/types.*OTelTracing.Setup"
+  },
+  {
+   "osv": "GO-2026-6505",
+   "aliases": [
+    "CVE-2026-81870",
+    "GHSA-8wmf-6v46-5gfg"
+   ],
+   "module": "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc",
+   "version": "v1.28.0",
+   "fixed": "v1.45.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc.*client.UploadTraces",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc.NewClient",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc.WithInsecure",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/envconfig.WithBool",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/envconfig.WithClientCert",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/envconfig.WithDuration",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/otlpconfig.WithHeaders",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/retry.RequestFunc$2"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/types.*OTelTracing.Setup"
+  },
+  {
+   "osv": "GO-2026-6505",
+   "aliases": [
+    "CVE-2026-81870",
+    "GHSA-8wmf-6v46-5gfg"
+   ],
+   "module": "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp",
+   "version": "v1.28.0",
+   "fixed": "v1.45.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp.*client.Stop",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp.Stop$1",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp.WithCompression",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp.init",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp/internal/envconfig.WithURL",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp/internal/otlpconfig.WithHeaders",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp/internal/otlpconfig.init",
+    "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp/internal/retry.RequestFunc$1"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service.*smartRoundTripper.Clone"
+  },
+  {
+   "osv": "GO-2026-6505",
+   "aliases": [
+    "CVE-2026-81870",
+    "GHSA-8wmf-6v46-5gfg"
+   ],
+   "module": "go.opentelemetry.io/otel/sdk",
+   "version": "v1.32.0",
+   "fixed": "v1.45.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/sdk/instrumentation.init",
+    "go.opentelemetry.io/otel/sdk/resource.*Resource.MarshalLog",
+    "go.opentelemetry.io/otel/sdk/resource.Default",
+    "go.opentelemetry.io/otel/sdk/resource.Environment",
+    "go.opentelemetry.io/otel/sdk/resource.New",
+    "go.opentelemetry.io/otel/sdk/trace.*tracer.Start",
+    "go.opentelemetry.io/otel/sdk/trace.WithSpanProcessor",
+    "go.opentelemetry.io/otel/sdk/trace.tracerProviderConfig.MarshalLog"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/logs.SetupOTelLogger"
+  },
+  {
+   "osv": "GO-2026-6508",
+   "aliases": [
+    "CVE-2026-81871",
+    "GHSA-w34q-cm8f-9c5x"
+   ],
+   "module": "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc",
+   "version": "v0.8.0",
+   "fixed": "v0.21.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.*Exporter.Export",
+    "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.New",
+    "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.WithCompressor",
+    "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.WithHeaders",
+    "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.WithInsecure",
+    "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.init",
+    "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc/internal/retry.Config.RequestFunc",
+    "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc/internal/transform.LogRecord$1"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/types.*OTelLog.NewLoggerProvider"
+  },
+  {
+   "osv": "GO-2026-6599",
+   "aliases": [
+    "CVE-2026-94448"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.*Balancer.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-6600",
+   "aliases": [
+    "CVE-2026-97030"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.*Balancer.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-6603",
+   "aliases": [
+    "CVE-2026-78659"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.60.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*Framer.WriteContinuation",
+    "golang.org/x/net/http2.*Framer.WriteSettings",
+    "golang.org/x/net/http2.*Framer.WriteWindowUpdate",
+    "golang.org/x/net/http2.*gzipReader.Close",
+    "golang.org/x/net/http2.*responseWriter.FlushError",
+    "golang.org/x/net/http2.StreamError.Error",
+    "golang.org/x/net/http2.headerFieldValueError.Error",
+    "golang.org/x/net/http2.pseudoHeaderError.Error"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/config/runtime.*MiddlewareInfo.AddError"
+  },
+  {
+   "osv": "GO-2026-6603",
+   "aliases": [
+    "CVE-2026-78659"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Server.Close",
+    "net/http.*Transport.Clone",
+    "net/http.*cancelTimerBody.Close",
+    "net/http.*http2gzipReader.Close",
+    "net/http.*response.Write",
+    "net/http.Header.Add",
+    "net/http.Header.WriteSubset",
+    "net/http.http2ErrCode.String"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/middlewares/compress.*CompressionHandler.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-6604",
+   "aliases": [
+    "CVE-2026-56857"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6605",
+   "aliases": [
+    "CVE-2026-56866"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.Do",
+    "net/http.*Client.Get",
+    "net/http.*Client.Head",
+    "net/http.*Client.Post",
+    "net/http.*Client.PostForm",
+    "net/http.*Transport.CloseIdleConnections",
+    "net/http/httputil.*ReverseProxy.ServeHTTP",
+    "net/http/httputil.DumpRequestOut"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.*Balancer.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-6607",
+   "aliases": [
+    "CVE-2026-97031"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.Dial",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.*QUICConn.Start",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/tcp.*Proxy.ServeTCP"
+  },
+  {
+   "osv": "GO-2026-6608",
+   "aliases": [
+    "CVE-2026-94440"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "mime/multipart.*Reader.ReadForm",
+    "net/textproto.*Reader.ReadMIMEHeader"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.*Balancer.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-6609",
+   "aliases": [
+    "CVE-2026-78667"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*fileHandler.ServeHTTP"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/api/dashboard.Handler.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-6610",
+   "aliases": [
+    "CVE-2026-78660"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.60.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*Transport.NewClientConn",
+    "golang.org/x/net/http2.*Transport.RoundTrip",
+    "golang.org/x/net/http2.*unencryptedTransport.RoundTrip",
+    "golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/server/service.*smartRoundTripper.RoundTrip"
+  },
+  {
+   "osv": "GO-2026-6610",
+   "aliases": [
+    "CVE-2026-78660"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.CloseIdleConnections",
+    "net/http.*Client.Get",
+    "net/http.*Client.Head",
+    "net/http.*Client.Post",
+    "net/http.*Client.PostForm",
+    "net/http.*Transport.CloseIdleConnections",
+    "net/http.*Transport.RoundTrip",
+    "net/http.http2noDialH2RoundTripper.RoundTrip"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/cmd/healthcheck.Do"
+  },
+  {
+   "osv": "GO-2026-6611",
+   "aliases": [
+    "CVE-2026-78669"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.60.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*Framer.ReadFrame",
+    "golang.org/x/net/http2.*Framer.WriteSettings",
+    "golang.org/x/net/http2.*Framer.WriteWindowUpdate",
+    "golang.org/x/net/http2.*requestBody.Close",
+    "golang.org/x/net/http2.ConfigureTransports",
+    "golang.org/x/net/http2.GoAwayError.Error",
+    "golang.org/x/net/http2.headerFieldNameError.Error",
+    "golang.org/x/net/http2.stickyErrWriter.Write"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/integration/helloworld.*greeterClient.StreamExample"
+  },
+  {
+   "osv": "GO-2026-6611",
+   "aliases": [
+    "CVE-2026-78669"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.CloseIdleConnections",
+    "net/http.*body.Close",
+    "net/http.*expectContinueReader.Close",
+    "net/http.*expectContinueReader.Read",
+    "net/http.*gzipReader.Read",
+    "net/http.*loggingConn.Close",
+    "net/http.CanonicalHeaderKey",
+    "net/http.http2FrameType.String"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/middlewares/capture.*readCounter.Close"
+  },
+  {
+   "osv": "GO-2026-6612",
+   "aliases": [
+    "CVE-2026-78663"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.60.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*Framer.WriteGoAway",
+    "golang.org/x/net/http2.*gzipReader.Close",
+    "golang.org/x/net/http2.*requestBody.Close",
+    "golang.org/x/net/http2.*responseWriter.Flush",
+    "golang.org/x/net/http2.*responseWriter.WriteHeader",
+    "golang.org/x/net/http2.*unencryptedTransport.RoundTrip",
+    "golang.org/x/net/http2.ConfigureServer",
+    "golang.org/x/net/http2.pseudoHeaderError.Error"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/config/runtime.*MiddlewareInfo.AddError"
+  },
+  {
+   "osv": "GO-2026-6612",
+   "aliases": [
+    "CVE-2026-78663"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.Head",
+    "net/http.*Response.Cookies",
+    "net/http.*cancelTimerBody.Read",
+    "net/http.*http2writeData.String",
+    "net/http.*loggingConn.Write",
+    "net/http.*response.WriteHeader",
+    "net/http.Header.WriteSubset",
+    "net/http.http2FrameType.String"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/middlewares/customerrors.*codeModifier.WriteHeader"
+  },
+  {
+   "osv": "GO-2026-6613",
+   "aliases": [
+    "CVE-2026-94439"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.CloseIdleConnections",
+    "net/http.*Request.BasicAuth",
+    "net/http.*Request.SetBasicAuth",
+    "net/http.*cancelTimerBody.Read",
+    "net/http.CanonicalHeaderKey",
+    "net/http.HandleFunc",
+    "net/http.Header.Set",
+    "net/http.Header.Values"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/middlewares/auth.*forwardAuth.ServeHTTP"
+  },
+  {
+   "osv": "GO-2026-6615",
+   "aliases": [
+    "CVE-2026-81872",
+    "GHSA-hjf4-fphr-2h65"
+   ],
+   "module": "go.opentelemetry.io/otel/sdk/log",
+   "version": "v0.8.0",
+   "fixed": "v0.21.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/sdk/log.*LoggerProvider.Logger",
+    "go.opentelemetry.io/otel/sdk/log.*logger.Emit",
+    "go.opentelemetry.io/otel/sdk/log.WithProcessor",
+    "go.opentelemetry.io/otel/sdk/log.init",
+    "go.opentelemetry.io/otel/sdk/log.init$2",
+    "go.opentelemetry.io/otel/sdk/log.init$3",
+    "go.opentelemetry.io/otel/sdk/log.init$4",
+    "go.opentelemetry.io/otel/sdk/log/internal/x.init"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/proxy/httputil.*bufferPool.Get"
+  },
+  {
+   "osv": "GO-2026-6616",
+   "aliases": [
+    "CVE-2026-81869",
+    "GHSA-p9f8-wvj8-2fg8"
+   ],
+   "module": "go.opentelemetry.io/otel/sdk",
+   "version": "v1.32.0",
+   "fixed": "v1.33.0",
+   "level": "symbol",
+   "symbols": [
+    "go.opentelemetry.io/otel/sdk/internal/env.BatchSpanProcessorMaxQueueSize",
+    "go.opentelemetry.io/otel/sdk/internal/env.SpanEventAttributeCount",
+    "go.opentelemetry.io/otel/sdk/resource.WithProcessCommandArgs",
+    "go.opentelemetry.io/otel/sdk/resource.WithTelemetrySDK",
+    "go.opentelemetry.io/otel/sdk/trace.TraceIDRatioBased",
+    "go.opentelemetry.io/otel/sdk/trace.WithSampler",
+    "go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.AddEvent",
+    "go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.SetStatus"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/types.*OTelTracing.Setup"
+  },
+  {
+   "osv": "GO-2026-6617",
+   "aliases": [
+    "CVE-2026-97032"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.60.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*Framer.WritePing",
+    "golang.org/x/net/http2.*Framer.WriteRSTStream",
+    "golang.org/x/net/http2.*Transport.RoundTrip",
+    "golang.org/x/net/http2.*unencryptedTransport.RoundTrip",
+    "golang.org/x/net/http2.connError.Error",
+    "golang.org/x/net/http2.stickyErrWriter.Write",
+    "golang.org/x/net/http2.transportResponseBody.Close",
+    "golang.org/x/net/http2.transportResponseBody.Read"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/integration/helloworld.*greeterClient.StreamExample"
+  },
+  {
+   "osv": "GO-2026-6617",
+   "aliases": [
+    "CVE-2026-97032"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.Post",
+    "net/http.*gzipReader.Close",
+    "net/http.*http2requestBody.Close",
+    "net/http.*http2requestBody.Read",
+    "net/http.HandlerFunc.ServeHTTP",
+    "net/http.Header.WriteSubset",
+    "net/http.Redirect",
+    "net/http.http2FrameWriteRequest.String"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/middlewares/accesslog.*CommonLogFormatter.Format"
+  },
+  {
+   "osv": "GO-2026-6629",
+   "aliases": [
+    "CVE-2026-56851"
+   ],
+   "module": "golang.org/x/text",
+   "version": "v0.21.0",
+   "fixed": "v0.41.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-6809",
+   "aliases": [
+    "CVE-2026-111943"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.10",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/tls.VerifyPeerCertificate"
+  },
+  {
+   "osv": "GO-2026-6859",
+   "aliases": [
+    "CVE-2026-97054"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.11",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Request.AddCookie",
+    "net/http.*Request.SetBasicAuth",
+    "net/http.*Response.Location",
+    "net/http.*ResponseController.Hijack",
+    "net/http.*cancelTimerBody.Read",
+    "net/http.*expectContinueReader.Read",
+    "net/http.*loggingConn.Write",
+    "net/http.Header.Write"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/middlewares/capture.*readCounter.Read"
+  },
+  {
+   "osv": "GO-2026-6860",
+   "aliases": [
+    "CVE-2026-78661"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.62.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6865",
+   "aliases": [
+    "CVE-2026-116591",
+    "GHSA-fpmh-frq8-7rj8"
+   ],
+   "module": "github.com/klauspost/compress",
+   "version": "v1.17.11-0.20241004063537-dbd6c381492a",
+   "fixed": "v1.20.2",
+   "level": "symbol",
+   "symbols": [
+    "github.com/klauspost/compress/fse.Compress",
+    "github.com/klauspost/compress/fse.Decompress",
+    "github.com/klauspost/compress/huff0.Compress1X",
+    "github.com/klauspost/compress/huff0.Compress4X",
+    "github.com/klauspost/compress/huff0.ReadTable"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/middlewares/compress.*responseWriter.Flush"
+  },
+  {
+   "osv": "GO-2026-6866",
+   "aliases": [
+    "CVE-2026-97045"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.33.0",
+   "fixed": "v0.62.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6888",
+   "aliases": [
+    "CVE-2026-111497",
+    "GHSA-c9gr-gmg4-2vqv"
+   ],
+   "module": "github.com/andybalholm/brotli",
+   "version": "v1.1.0",
+   "fixed": "v1.2.7",
+   "level": "symbol",
+   "symbols": [
+    "github.com/andybalholm/brotli.*Reader.Read",
+    "github.com/andybalholm/brotli.decodeError.Error"
+   ],
+   "called_from": "github.com/traefik/traefik/v3/pkg/config/runtime.*MiddlewareInfo.AddError"
+  }
+ ]
+}

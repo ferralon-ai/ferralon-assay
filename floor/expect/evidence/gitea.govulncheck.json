@@ -1,0 +1,2300 @@
+{
+ "schema": "ferralon.floor-govulncheck.v1",
+ "comparator": {
+  "name": "govulncheck",
+  "version": "v1.9.0",
+  "db": "https://vuln.go.dev",
+  "db_last_modified": "2026-11-11T02:51:11Z",
+  "go_version": "go1.23.12",
+  "scan_mode": "source",
+  "scan_level": "symbol",
+  "command": "GOTOOLCHAIN=go1.23.12 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 govulncheck -mode source -format json ./..."
+ },
+ "target": "gitea",
+ "upstream_sha": "fcbbc24cc43811f2fc2f99b2f88060bc360ec38f",
+ "findings": [
+  {
+   "osv": "GO-2022-0470",
+   "aliases": [
+    "CVE-2022-31022",
+    "GHSA-9w9f-6mg8-jp7w"
+   ],
+   "module": "github.com/blevesearch/bleve/v2",
+   "version": "v2.4.2",
+   "fixed": "v2.5.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2025-3487",
+   "aliases": [
+    "CVE-2025-22869"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.35.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.*Request.Reply",
+    "golang.org/x/crypto/ssh.*extChannel.Read",
+    "golang.org/x/crypto/ssh.*extChannel.Write",
+    "golang.org/x/crypto/ssh.NewServerConn"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/git.*Repository.GetLanguageStats"
+  },
+  {
+   "osv": "GO-2025-3488",
+   "aliases": [
+    "CVE-2025-22868"
+   ],
+   "module": "golang.org/x/oauth2",
+   "version": "v0.23.0",
+   "fixed": "v0.27.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-3503",
+   "aliases": [
+    "CVE-2025-22870",
+    "GHSA-qxp5-gwg8-xv66"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.36.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-3540",
+   "aliases": [
+    "CVE-2025-29923",
+    "GHSA-92cp-5422-2mw7"
+   ],
+   "module": "github.com/redis/go-redis/v9",
+   "version": "v9.7.0",
+   "fixed": "v9.7.3",
+   "level": "symbol",
+   "symbols": [
+    "github.com/redis/go-redis/v9.*baseClient.initConn"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/cache.*RedisCacher.Flush"
+  },
+  {
+   "osv": "GO-2025-3553",
+   "aliases": [
+    "CVE-2025-30204",
+    "GHSA-mh63-6h87-95cp"
+   ],
+   "module": "github.com/golang-jwt/jwt/v4",
+   "version": "v4.5.1",
+   "fixed": "v4.5.2",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-3553",
+   "aliases": [
+    "CVE-2025-30204",
+    "GHSA-mh63-6h87-95cp"
+   ],
+   "module": "github.com/golang-jwt/jwt/v5",
+   "version": "v5.2.1",
+   "fixed": "v5.2.2",
+   "level": "symbol",
+   "symbols": [
+    "github.com/golang-jwt/jwt/v5.*Parser.ParseUnverified"
+   ],
+   "called_from": "code.gitea.io/gitea/services/actions.TokenToTaskID"
+  },
+  {
+   "osv": "GO-2025-3595",
+   "aliases": [
+    "CVE-2025-22872"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.38.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/html.*Tokenizer.Next",
+    "golang.org/x/net/html.Parse",
+    "golang.org/x/net/html.ParseFragment"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/markup/orgmode.Render"
+  },
+  {
+   "osv": "GO-2025-3754",
+   "aliases": [
+    "GHSA-2x5j-vhc8-9cwm"
+   ],
+   "module": "github.com/cloudflare/circl",
+   "version": "v1.5.0",
+   "fixed": "v1.6.1",
+   "level": "symbol",
+   "symbols": [
+    "github.com/cloudflare/circl/dh/x25519.KeyGen",
+    "github.com/cloudflare/circl/dh/x448.init",
+    "github.com/cloudflare/circl/internal/sha3.*State.Reset",
+    "github.com/cloudflare/circl/math/fp25519.P",
+    "github.com/cloudflare/circl/math/fp448.InvSqrt",
+    "github.com/cloudflare/circl/math/fp448.ToBytes",
+    "github.com/cloudflare/circl/sign/ed25519.PrivateKey.Seed",
+    "github.com/cloudflare/circl/sign/ed25519.Verify"
+   ],
+   "called_from": "code.gitea.io/gitea/services/packages/rpm.GetOrCreateKeyPair"
+  },
+  {
+   "osv": "GO-2025-3922",
+   "aliases": [
+    "CVE-2025-58058",
+    "GHSA-jc7w-c686-c4v9"
+   ],
+   "module": "github.com/ulikunitz/xz",
+   "version": "v0.5.12",
+   "fixed": "v0.5.15",
+   "level": "symbol",
+   "symbols": [
+    "github.com/ulikunitz/xz.*Reader.Read",
+    "github.com/ulikunitz/xz.*Writer.Close",
+    "github.com/ulikunitz/xz.*Writer.Write",
+    "github.com/ulikunitz/xz.NewReader",
+    "github.com/ulikunitz/xz.init",
+    "github.com/ulikunitz/xz.noneHash.Write",
+    "github.com/ulikunitz/xz/lzma.*Writer2.Close",
+    "github.com/ulikunitz/xz/lzma.*chunkHeader.String"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/packages/arch.ParsePackage"
+  },
+  {
+   "osv": "GO-2025-3988",
+   "aliases": [
+    "CVE-2025-59937",
+    "GHSA-wpwj-69cm-q9c5"
+   ],
+   "module": "github.com/wneessen/go-mail",
+   "version": "v0.5.2",
+   "fixed": "v0.7.1",
+   "level": "symbol",
+   "symbols": [
+    "github.com/wneessen/go-mail.*Msg.GetRecipients",
+    "github.com/wneessen/go-mail.*Msg.SetAddrHeader",
+    "github.com/wneessen/go-mail.*Msg.SetDateWithValue",
+    "github.com/wneessen/go-mail.*Msg.SetGenHeader",
+    "github.com/wneessen/go-mail.*Msg.WriteTo",
+    "github.com/wneessen/go-mail.*msgWriter.Write",
+    "github.com/wneessen/go-mail/smtp.*Client.Mail",
+    "github.com/wneessen/go-mail/smtp.*Client.Rcpt"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/packages/rubygems.*MarshalEncoder.Encode"
+  },
+  {
+   "osv": "GO-2025-4006",
+   "aliases": [
+    "CVE-2025-61725",
+    "CVE-2025-61725"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "net/mail.*AddressParser.ParseList",
+    "net/mail.ParseAddress"
+   ],
+   "called_from": "code.gitea.io/gitea/models/user.*User.EmailTo"
+  },
+  {
+   "osv": "GO-2025-4007",
+   "aliases": [
+    "CVE-2025-58187",
+    "CVE-2025-58187"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.9",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.CheckSignature",
+    "crypto/x509.*Certificate.Verify",
+    "crypto/x509.CreateCertificate",
+    "crypto/x509.CreateCertificateRequest",
+    "crypto/x509.MarshalECPrivateKey",
+    "crypto/x509.MarshalPKCS8PrivateKey",
+    "crypto/x509.MarshalPKIXPublicKey",
+    "crypto/x509.SystemCertPool"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/user/setting/security.WebauthnRegisterPost"
+  },
+  {
+   "osv": "GO-2025-4008",
+   "aliases": [
+    "CVE-2025-58189",
+    "CVE-2025-58189"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.Dial",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "code.gitea.io/gitea/services/migrations.*GogsDownloader.RoundTrip"
+  },
+  {
+   "osv": "GO-2025-4009",
+   "aliases": [
+    "CVE-2025-61723",
+    "CVE-2025-61723"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "encoding/pem.Decode"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/activitypub.NewClient"
+  },
+  {
+   "osv": "GO-2025-4010",
+   "aliases": [
+    "CVE-2025-47912",
+    "CVE-2025-47912"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "net/url.*URL.Parse",
+    "net/url.Parse",
+    "net/url.ParseRequestURI"
+   ],
+   "called_from": "code.gitea.io/gitea/services/migrations.*OneDevDownloader.GetRepoInfo"
+  },
+  {
+   "osv": "GO-2025-4011",
+   "aliases": [
+    "CVE-2025-58185",
+    "CVE-2025-58185"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "encoding/asn1.Unmarshal",
+    "encoding/asn1.UnmarshalWithParams"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/api/packages/alpine.GetRepositoryKey"
+  },
+  {
+   "osv": "GO-2025-4012",
+   "aliases": [
+    "CVE-2025-58186",
+    "CVE-2025-58186"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.Do",
+    "net/http.*Client.Get",
+    "net/http.*Client.Post",
+    "net/http.*Client.PostForm",
+    "net/http.*Request.Cookie",
+    "net/http.Get"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/web/middleware.GetSiteCookie"
+  },
+  {
+   "osv": "GO-2025-4013",
+   "aliases": [
+    "CVE-2025-58188",
+    "CVE-2025-58188"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/user/setting/security.WebauthnRegisterPost"
+  },
+  {
+   "osv": "GO-2025-4014",
+   "aliases": [
+    "CVE-2025-58183",
+    "CVE-2025-58183"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "archive/tar.*Reader.Next"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/packages/rubygems.ParsePackageMetaData"
+  },
+  {
+   "osv": "GO-2025-4015",
+   "aliases": [
+    "CVE-2025-61724",
+    "CVE-2025-61724"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.8",
+   "level": "symbol",
+   "symbols": [
+    "net/textproto.*Reader.ReadResponse"
+   ],
+   "called_from": "code.gitea.io/gitea/services/mailer/sender.*SMTPSender.Send"
+  },
+  {
+   "osv": "GO-2025-4020",
+   "aliases": [
+    "CVE-2025-11579",
+    "GHSA-rwvp-r38j-9rgg"
+   ],
+   "module": "github.com/nwaples/rardecode",
+   "version": "v1.1.3",
+   "level": "symbol",
+   "symbols": [
+    "github.com/nwaples/rardecode.*cipherBlockReader.Read",
+    "github.com/nwaples/rardecode.*limitedReader.Read",
+    "github.com/nwaples/rardecode.init"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/dump.init"
+  },
+  {
+   "osv": "GO-2025-4116",
+   "aliases": [
+    "CVE-2025-47913"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.43.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh/agent.*agentKeyringSigner.Sign",
+    "golang.org/x/crypto/ssh/agent.*agentKeyringSigner.SignWithAlgorithm"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2025-4134",
+   "aliases": [
+    "CVE-2025-58181",
+    "GHSA-j5w8-q4qc-rx2x"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.45.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.NewServerConn"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2025-4135",
+   "aliases": [
+    "CVE-2025-47914",
+    "GHSA-f6x5-jh6r-wrfv"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.45.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2025-4155",
+   "aliases": [
+    "CVE-2025-61729",
+    "CVE-2025-61729"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.11",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify",
+    "crypto/x509.*Certificate.VerifyHostname"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/lfs.*hashingReader.Read"
+  },
+  {
+   "osv": "GO-2025-4175",
+   "aliases": [
+    "CVE-2025-61727"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.11",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/user/setting/security.WebauthnRegisterPost"
+  },
+  {
+   "osv": "GO-2026-4337",
+   "aliases": [
+    "CVE-2025-68121"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.13",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.Dial",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2026-4340",
+   "aliases": [
+    "CVE-2025-61730",
+    "CVE-2025-61730"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.12",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.Dial",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/session.*VirtualStore.Release"
+  },
+  {
+   "osv": "GO-2026-4341",
+   "aliases": [
+    "CVE-2025-61726",
+    "CVE-2025-61726"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.12",
+   "level": "symbol",
+   "symbols": [
+    "net/url.*URL.Query",
+    "net/url.ParseQuery"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/storage.*MinioStorage.URL"
+  },
+  {
+   "osv": "GO-2026-4342",
+   "aliases": [
+    "CVE-2025-61728",
+    "CVE-2025-61728"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.24.12",
+   "level": "symbol",
+   "symbols": [
+    "archive/zip.*Reader.Open"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/packages/nuget.ParseNuspecMetaData"
+  },
+  {
+   "osv": "GO-2026-4440",
+   "aliases": [
+    "CVE-2025-47911"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.45.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/html.Parse",
+    "golang.org/x/net/html.ParseFragment"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/markup/orgmode.Render"
+  },
+  {
+   "osv": "GO-2026-4441",
+   "aliases": [
+    "CVE-2025-58190"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.45.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/html.Parse",
+    "golang.org/x/net/html.ParseFragment"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/markup/orgmode.Render"
+  },
+  {
+   "osv": "GO-2026-4473",
+   "aliases": [
+    "CVE-2026-25934",
+    "GHSA-37cx-329c-33x3"
+   ],
+   "module": "github.com/go-git/go-git/v5",
+   "version": "v5.13.1",
+   "fixed": "v5.16.5",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-git/go-git/v5/plumbing.HashSlice.Len",
+    "github.com/go-git/go-git/v5/plumbing.HashSlice.Less",
+    "github.com/go-git/go-git/v5/plumbing/format/packfile.*scannerReader.Seek",
+    "github.com/go-git/go-git/v5/plumbing/transport/internal/common.NewClient",
+    "github.com/go-git/go-git/v5/utils/ioutil.*readerAtAsReader.Read",
+    "github.com/go-git/go-git/v5/utils/ioutil.init",
+    "github.com/go-git/go-git/v5/utils/merkletrie/noder.init",
+    "github.com/go-git/go-git/v5/utils/sync.init"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/git.ParseCatFileTreeLine"
+  },
+  {
+   "osv": "GO-2026-4503",
+   "aliases": [
+    "CVE-2026-26958"
+   ],
+   "module": "filippo.io/edwards25519",
+   "version": "v1.1.0",
+   "fixed": "v1.1.1",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4550",
+   "aliases": [
+    "CVE-2026-1229",
+    "GHSA-q9hv-hpm4-hj6x"
+   ],
+   "module": "github.com/cloudflare/circl",
+   "version": "v1.5.0",
+   "fixed": "v1.6.3",
+   "level": "symbol",
+   "symbols": [
+    "github.com/cloudflare/circl/dh/x25519.KeyGen",
+    "github.com/cloudflare/circl/dh/x25519.init",
+    "github.com/cloudflare/circl/dh/x448.KeyGen",
+    "github.com/cloudflare/circl/internal/sha3.*State.Read",
+    "github.com/cloudflare/circl/math.init",
+    "github.com/cloudflare/circl/math/fp25519.Cmov",
+    "github.com/cloudflare/circl/math/fp25519.SetOne",
+    "github.com/cloudflare/circl/math/fp448.SetOne"
+   ],
+   "called_from": "code.gitea.io/gitea/services/packages/rpm.init"
+  },
+  {
+   "osv": "GO-2026-4601",
+   "aliases": [
+    "CVE-2026-25679"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.8",
+   "level": "symbol",
+   "symbols": [
+    "net/url.*URL.Parse",
+    "net/url.Parse",
+    "net/url.ParseRequestURI"
+   ],
+   "called_from": "code.gitea.io/gitea/services/migrations.*OneDevDownloader.GetRepoInfo"
+  },
+  {
+   "osv": "GO-2026-4602",
+   "aliases": [
+    "CVE-2026-27139"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.8",
+   "level": "symbol",
+   "symbols": [
+    "os.*File.ReadDir",
+    "os.*File.Readdir",
+    "os.ReadDir"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/util.StatDir"
+  },
+  {
+   "osv": "GO-2026-4603",
+   "aliases": [
+    "CVE-2026-27142"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.8",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "code.gitea.io/gitea/services/mailer.SendCollaboratorMail"
+  },
+  {
+   "osv": "GO-2026-4762",
+   "aliases": [
+    "CVE-2026-33186",
+    "GHSA-p77j-4mvh-x3m3"
+   ],
+   "module": "google.golang.org/grpc",
+   "version": "v1.67.1",
+   "fixed": "v1.79.3",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-4815",
+   "aliases": [
+    "CVE-2026-33809",
+    "GHSA-44p7-9xx4-hf2g"
+   ],
+   "module": "golang.org/x/image",
+   "version": "v0.21.0",
+   "fixed": "v0.38.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-4864",
+   "aliases": [
+    "CVE-2026-32282"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4865",
+   "aliases": [
+    "CVE-2026-32289"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Error.Error",
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate",
+    "html/template.*Template.Funcs",
+    "html/template.*Template.Parse",
+    "html/template.context.String"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget"
+  },
+  {
+   "osv": "GO-2026-4869",
+   "aliases": [
+    "CVE-2026-32288"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "symbol",
+   "symbols": [
+    "archive/tar.*Reader.Next"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/packages/rubygems.ParsePackageMetaData"
+  },
+  {
+   "osv": "GO-2026-4870",
+   "aliases": [
+    "CVE-2026-32283"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.Dial",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "code.gitea.io/gitea/services/migrations.*GogsDownloader.RoundTrip"
+  },
+  {
+   "osv": "GO-2026-4909",
+   "aliases": [
+    "CVE-2026-33762",
+    "GHSA-gm2x-2g9h-ccm8"
+   ],
+   "module": "github.com/go-git/go-git/v5",
+   "version": "v5.13.1",
+   "fixed": "v5.17.1",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-git/go-git/v5/plumbing/cache.init",
+    "github.com/go-git/go-git/v5/plumbing/format/pktline.init",
+    "github.com/go-git/go-git/v5/plumbing/protocol/packp/sideband.init",
+    "github.com/go-git/go-git/v5/plumbing/transport/client.init",
+    "github.com/go-git/go-git/v5/plumbing/transport/internal/common.NewClient",
+    "github.com/go-git/go-git/v5/utils/merkletrie/internal/frame.init",
+    "github.com/go-git/go-git/v5/utils/merkletrie/noder.init",
+    "github.com/go-git/go-git/v5/utils/sync.init$5"
+   ],
+   "called_from": "code.gitea.io/gitea/services/actions.init"
+  },
+  {
+   "osv": "GO-2026-4910",
+   "aliases": [
+    "CVE-2026-34165",
+    "GHSA-jhf3-xxhw-2wpp"
+   ],
+   "module": "github.com/go-git/go-git/v5",
+   "version": "v5.13.1",
+   "fixed": "v5.17.1",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-git/go-git/v5/plumbing.Hash.IsZero",
+    "github.com/go-git/go-git/v5/plumbing/format/gitignore.NewMatcher",
+    "github.com/go-git/go-git/v5/plumbing/format/idxfile.objects.Less",
+    "github.com/go-git/go-git/v5/plumbing/storer.init",
+    "github.com/go-git/go-git/v5/plumbing/transport/file.init",
+    "github.com/go-git/go-git/v5/storage/filesystem.init",
+    "github.com/go-git/go-git/v5/utils/diff.init",
+    "github.com/go-git/go-git/v5/utils/ioutil.WriteNopCloser"
+   ],
+   "called_from": "code.gitea.io/gitea/services/actions.init"
+  },
+  {
+   "osv": "GO-2026-4918",
+   "aliases": [
+    "CVE-2026-33814"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.53.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*Transport.NewClientConn",
+    "golang.org/x/net/http2.*Transport.RoundTrip",
+    "golang.org/x/net/http2.*unencryptedTransport.RoundTrip",
+    "golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip"
+   ],
+   "called_from": "code.gitea.io/gitea/services/migrations.*GogsDownloader.RoundTrip"
+  },
+  {
+   "osv": "GO-2026-4918",
+   "aliases": [
+    "CVE-2026-33814"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.CloseIdleConnections",
+    "net/http.*Client.Do",
+    "net/http.*Client.Get",
+    "net/http.*Client.Post",
+    "net/http.*Client.PostForm",
+    "net/http.*Transport.CloseIdleConnections",
+    "net/http.*Transport.RoundTrip",
+    "net/http.Get"
+   ],
+   "called_from": "code.gitea.io/gitea/services/auth/source/oauth2.*Source.Callback"
+  },
+  {
+   "osv": "GO-2026-4946",
+   "aliases": [
+    "CVE-2026-32281"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/user/setting/security.WebauthnRegisterPost"
+  },
+  {
+   "osv": "GO-2026-4947",
+   "aliases": [
+    "CVE-2026-32280"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.9",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/user/setting/security.WebauthnRegisterPost"
+  },
+  {
+   "osv": "GO-2026-4961",
+   "aliases": [
+    "CVE-2026-33813"
+   ],
+   "module": "golang.org/x/image",
+   "version": "v0.21.0",
+   "fixed": "v0.42.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/image/webp.Decode",
+    "golang.org/x/image/webp.DecodeConfig"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/avatar.ProcessAvatarImage"
+  },
+  {
+   "osv": "GO-2026-4962",
+   "aliases": [
+    "CVE-2026-33812"
+   ],
+   "module": "golang.org/x/image",
+   "version": "v0.21.0",
+   "fixed": "v0.39.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-4970",
+   "aliases": [
+    "CVE-2026-39822"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.12",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4971",
+   "aliases": [
+    "CVE-2026-39836"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "symbol",
+   "symbols": [
+    "net.*Dialer.Dial",
+    "net.*Dialer.DialContext",
+    "net.*Resolver.LookupIPAddr",
+    "net.Dial",
+    "net.DialTimeout",
+    "net.LookupHost",
+    "net.LookupSRV",
+    "net.ResolveTCPAddr"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/storage.*MinioStorage.Stat"
+  },
+  {
+   "osv": "GO-2026-4976",
+   "aliases": [
+    "CVE-2026-39825"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4977",
+   "aliases": [
+    "CVE-2026-42499"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "symbol",
+   "symbols": [
+    "net/mail.*AddressParser.ParseList",
+    "net/mail.ParseAddress"
+   ],
+   "called_from": "code.gitea.io/gitea/models/user.*User.EmailTo"
+  },
+  {
+   "osv": "GO-2026-4980",
+   "aliases": [
+    "CVE-2026-39826"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/templates/scopedtmpl.*ScopedTemplate.Executor"
+  },
+  {
+   "osv": "GO-2026-4981",
+   "aliases": [
+    "CVE-2026-33811"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-4982",
+   "aliases": [
+    "CVE-2026-39823"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/templates/scopedtmpl.*ScopedTemplate.Executor"
+  },
+  {
+   "osv": "GO-2026-4986",
+   "aliases": [
+    "CVE-2026-39820"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.10",
+   "level": "symbol",
+   "symbols": [
+    "net/mail.*AddressParser.ParseList",
+    "net/mail.ParseAddress"
+   ],
+   "called_from": "code.gitea.io/gitea/services/mailer/incoming.Init"
+  },
+  {
+   "osv": "GO-2026-5005",
+   "aliases": [
+    "CVE-2026-39833",
+    "GHSA-jppx-rxg9-jmrx"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5006",
+   "aliases": [
+    "CVE-2026-39832",
+    "GHSA-f5wc-c3c7-36mc"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5013",
+   "aliases": [
+    "CVE-2026-46597"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.NewServerConn"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2026-5014",
+   "aliases": [
+    "CVE-2026-39828"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.NewServerConn"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2026-5015",
+   "aliases": [
+    "CVE-2026-39835"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5016",
+   "aliases": [
+    "CVE-2026-39827"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5017",
+   "aliases": [
+    "CVE-2026-39830"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.NewServerConn"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2026-5018",
+   "aliases": [
+    "CVE-2026-39829"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.NewServerConn",
+    "golang.org/x/crypto/ssh.NewSignerFromKey",
+    "golang.org/x/crypto/ssh.ParseAuthorizedKey",
+    "golang.org/x/crypto/ssh.ParsePrivateKey",
+    "golang.org/x/crypto/ssh.ParsePublicKey"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2026-5019",
+   "aliases": [
+    "CVE-2026-39831"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.*CertChecker.CheckCert",
+    "golang.org/x/crypto/ssh.*Certificate.Verify",
+    "golang.org/x/crypto/ssh.*skECDSAPublicKey.Verify",
+    "golang.org/x/crypto/ssh.*skEd25519PublicKey.Verify",
+    "golang.org/x/crypto/ssh.NewServerConn"
+   ],
+   "called_from": "code.gitea.io/gitea/models/asymkey.VerifySSHKey"
+  },
+  {
+   "osv": "GO-2026-5020",
+   "aliases": [
+    "CVE-2026-39834"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.*extChannel.Write",
+    "golang.org/x/crypto/ssh.NewServerConn"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2026-5021",
+   "aliases": [
+    "CVE-2026-42508",
+    "GHSA-5cgq-3rg8-m6cv"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5023",
+   "aliases": [
+    "CVE-2026-46595"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.NewServerConn"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2026-5024",
+   "aliases": [
+    "CVE-2026-39824"
+   ],
+   "module": "golang.org/x/sys",
+   "version": "v0.29.0",
+   "fixed": "v0.44.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5025",
+   "aliases": [
+    "CVE-2026-42506"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.55.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/html.Parse",
+    "golang.org/x/net/html.ParseFragment"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/markup.PostProcessDefault"
+  },
+  {
+   "osv": "GO-2026-5026",
+   "aliases": [
+    "CVE-2026-39821"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.55.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/idna.ToASCII"
+   ],
+   "called_from": "code.gitea.io/gitea/services/migrations.*GogsDownloader.RoundTrip"
+  },
+  {
+   "osv": "GO-2026-5026",
+   "aliases": [
+    "CVE-2026-39821"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.CloseIdleConnections",
+    "net/http.*Client.Do",
+    "net/http.*Client.Get",
+    "net/http.*Client.Post",
+    "net/http.*Client.PostForm",
+    "net/http.*Transport.CloseIdleConnections",
+    "net/http.*Transport.RoundTrip",
+    "net/http.Get"
+   ],
+   "called_from": "code.gitea.io/gitea/services/webhook.Deliver"
+  },
+  {
+   "osv": "GO-2026-5027",
+   "aliases": [
+    "CVE-2026-42502"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.55.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/html.Parse",
+    "golang.org/x/net/html.ParseFragment"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/markup.PostProcessDefault"
+  },
+  {
+   "osv": "GO-2026-5028",
+   "aliases": [
+    "CVE-2026-25680"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.55.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/html.Parse",
+    "golang.org/x/net/html.ParseFragment"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/markup/orgmode.Render"
+  },
+  {
+   "osv": "GO-2026-5029",
+   "aliases": [
+    "CVE-2026-25681"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.55.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/html.Parse",
+    "golang.org/x/net/html.ParseFragment"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/markup/orgmode.Render"
+  },
+  {
+   "osv": "GO-2026-5030",
+   "aliases": [
+    "CVE-2026-27136"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.55.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/html.Parse",
+    "golang.org/x/net/html.ParseFragment"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/markup.PostProcessDefault"
+  },
+  {
+   "osv": "GO-2026-5031",
+   "aliases": [
+    "CVE-2026-42500"
+   ],
+   "module": "golang.org/x/image",
+   "version": "v0.21.0",
+   "fixed": "v0.41.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/image/bmp.Decode"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/avatar.ProcessAvatarImage"
+  },
+  {
+   "osv": "GO-2026-5032",
+   "aliases": [
+    "CVE-2026-46599"
+   ],
+   "module": "golang.org/x/image",
+   "version": "v0.21.0",
+   "fixed": "v0.41.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5033",
+   "aliases": [
+    "CVE-2026-46598"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.52.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5037",
+   "aliases": [
+    "CVE-2026-27145"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.11",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify",
+    "crypto/x509.*Certificate.VerifyHostname",
+    "crypto/x509.HostnameError.Error"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget"
+  },
+  {
+   "osv": "GO-2026-5038",
+   "aliases": [
+    "CVE-2026-42504"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.11",
+   "level": "symbol",
+   "symbols": [
+    "mime.*WordDecoder.DecodeHeader"
+   ],
+   "called_from": "code.gitea.io/gitea/services/mailer/incoming.Init"
+  },
+  {
+   "osv": "GO-2026-5039",
+   "aliases": [
+    "CVE-2026-42507"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.11",
+   "level": "symbol",
+   "symbols": [
+    "net/textproto.*Error.Error",
+    "net/textproto.*Reader.ReadMIMEHeader",
+    "net/textproto.*Reader.ReadResponse"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget"
+  },
+  {
+   "osv": "GO-2026-5061",
+   "aliases": [
+    "CVE-2026-46601"
+   ],
+   "module": "golang.org/x/image",
+   "version": "v0.21.0",
+   "fixed": "v0.43.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/image/webp.Decode",
+    "golang.org/x/image/webp.DecodeConfig",
+    "golang.org/x/image/webp.init"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/avatar.ProcessAvatarImage"
+  },
+  {
+   "osv": "GO-2026-5062",
+   "aliases": [
+    "CVE-2026-46602"
+   ],
+   "module": "golang.org/x/image",
+   "version": "v0.21.0",
+   "fixed": "v0.43.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5066",
+   "aliases": [
+    "CVE-2026-46604"
+   ],
+   "module": "golang.org/x/image",
+   "version": "v0.21.0",
+   "fixed": "v0.43.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5074",
+   "aliases": [
+    "CVE-2026-45022",
+    "GHSA-389r-gv7p-r3rp"
+   ],
+   "module": "github.com/go-git/go-git/v5",
+   "version": "v5.13.1",
+   "fixed": "v5.19.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5105",
+   "aliases": [
+    "CVE-2026-41506",
+    "GHSA-3xc5-wrhm-f963"
+   ],
+   "module": "github.com/go-git/go-git/v5",
+   "version": "v5.13.1",
+   "fixed": "v5.18.0",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-git/go-git/v5/plumbing/transport/http.NewClient"
+   ],
+   "called_from": "code.gitea.io/gitea/services/actions.init"
+  },
+  {
+   "osv": "GO-2026-5320",
+   "aliases": [
+    "CVE-2026-5160",
+    "GHSA-c97m-vxhj-p7j6"
+   ],
+   "module": "github.com/yuin/goldmark",
+   "version": "v1.7.8",
+   "fixed": "v1.7.17",
+   "level": "symbol",
+   "symbols": [
+    "github.com/yuin/goldmark/renderer/html.*Renderer.renderAutoLink",
+    "github.com/yuin/goldmark/renderer/html.*Renderer.renderImage",
+    "github.com/yuin/goldmark/renderer/html.*Renderer.renderLink"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/markup/markdown.*ASTTransformer.Transform"
+  },
+  {
+   "osv": "GO-2026-5336",
+   "aliases": [
+    "CVE-2026-45571",
+    "GHSA-crhj-59gh-8x96"
+   ],
+   "module": "github.com/go-git/go-git/v5",
+   "version": "v5.13.1",
+   "fixed": "v5.19.1",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5490",
+   "aliases": [
+    "CVE-2026-44740",
+    "GHSA-m3xc-h892-ggx6"
+   ],
+   "module": "github.com/go-git/go-billy/v5",
+   "version": "v5.6.1",
+   "fixed": "v5.9.0",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-git/go-billy/v5/helper/chroot.New"
+   ],
+   "called_from": "code.gitea.io/gitea/services/actions.init"
+  },
+  {
+   "osv": "GO-2026-5496",
+   "aliases": [
+    "CVE-2026-45570",
+    "GHSA-m7cr-m3pv-hgrp"
+   ],
+   "module": "github.com/go-git/go-git/v5",
+   "version": "v5.13.1",
+   "fixed": "v5.19.1",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-git/go-git/v5/plumbing.Hash.String",
+    "github.com/go-git/go-git/v5/plumbing.HashSlice.Less",
+    "github.com/go-git/go-git/v5/plumbing/format/gitignore.ParsePattern",
+    "github.com/go-git/go-git/v5/plumbing/format/packfile.*Error.Error",
+    "github.com/go-git/go-git/v5/plumbing/object.init",
+    "github.com/go-git/go-git/v5/utils/diff.init",
+    "github.com/go-git/go-git/v5/utils/merkletrie.init",
+    "github.com/go-git/go-git/v5/utils/sync.init$3"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget"
+  },
+  {
+   "osv": "GO-2026-5543",
+   "aliases": [
+    "CVE-2026-32952",
+    "GHSA-pjcq-xvwq-hhpj"
+   ],
+   "module": "github.com/Azure/go-ntlmssp",
+   "version": "v0.0.0-20221128193559-754e69321358",
+   "fixed": "v0.1.1",
+   "level": "symbol",
+   "symbols": [
+    "github.com/Azure/go-ntlmssp.ProcessChallenge"
+   ],
+   "called_from": "code.gitea.io/gitea/services/mailer/sender.*ntlmAuth.Next"
+  },
+  {
+   "osv": "GO-2026-5597",
+   "aliases": [
+    "CVE-2026-44973",
+    "GHSA-qw64-3x98-g7q2"
+   ],
+   "module": "github.com/go-git/go-billy/v5",
+   "version": "v5.6.1",
+   "fixed": "v5.9.0",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-git/go-billy/v5/helper/chroot.New",
+    "github.com/go-git/go-billy/v5/osfs.New"
+   ],
+   "called_from": "code.gitea.io/gitea/services/actions.init"
+  },
+  {
+   "osv": "GO-2026-5693",
+   "aliases": [
+    "GHSA-w5pp-99ch-qj29"
+   ],
+   "module": "github.com/go-git/go-git/v5",
+   "version": "v5.13.1",
+   "fixed": "v5.19.1",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5775",
+   "aliases": [
+    "GHSA-9g5q-2w5x-hmxf"
+   ],
+   "module": "github.com/go-chi/chi/v5",
+   "version": "v5.1.0",
+   "fixed": "v5.3.0",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-chi/chi/v5/middleware.RealIP"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/web.*Router.Any"
+  },
+  {
+   "osv": "GO-2026-5777",
+   "aliases": [
+    "GHSA-rjr7-jggh-pgcp"
+   ],
+   "module": "github.com/go-chi/chi/v5",
+   "version": "v5.1.0",
+   "fixed": "v5.3.0",
+   "level": "symbol",
+   "symbols": [
+    "github.com/go-chi/chi/v5/middleware.RealIP"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/web.*Router.Any"
+  },
+  {
+   "osv": "GO-2026-5841",
+   "aliases": [
+    "GHSA-259r-337f-4rfw"
+   ],
+   "module": "github.com/klauspost/compress",
+   "version": "v1.17.11",
+   "fixed": "v1.18.7",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-5856",
+   "aliases": [
+    "CVE-2026-42505"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.12",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.Dial",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/lfs.*hashingReader.Read"
+  },
+  {
+   "osv": "GO-2026-5932",
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.58.1-0.20261009181718-2f1f834330b2",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5942",
+   "aliases": [
+    "CVE-2026-46600"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.56.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-5970",
+   "aliases": [
+    "CVE-2026-56852"
+   ],
+   "module": "golang.org/x/text",
+   "version": "v0.21.0",
+   "fixed": "v0.39.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/text/unicode/norm.Form.Append",
+    "golang.org/x/text/unicode/norm.Form.AppendString",
+    "golang.org/x/text/unicode/norm.Form.FirstBoundaryInString",
+    "golang.org/x/text/unicode/norm.Form.IsNormalString",
+    "golang.org/x/text/unicode/norm.Form.Properties",
+    "golang.org/x/text/unicode/norm.Form.PropertiesString",
+    "golang.org/x/text/unicode/norm.Form.QuickSpan",
+    "golang.org/x/text/unicode/norm.Form.String"
+   ],
+   "called_from": "code.gitea.io/gitea/models/user.NormalizeUserName"
+  },
+  {
+   "osv": "GO-2026-5972",
+   "aliases": [
+    "CVE-2026-33818"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "encoding/asn1.Unmarshal",
+    "encoding/asn1.UnmarshalWithParams"
+   ],
+   "called_from": "code.gitea.io/gitea/cmd.RunMainApp"
+  },
+  {
+   "osv": "GO-2026-6061",
+   "aliases": [
+    "GHSA-hrxh-6v49-42gf"
+   ],
+   "module": "google.golang.org/grpc",
+   "version": "v1.67.1",
+   "fixed": "v1.82.1",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-6088",
+   "aliases": [
+    "CVE-2026-56859"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "encoding/xml.*Decoder.Decode",
+    "encoding/xml.*Decoder.DecodeElement",
+    "encoding/xml.*Decoder.Token",
+    "encoding/xml.Unmarshal"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/storage.*AzureBlobStorage.IterateObjects"
+  },
+  {
+   "osv": "GO-2026-6089",
+   "aliases": [
+    "CVE-2026-56853"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Server.Serve",
+    "net/http.ListenAndServe"
+   ],
+   "called_from": "code.gitea.io/gitea/cmd.RunMainApp"
+  },
+  {
+   "osv": "GO-2026-6090",
+   "aliases": [
+    "CVE-2026-56862"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.Dial",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/session.*VirtualStore.Release"
+  },
+  {
+   "osv": "GO-2026-6091",
+   "aliases": [
+    "CVE-2026-56858"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/templates/scopedtmpl.*ScopedTemplate.Executor"
+  },
+  {
+   "osv": "GO-2026-6179",
+   "aliases": [
+    "CVE-2026-56865"
+   ],
+   "module": "golang.org/x/mod",
+   "version": "v0.22.0",
+   "fixed": "v0.40.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-6180",
+   "aliases": [
+    "CVE-2026-56864"
+   ],
+   "module": "golang.org/x/mod",
+   "version": "v0.22.0",
+   "fixed": "v0.40.0",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-6213",
+   "aliases": [
+    "CVE-2026-71556",
+    "GHSA-hc8v-wwc9-vgxm"
+   ],
+   "module": "github.com/go-git/go-git/v5",
+   "version": "v5.13.1",
+   "fixed": "v5.19.2",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6214",
+   "aliases": [
+    "CVE-2026-71557",
+    "GHSA-qgq7-7hm3-q39j"
+   ],
+   "module": "github.com/go-git/go-git/v5",
+   "version": "v5.13.1",
+   "fixed": "v5.19.2",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6218",
+   "aliases": [
+    "CVE-2026-56860"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.25.13",
+   "level": "symbol",
+   "symbols": [
+    "net/url.*URL.Parse",
+    "net/url.*URL.ResolveReference"
+   ],
+   "called_from": "code.gitea.io/gitea/services/migrations.*OneDevDownloader.GetRepoInfo"
+  },
+  {
+   "osv": "GO-2026-6222",
+   "aliases": [
+    "CVE-2026-46603"
+   ],
+   "module": "golang.org/x/image",
+   "version": "v0.21.0",
+   "fixed": "v0.45.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/image/vp8l.Decode"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/avatar.ProcessAvatarImage"
+  },
+  {
+   "osv": "GO-2026-6303",
+   "aliases": [
+    "CVE-2026-56854"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.55.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.NewServerConn"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2026-6348",
+   "aliases": [
+    "CVE-2026-84304",
+    "GHSA-vp52-pcj8-j9qc"
+   ],
+   "module": "google.golang.org/grpc",
+   "version": "v1.67.1",
+   "fixed": "v1.83.1",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-6354",
+   "aliases": [
+    "CVE-2026-78662"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.56.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.NewServerConn"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2026-6355",
+   "aliases": [
+    "CVE-2026-56855"
+   ],
+   "module": "golang.org/x/crypto",
+   "version": "v0.32.0",
+   "fixed": "v0.56.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/crypto/ssh.NewServerConn"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/graceful.*Server.Serve"
+  },
+  {
+   "osv": "GO-2026-6441",
+   "aliases": [
+    "CVE-2026-84303",
+    "GHSA-qc2q-p7wx-3px3"
+   ],
+   "module": "google.golang.org/grpc",
+   "version": "v1.67.1",
+   "fixed": "v1.83.1",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-6443",
+   "aliases": [
+    "CVE-2026-84445",
+    "GHSA-2v4p-qf9q-27wj"
+   ],
+   "module": "google.golang.org/grpc",
+   "version": "v1.67.1",
+   "fixed": "v1.82.2",
+   "level": "module"
+  },
+  {
+   "osv": "GO-2026-6599",
+   "aliases": [
+    "CVE-2026-94448"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/templates/scopedtmpl.*ScopedTemplate.Executor"
+  },
+  {
+   "osv": "GO-2026-6600",
+   "aliases": [
+    "CVE-2026-97030"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "html/template.*Template.Execute",
+    "html/template.*Template.ExecuteTemplate"
+   ],
+   "called_from": "code.gitea.io/gitea/services/mailer.SendCollaboratorMail"
+  },
+  {
+   "osv": "GO-2026-6603",
+   "aliases": [
+    "CVE-2026-78659"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.60.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*writeData.String",
+    "golang.org/x/net/http2.ConfigureTransports",
+    "golang.org/x/net/http2.FrameHeader.String",
+    "golang.org/x/net/http2.FrameType.String",
+    "golang.org/x/net/http2.StreamError.Error",
+    "golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip",
+    "golang.org/x/net/http2.stickyErrWriter.Write",
+    "golang.org/x/net/http2.transportResponseBody.Read"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/translation/i18n.*locale.TrHTML"
+  },
+  {
+   "osv": "GO-2026-6603",
+   "aliases": [
+    "CVE-2026-78659"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*ServeMux.ServeHTTP",
+    "net/http.*bodyEOFSignal.Read",
+    "net/http.*expectContinueReader.Close",
+    "net/http.*maxBytesReader.Read",
+    "net/http.Header.Del",
+    "net/http.http2ErrCode.String",
+    "net/http.http2Setting.String",
+    "net/http.persistConnWriter.Write"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/lfs.*hashingReader.Read"
+  },
+  {
+   "osv": "GO-2026-6604",
+   "aliases": [
+    "CVE-2026-56857"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6605",
+   "aliases": [
+    "CVE-2026-56866"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.Do",
+    "net/http.*Client.Get",
+    "net/http.*Client.Post",
+    "net/http.*Client.PostForm",
+    "net/http.*Transport.CloseIdleConnections",
+    "net/http.*Transport.RoundTrip",
+    "net/http.Get",
+    "net/http/httputil.DumpRequestOut"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/indexer/code/elasticsearch.*Indexer.Search"
+  },
+  {
+   "osv": "GO-2026-6607",
+   "aliases": [
+    "CVE-2026-97031"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "crypto/tls.*Conn.Handshake",
+    "crypto/tls.*Conn.HandshakeContext",
+    "crypto/tls.*Conn.Read",
+    "crypto/tls.*Conn.Write",
+    "crypto/tls.*Dialer.DialContext",
+    "crypto/tls.Dial",
+    "crypto/tls.DialWithDialer"
+   ],
+   "called_from": "code.gitea.io/gitea/services/auth/source/ldap.*Source.SearchEntries"
+  },
+  {
+   "osv": "GO-2026-6608",
+   "aliases": [
+    "CVE-2026-94440"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "mime/multipart.*Reader.ReadForm",
+    "net/textproto.*Reader.ReadMIMEHeader"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/api/packages/rubygems.DeletePackage"
+  },
+  {
+   "osv": "GO-2026-6609",
+   "aliases": [
+    "CVE-2026-78667"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.ServeContent",
+    "net/http.ServeFile"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/misc.RobotsTxt"
+  },
+  {
+   "osv": "GO-2026-6610",
+   "aliases": [
+    "CVE-2026-78660"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.60.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*Transport.NewClientConn",
+    "golang.org/x/net/http2.*Transport.RoundTrip",
+    "golang.org/x/net/http2.*unencryptedTransport.RoundTrip",
+    "golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip"
+   ],
+   "called_from": "code.gitea.io/gitea/services/migrations.*GogsDownloader.RoundTrip"
+  },
+  {
+   "osv": "GO-2026-6610",
+   "aliases": [
+    "CVE-2026-78660"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Client.CloseIdleConnections",
+    "net/http.*Client.Do",
+    "net/http.*Client.Get",
+    "net/http.*Client.Post",
+    "net/http.*Client.PostForm",
+    "net/http.*Transport.CloseIdleConnections",
+    "net/http.*Transport.RoundTrip",
+    "net/http.Get"
+   ],
+   "called_from": "code.gitea.io/gitea/services/webhook.Deliver"
+  },
+  {
+   "osv": "GO-2026-6611",
+   "aliases": [
+    "CVE-2026-78669"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.60.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*Transport.RoundTrip",
+    "golang.org/x/net/http2.*bufferedWriterTimeoutWriter.Write",
+    "golang.org/x/net/http2.ConfigureTransports",
+    "golang.org/x/net/http2.ConnectionError.Error",
+    "golang.org/x/net/http2.SettingID.String",
+    "golang.org/x/net/http2.chunkWriter.Write",
+    "golang.org/x/net/http2.headerFieldNameError.Error",
+    "golang.org/x/net/http2.transportResponseBody.Close"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget"
+  },
+  {
+   "osv": "GO-2026-6611",
+   "aliases": [
+    "CVE-2026-78669"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Request.SetBasicAuth",
+    "net/http.*Request.UserAgent",
+    "net/http.*Response.Write",
+    "net/http.*cancelTimerBody.Close",
+    "net/http.*http2responseWriter.Write",
+    "net/http.*persistConn.Read",
+    "net/http.*response.Flush",
+    "net/http.ListenAndServe"
+   ],
+   "called_from": "code.gitea.io/gitea/services/context.*Response.Flush"
+  },
+  {
+   "osv": "GO-2026-6612",
+   "aliases": [
+    "CVE-2026-78663"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.60.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*unencryptedTransport.RoundTrip",
+    "golang.org/x/net/http2.*writeData.String",
+    "golang.org/x/net/http2.FrameType.String",
+    "golang.org/x/net/http2.StreamError.Error",
+    "golang.org/x/net/http2.chunkWriter.Write",
+    "golang.org/x/net/http2.headerFieldValueError.Error",
+    "golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip",
+    "golang.org/x/net/http2.transportResponseBody.Read"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/translation/i18n.*locale.TrHTML"
+  },
+  {
+   "osv": "GO-2026-6612",
+   "aliases": [
+    "CVE-2026-78663"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Request.FormFile",
+    "net/http.*Request.FormValue",
+    "net/http.*Transport.Clone",
+    "net/http.*expectContinueReader.Read",
+    "net/http.*http2responseWriter.WriteHeader",
+    "net/http.SetCookie",
+    "net/http.bodyLocked.Read",
+    "net/http.http2stickyErrWriter.Write"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/auth.HandleSignOut"
+  },
+  {
+   "osv": "GO-2026-6613",
+   "aliases": [
+    "CVE-2026-94439"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*Server.SetKeepAlivesEnabled",
+    "net/http.*Server.Shutdown",
+    "net/http.*connReader.Read",
+    "net/http.*gzipReader.Close",
+    "net/http.*maxBytesReader.Read",
+    "net/http.*timeoutWriter.WriteHeader",
+    "net/http.Error",
+    "net/http.NewRequest"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/install.SubmitInstall"
+  },
+  {
+   "osv": "GO-2026-6617",
+   "aliases": [
+    "CVE-2026-97032"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.60.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/http2.*Transport.NewClientConn",
+    "golang.org/x/net/http2.*bufferedWriterTimeoutWriter.Write",
+    "golang.org/x/net/http2.*unencryptedTransport.RoundTrip",
+    "golang.org/x/net/http2.FrameHeader.String",
+    "golang.org/x/net/http2.FrameType.String",
+    "golang.org/x/net/http2.chunkWriter.Write",
+    "golang.org/x/net/http2.headerFieldNameError.Error",
+    "golang.org/x/net/http2.stickyErrWriter.Write"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/translation/i18n.*locale.TrHTML"
+  },
+  {
+   "osv": "GO-2026-6617",
+   "aliases": [
+    "CVE-2026-97032"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.9",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*ServeMux.Handle",
+    "net/http.*body.Close",
+    "net/http.*cancelTimerBody.Close",
+    "net/http.*response.WriteString",
+    "net/http.Header.Values",
+    "net/http.ListenAndServe",
+    "net/http.http2ErrCode.String",
+    "net/http.http2connError.Error"
+   ],
+   "called_from": "code.gitea.io/gitea/cmd.RunMainApp"
+  },
+  {
+   "osv": "GO-2026-6629",
+   "aliases": [
+    "CVE-2026-56851"
+   ],
+   "module": "golang.org/x/text",
+   "version": "v0.21.0",
+   "fixed": "v0.41.0",
+   "level": "package"
+  },
+  {
+   "osv": "GO-2026-6809",
+   "aliases": [
+    "CVE-2026-111943"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.10",
+   "level": "symbol",
+   "symbols": [
+    "crypto/x509.*Certificate.Verify"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/user/setting/security.WebauthnRegisterPost"
+  },
+  {
+   "osv": "GO-2026-6859",
+   "aliases": [
+    "CVE-2026-97054"
+   ],
+   "module": "stdlib",
+   "version": "v1.23.12",
+   "fixed": "v1.26.11",
+   "level": "symbol",
+   "symbols": [
+    "net/http.*gzipReader.Close",
+    "net/http.*response.Write",
+    "net/http.*response.WriteHeader",
+    "net/http.HandlerFunc.ServeHTTP",
+    "net/http.Header.Del",
+    "net/http.Header.Set",
+    "net/http.persistConnWriter.ReadFrom",
+    "net/http.persistConnWriter.Write"
+   ],
+   "called_from": "code.gitea.io/gitea/services/context.*Response.WriteHeader"
+  },
+  {
+   "osv": "GO-2026-6860",
+   "aliases": [
+    "CVE-2026-78661"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.62.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/html.Parse",
+    "golang.org/x/net/html.ParseFragment"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/markup/orgmode.Render"
+  },
+  {
+   "osv": "GO-2026-6865",
+   "aliases": [
+    "CVE-2026-116591",
+    "GHSA-fpmh-frq8-7rj8"
+   ],
+   "module": "github.com/klauspost/compress",
+   "version": "v1.17.11",
+   "fixed": "v1.20.2",
+   "level": "symbol",
+   "symbols": [
+    "github.com/klauspost/compress/fse.Compress",
+    "github.com/klauspost/compress/fse.Decompress",
+    "github.com/klauspost/compress/huff0.Compress1X",
+    "github.com/klauspost/compress/huff0.Compress4X",
+    "github.com/klauspost/compress/huff0.ReadTable"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/zstd.*Writer.Close"
+  },
+  {
+   "osv": "GO-2026-6866",
+   "aliases": [
+    "CVE-2026-97045"
+   ],
+   "module": "golang.org/x/net",
+   "version": "v0.34.0",
+   "fixed": "v0.62.0",
+   "level": "symbol",
+   "symbols": [
+    "golang.org/x/net/html.Render"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/markup.PostProcessDefault"
+  },
+  {
+   "osv": "GO-2026-6888",
+   "aliases": [
+    "CVE-2026-111497",
+    "GHSA-c9gr-gmg4-2vqv"
+   ],
+   "module": "github.com/andybalholm/brotli",
+   "version": "v1.1.1",
+   "fixed": "v1.2.7",
+   "level": "symbol",
+   "symbols": [
+    "github.com/andybalholm/brotli.*Reader.Read",
+    "github.com/andybalholm/brotli.decodeError.Error"
+   ],
+   "called_from": "code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget"
+  },
+  {
+   "osv": "GO-2026-6905",
+   "module": "github.com/blakesmith/ar",
+   "version": "v0.0.0-20190502131153-809d4375e1fb",
+   "level": "symbol",
+   "symbols": [
+    "github.com/blakesmith/ar.*Reader.Read"
+   ],
+   "called_from": "code.gitea.io/gitea/modules/git.ParseCatFileTreeLine"
+  }
+ ]
+}

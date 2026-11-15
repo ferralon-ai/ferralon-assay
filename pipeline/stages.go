@@ -27,7 +27,6 @@ import (
 	"strings"
 
 	"golang.org/x/mod/modfile"
-	"golang.org/x/mod/semver"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -2217,13 +2216,11 @@ func versionOutsideUpper(ver string, rng affectedRange) (outside bool, ok bool) 
 		return goToolchainVersionOutsideRange(ver, rng.UpperExclusive)
 	}
 	upper := rng.UpperExclusive
-	if !semver.IsValid(ver) || !semver.IsValid(upper) {
+	cmp, ok := compareGoModVersions(ver, upper)
+	if !ok {
 		return false, false
 	}
-	if semver.Prerelease(ver) != "" || semver.Prerelease(upper) != "" {
-		return false, false
-	}
-	return semver.Compare(ver, upper) >= 0, true
+	return cmp >= 0, true
 }
 
 // extractAffectedRange reads the advisory's full affected set (one or more disjoint ranges) from

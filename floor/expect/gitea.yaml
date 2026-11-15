@@ -20,6 +20,7 @@ header:
     version: v1.9.0
     db_timestamp: "2026-11-11T02:51:11Z"
     evidence: evidence/gitea.govulncheck.json
+  main_module: code.gitea.io/gitea
 rows:
   - advisory:
       - BIT-apisix-2023-44487
@@ -68,6 +69,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget
+        - github.com/andybalholm/brotli.decodeError.Error
+      hops: 2
+      path_sha: 25082c7c4fae4758
+      status: unreviewed
   - advisory:
       - BIT-gitea-2020-13246
       - CVE-2020-13246
@@ -1406,6 +1414,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/models/repo.Repository.GetOriginalURLHostname
+        - net/url.Parse
+      hops: 2
+      path_sha: 23af6ef976444b01
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-58183
       - CVE-2025-58183
@@ -1417,6 +1432,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/packages/rubygems.ParsePackageMetaData
+        - archive/tar.Reader.Next
+      hops: 2
+      path_sha: 352e40b5ab4d5c79
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-58185
       - CVE-2025-58185
@@ -1428,6 +1450,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/routers/api/packages/alpine.GetRepositoryKey
+        - crypto/x509.ParsePKIXPublicKey
+        - encoding/asn1.Unmarshal
+      hops: 3
+      path_sha: 043e6ba5849e9181
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-58186
       - CVE-2025-58186
@@ -1439,6 +1469,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/uri.Open
+        - net/http.Get
+      hops: 2
+      path_sha: bf58f01323defa5a
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-58187
       - CVE-2025-58187
@@ -1450,6 +1487,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/activitypub.NewClient
+        - crypto/x509.ParsePKCS1PrivateKey
+      hops: 2
+      path_sha: 31ba014a1395da98
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-58188
       - CVE-2025-58188
@@ -1461,6 +1505,18 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/routers/web/user/setting/security.WebauthnRegisterPost
+        - github.com/go-webauthn/webauthn/webauthn.WebAuthn.FinishRegistration
+        - github.com/go-webauthn/webauthn/webauthn.WebAuthn.CreateCredential
+        - github.com/go-webauthn/webauthn/protocol.ParsedCredentialCreationData.Verify
+        - github.com/go-webauthn/webauthn/protocol.AttestationObject.Verify
+        - github.com/go-webauthn/webauthn/protocol.AttestationObject.VerifyAttestation
+        - crypto/x509.Certificate.Verify
+      hops: 7
+      path_sha: 2a926229b18fce2e
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-58189
       - CVE-2025-58189
@@ -1472,6 +1528,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - crypto/tls.Conn.Read
+      hops: 2
+      path_sha: e3f930fff37badad
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61723
       - CVE-2025-61723
@@ -1483,6 +1546,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/activitypub.NewClient
+        - encoding/pem.Decode
+      hops: 2
+      path_sha: 75d5e33b2c76b9f7
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61724
       - CVE-2025-61724
@@ -1494,6 +1564,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/mailer/sender.SMTPSender.Send
+        - github.com/wneessen/go-mail/smtp.NewClient
+        - net/textproto.Reader.ReadResponse
+      hops: 3
+      path_sha: 33126dbd8ae2f4a5
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61725
       - CVE-2025-61725
@@ -1505,6 +1583,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/models/user.User.EmailTo
+        - net/mail.ParseAddress
+      hops: 2
+      path_sha: f3134ad2d373aced
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61726
       - CVE-2025-61726
@@ -1516,6 +1601,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/models/auth.OAuth2AuthorizationCode.GenerateRedirectURI
+        - net/url.URL.Query
+      hops: 2
+      path_sha: e4595d59a5416f57
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61727
       - CVE-2025-61727
@@ -1527,6 +1619,18 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/routers/web/user/setting/security.WebauthnRegisterPost
+        - github.com/go-webauthn/webauthn/webauthn.WebAuthn.FinishRegistration
+        - github.com/go-webauthn/webauthn/webauthn.WebAuthn.CreateCredential
+        - github.com/go-webauthn/webauthn/protocol.ParsedCredentialCreationData.Verify
+        - github.com/go-webauthn/webauthn/protocol.AttestationObject.Verify
+        - github.com/go-webauthn/webauthn/protocol.AttestationObject.VerifyAttestation
+        - crypto/x509.Certificate.Verify
+      hops: 7
+      path_sha: 2a926229b18fce2e
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61728
       - CVE-2025-61728
@@ -1538,6 +1642,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/packages/nuget.ParseNuspecMetaData
+        - archive/zip.Reader.Open
+      hops: 2
+      path_sha: 1c57e39e7c805965
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61729
       - CVE-2025-61729
@@ -1549,6 +1660,18 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - crypto/tls.Conn.Read
+        - crypto/tls.Conn.handlePostHandshakeMessage
+        - crypto/tls.Conn.handleRenegotiation
+        - crypto/tls.Conn.clientHandshake
+        - crypto/tls.Conn.loadSession
+        - crypto/x509.Certificate.VerifyHostname
+      hops: 7
+      path_sha: b2cc5d79a22ea54b
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61730
       - CVE-2025-61730
@@ -1560,6 +1683,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - crypto/tls.Conn.Read
+      hops: 2
+      path_sha: e3f930fff37badad
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61731
       - CVE-2025-61731
@@ -1607,6 +1737,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - crypto/tls.Conn.Read
+      hops: 2
+      path_sha: e3f930fff37badad
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-111943
       - CVE-2026-111943
@@ -1632,6 +1769,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/models/repo.Repository.GetOriginalURLHostname
+        - net/url.Parse
+      hops: 2
+      path_sha: 23af6ef976444b01
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-27137
       - CVE-2026-27137
@@ -1667,6 +1811,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/models/unittest.FixturesFileFullPaths
+        - os.ReadDir
+      hops: 2
+      path_sha: 6a9e5b2a599288c1
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-27140
       - CVE-2026-27140
@@ -1690,6 +1841,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/mailer.SendCollaboratorMail
+        - html/template.Template.ExecuteTemplate
+      hops: 2
+      path_sha: b20cc10f8c31f367
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-27143
       - CVE-2026-27143
@@ -1725,6 +1883,18 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/routers/web/user/setting/security.WebauthnRegisterPost
+        - github.com/go-webauthn/webauthn/webauthn.WebAuthn.FinishRegistration
+        - github.com/go-webauthn/webauthn/webauthn.WebAuthn.CreateCredential
+        - github.com/go-webauthn/webauthn/protocol.ParsedCredentialCreationData.Verify
+        - github.com/go-webauthn/webauthn/protocol.AttestationObject.Verify
+        - github.com/go-webauthn/webauthn/protocol.AttestationObject.VerifyAttestation
+        - crypto/x509.Certificate.Verify
+      hops: 7
+      path_sha: 2a926229b18fce2e
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-32282
       - CVE-2026-32282
@@ -1747,6 +1917,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - crypto/tls.Conn.Read
+      hops: 2
+      path_sha: e3f930fff37badad
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-32288
       - CVE-2026-32288
@@ -1758,6 +1935,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/packages/rubygems.ParsePackageMetaData
+        - archive/tar.Reader.Next
+      hops: 2
+      path_sha: 352e40b5ab4d5c79
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-32289
       - CVE-2026-32289
@@ -1769,6 +1953,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/templates.HTMLRender.CompileTemplates
+        - html/template.Template.Parse
+      hops: 2
+      path_sha: aa0d9cff4a371c45
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-33810
       - CVE-2026-33810
@@ -1804,6 +1995,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/migrations.GogsDownloader.RoundTrip
+        - net/http.Transport.RoundTrip
+        - net/http.Transport.roundTrip
+        - golang.org/x/net/http2.Transport.RoundTrip
+      hops: 4
+      path_sha: 664a0cb06dfe118a
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-33818
       - CVE-2026-33818
@@ -1815,6 +2015,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/routers/api/packages/alpine.GetRepositoryKey
+        - crypto/x509.ParsePKIXPublicKey
+        - encoding/asn1.Unmarshal
+      hops: 3
+      path_sha: 043e6ba5849e9181
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-39817
       - CVE-2026-39817
@@ -1850,6 +2058,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/models/user.User.EmailTo
+        - net/mail.ParseAddress
+      hops: 2
+      path_sha: f3134ad2d373aced
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-39822
       - CVE-2026-39822
@@ -1873,6 +2088,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/mailer.SendCollaboratorMail
+        - html/template.Template.ExecuteTemplate
+      hops: 2
+      path_sha: b20cc10f8c31f367
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-39825
       - CVE-2026-39825
@@ -1896,6 +2118,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/mailer.SendCollaboratorMail
+        - html/template.Template.ExecuteTemplate
+      hops: 2
+      path_sha: b20cc10f8c31f367
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-39836
       - CVE-2026-39836
@@ -1906,6 +2135,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/graceful.DefaultGetListener
+        - net.ResolveTCPAddr
+      hops: 2
+      path_sha: 37b4546624615f7b
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-42499
       - CVE-2026-42499
@@ -1917,6 +2153,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/models/user.User.EmailTo
+        - net/mail.ParseAddress
+      hops: 2
+      path_sha: f3134ad2d373aced
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-42501
       - CVE-2026-42501
@@ -1939,6 +2182,20 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/mailer/incoming.Init
+        - code.gitea.io/gitea/services/mailer/incoming.Init$1
+        - code.gitea.io/gitea/services/mailer/incoming.processIncomingEmails
+        - code.gitea.io/gitea/services/mailer/incoming.processMessages
+        - code.gitea.io/gitea/services/mailer/incoming.processMessages$2
+        - code.gitea.io/gitea/services/mailer/incoming.isAutomaticReply
+        - github.com/jhillyerd/enmime.Envelope.GetHeader
+        - github.com/jhillyerd/enmime/internal/coding.DecodeExtHeader
+        - mime.WordDecoder.DecodeHeader
+      hops: 9
+      path_sha: e993d0e173039c16
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-42505
       - CVE-2026-42505
@@ -1949,6 +2206,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - crypto/tls.Conn.Read
+      hops: 2
+      path_sha: e3f930fff37badad
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-42507
       - CVE-2026-42507
@@ -1959,6 +2223,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget
+        - net/textproto.Error.Error
+      hops: 2
+      path_sha: 71e4a2d94c2446a7
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-46600
       - CVE-2026-46600
@@ -1983,6 +2254,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/graceful.Server.Serve
+        - net/http.Server.Serve
+      hops: 2
+      path_sha: 2bd23c16a563c2b5
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-56857
       - CVE-2026-56857
@@ -2006,6 +2284,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/mailer.SendCollaboratorMail
+        - html/template.Template.ExecuteTemplate
+      hops: 2
+      path_sha: b20cc10f8c31f367
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-56859
       - CVE-2026-56859
@@ -2017,6 +2302,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/packages/nuget.ParseNuspecMetaData
+        - encoding/xml.Decoder.Decode
+      hops: 2
+      path_sha: 84ac02e91ea4c093
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-56860
       - CVE-2026-56860
@@ -2028,6 +2320,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/util.URLJoin
+        - net/url.URL.ResolveReference
+      hops: 2
+      path_sha: c8c7e1027c6ecce8
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-56862
       - CVE-2026-56862
@@ -2039,6 +2338,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - crypto/tls.Conn.Read
+      hops: 2
+      path_sha: e3f930fff37badad
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-56866
       - CVE-2026-56866
@@ -2050,6 +2356,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/uri.Open
+        - net/http.Get
+      hops: 2
+      path_sha: bf58f01323defa5a
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-78659
       - CVE-2026-78659
@@ -2061,6 +2374,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - golang.org/x/net/http2.gzipReader.Read
+      hops: 2
+      path_sha: 370386399d8d22e5
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-78660
       - CVE-2026-78660
@@ -2072,6 +2392,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/migrations.GogsDownloader.RoundTrip
+        - net/http.Transport.RoundTrip
+        - net/http.Transport.roundTrip
+        - golang.org/x/net/http2.Transport.RoundTrip
+      hops: 4
+      path_sha: 664a0cb06dfe118a
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-78663
       - CVE-2026-78663
@@ -2083,6 +2412,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - golang.org/x/net/http2.gzipReader.Read
+      hops: 2
+      path_sha: 370386399d8d22e5
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-78667
       - CVE-2026-78667
@@ -2094,6 +2430,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/routers/web/misc.RobotsTxt
+        - net/http.ServeFile
+      hops: 2
+      path_sha: a068b189e97a1baa
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-78669
       - CVE-2026-78669
@@ -2105,6 +2448,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - golang.org/x/net/http2.gzipReader.Read
+      hops: 2
+      path_sha: 370386399d8d22e5
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-94439
       - CVE-2026-94439
@@ -2116,6 +2466,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/activitypub.Client.NewRequest
+        - net/http.NewRequest
+      hops: 2
+      path_sha: 18b251d2393d7f4c
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-94440
       - CVE-2026-94440
@@ -2127,6 +2484,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/routers/api/packages/rubygems.DeletePackage
+        - net/http.Request.ParseMultipartForm
+        - mime/multipart.Reader.ReadForm
+      hops: 3
+      path_sha: 41b52f8e43fc86f1
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-94448
       - CVE-2026-94448
@@ -2138,6 +2503,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/mailer.SendCollaboratorMail
+        - html/template.Template.ExecuteTemplate
+      hops: 2
+      path_sha: b20cc10f8c31f367
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-97030
       - CVE-2026-97030
@@ -2149,6 +2521,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/mailer.SendCollaboratorMail
+        - html/template.Template.ExecuteTemplate
+      hops: 2
+      path_sha: b20cc10f8c31f367
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-97031
       - CVE-2026-97031
@@ -2160,6 +2539,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - crypto/tls.Conn.Read
+      hops: 2
+      path_sha: e3f930fff37badad
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-97032
       - CVE-2026-97032
@@ -2171,6 +2557,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/lfs.hashingReader.Read
+        - golang.org/x/net/http2.gzipReader.Read
+      hops: 2
+      path_sha: 370386399d8d22e5
+      status: unreviewed
   - advisory:
       - CVE-2018-15192
       - GHSA-fg3x-rwq9-74cw
@@ -2687,6 +3080,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/dump.init
+        - github.com/mholt/archiver/v3.init
+        - github.com/nwaples/rardecode.init
+      hops: 3
+      path_sha: 3f4f181a1aba4aac
+      status: unreviewed
   - advisory:
       - CVE-2025-21613
       - GHSA-v725-9546-7q7m
@@ -2735,6 +3136,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/git.Repository.GetLanguageStats
+        - bytes.Buffer.ReadFrom
+        - golang.org/x/crypto/ssh.extChannel.Read
+      hops: 3
+      path_sha: 685b2e74ae9b2444
+      status: unreviewed
   - advisory:
       - CVE-2025-22870
       - GHSA-qxp5-gwg8-xv66
@@ -2759,6 +3168,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/charset.StreamHTML
+        - golang.org/x/net/html.Tokenizer.Next
+      hops: 2
+      path_sha: c7f4f4f1783ff90e
+      status: unreviewed
   - advisory:
       - CVE-2025-29923
       - GHSA-92cp-5422-2mw7
@@ -2770,6 +3186,21 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/cache.RedisCacher.Flush
+        - github.com/redis/go-redis/v9.cmdable.FlushDB
+        - github.com/redis/go-redis/v9.Client.Process
+        - github.com/redis/go-redis/v9.hooksMixin.processHook
+        - github.com/redis/go-redis/v9.baseClient.process
+        - github.com/redis/go-redis/v9.baseClient._process
+        - github.com/redis/go-redis/v9.baseClient.withConn
+        - github.com/redis/go-redis/v9.baseClient.getConn
+        - github.com/redis/go-redis/v9.baseClient._getConn
+        - github.com/redis/go-redis/v9.baseClient.initConn
+      hops: 10
+      path_sha: 64777cf63135d803
+      status: unreviewed
   - advisory:
       - CVE-2025-30204
       - GHSA-mh63-6h87-95cp
@@ -2782,6 +3213,15 @@ rows:
     engine_expected:
       verdict: reachable_candidate
     gap: 'unfiled: reachable_candidate'
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/actions.TokenToTaskID
+        - github.com/golang-jwt/jwt/v5.ParseWithClaims
+        - github.com/golang-jwt/jwt/v5.Parser.ParseWithClaims
+        - github.com/golang-jwt/jwt/v5.Parser.ParseUnverified
+      hops: 4
+      path_sha: 1898e82c721a3e21
+      status: unreviewed
   - advisory:
       - CVE-2025-30204
       - GHSA-mh63-6h87-95cp
@@ -2817,6 +3257,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/markup.PostProcessDefault
+        - code.gitea.io/gitea/modules/markup.postProcess
+        - golang.org/x/net/html.Parse
+      hops: 3
+      path_sha: 4c47cfcdc2c7a8ae
+      status: unreviewed
   - advisory:
       - CVE-2025-47913
       - GHSA-56w8-48fp-6mgv
@@ -2828,6 +3276,23 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/graceful.Server.Serve
+        - github.com/gliderlabs/ssh.Server.Serve
+        - github.com/gliderlabs/ssh.Server.HandleConn
+        - golang.org/x/crypto/ssh.NewServerConn
+        - golang.org/x/crypto/ssh.connection.serverHandshake
+        - golang.org/x/crypto/ssh.newServerTransport
+        - golang.org/x/crypto/ssh.handshakeTransport.kexLoop
+        - golang.org/x/crypto/ssh.handshakeTransport.enterKeyExchange
+        - golang.org/x/crypto/ssh.handshakeTransport.server
+        - golang.org/x/crypto/ssh.dhGroup.Server
+        - golang.org/x/crypto/ssh.signAndMarshal
+        - golang.org/x/crypto/ssh/agent.agentKeyringSigner.SignWithAlgorithm
+      hops: 12
+      path_sha: 5584edc12a8157be
+      status: unreviewed
   - advisory:
       - CVE-2025-47914
       - GHSA-f6x5-jh6r-wrfv
@@ -2852,6 +3317,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/packages/arch.ParsePackage
+        - github.com/ulikunitz/xz.NewReader
+      hops: 2
+      path_sha: c237fd96d8ac53e5
+      status: unreviewed
   - advisory:
       - CVE-2025-58181
       - GHSA-j5w8-q4qc-rx2x
@@ -2863,6 +3335,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/graceful.Server.Serve
+        - github.com/gliderlabs/ssh.Server.Serve
+        - github.com/gliderlabs/ssh.Server.HandleConn
+        - golang.org/x/crypto/ssh.NewServerConn
+      hops: 4
+      path_sha: 461154aabe426d10
+      status: unreviewed
   - advisory:
       - CVE-2025-58190
       - GO-2026-4441
@@ -2873,6 +3354,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/markup.PostProcessDefault
+        - code.gitea.io/gitea/modules/markup.postProcess
+        - golang.org/x/net/html.Parse
+      hops: 3
+      path_sha: 4c47cfcdc2c7a8ae
+      status: unreviewed
   - advisory:
       - CVE-2025-59937
       - GHSA-wpwj-69cm-q9c5
@@ -2884,6 +3373,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/mailer/sender.Message.ToMessage
+        - github.com/wneessen/go-mail.Msg.SetAddrHeader
+      hops: 2
+      path_sha: 438e0036f7a3f41b
+      status: unreviewed
   - advisory:
       - CVE-2025-65637
       - GHSA-4f99-4q7p-p3gh
@@ -2931,6 +3427,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/packages/rpm.init
+        - github.com/ProtonMail/go-crypto/openpgp/packet.init
+        - github.com/ProtonMail/go-crypto/openpgp/ed25519.init
+        - github.com/cloudflare/circl/sign/ed25519.init
+      hops: 4
+      path_sha: a8daa9a8a8940b58
+      status: unreviewed
   - advisory:
       - CVE-2026-114437
       - GHSA-j6qf-3m9c-vwj3
@@ -2953,6 +3458,16 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/zstd.Writer.Close
+        - github.com/klauspost/compress/zstd.Encoder.Close
+        - github.com/klauspost/compress/zstd.Encoder.nextBlock
+        - github.com/klauspost/compress/zstd.blockEnc.encode
+        - github.com/klauspost/compress/huff0.Compress1X
+      hops: 5
+      path_sha: 0fe95ca1db79f9e1
+      status: unreviewed
   - advisory:
       - CVE-2026-1229
       - GHSA-q9hv-hpm4-hj6x
@@ -2964,6 +3479,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/packages/rpm.init
+        - github.com/ProtonMail/go-crypto/openpgp/packet.init
+        - github.com/ProtonMail/go-crypto/openpgp/ed25519.init
+        - github.com/cloudflare/circl/sign/ed25519.init
+      hops: 4
+      path_sha: a8daa9a8a8940b58
+      status: unreviewed
   - advisory:
       - CVE-2026-20706
       - GHSA-cr4g-f395-h25h
@@ -3131,6 +3655,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/markup.PostProcessDefault
+        - code.gitea.io/gitea/modules/markup.postProcess
+        - golang.org/x/net/html.Parse
+      hops: 3
+      path_sha: 4c47cfcdc2c7a8ae
+      status: unreviewed
   - advisory:
       - CVE-2026-25681
       - GO-2026-5029
@@ -3141,6 +3673,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/markup.PostProcessDefault
+        - code.gitea.io/gitea/modules/markup.postProcess
+        - golang.org/x/net/html.Parse
+      hops: 3
+      path_sha: 4c47cfcdc2c7a8ae
+      status: unreviewed
   - advisory:
       - CVE-2026-25712
       - GHSA-37w2-86g3-h4qh
@@ -3212,6 +3752,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/translation/i18n.locale.TrHTML
+        - github.com/go-git/go-git/v5/plumbing.Hash.String
+      hops: 2
+      path_sha: ed5a07c49f73a687
+      status: unreviewed
   - advisory:
       - CVE-2026-26231
       - GHSA-mm7c-rhg6-qr4r
@@ -3295,6 +3842,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/markup.PostProcessDefault
+        - code.gitea.io/gitea/modules/markup.postProcess
+        - golang.org/x/net/html.Parse
+      hops: 3
+      path_sha: 4c47cfcdc2c7a8ae
+      status: unreviewed
   - advisory:
       - CVE-2026-27141
       - GO-2026-4559
@@ -3473,6 +4028,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/mailer/sender.ntlmAuth.Next
+        - github.com/Azure/go-ntlmssp.ProcessChallenge
+      hops: 2
+      path_sha: 03b4d22f518ed5a5
+      status: unreviewed
   - advisory:
       - CVE-2026-33186
       - GHSA-p77j-4mvh-x3m3
@@ -3496,6 +4058,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/translation/i18n.locale.TrHTML
+        - github.com/go-git/go-git/v5/plumbing.Hash.String
+      hops: 2
+      path_sha: ed5a07c49f73a687
+      status: unreviewed
   - advisory:
       - CVE-2026-33809
       - GHSA-44p7-9xx4-hf2g
@@ -3529,6 +4098,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/avatar.ProcessAvatarImage
+        - code.gitea.io/gitea/modules/avatar.processAvatarImage
+        - image.Decode
+        - golang.org/x/image/webp.Decode
+      hops: 4
+      path_sha: ae4d1713d84de545
+      status: unreviewed
   - advisory:
       - CVE-2026-33817
       - GHSA-6jwv-w5xf-7j27
@@ -3575,6 +4153,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/translation/i18n.locale.TrHTML
+        - github.com/go-git/go-git/v5/plumbing.Hash.String
+      hops: 2
+      path_sha: ed5a07c49f73a687
+      status: unreviewed
   - advisory:
       - CVE-2026-34966
       - CVE-2026-59765
@@ -3598,6 +4183,18 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/migrations.GogsDownloader.RoundTrip
+        - net/http.Transport.RoundTrip
+        - net/http.Transport.roundTrip
+        - golang.org/x/net/http2.unencryptedTransport.RoundTrip
+        - golang.org/x/net/http2.Transport.RoundTripOpt
+        - golang.org/x/net/http2.authorityAddr
+        - golang.org/x/net/idna.ToASCII
+      hops: 7
+      path_sha: 306c83c4a6d79eda
+      status: unreviewed
   - advisory:
       - CVE-2026-39824
       - GO-2026-5024
@@ -3634,6 +4231,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/graceful.Server.Serve
+        - github.com/gliderlabs/ssh.Server.Serve
+        - github.com/gliderlabs/ssh.Server.HandleConn
+        - golang.org/x/crypto/ssh.NewServerConn
+      hops: 4
+      path_sha: 461154aabe426d10
+      status: unreviewed
   - advisory:
       - CVE-2026-39829
       - GHSA-w879-237q-wc7r
@@ -3645,6 +4251,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/models/asymkey.AddPublicKeysBySource
+        - golang.org/x/crypto/ssh.ParseAuthorizedKey
+      hops: 2
+      path_sha: 922ec2442cf1f896
+      status: unreviewed
   - advisory:
       - CVE-2026-39830
       - GHSA-vgwf-h737-ff37
@@ -3656,6 +4269,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/graceful.Server.Serve
+        - github.com/gliderlabs/ssh.Server.Serve
+        - github.com/gliderlabs/ssh.Server.HandleConn
+        - golang.org/x/crypto/ssh.NewServerConn
+      hops: 4
+      path_sha: 461154aabe426d10
+      status: unreviewed
   - advisory:
       - CVE-2026-39831
       - GHSA-89gr-r52h-f8rx
@@ -3667,6 +4289,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/auth.VerifyCert
+        - golang.org/x/crypto/ssh.CertChecker.CheckCert
+      hops: 2
+      path_sha: 77ab869b9cbd1f28
+      status: unreviewed
   - advisory:
       - CVE-2026-39832
       - GHSA-f5wc-c3c7-36mc
@@ -3704,6 +4333,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/packages/rubygems.MarshalEncoder.Encode
+        - bufio.Writer.Write
+        - golang.org/x/crypto/ssh.extChannel.Write
+      hops: 3
+      path_sha: 52fef2b06be24cf9
+      status: unreviewed
   - advisory:
       - CVE-2026-39835
       - GHSA-78mq-xcr3-xm33
@@ -3728,6 +4365,16 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/actions.init
+        - github.com/nektos/act/pkg/model.init
+        - github.com/nektos/act/pkg/common/git.init
+        - github.com/go-git/go-git/v5/plumbing/transport/http.init
+        - github.com/go-git/go-git/v5/plumbing/transport/http.NewClient
+      hops: 5
+      path_sha: fdf6d7abbabced1a
+      status: unreviewed
   - advisory:
       - CVE-2026-42500
       - GO-2026-5031
@@ -3738,6 +4385,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/avatar.ProcessAvatarImage
+        - code.gitea.io/gitea/modules/avatar.processAvatarImage
+        - image.Decode
+        - golang.org/x/image/bmp.Decode
+      hops: 4
+      path_sha: d8d00e80de0bf641
+      status: unreviewed
   - advisory:
       - CVE-2026-42502
       - GO-2026-5027
@@ -3748,6 +4404,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/markup.PostProcessDefault
+        - code.gitea.io/gitea/modules/markup.postProcess
+        - golang.org/x/net/html.Parse
+      hops: 3
+      path_sha: 4c47cfcdc2c7a8ae
+      status: unreviewed
   - advisory:
       - CVE-2026-42506
       - GO-2026-5025
@@ -3758,6 +4422,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/markup.PostProcessDefault
+        - code.gitea.io/gitea/modules/markup.postProcess
+        - golang.org/x/net/html.Parse
+      hops: 3
+      path_sha: 4c47cfcdc2c7a8ae
+      status: unreviewed
   - advisory:
       - CVE-2026-42508
       - GHSA-5cgq-3rg8-m6cv
@@ -3794,6 +4466,21 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/actions.init
+        - github.com/nektos/act/pkg/model.init
+        - github.com/nektos/act/pkg/common/git.init
+        - github.com/go-git/go-git/v5.init
+        - github.com/go-git/go-git/v5/plumbing/transport/client.init
+        - github.com/go-git/go-git/v5/plumbing/transport/file.init
+        - github.com/go-git/go-git/v5/plumbing/transport/server.init
+        - github.com/go-git/go-billy/v5/osfs.New
+        - github.com/go-git/go-billy/v5/osfs.newChrootOS
+        - github.com/go-git/go-billy/v5/helper/chroot.New
+      hops: 10
+      path_sha: a67ca258aa533f4d
+      status: unreviewed
   - advisory:
       - CVE-2026-44973
       - GHSA-qw64-3x98-g7q2
@@ -3805,6 +4492,19 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/actions.init
+        - github.com/nektos/act/pkg/model.init
+        - github.com/nektos/act/pkg/common/git.init
+        - github.com/go-git/go-git/v5.init
+        - github.com/go-git/go-git/v5/plumbing/transport/client.init
+        - github.com/go-git/go-git/v5/plumbing/transport/file.init
+        - github.com/go-git/go-git/v5/plumbing/transport/server.init
+        - github.com/go-git/go-billy/v5/osfs.New
+      hops: 8
+      path_sha: aed60851a3d5810c
+      status: unreviewed
   - advisory:
       - CVE-2026-45022
       - GHSA-389r-gv7p-r3rp
@@ -3829,6 +4529,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/translation/i18n.locale.TrHTML
+        - github.com/go-git/go-git/v5/plumbing.Hash.String
+      hops: 2
+      path_sha: ed5a07c49f73a687
+      status: unreviewed
   - advisory:
       - CVE-2026-45571
       - GHSA-crhj-59gh-8x96
@@ -3853,6 +4560,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/graceful.Server.Serve
+        - github.com/gliderlabs/ssh.Server.Serve
+        - github.com/gliderlabs/ssh.Server.HandleConn
+        - golang.org/x/crypto/ssh.NewServerConn
+      hops: 4
+      path_sha: 461154aabe426d10
+      status: unreviewed
   - advisory:
       - CVE-2026-46597
       - GHSA-q4h4-gmj2-qvw2
@@ -3864,6 +4580,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/graceful.Server.Serve
+        - github.com/gliderlabs/ssh.Server.Serve
+        - github.com/gliderlabs/ssh.Server.HandleConn
+        - golang.org/x/crypto/ssh.NewServerConn
+      hops: 4
+      path_sha: 461154aabe426d10
+      status: unreviewed
   - advisory:
       - CVE-2026-46598
       - GHSA-9m57-25v3-79x9
@@ -3899,6 +4624,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/routers/web/repo.init
+        - golang.org/x/image/webp.init
+      hops: 2
+      path_sha: a633beb5ec73cf86
+      status: unreviewed
   - advisory:
       - CVE-2026-46602
       - GO-2026-5062
@@ -3920,6 +4652,17 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/avatar.ProcessAvatarImage
+        - code.gitea.io/gitea/modules/avatar.processAvatarImage
+        - image.Decode
+        - golang.org/x/image/webp.Decode
+        - golang.org/x/image/webp.decode
+        - golang.org/x/image/vp8l.Decode
+      hops: 6
+      path_sha: 8cbe7043555a90b5
+      status: unreviewed
   - advisory:
       - CVE-2026-46604
       - GO-2026-5066
@@ -3954,6 +4697,16 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/markup/markdown.ASTTransformer.Transform
+        - github.com/yuin/goldmark/ast.Walk
+        - github.com/yuin/goldmark/ast.walkHelper
+        - github.com/yuin/goldmark/renderer.Render$2
+        - github.com/yuin/goldmark/renderer/html.Renderer.renderAutoLink
+      hops: 5
+      path_sha: 6b898285bb049012
+      status: unreviewed
   - advisory:
       - CVE-2026-54481
       - GHSA-94v3-77j7-vm48
@@ -4084,6 +4837,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/models/user.NormalizeUserName
+        - golang.org/x/text/transform.String
+        - golang.org/x/text/transform.chain.Transform
+        - golang.org/x/text/unicode/norm.Form.Transform
+      hops: 4
+      path_sha: dde32d4b282c7dad
+      status: unreviewed
   - advisory:
       - CVE-2026-56854
       - GO-2026-6303
@@ -4094,6 +4856,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/graceful.Server.Serve
+        - github.com/gliderlabs/ssh.Server.Serve
+        - github.com/gliderlabs/ssh.Server.HandleConn
+        - golang.org/x/crypto/ssh.NewServerConn
+      hops: 4
+      path_sha: 461154aabe426d10
+      status: unreviewed
   - advisory:
       - CVE-2026-56855
       - GO-2026-6355
@@ -4104,6 +4875,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/graceful.Server.Serve
+        - github.com/gliderlabs/ssh.Server.Serve
+        - github.com/gliderlabs/ssh.Server.HandleConn
+        - golang.org/x/crypto/ssh.NewServerConn
+      hops: 4
+      path_sha: 461154aabe426d10
+      status: unreviewed
   - advisory:
       - CVE-2026-56864
       - GO-2026-6180
@@ -4550,6 +5330,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/web.Router.Any
+        - code.gitea.io/gitea/modules/web.Router.wrapMiddlewareAndHandler
+        - code.gitea.io/gitea/modules/web/wrapHandlerProvider[net.http.Handler]$1
+        - github.com/go-chi/chi/v5/middleware.RealIP
+      hops: 4
+      path_sha: c6bb92d2414d8c4e
+      status: unreviewed
   - advisory:
       - CVE-2026-72817
       - GHSA-9g5q-2w5x-hmxf
@@ -4561,6 +5350,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/web.Router.Any
+        - code.gitea.io/gitea/modules/web.Router.wrapMiddlewareAndHandler
+        - code.gitea.io/gitea/modules/web/wrapHandlerProvider[net.http.Handler]$1
+        - github.com/go-chi/chi/v5/middleware.RealIP
+      hops: 4
+      path_sha: c6bb92d2414d8c4e
+      status: unreviewed
   - advisory:
       - CVE-2026-78661
       - GO-2026-6860
@@ -4571,6 +5369,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/markup.PostProcessDefault
+        - code.gitea.io/gitea/modules/markup.postProcess
+        - golang.org/x/net/html.Parse
+      hops: 3
+      path_sha: 4c47cfcdc2c7a8ae
+      status: unreviewed
   - advisory:
       - CVE-2026-78662
       - GO-2026-6354
@@ -4581,6 +5387,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/graceful.Server.Serve
+        - github.com/gliderlabs/ssh.Server.Serve
+        - github.com/gliderlabs/ssh.Server.HandleConn
+        - golang.org/x/crypto/ssh.NewServerConn
+      hops: 4
+      path_sha: 461154aabe426d10
+      status: unreviewed
   - advisory:
       - CVE-2026-84303
       - GHSA-qc2q-p7wx-3px3
@@ -4770,6 +5585,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/markup.PostProcessDefault
+        - code.gitea.io/gitea/modules/markup.postProcess
+        - golang.org/x/net/html.Render
+      hops: 3
+      path_sha: 18b4b0ffc885a671
+      status: unreviewed
   - advisory:
       - CVE-2026-97054
       - GO-2026-6859
@@ -4780,6 +5603,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/activitypub.Client.NewRequest
+        - net/http.NewRequest
+      hops: 2
+      path_sha: 18b251d2393d7f4c
+      status: unreviewed
   - advisory:
       - GHSA-3m6q-h5gj-7mrw
       - GO-2026-5091
@@ -4898,3 +5728,11 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/modules/git.ParseCatFileTreeLine
+        - bufio.Reader.Read
+        - github.com/blakesmith/ar.Reader.Read
+      hops: 3
+      path_sha: f361d97463f9b5ee
+      status: unreviewed

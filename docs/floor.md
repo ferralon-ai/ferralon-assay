@@ -119,6 +119,8 @@ release and the comparator's name, version and database timestamp. A row has:
 | `truth` | `reachable`, `not_reachable`, `out_of_range`, `not_present`, `conditional` or `unknown`: what is the case, not what Assay says. |
 | `basis`, `source` | A checkable pointer: why, and where it came from. |
 | `engine_expected` | `verdict` and `reason` as Assay emits them today (`undetermined_reason` for an undetermined finding, the evidence basis for a refutation). `not_emitted` is a row the comparator reports in a module and Assay emits no finding for at all; it is kept so the blind spot is on record, and the check fails when Assay starts to emit it. |
+| `path_review` | On every row whose `engine_expected` verdict is `reachable_candidate`, and only those: see [Path review](#path-review). |
+| `featured` | `true` marks a row a demo shows. Allowed only when `path_review.status` is `real`. |
 | `gap` | The tracker issue, required when `truth` and `engine_expected` contradict each other. `#790` covers `refutation_withheld`; `unfiled: …` marks a gap with no issue yet. |
 
 **Truth is seeded from a comparator and is not ground truth.** `govulncheck -mode source -format json ./...`
@@ -137,6 +139,58 @@ A comparator finding in a module Assay emitted nothing for becomes a `not_emitte
 
 `floorcheck seed` applies the rules; nothing else writes a `truth`.
 
+### Path review
+
+A reachable finding is only as convincing as the call path shown with it. An interface-dispatch edge
+(`io.Reader`, `error`, `http.Handler`…) can make a path look like a real route when it is not, so every
+reachable row records the path Assay shows today and whether a person has read it:
+
+```yaml
+path_review:
+  path: [code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget, github.com/andybalholm/brotli.decodeError.Error]
+  hops: 2
+  path_sha: 3f1c9a0b7d2e4a55   # first 16 hex of sha256 of the path's functions, joined by newlines
+  status: unreviewed           # unreviewed | real | artifact | unclear
+  by: <reviewer>               # by, date and note are required unless the status is unreviewed
+  date: 2026-11-16
+  note: one line why
+```
+
+| Status | Meaning |
+|---|---|
+| `unreviewed` | Nobody has read the path. Every row is seeded this way, and a changed path returns to it. |
+| `real` | A reviewer read the path and each hop is a call the program makes. |
+| `artifact` | A reviewer read the path and a hop is not real (typically an interface-dispatch edge to code the program never wires there). |
+| `unclear` | A reviewer could not tell from the source. Treated like `unreviewed` for featuring. |
+
+`floorcheck check` fails a showcase target when:
+
+- a reachable row has no `path_review` block (or a block's `hops` or `path_sha` does not describe its
+  `path`);
+- the engine's current path for a row hashes differently from `path_sha`. The failure names the row, the
+  old path and the new path. Fix it by updating `path` and `path_sha` (`floorcheck seed -update` does) and
+  resetting `status` to `unreviewed` in the same pull request: a review is of one path;
+- a row has `featured: true` and its status is not `real`.
+
+**Only `real` rows may be featured in a demo.** Marking a row `real` or `artifact` is a human call and
+needs a reviewer named in the pull request; the one who edits the file does not review their own change.
+`floorcheck seed -update` keeps a review while the path is unchanged and never sets a status other than
+`unreviewed`.
+
+Assay's report does not yet say what kind of edge joins two frames, so the ledger has no `dynamic_edges`
+count. The review aid marks the hops it reads as likely interface dispatch: a standard-library method named
+for a generic interface (`Read`, `Write`, `ReadFrom`, `Close`, `Error`, `String`, `ServeHTTP`,
+`RoundTrip`…), and a standard-library hop whose next hop is back in the target or a dependency (the
+standard library can reach that code only through an interface or a function value). It is a reading
+aid, not a verdict: the reviewer still reads the source.
+
+**The review aid** prints every reachable row with its path, one hop per line, each hop marked `target`,
+`dependency` or `stdlib`:
+
+```
+floorcheck paths -targets floor/targets.json [-target gitea]
+```
+
 ### Updating a ledger row
 
 A change in Assay's output fails the pinned showcase scan until the ledger agrees, in the same pull
@@ -147,7 +201,8 @@ request:
 2. Download the pinned scan's `report.json` and run
    `floorcheck seed -target <name> -report report.json -update`. `-update` keeps every existing row's
    `truth`, `basis`, `source` and `gap` and follows the report for `engine_expected`; a gap the engine
-   closed is dropped and a new disagreement gets one. New rows get their truth by the rules above.
+   closed is dropped and a new disagreement gets one. New rows get their truth by the rules above. A
+   reachable row whose path moved is reset to `unreviewed` and loses `featured`.
 3. Commit `floor/expect/<name>.yaml`.
 
 **A change to a `truth`, or to its `basis` or `source`, needs a second reviewer, named in the pull

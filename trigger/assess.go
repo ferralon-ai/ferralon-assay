@@ -55,6 +55,37 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 	return store, a.ID, nil
 }
 
+// siblingInstanceFindings returns a finding for each other major version of the assessed Go module
+// that the build carries (pipeline.SiblingInstances): the same advisory assessed once more with that
+// instance selected, so each package instance has its own verdict and call path. A sibling the scan
+// stopped before, or whose assessment failed, still gets its row, with no package, as for any advisory.
+func siblingInstanceFindings(analysis context.Context, areq assessment.Request, st artifact.Store, assessmentID string, opts []pipeline.AssessOption, sbom []report.Package, mods goModules, invNotes []report.PartialityNote) ([]report.AdvisoryFinding, []report.PartialityNote) {
+	var (
+		findings []report.AdvisoryFinding
+		notes    []report.PartialityNote
+	)
+	for _, module := range pipeline.SiblingInstances(st, assessmentID) {
+		sst, sid, stopped, err := assessWithin(analysis, areq, append(opts[:len(opts):len(opts)], pipeline.WithSelectedModule(module))...)
+		if stopped {
+			findings = append(findings, cutShortFinding(areq.Vulnerability))
+			continue
+		}
+		if err != nil {
+			findings = append(findings, assessFailureFinding(areq.Vulnerability, err))
+			notes = append(notes, assessFailureNote(areq.Vulnerability, err))
+			continue
+		}
+		advisory, pkg := advisoryFromArtifacts(sst, sid, areq, sbom)
+		f := withInventoryLimits(findingInBuild(sst, sid, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(sst, sid))
+		findings = append(findings, f)
+		if note, ok := limitNoteFor(f); ok {
+			notes = append(notes, note)
+		}
+		notes = append(notes, partialityNotes(sst, sid)...)
+	}
+	return findings, notes
+}
+
 // finding maps one advisory's S1–S6 artifacts into a single report.AdvisoryFinding,
 // applying the deterministic verdict rule (inv. 5):
 //

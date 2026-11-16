@@ -1519,6 +1519,12 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 			if moduleFilter == "" && (isToolchainPackage(pkgFilter) || dependencyHolds(ctx, req.BuildDir, pkgFilter)) {
 				return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
 			}
+			// Another major version of the advisory's module in the build is a package instance of
+			// its own, and its symbols are not this one's: a name match across the program would
+			// attribute them here.
+			if moduleFilter == "" && otherMajorHolds(ctx, req.BuildDir, pkgFilter) {
+				return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
+			}
 			// No loaded package is the advisory's: if no module in the build holds it either,
 			// search every module's source for the symbols, which is what can show the
 			// advisory's code is not in the build under another path.

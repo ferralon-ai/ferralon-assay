@@ -73,3 +73,90 @@ func TestBaseline_PathIntoAFixedOtherPackageNeverRefutes(t *testing.T) {
 		})
 	}
 }
+
+// jwtPathPlugin is goManifestPlugin whose reachability result, like govulncheck's for one advisory,
+// covers every module the advisory names: one path per major version of golang-jwt in calls.
+type jwtPathPlugin struct {
+	goManifestPlugin
+	calls []string
+}
+
+func (p jwtPathPlugin) Reachability(context.Context, plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	res := plugin.ReachabilityResult{Partiality: plugin.Complete()}
+	for _, major := range p.calls {
+		pkg := "github.com/golang-jwt/jwt/" + major
+		res.Paths = append(res.Paths, plugin.ReachPath{
+			Ingress: plugin.Symbol{SCIP: "scip-go gomod example.com/target . example.com/target/main()."},
+			Sink:    plugin.Symbol{SCIP: "scip-go gomod " + pkg + " . " + pkg + "/Parser#ParseUnverified().", Package: pkg},
+		})
+	}
+	return res, nil
+}
+
+// jwtSource serves GO-2099-0002, affecting golang-jwt v4 below v4.5.2 and v5 below v5.2.2.
+type jwtSource struct{}
+
+func (jwtSource) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
+	if id != "GO-2099-0002" {
+		return pipeline.AdvisoryFacts{}, false
+	}
+	pkg := func(major, fixed string) pipeline.AffectedPackage {
+		module := "github.com/golang-jwt/jwt/" + major
+		return pipeline.AffectedPackage{Module: module, PURL: "pkg:golang/" + module, AffectedRanges: []pipeline.Range{{Fixed: fixed}}}
+	}
+	return pipeline.AdvisoryFacts{
+		Module:           "github.com/golang-jwt/jwt/v4",
+		PURL:             "pkg:golang/github.com/golang-jwt/jwt/v4",
+		AffectedRanges:   []pipeline.Range{{Fixed: "v4.5.2"}},
+		AffectedPackages: []pipeline.AffectedPackage{pkg("v4", "v4.5.2"), pkg("v5", "v5.2.2")},
+		Provenance:       pipeline.Provenance{Source: "test", TrustTier: pipeline.TrustFirstParty},
+	}, true
+}
+
+// A build carrying two major versions of one module gets a finding per instance, and a call path
+// belongs to the instance whose code it enters: a path into v5 never makes the v4 row reachable.
+func TestBaseline_EachMajorVersionInstanceHasItsOwnVerdictAndPath(t *testing.T) {
+	adv := []assessment.VulnRef{{ID: "GO-2099-0002", Source: "corpus"}}
+	both := "module example.com/target\n\ngo 1.26.0\n\nrequire (\n\tgithub.com/golang-jwt/jwt/v4 v4.5.1\n\tgithub.com/golang-jwt/jwt/v5 v5.2.1\n)\n"
+	onlyV4 := "module example.com/target\n\ngo 1.26.0\n\nrequire github.com/golang-jwt/jwt/v4 v4.5.1\n"
+	tests := []struct {
+		name  string
+		goMod string
+		calls []string
+		want  map[string]report.Verdict // by package name; absent: no row
+	}{
+		{"v5 only called", both, []string{"v5"}, map[string]report.Verdict{
+			"github.com/golang-jwt/jwt/v5": report.VerdictReachableCandidate,
+			"github.com/golang-jwt/jwt/v4": report.VerdictUndetermined,
+		}},
+		{"both called", both, []string{"v4", "v5"}, map[string]report.Verdict{
+			"github.com/golang-jwt/jwt/v5": report.VerdictReachableCandidate,
+			"github.com/golang-jwt/jwt/v4": report.VerdictReachableCandidate,
+		}},
+		{"only v4 present", onlyV4, []string{"v4"}, map[string]report.Verdict{
+			"github.com/golang-jwt/jwt/v4": report.VerdictReachableCandidate,
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rep := runGoBaseline(t, tt.goMod, adv,
+				pipeline.WithPlugin(jwtPathPlugin{calls: tt.calls}),
+				pipeline.WithAdvisorySource(jwtSource{}))
+			got := map[string]report.Verdict{}
+			for _, f := range rep.Advisories {
+				if f.Package == nil {
+					t.Fatalf("row without a package: %+v", f)
+				}
+				got[f.Package.Name] = f.Verdict
+			}
+			if len(got) != len(tt.want) || len(rep.Advisories) != len(tt.want) {
+				t.Fatalf("rows = %v (%d findings), want %v", got, len(rep.Advisories), tt.want)
+			}
+			for name, v := range tt.want {
+				if got[name] != v {
+					t.Errorf("%s: verdict %q, want %q", name, got[name], v)
+				}
+			}
+		})
+	}
+}

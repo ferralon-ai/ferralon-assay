@@ -26,6 +26,14 @@ func TestCountedReachPaths(t *testing.T) {
 		return map[string]any{"module": "golang.org/x/net/idna", "versions": versions, "complete": true}
 	}
 
+	jwtRange := func(module, upper string) map[string]any {
+		return map[string]any{"module": module, "affected_ranges": []map[string]any{{"upper_exclusive": upper, "scheme": "gomod"}}}
+	}
+	jwtV4, jwtV5 := jwtRange("github.com/golang-jwt/jwt/v4", "v4.5.2"), jwtRange("github.com/golang-jwt/jwt/v5", "v5.2.2")
+	jwtAt := func(major, version string) map[string]any {
+		return map[string]any{"module": "github.com/golang-jwt/jwt/" + major, "versions": []string{version}, "complete": true}
+	}
+
 	tests := []struct {
 		name      string
 		module    string
@@ -161,6 +169,39 @@ func TestCountedReachPaths(t *testing.T) {
 			packages: []map[string]any{xnet, idna},
 			paths:    []plugin.ReachPath{reachTo("golang.org/x/net/idna", "ToASCII"), reachTo("golang.org/x/net/http2", "Transport")},
 			want:     []string{"ToASCII"},
+		},
+		{
+			name:     "v5-only call is not the selected v4's path",
+			selected: "github.com/golang-jwt/jwt/v4",
+			present:  []map[string]any{jwtAt("v5", "v5.2.1")},
+			packages: []map[string]any{jwtV4, jwtV5},
+			paths:    []plugin.ReachPath{reachTo("github.com/golang-jwt/jwt/v5", "ParseUnverified")},
+			want:     nil,
+		},
+		{
+			name:     "v5-only call is the selected v5's path",
+			selected: "github.com/golang-jwt/jwt/v5",
+			present:  []map[string]any{jwtAt("v4", "v4.5.1")},
+			packages: []map[string]any{jwtV4, jwtV5},
+			paths:    []plugin.ReachPath{reachTo("github.com/golang-jwt/jwt/v5", "ParseUnverified")},
+			want:     []string{"ParseUnverified"},
+		},
+		{
+			name:     "both called: each selection keeps only its own major's path",
+			selected: "github.com/golang-jwt/jwt/v4",
+			present:  []map[string]any{jwtAt("v5", "v5.2.1")},
+			packages: []map[string]any{jwtV4, jwtV5},
+			paths: []plugin.ReachPath{
+				reachTo("github.com/golang-jwt/jwt/v5", "ParseUnverified"), reachTo("github.com/golang-jwt/jwt/v4", "ParseUnverified"),
+			},
+			want: []string{"ParseUnverified"},
+		},
+		{
+			name:     "only v4 present keeps its path",
+			selected: "github.com/golang-jwt/jwt/v4",
+			packages: []map[string]any{jwtV4, jwtV5},
+			paths:    []plugin.ReachPath{reachTo("github.com/golang-jwt/jwt/v4", "ParseUnverified")},
+			want:     []string{"ParseUnverified"},
 		},
 		{
 			name:     "module name matches only at a path boundary",

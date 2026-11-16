@@ -25,6 +25,7 @@ schema, `Validate`) and fails the repository for any of these reasons:
 |---|---|
 | `ungrounded_not_exploitable` | A `not_exploitable` finding whose `evidence.basis` is empty or isn't one of `version_not_in_affected_range`, `vulnerable_symbol_absent`, `vulnerable_symbol_unreachable` or `static_refutation`. |
 | `ungrounded_disqualified` | A `disqualified` finding whose basis is something other than a version, symbol or intake basis. |
+| `path_outside_module` | A Go `reachable_candidate` finding whose `call_path` has no frame under the finding's own module path, so the path belongs to another package instance (another major version of the module). Standard-library rows, rows with no package and rows with no recorded frames are exempt. One failure per row, naming it. |
 | `scan_truncated` | The scan hit its time limit (a `scan_cut_short` limit on the report), so some advisories weren't assessed. |
 | `ledger_mismatch` | A showcase target's pinned scan differs from its ledger (`floor/expect/<name>.yaml`) by a missing, extra or changed row, by a reviewed row whose `bound_to` inputs are not the scan's, or the ledger's header is not the pinned scope, or the ledger breaks its own rules (a featured row that is not fully reviewed). See [The showcase lane](#the-showcase-lane). |
 | `incomplete_scan` | A showcase scan that did not see the whole build: see [Incomplete scans](#incomplete-scans). |

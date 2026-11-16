@@ -36,6 +36,9 @@ type PathReview struct {
 	By      string `yaml:"by,omitempty"`
 	Date    string `yaml:"date,omitempty"`
 	Note    string `yaml:"note,omitempty"`
+	// BoundTo is the analysis the path was read under; required once the status is not unreviewed,
+	// and checked against every scan from then on.
+	BoundTo *BoundTo `yaml:"bound_to,omitempty"`
 }
 
 // reachableRow is a row whose engine_expected verdict asserts a call path.
@@ -49,9 +52,9 @@ func pathSHA(path []string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// newPathReview is the unreviewed record for a path.
-func newPathReview(path []string) *PathReview {
-	return &PathReview{Path: path, Hops: len(path), PathSHA: pathSHA(path), Status: StatusUnreviewed}
+// newPathReview is the unreviewed record for a path, bound to the analysis it was seeded from.
+func newPathReview(path []string, b BoundTo) *PathReview {
+	return &PathReview{Path: path, Hops: len(path), PathSHA: pathSHA(path), Status: StatusUnreviewed, BoundTo: &b}
 }
 
 // validatePathReview checks a row's review block: the row needs one if and only if it is reachable, the hash and
@@ -80,6 +83,8 @@ func (r LedgerRow) validatePathReview(needReview bool) error {
 		return fmt.Errorf("path_review status %s needs by, date and note", pr.Status)
 	case pr.Date != "" && !validDate(pr.Date):
 		return fmt.Errorf("path_review date %q is not YYYY-MM-DD", pr.Date)
+	case pr.Status != StatusUnreviewed && pr.BoundTo.validate() != nil:
+		return fmt.Errorf("path_review status %s: %w", pr.Status, pr.BoundTo.validate())
 	case r.Featured && pr.Status != StatusReal:
 		return fmt.Errorf("featured: true, but the path_review status is %s: only a real path may be featured", pr.Status)
 	}

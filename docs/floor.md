@@ -26,7 +26,8 @@ schema, `Validate`) and fails the repository for any of these reasons:
 | `ungrounded_not_exploitable` | A `not_exploitable` finding whose `evidence.basis` is empty or isn't one of `version_not_in_affected_range`, `vulnerable_symbol_absent`, `vulnerable_symbol_unreachable` or `static_refutation`. |
 | `ungrounded_disqualified` | A `disqualified` finding whose basis is something other than a version or symbol basis. |
 | `scan_truncated` | The scan hit its time limit (a `scan_cut_short` limit on the report), so some advisories weren't assessed. |
-| `ledger_mismatch` | A showcase target's pinned scan differs from its ledger (`floor/expect/<name>.yaml`) by a missing, extra or changed row, or the ledger's header is not the pinned scope. See [The showcase lane](#the-showcase-lane). |
+| `ledger_mismatch` | A showcase target's pinned scan differs from its ledger (`floor/expect/<name>.yaml`) by a missing, extra or changed row, by a reviewed row whose `bound_to` inputs are not the scan's, or the ledger's header is not the pinned scope, or the ledger breaks its own rules (a featured row that is not fully reviewed). See [The showcase lane](#the-showcase-lane). |
+| `incomplete_scan` | A showcase scan that did not see the whole build: see [Incomplete scans](#incomplete-scans). |
 | `scan_failed` | The scanner exited non-zero, or the scan step failed, was stopped or never ran. A report the scan still published is checked too. |
 | `no_report` | The scanner exited cleanly but wrote no `report.json`. |
 | `malformed_report` | `report.json` doesn't decode, has an unknown `schema_version`, or fails `Validate`. |
@@ -116,16 +117,21 @@ release and the comparator's name, version and database timestamp. A row has:
 
 | Field | Meaning |
 |---|---|
-| `truth` | `reachable`, `not_reachable`, `out_of_range`, `not_present`, `conditional` or `unknown`: what is the case, not what Assay says. |
-| `basis`, `source` | A checkable pointer: why, and where it came from. |
+| `comparator_observed` | `reachable`, `not_reachable`, `out_of_range`, `not_present`, `conditional` or `unknown`: what the comparator (govulncheck) said. An observation, not ground truth. |
+| `basis`, `source` | With `comparator_observed`: why, and where it came from. |
+| `adjudicated` | A person's conclusion, apart from the comparator: see [Comparator and adjudication](#comparator-and-adjudication). Seeded `status: unknown` on every row. |
 | `engine_expected` | `verdict` and `reason` as Assay emits them today (`undetermined_reason` for an undetermined finding, the evidence basis for a refutation). `not_emitted` is a row the comparator reports in a module and Assay emits no finding for at all; it is kept so the blind spot is on record, and the check fails when Assay starts to emit it. |
 | `path_review` | On every row whose `engine_expected` verdict is `reachable_candidate`, and only those: see [Path review](#path-review). |
-| `featured` | `true` marks a row a demo shows. Allowed only when `path_review.status` is `real`. |
-| `gap` | The tracker issue, required when `truth` and `engine_expected` contradict each other. `#790` covers `refutation_withheld`; `unfiled: …` marks a gap with no issue yet. |
+| `featured` | `true` marks a row a demo shows. Allowed only when `path_review.status` is `real` (reachable rows) **and** `adjudicated.status` is not `unknown`. |
+| `gap` | The tracker issue, required when `comparator_observed` and `engine_expected` contradict each other. `#790` covers `refutation_withheld`; `unfiled: …` marks a gap with no issue yet. |
 
-**Truth is seeded from a comparator and is not ground truth.** `govulncheck -mode source -format json ./...`
-(its version is pinned in the header) runs on each target, and its output, normalized, is committed under
-`floor/expect/evidence/`. `truth` is derived by these rules and none other:
+### Comparator and adjudication
+
+**`comparator_observed` is seeded from a comparator and is not ground truth.** `govulncheck -mode source
+-format json ./...` (its version is pinned in the header) runs on each target, and its output, normalized,
+is committed under `floor/expect/evidence/`. Assay's own Go reachability also runs govulncheck as a library,
+so the comparator is **not independent** of the engine: agreement between the two is not confirmation.
+`comparator_observed` is derived by these rules and none other:
 
 1. `stdlib` and toolchain rows: `unknown`, "depends on toolchain".
 2. govulncheck reached the advisory in the module at symbol level: `reachable`; at package level:
@@ -134,10 +140,27 @@ release and the comparator's name, version and database timestamp. A row has:
 3. Assay's own out-of-range verdict: `out_of_range`.
 4. Anything else: `unknown`: the comparator has no view.
 
-A comparator finding in a module Assay emitted nothing for becomes a `not_emitted` row (its truth by rules
+A comparator finding in a module Assay emitted nothing for becomes a `not_emitted` row (its observation by rules
 2 to 4). Comparator findings in `stdlib` are not rows: they depend on the toolchain.
 
-`floorcheck seed` applies the rules; nothing else writes a `truth`.
+`floorcheck seed` applies the rules; nothing else writes a `comparator_observed`.
+
+**`adjudicated` is where a human conclusion goes.** Nothing in this repository sets it but a person:
+
+```yaml
+adjudicated:
+  status: unknown          # unknown | reachable | not_reachable | out_of_range | not_present | conditional
+  by: <reviewer>           # by, date and evidence are required unless the status is unknown
+  date: 2026-11-16
+  evidence: traefik/pkg/x/y.go:120   # checkable: file:line in the pinned upstream, a vendor advisory's
+                                     # preconditions, or a reviewed call graph
+  note: one line why
+  bound_to: {…}            # required with a conclusion; see below
+```
+
+Who may set it: a **named reviewer**, who puts their name in `by`. **A featured row needs a second
+reviewer, named in the pull request**, who is not the one who edited the file. `floorcheck seed` and
+`seed -update` never set a status other than `unknown`.
 
 ### Path review
 
@@ -170,9 +193,11 @@ path_review:
 - the engine's current path for a row hashes differently from `path_sha`. The failure names the row, the
   old path and the new path. Fix it by updating `path` and `path_sha` (`floorcheck seed -update` does) and
   resetting `status` to `unreviewed` in the same pull request: a review is of one path;
-- a row has `featured: true` and its status is not `real`.
+- a reviewed row's `bound_to` is not the scan's: see [What a review is bound to](#what-a-review-is-bound-to);
+- a row has `featured: true` and its `path_review` status is not `real`, or its `adjudicated.status` is
+  `unknown` (or lacks `by`, `date` or `evidence`). The failure is one line naming the row and the rule.
 
-**Only `real` rows may be featured in a demo.** Marking a row `real` or `artifact` is a human call and
+**Only rows a person has fully reviewed may be featured in a demo: a `real` path (reachable rows) and an adjudication.** Marking a row `real` or `artifact` is a human call and
 needs a reviewer named in the pull request; the one who edits the file does not review their own change.
 `floorcheck seed -update` keeps a review while the path is unchanged and never sets a status other than
 `unreviewed`.
@@ -191,6 +216,54 @@ aid, not a verdict: the reviewer still reads the source.
 floorcheck paths -targets floor/targets.json [-target gitea]
 ```
 
+### What a review is bound to
+
+The same path text can mean something else when what produced it changes. A `path_review` past
+`unreviewed`, and any `adjudicated` conclusion, therefore carries a `bound_to` block: the analysis inputs
+the person read it against.
+
+```yaml
+bound_to:
+  target: traefik@020ab5f34703ea523895ab004825dbfa6f7de060   # target name @ the scan's resolved commit
+  component: github.com/andybalholm/brotli@v1.1.0            # module@version
+  symbol: github.com/andybalholm/brotli.decodeError.Error     # the vulnerable symbol the call path ends at
+  symbol_confidence: high                                     # the engine's reading of the symbol set's provenance
+  analysis:
+    assay_version: <the report's provenance.analyzer_version>
+    assay_commit: <the scanner's build commit, from the scan's meta.json>
+    corpus_release: corpus-92d72057330c
+    go_version: 1.23.12
+```
+
+`floorcheck check` compares every field with the current scan for each reviewed row and fails naming the
+field: `review stale: <row>: path_review bound_to.analysis.corpus_release: recorded "…", scan has "…"`.
+**Fix it by re-reviewing**: `floorcheck seed -update` records the new inputs and resets `path_review.status`
+to `unreviewed` (and `adjudicated.status` to `unknown`, and `featured` off), as it does for a changed path.
+An unreviewed row is not held to its inputs; `seed` refreshes them.
+
+Assay's report does not carry the advisory's full vulnerable-symbol set or its raw `symbol_provenance`
+tag. It carries the symbol the call path ends at and `symbol_confidence` (`high`: osv-declared or curated;
+`moderate`: diff-lexed; empty: cna-declared, unrecognized or absent), so those are what is recorded.
+`floorcheck seed` reads `meta.json` beside `report.json` for the scanner commit, corpus release and Go
+version, and falls back to the lane's pins for the last two.
+
+### Incomplete scans
+
+A broken toolchain once produced a clean-looking scan of zero packages. A clean-looking report has no
+findings to differ from, so the showcase lane also fails the **pinned** scan, one line each, when:
+
+- the package inventory is empty (`the scan's package inventory is empty`), or lacks more than
+  `inventoryTolerance` (3, in `cmd/floorcheck/incomplete.go`) of the ledger's distinct component instances
+  (module@version, without `stdlib`, `toolchain` and `-`);
+- the report's partiality says the scan was cut short (`scan_truncated`, raised on every lane), or records a
+  `tool_failure` (a wrapped tool or the toolchain failed);
+- fewer ledger rows are answered than the ledger holds: a row is answered when the engine emitted a row under
+  its key, or the ledger expects `not_emitted` and the engine emitted none.
+
+These are `incomplete_scan` failures. On the floating scan they are reported and never fail the run.
+`go_toolchain_unresolved` and `go_toolchain_not_scanned` are not failures here: they are per-finding reasons the
+ledger records and compares like any other.
+
 ### Updating a ledger row
 
 A change in Assay's output fails the pinned showcase scan until the ledger agrees, in the same pull
@@ -200,13 +273,14 @@ request:
    the intended one.
 2. Download the pinned scan's `report.json` and run
    `floorcheck seed -target <name> -report report.json -update`. `-update` keeps every existing row's
-   `truth`, `basis`, `source` and `gap` and follows the report for `engine_expected`; a gap the engine
-   closed is dropped and a new disagreement gets one. New rows get their truth by the rules above. A
-   reachable row whose path moved is reset to `unreviewed` and loses `featured`.
+   `comparator_observed`, `basis`, `source` and `gap` and follows the report for `engine_expected`; a gap the
+   engine closed is dropped and a new disagreement gets one. New rows get their observation by the rules
+   above. A review (path or adjudication) whose path or `bound_to` inputs changed is reset and the row
+   loses `featured`.
 3. Commit `floor/expect/<name>.yaml`.
 
-**A change to a `truth`, or to its `basis` or `source`, needs a second reviewer, named in the pull
-request.** The rules above are the only way a `truth` is set; a hand edit is a judgment, and judgments
+**A change to a `comparator_observed`, or to its `basis` or `source`, needs a second reviewer, named in the
+pull request.** The rules above are the only way it is set; a hand edit is a judgment, and judgments
 are reviewed by someone who did not make them. Re-seeding without `-update` (a new comparator run, a new
 pin) rewrites every row and is that kind of change.
 
@@ -219,7 +293,7 @@ pin) rewrites every row and is that kind of change.
 3. Re-run the comparator on each target at the new pins (`govulncheck -mode source -format json ./...`
    under the pinned `go_version`, `GOOS`, `GOARCH` and `CGO_ENABLED`) and run
    `floorcheck seed -target <name> -report report.json -govulncheck govulncheck.json`.
-4. Review the ledger diff as a `truth` change (a second reviewer), and say in the pull request why the
+4. Review the ledger diff as a `comparator_observed` change (a second reviewer), and say in the pull request why the
    pin moved. A release is bumped deliberately, never because the floating scan drifted.
 
 ## Adding a target
@@ -271,8 +345,8 @@ The job summary (and `floor-summary.md` in the artifact) starts with **PASS** or
 - **Failures**: each failure kind with its details and the offending finding ids (advisory id and
   package).
 - **Showcase lane**: per scan (pinned and floating): corpus release, Go version, duration, peak memory,
-  the number of ledger rows that differ, and the verdict counts by reason; the truth × `engine_expected`
-  table over the ledgers; and the floating scan's drift, which is report-only.
+  the number of differences from the ledger, and the verdict counts by reason; the `comparator_observed` × `engine_expected`
+  table over the ledgers and the count of adjudications by status; and the floating scan's drift, which is report-only.
 - **Not scanned**: the excluded repositories and why.
 
 `floor-summary.json` holds the same data in machine-readable form (`schema:

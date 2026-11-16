@@ -43,9 +43,11 @@ rows:
       - GHSA-qppj-fm5r-hxr3
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -64,9 +66,11 @@ rows:
       - PYSEC-2026-4323
     package: github.com/andybalholm/brotli@v1.1.1
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/andybalholm/brotli.*Reader.Read, github.com/andybalholm/brotli.decodeError.Error reached from code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -83,9 +87,11 @@ rows:
       - GO-2022-0830
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -96,9 +102,11 @@ rows:
       - GO-2022-0832
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -109,9 +117,11 @@ rows:
       - GO-2022-0353
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -122,9 +132,11 @@ rows:
       - GO-2024-2757
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -135,9 +147,11 @@ rows:
       - GO-2022-0310
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -148,9 +162,11 @@ rows:
       - GO-2022-0982
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -161,9 +177,11 @@ rows:
       - GO-2022-0315
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -174,9 +192,11 @@ rows:
       - GO-2022-0609
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -187,9 +207,11 @@ rows:
       - GO-2024-2752
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -200,9 +222,11 @@ rows:
       - GO-2022-0612
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -213,9 +237,11 @@ rows:
       - GO-2022-0442
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -226,9 +252,11 @@ rows:
       - GO-2022-0450
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -239,9 +267,11 @@ rows:
       - GO-2024-2769
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -252,9 +282,11 @@ rows:
       - GO-2023-1999
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -265,9 +297,11 @@ rows:
       - GO-2022-1065
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -278,9 +312,11 @@ rows:
       - GO-2023-1894
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -291,9 +327,11 @@ rows:
       - GO-2025-4258
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -304,9 +342,11 @@ rows:
       - GO-2025-4261
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -317,9 +357,11 @@ rows:
       - GO-2025-4267
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -330,9 +372,11 @@ rows:
       - GO-2025-4268
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -343,9 +387,11 @@ rows:
       - GO-2025-4263
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -356,9 +402,11 @@ rows:
       - GO-2025-4266
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -369,9 +417,11 @@ rows:
       - GO-2025-4264
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -382,9 +432,11 @@ rows:
       - GO-2025-4262
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -395,9 +447,11 @@ rows:
       - GO-2025-4265
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -408,9 +462,11 @@ rows:
       - GO-2026-4274
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -422,9 +478,11 @@ rows:
       - GO-2026-4365
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -436,9 +494,11 @@ rows:
       - GO-2026-4367
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -450,9 +510,11 @@ rows:
       - GO-2026-4370
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -464,9 +526,11 @@ rows:
       - GO-2026-4362
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -478,9 +542,11 @@ rows:
       - GO-2026-4368
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -492,9 +558,11 @@ rows:
       - GO-2026-4366
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -506,9 +574,11 @@ rows:
       - GO-2026-4363
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -520,9 +590,11 @@ rows:
       - GO-2026-4369
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -534,9 +606,11 @@ rows:
       - GO-2026-4364
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -547,9 +621,11 @@ rows:
       - GO-2026-6433
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -560,9 +636,11 @@ rows:
       - GO-2021-0142
     package: github.com/ulikunitz/xz@v0.5.12
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -573,9 +651,11 @@ rows:
       - GO-2022-0229
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -586,9 +666,11 @@ rows:
       - GO-2022-0236
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -599,9 +681,11 @@ rows:
       - GO-2021-0238
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -612,9 +696,11 @@ rows:
       - GO-2022-0969
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -624,9 +710,11 @@ rows:
       - GO-2022-1037
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -636,9 +724,11 @@ rows:
       - GO-2022-1038
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -649,9 +739,11 @@ rows:
       - GO-2022-0493
     package: golang.org/x/sys@v0.29.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -661,9 +753,11 @@ rows:
       - GO-2022-0988
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -673,9 +767,11 @@ rows:
       - GO-2022-1039
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -685,9 +781,11 @@ rows:
       - GO-2022-1095
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -698,9 +796,11 @@ rows:
       - GO-2022-1144
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -710,9 +810,11 @@ rows:
       - GO-2022-1143
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -722,9 +824,11 @@ rows:
       - GO-2023-1568
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -735,9 +839,11 @@ rows:
       - GO-2023-1571
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -747,9 +853,11 @@ rows:
       - GO-2023-1570
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -759,9 +867,11 @@ rows:
       - GO-2023-1569
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -771,9 +881,11 @@ rows:
       - GO-2024-2962
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -783,9 +895,11 @@ rows:
       - GO-2023-1621
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -795,9 +909,11 @@ rows:
       - GO-2023-1704
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -807,9 +923,11 @@ rows:
       - GO-2023-1705
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -819,9 +937,11 @@ rows:
       - GO-2023-1702
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -831,9 +951,11 @@ rows:
       - GO-2023-1703
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -843,9 +965,11 @@ rows:
       - GO-2023-1751
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -855,9 +979,11 @@ rows:
       - GO-2023-1752
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -867,9 +993,11 @@ rows:
       - GO-2023-1753
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -879,9 +1007,11 @@ rows:
       - GO-2023-1839
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -891,9 +1021,11 @@ rows:
       - GO-2023-1840
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -903,9 +1035,11 @@ rows:
       - GO-2023-1841
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -915,9 +1049,11 @@ rows:
       - GO-2023-1842
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -927,9 +1063,11 @@ rows:
       - GO-2023-1878
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -939,9 +1077,11 @@ rows:
       - GO-2023-1987
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -951,9 +1091,11 @@ rows:
       - GO-2023-2041
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -963,9 +1105,11 @@ rows:
       - GO-2023-2043
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -975,9 +1119,11 @@ rows:
       - GO-2023-2042
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -987,9 +1133,11 @@ rows:
       - GO-2023-2044
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -999,9 +1147,11 @@ rows:
       - GO-2023-2045
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1011,9 +1161,11 @@ rows:
       - GO-2023-2095
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1024,9 +1176,11 @@ rows:
       - GO-2023-2102
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -1036,9 +1190,11 @@ rows:
       - GO-2023-2382
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1048,9 +1204,11 @@ rows:
       - GO-2023-2185
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1060,9 +1218,11 @@ rows:
       - GO-2023-2186
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1072,9 +1232,11 @@ rows:
       - GO-2023-2383
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1084,9 +1246,11 @@ rows:
       - GO-2023-2375
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1097,9 +1261,11 @@ rows:
       - GO-2024-2687
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -1109,9 +1275,11 @@ rows:
       - GO-2024-2600
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1121,9 +1289,11 @@ rows:
       - GO-2024-2599
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1133,9 +1303,11 @@ rows:
       - GO-2024-2598
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1145,9 +1317,11 @@ rows:
       - GO-2024-2609
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1157,9 +1331,11 @@ rows:
       - GO-2024-2610
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1169,9 +1345,11 @@ rows:
       - GO-2024-2825
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1181,9 +1359,11 @@ rows:
       - GO-2024-2824
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1193,9 +1373,11 @@ rows:
       - GO-2024-2888
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1205,9 +1387,11 @@ rows:
       - GO-2024-2887
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1217,9 +1401,11 @@ rows:
       - GO-2024-2963
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1229,9 +1415,11 @@ rows:
       - GO-2024-3105
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1241,9 +1429,11 @@ rows:
       - GO-2024-3106
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1253,9 +1443,11 @@ rows:
       - GO-2024-3107
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1265,9 +1457,11 @@ rows:
       - GO-2025-3420
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1277,9 +1471,11 @@ rows:
       - GO-2025-3373
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1289,9 +1485,11 @@ rows:
       - GO-2025-3750
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1301,9 +1499,11 @@ rows:
       - GO-2025-3447
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1314,9 +1514,11 @@ rows:
       - GO-2025-3563
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: disqualified
   - advisory:
@@ -1325,9 +1527,11 @@ rows:
       - GO-2026-4403
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1337,9 +1541,11 @@ rows:
       - GO-2025-3749
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1349,9 +1555,11 @@ rows:
       - GO-2025-3751
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1361,9 +1569,11 @@ rows:
       - GO-2025-3828
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1373,9 +1583,11 @@ rows:
       - GO-2025-3956
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1385,9 +1597,11 @@ rows:
       - GO-2025-3849
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1397,9 +1611,11 @@ rows:
       - GO-2025-3955
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1409,9 +1625,11 @@ rows:
       - GO-2025-4010
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1427,9 +1645,11 @@ rows:
       - GO-2025-4014
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1445,9 +1665,11 @@ rows:
       - GO-2025-4011
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1464,9 +1686,11 @@ rows:
       - GO-2025-4012
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1482,9 +1706,11 @@ rows:
       - GO-2025-4007
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1500,9 +1726,11 @@ rows:
       - GO-2025-4013
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1523,9 +1751,11 @@ rows:
       - GO-2025-4008
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1541,9 +1771,11 @@ rows:
       - GO-2025-4009
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1559,9 +1791,11 @@ rows:
       - GO-2025-4015
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1578,9 +1812,11 @@ rows:
       - GO-2025-4006
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1596,9 +1832,11 @@ rows:
       - GO-2026-4341
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1614,9 +1852,11 @@ rows:
       - GO-2025-4175
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1637,9 +1877,11 @@ rows:
       - GO-2026-4342
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1655,9 +1897,11 @@ rows:
       - GO-2025-4155
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1678,9 +1922,11 @@ rows:
       - GO-2026-4340
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1696,9 +1942,11 @@ rows:
       - GO-2026-4339
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1708,9 +1956,11 @@ rows:
       - GO-2026-4433
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1720,9 +1970,11 @@ rows:
       - GO-2026-4338
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1732,9 +1984,11 @@ rows:
       - GO-2026-4337
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1753,9 +2007,11 @@ rows:
       - RUSTSEC-2026-0383
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: disqualified
   - advisory:
@@ -1764,9 +2020,11 @@ rows:
       - GO-2026-4601
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1782,9 +2040,11 @@ rows:
       - GO-2026-4599
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1794,9 +2054,11 @@ rows:
       - GO-2026-4600
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1806,9 +2068,11 @@ rows:
       - GO-2026-4602
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1824,9 +2088,11 @@ rows:
       - GO-2026-4871
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1836,9 +2102,11 @@ rows:
       - GO-2026-4603
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1854,9 +2122,11 @@ rows:
       - GO-2026-4868
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1866,9 +2136,11 @@ rows:
       - GO-2026-4867
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1878,9 +2150,11 @@ rows:
       - GO-2026-4946
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1900,9 +2174,11 @@ rows:
       - CVE-2026-32282
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1912,9 +2188,11 @@ rows:
       - GO-2026-4870
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1930,9 +2208,11 @@ rows:
       - GO-2026-4869
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1948,9 +2228,11 @@ rows:
       - GO-2026-4865
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -1966,9 +2248,11 @@ rows:
       - GO-2026-4866
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1978,9 +2262,11 @@ rows:
       - GO-2026-4981
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -1990,9 +2276,11 @@ rows:
       - GO-2026-4918
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/http2.*Transport.NewClientConn, golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip reached from code.gitea.io/gitea/services/migrations.*GogsDownloader.RoundTrip'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2010,9 +2298,11 @@ rows:
       - GO-2026-5972
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2029,9 +2319,11 @@ rows:
       - GO-2026-4979
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -2041,9 +2333,11 @@ rows:
       - GO-2026-4978
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -2053,9 +2347,11 @@ rows:
       - GO-2026-4986
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2071,9 +2367,11 @@ rows:
       - GO-2026-4970
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -2083,9 +2381,11 @@ rows:
       - GO-2026-4982
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2101,9 +2401,11 @@ rows:
       - GO-2026-4976
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -2113,9 +2415,11 @@ rows:
       - GO-2026-4980
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2130,9 +2434,11 @@ rows:
       - CVE-2026-39836
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2148,9 +2454,11 @@ rows:
       - GO-2026-4977
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2166,9 +2474,11 @@ rows:
       - GO-2026-4984
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -2177,9 +2487,11 @@ rows:
       - CVE-2026-42504
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2201,9 +2513,11 @@ rows:
       - CVE-2026-42505
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2218,9 +2532,11 @@ rows:
       - CVE-2026-42507
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2236,9 +2552,11 @@ rows:
       - GO-2026-5942
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: vulnerable_symbol_unresolved
@@ -2249,9 +2567,11 @@ rows:
       - GO-2026-6089
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2267,9 +2587,11 @@ rows:
       - GO-2026-6604
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -2279,9 +2601,11 @@ rows:
       - GO-2026-6091
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2297,9 +2621,11 @@ rows:
       - GO-2026-6088
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2315,9 +2641,11 @@ rows:
       - GO-2026-6218
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2333,9 +2661,11 @@ rows:
       - GO-2026-6090
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2351,9 +2681,11 @@ rows:
       - GO-2026-6605
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2369,9 +2701,11 @@ rows:
       - GO-2026-6603
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/http2.*writeData.String, golang.org/x/net/http2.ConfigureTransports, golang.org/x/net/http2.FrameHeader.String, golang.org/x/net/http2.FrameType.String, golang.org/x/net/http2.StreamError.Error, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip, golang.org/x/net/http2.stickyErrWriter.Write, golang.org/x/net/http2.transportResponseBody.Read reached from code.gitea.io/gitea/modules/translation/i18n.*locale.TrHTML'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2387,9 +2721,11 @@ rows:
       - GO-2026-6610
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/http2.*Transport.NewClientConn, golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip reached from code.gitea.io/gitea/services/migrations.*GogsDownloader.RoundTrip'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2407,9 +2743,11 @@ rows:
       - GO-2026-6612
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.*writeData.String, golang.org/x/net/http2.FrameType.String, golang.org/x/net/http2.StreamError.Error, golang.org/x/net/http2.chunkWriter.Write, golang.org/x/net/http2.headerFieldValueError.Error, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip, golang.org/x/net/http2.transportResponseBody.Read reached from code.gitea.io/gitea/modules/translation/i18n.*locale.TrHTML'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2425,9 +2763,11 @@ rows:
       - GO-2026-6609
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2443,9 +2783,11 @@ rows:
       - GO-2026-6611
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*bufferedWriterTimeoutWriter.Write, golang.org/x/net/http2.ConfigureTransports, golang.org/x/net/http2.ConnectionError.Error, golang.org/x/net/http2.SettingID.String, golang.org/x/net/http2.chunkWriter.Write, golang.org/x/net/http2.headerFieldNameError.Error, golang.org/x/net/http2.transportResponseBody.Close reached from code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2461,9 +2803,11 @@ rows:
       - GO-2026-6613
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2479,9 +2823,11 @@ rows:
       - GO-2026-6608
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2498,9 +2844,11 @@ rows:
       - GO-2026-6599
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2516,9 +2864,11 @@ rows:
       - GO-2026-6600
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2534,9 +2884,11 @@ rows:
       - GO-2026-6607
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2552,9 +2904,11 @@ rows:
       - GO-2026-6617
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/http2.*Transport.NewClientConn, golang.org/x/net/http2.*bufferedWriterTimeoutWriter.Write, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.FrameHeader.String, golang.org/x/net/http2.FrameType.String, golang.org/x/net/http2.chunkWriter.Write, golang.org/x/net/http2.headerFieldNameError.Error, golang.org/x/net/http2.stickyErrWriter.Write reached from code.gitea.io/gitea/modules/translation/i18n.*locale.TrHTML'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -2570,9 +2924,11 @@ rows:
       - GO-2023-1971
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2584,9 +2940,11 @@ rows:
       - GO-2022-0197
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2596,9 +2954,11 @@ rows:
       - GO-2022-0844
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2608,9 +2968,11 @@ rows:
       - GO-2023-1922
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2620,9 +2982,11 @@ rows:
       - GO-2020-0036
     package: gopkg.in/yaml.v2@v2.4.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2632,9 +2996,11 @@ rows:
       - GO-2022-0209
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2644,9 +3010,11 @@ rows:
       - GO-2023-1992
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2658,9 +3026,11 @@ rows:
       - GO-2022-0536
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2670,9 +3040,11 @@ rows:
       - GO-2020-0015
     package: golang.org/x/text@v0.21.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2682,9 +3054,11 @@ rows:
       - GO-2021-0227
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2695,9 +3069,11 @@ rows:
       - SNYK-GOLANG-GITHUBCOMSASSOFTWAREGORPMUTILSCPIO-570427
     package: github.com/sassoftware/go-rpmutils@v0.4.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2707,9 +3083,11 @@ rows:
       - GO-2021-0095
     package: github.com/google/go-tpm@v0.9.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2719,9 +3097,11 @@ rows:
       - GO-2020-0012
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2731,9 +3111,11 @@ rows:
       - GO-2020-0016
     package: github.com/ulikunitz/xz@v0.5.12
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2743,9 +3125,11 @@ rows:
       - GO-2021-0113
     package: golang.org/x/text@v0.21.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2755,9 +3139,11 @@ rows:
       - GO-2021-0061
     package: gopkg.in/yaml.v2@v2.4.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2767,9 +3153,11 @@ rows:
       - GO-2022-0968
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2779,9 +3167,11 @@ rows:
       - GO-2022-0322
     package: github.com/prometheus/client_golang@v1.20.5
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2791,9 +3181,11 @@ rows:
       - GO-2021-0356
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2803,9 +3195,11 @@ rows:
       - GO-2022-0603
     package: gopkg.in/yaml.v3@v3.0.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2814,9 +3208,11 @@ rows:
       - GO-2024-2961
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2826,9 +3222,11 @@ rows:
       - GO-2022-0956
     package: gopkg.in/yaml.v2@v2.4.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2838,9 +3236,11 @@ rows:
       - GO-2022-0470
     package: github.com/blevesearch/bleve/v2@v2.4.2
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -2850,9 +3250,11 @@ rows:
       - GO-2022-1059
     package: golang.org/x/text@v0.21.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2860,9 +3262,11 @@ rows:
       - CVE-2022-32189
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -2872,9 +3276,11 @@ rows:
       - GO-2023-1495
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2884,9 +3290,11 @@ rows:
       - GO-2023-1765
     package: github.com/cloudflare/circl@v1.5.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2896,9 +3304,11 @@ rows:
       - GO-2023-1504
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: package_version_unresolved
@@ -2908,9 +3318,11 @@ rows:
       - GO-2023-1631
     package: google.golang.org/protobuf@v1.35.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2920,9 +3332,11 @@ rows:
       - GO-2023-1988
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2933,9 +3347,11 @@ rows:
       - PYSEC-2026-1758
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2945,9 +3361,11 @@ rows:
       - GO-2024-2466
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2957,9 +3375,11 @@ rows:
       - GO-2024-2456
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2969,9 +3389,11 @@ rows:
       - GO-2024-2698
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: package_version_unresolved
@@ -2981,9 +3403,11 @@ rows:
       - GO-2024-2611
     package: google.golang.org/protobuf@v1.35.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -2993,9 +3417,11 @@ rows:
       - GO-2024-2937
     package: golang.org/x/image@v0.21.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3005,9 +3431,11 @@ rows:
       - GO-2024-3321
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3017,9 +3445,11 @@ rows:
       - GO-2024-3333
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3029,9 +3459,11 @@ rows:
       - GO-2024-3250
     package: github.com/golang-jwt/jwt/v4@v4.5.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3041,9 +3473,11 @@ rows:
       - GO-2024-2947
     package: github.com/hashicorp/go-retryablehttp@v0.7.7
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3053,9 +3487,11 @@ rows:
       - GO-2024-3056
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3063,9 +3499,11 @@ rows:
       - CVE-2024-8244
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -3075,9 +3513,11 @@ rows:
       - GO-2025-4020
     package: github.com/nwaples/rardecode@v1.1.3
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/nwaples/rardecode.*cipherBlockReader.Read, github.com/nwaples/rardecode.*limitedReader.Read, github.com/nwaples/rardecode.init reached from code.gitea.io/gitea/modules/dump.init'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3094,9 +3534,11 @@ rows:
       - GO-2025-3368
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3106,9 +3548,11 @@ rows:
       - GO-2025-3367
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3118,9 +3562,11 @@ rows:
       - GO-2025-3488
     package: golang.org/x/oauth2@v0.23.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -3131,9 +3577,11 @@ rows:
       - GO-2025-3487
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.*Request.Reply, golang.org/x/crypto/ssh.*extChannel.Read, golang.org/x/crypto/ssh.*extChannel.Write, golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/git.*Repository.GetLanguageStats'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3150,9 +3598,11 @@ rows:
       - GO-2025-3503
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -3163,9 +3613,11 @@ rows:
       - GO-2025-3595
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/html.*Tokenizer.Next, golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3181,9 +3633,11 @@ rows:
       - GO-2025-3540
     package: github.com/redis/go-redis/v9@v9.7.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/redis/go-redis/v9.*baseClient.initConn reached from code.gitea.io/gitea/modules/cache.*RedisCacher.Flush'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3207,9 +3661,11 @@ rows:
       - GO-2025-3553
     package: github.com/golang-jwt/jwt/v4@v4.5.1
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     gap: 'unfiled: reachable_candidate'
@@ -3228,9 +3684,11 @@ rows:
       - GO-2025-3553
     package: github.com/golang-jwt/jwt/v5@v5.2.1
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/golang-jwt/jwt/v5.*Parser.ParseUnverified reached from code.gitea.io/gitea/services/actions.TokenToTaskID'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_emitted
     gap: 'unfiled: not_emitted'
@@ -3240,9 +3698,11 @@ rows:
       - GO-2025-3605
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: package_version_unresolved
@@ -3252,9 +3712,11 @@ rows:
       - GO-2026-4440
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3271,9 +3733,11 @@ rows:
       - GO-2025-4116
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh/agent.*agentKeyringSigner.Sign, golang.org/x/crypto/ssh/agent.*agentKeyringSigner.SignWithAlgorithm reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3299,9 +3763,11 @@ rows:
       - GO-2025-4135
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -3312,9 +3778,11 @@ rows:
       - GO-2025-3922
     package: github.com/ulikunitz/xz@v0.5.12
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/ulikunitz/xz.*Reader.Read, github.com/ulikunitz/xz.*Writer.Close, github.com/ulikunitz/xz.*Writer.Write, github.com/ulikunitz/xz.NewReader, github.com/ulikunitz/xz.init, github.com/ulikunitz/xz.noneHash.Write, github.com/ulikunitz/xz/lzma.*Writer2.Close, github.com/ulikunitz/xz/lzma.*chunkHeader.String reached from code.gitea.io/gitea/modules/packages/arch.ParsePackage'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3330,9 +3798,11 @@ rows:
       - GO-2025-4134
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3349,9 +3819,11 @@ rows:
       - GO-2026-4441
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3368,9 +3840,11 @@ rows:
       - GO-2025-3988
     package: github.com/wneessen/go-mail@v0.5.2
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/wneessen/go-mail.*Msg.GetRecipients, github.com/wneessen/go-mail.*Msg.SetAddrHeader, github.com/wneessen/go-mail.*Msg.SetDateWithValue, github.com/wneessen/go-mail.*Msg.SetGenHeader, github.com/wneessen/go-mail.*Msg.WriteTo, github.com/wneessen/go-mail.*msgWriter.Write, github.com/wneessen/go-mail/smtp.*Client.Mail, github.com/wneessen/go-mail/smtp.*Client.Rcpt reached from code.gitea.io/gitea/modules/packages/rubygems.*MarshalEncoder.Encode'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3386,9 +3860,11 @@ rows:
       - GO-2025-4188
     package: github.com/sirupsen/logrus@v1.9.3
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3398,9 +3874,11 @@ rows:
       - GO-2026-4316
     package: github.com/go-chi/chi/v5@v5.1.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3410,9 +3888,11 @@ rows:
       - GO-2025-3770
     package: github.com/go-chi/chi/v5@v5.1.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3422,9 +3902,11 @@ rows:
       - GO-2025-3754
     package: github.com/cloudflare/circl@v1.5.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/cloudflare/circl/dh/x25519.KeyGen, github.com/cloudflare/circl/dh/x448.init, github.com/cloudflare/circl/internal/sha3.*State.Reset, github.com/cloudflare/circl/math/fp25519.P, github.com/cloudflare/circl/math/fp448.InvSqrt, github.com/cloudflare/circl/math/fp448.ToBytes, github.com/cloudflare/circl/sign/ed25519.PrivateKey.Seed, github.com/cloudflare/circl/sign/ed25519.Verify reached from code.gitea.io/gitea/services/packages/rpm.GetOrCreateKeyPair'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3441,9 +3923,11 @@ rows:
       - GHSA-j6qf-3m9c-vwj3
     package: github.com/go-chi/chi/v5@v5.1.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3453,9 +3937,11 @@ rows:
       - GO-2026-6865
     package: github.com/klauspost/compress@v1.17.11
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/klauspost/compress/fse.Compress, github.com/klauspost/compress/fse.Decompress, github.com/klauspost/compress/huff0.Compress1X, github.com/klauspost/compress/huff0.Compress4X, github.com/klauspost/compress/huff0.ReadTable reached from code.gitea.io/gitea/modules/zstd.*Writer.Close'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3474,9 +3960,11 @@ rows:
       - GO-2026-4550
     package: github.com/cloudflare/circl@v1.5.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/cloudflare/circl/dh/x25519.KeyGen, github.com/cloudflare/circl/dh/x25519.init, github.com/cloudflare/circl/dh/x448.KeyGen, github.com/cloudflare/circl/internal/sha3.*State.Read, github.com/cloudflare/circl/math.init, github.com/cloudflare/circl/math/fp25519.Cmov, github.com/cloudflare/circl/math/fp25519.SetOne, github.com/cloudflare/circl/math/fp448.SetOne reached from code.gitea.io/gitea/services/packages/rpm.init'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3494,9 +3982,11 @@ rows:
       - GO-2026-5334
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3506,9 +3996,11 @@ rows:
       - GO-2026-6057
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3518,9 +4010,11 @@ rows:
       - GO-2026-6051
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3530,9 +4024,11 @@ rows:
       - GO-2026-6339
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3542,9 +4038,11 @@ rows:
       - GO-2026-6338
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3554,9 +4052,11 @@ rows:
       - GO-2026-5365
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3566,9 +4066,11 @@ rows:
       - GO-2026-6030
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3578,9 +4080,11 @@ rows:
       - GO-2026-5327
     package: go.mongodb.org/mongo-driver@v1.17.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3590,9 +4094,11 @@ rows:
       - GO-2026-6083
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3602,9 +4108,11 @@ rows:
       - GO-2026-6081
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3614,9 +4122,11 @@ rows:
       - GO-2026-6334
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3626,9 +4136,11 @@ rows:
       - GO-2026-5721
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3638,9 +4150,11 @@ rows:
       - GO-2026-6076
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3650,9 +4164,11 @@ rows:
       - GO-2026-5028
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3668,9 +4184,11 @@ rows:
       - GO-2026-5029
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3687,9 +4205,11 @@ rows:
       - GO-2026-6333
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3699,9 +4219,11 @@ rows:
       - GO-2026-5243
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3711,9 +4233,11 @@ rows:
       - GO-2026-6340
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3723,9 +4247,11 @@ rows:
       - GO-2026-5448
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3735,9 +4261,11 @@ rows:
       - GO-2026-6343
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3747,9 +4275,11 @@ rows:
       - GO-2026-4473
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/go-git/go-git/v5/plumbing.HashSlice.Len, github.com/go-git/go-git/v5/plumbing.HashSlice.Less, github.com/go-git/go-git/v5/plumbing/format/packfile.*scannerReader.Seek, github.com/go-git/go-git/v5/plumbing/transport/internal/common.NewClient, github.com/go-git/go-git/v5/utils/ioutil.*readerAtAsReader.Read, github.com/go-git/go-git/v5/utils/ioutil.init, github.com/go-git/go-git/v5/utils/merkletrie/noder.init, github.com/go-git/go-git/v5/utils/sync.init reached from code.gitea.io/gitea/modules/git.ParseCatFileTreeLine'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3765,9 +4295,11 @@ rows:
       - GO-2026-5510
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3777,9 +4309,11 @@ rows:
       - GO-2026-6336
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3789,9 +4323,11 @@ rows:
       - GO-2026-6342
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3801,9 +4337,11 @@ rows:
       - GO-2026-6344
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3813,9 +4351,11 @@ rows:
       - GO-2026-6341
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3825,9 +4365,11 @@ rows:
       - GO-2026-4503
     package: filippo.io/edwards25519@v1.1.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -3837,9 +4379,11 @@ rows:
       - GO-2026-5030
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup.PostProcessDefault'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -3855,9 +4399,11 @@ rows:
       - GO-2026-4559
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3867,9 +4413,11 @@ rows:
       - GO-2026-6335
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3879,9 +4427,11 @@ rows:
       - GO-2026-6347
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3891,9 +4441,11 @@ rows:
       - GO-2026-6031
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3903,9 +4455,11 @@ rows:
       - GO-2026-6017
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3915,9 +4469,11 @@ rows:
       - GO-2026-6043
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3927,9 +4483,11 @@ rows:
       - GO-2026-6345
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3939,9 +4497,11 @@ rows:
       - GO-2026-6346
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3951,9 +4511,11 @@ rows:
       - GO-2026-5081
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3963,9 +4525,11 @@ rows:
       - GO-2026-5299
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3975,9 +4539,11 @@ rows:
       - GO-2026-6337
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3987,9 +4553,11 @@ rows:
       - GO-2026-5286
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -3999,9 +4567,11 @@ rows:
       - GO-2026-6029
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4011,9 +4581,11 @@ rows:
       - GO-2026-5321
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4023,9 +4595,11 @@ rows:
       - GO-2026-5543
     package: github.com/Azure/go-ntlmssp@v0.0.0-20221128193559-754e69321358
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/Azure/go-ntlmssp.ProcessChallenge reached from code.gitea.io/gitea/services/mailer/sender.*ntlmAuth.Next'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4041,9 +4615,11 @@ rows:
       - GO-2026-4762
     package: google.golang.org/grpc@v1.67.1
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -4053,9 +4629,11 @@ rows:
       - GO-2026-4909
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/go-git/go-git/v5/plumbing/cache.init, github.com/go-git/go-git/v5/plumbing/format/pktline.init, github.com/go-git/go-git/v5/plumbing/protocol/packp/sideband.init, github.com/go-git/go-git/v5/plumbing/transport/client.init, github.com/go-git/go-git/v5/plumbing/transport/internal/common.NewClient, github.com/go-git/go-git/v5/utils/merkletrie/internal/frame.init, github.com/go-git/go-git/v5/utils/merkletrie/noder.init, github.com/go-git/go-git/v5/utils/sync.init$5 reached from code.gitea.io/gitea/services/actions.init'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4071,9 +4649,11 @@ rows:
       - GO-2026-4815
     package: golang.org/x/image@v0.21.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -4082,9 +4662,11 @@ rows:
       - GO-2026-4962
     package: golang.org/x/image@v0.21.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -4093,9 +4675,11 @@ rows:
       - GO-2026-4961
     package: golang.org/x/image@v0.21.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/image/webp.Decode, golang.org/x/image/webp.DecodeConfig reached from code.gitea.io/gitea/modules/avatar.ProcessAvatarImage'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4112,9 +4696,11 @@ rows:
       - GHSA-6jwv-w5xf-7j27
     package: go.etcd.io/bbolt@v1.3.11
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4124,9 +4710,11 @@ rows:
       - GO-2026-4891
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: package_version_unresolved
@@ -4136,9 +4724,11 @@ rows:
       - GO-2026-4890
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: package_version_unresolved
@@ -4148,9 +4738,11 @@ rows:
       - GO-2026-4910
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/go-git/go-git/v5/plumbing.Hash.IsZero, github.com/go-git/go-git/v5/plumbing/format/gitignore.NewMatcher, github.com/go-git/go-git/v5/plumbing/format/idxfile.objects.Less, github.com/go-git/go-git/v5/plumbing/storer.init, github.com/go-git/go-git/v5/plumbing/transport/file.init, github.com/go-git/go-git/v5/storage/filesystem.init, github.com/go-git/go-git/v5/utils/diff.init, github.com/go-git/go-git/v5/utils/ioutil.WriteNopCloser reached from code.gitea.io/gitea/services/actions.init'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4167,9 +4759,11 @@ rows:
       - GO-2026-6039
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4178,9 +4772,11 @@ rows:
       - GO-2026-5026
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/idna.ToASCII reached from code.gitea.io/gitea/services/migrations.*GogsDownloader.RoundTrip'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4200,9 +4796,11 @@ rows:
       - GO-2026-5024
     package: golang.org/x/sys@v0.29.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -4213,9 +4811,11 @@ rows:
       - GO-2026-5016
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -4226,9 +4826,11 @@ rows:
       - GO-2026-5014
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4246,9 +4848,11 @@ rows:
       - GO-2026-5018
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn, golang.org/x/crypto/ssh.NewSignerFromKey, golang.org/x/crypto/ssh.ParseAuthorizedKey, golang.org/x/crypto/ssh.ParsePrivateKey, golang.org/x/crypto/ssh.ParsePublicKey reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4264,9 +4868,11 @@ rows:
       - GO-2026-5017
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4284,9 +4890,11 @@ rows:
       - GO-2026-5019
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.*CertChecker.CheckCert, golang.org/x/crypto/ssh.*Certificate.Verify, golang.org/x/crypto/ssh.*skECDSAPublicKey.Verify, golang.org/x/crypto/ssh.*skEd25519PublicKey.Verify, golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/models/asymkey.VerifySSHKey'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4302,9 +4910,11 @@ rows:
       - GO-2026-5006
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -4315,9 +4925,11 @@ rows:
       - GO-2026-5005
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -4328,9 +4940,11 @@ rows:
       - GO-2026-5020
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.*extChannel.Write, golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4347,9 +4961,11 @@ rows:
       - GO-2026-5015
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -4360,9 +4976,11 @@ rows:
       - GO-2026-5105
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/go-git/go-git/v5/plumbing/transport/http.NewClient reached from code.gitea.io/gitea/services/actions.init'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4380,9 +4998,11 @@ rows:
       - GO-2026-5031
     package: golang.org/x/image@v0.21.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/image/bmp.Decode reached from code.gitea.io/gitea/modules/avatar.ProcessAvatarImage'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4399,9 +5019,11 @@ rows:
       - GO-2026-5027
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup.PostProcessDefault'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4417,9 +5039,11 @@ rows:
       - GO-2026-5025
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup.PostProcessDefault'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4436,9 +5060,11 @@ rows:
       - GO-2026-5021
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -4449,9 +5075,11 @@ rows:
       - GO-2026-6082
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4461,9 +5089,11 @@ rows:
       - GO-2026-5490
     package: github.com/go-git/go-billy/v5@v5.6.1
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/go-git/go-billy/v5/helper/chroot.New reached from code.gitea.io/gitea/services/actions.init'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4487,9 +5117,11 @@ rows:
       - GO-2026-5597
     package: github.com/go-git/go-billy/v5@v5.6.1
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/go-git/go-billy/v5/helper/chroot.New, github.com/go-git/go-billy/v5/osfs.New reached from code.gitea.io/gitea/services/actions.init'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4511,9 +5143,11 @@ rows:
       - GO-2026-5074
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -4524,9 +5158,11 @@ rows:
       - GO-2026-5496
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/go-git/go-git/v5/plumbing.Hash.String, github.com/go-git/go-git/v5/plumbing.HashSlice.Less, github.com/go-git/go-git/v5/plumbing/format/gitignore.ParsePattern, github.com/go-git/go-git/v5/plumbing/format/packfile.*Error.Error, github.com/go-git/go-git/v5/plumbing/object.init, github.com/go-git/go-git/v5/utils/diff.init, github.com/go-git/go-git/v5/utils/merkletrie.init, github.com/go-git/go-git/v5/utils/sync.init$3 reached from code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4542,9 +5178,11 @@ rows:
       - GO-2026-5336
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -4555,9 +5193,11 @@ rows:
       - GO-2026-5023
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4575,9 +5215,11 @@ rows:
       - GO-2026-5013
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4595,9 +5237,11 @@ rows:
       - GO-2026-5033
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -4608,9 +5252,11 @@ rows:
       - GO-2026-5032
     package: golang.org/x/image@v0.21.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -4619,9 +5265,11 @@ rows:
       - GO-2026-5061
     package: golang.org/x/image@v0.21.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/image/webp.Decode, golang.org/x/image/webp.DecodeConfig, golang.org/x/image/webp.init reached from code.gitea.io/gitea/modules/avatar.ProcessAvatarImage'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4636,9 +5284,11 @@ rows:
       - GO-2026-5062
     package: golang.org/x/image@v0.21.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -4647,9 +5297,11 @@ rows:
       - GO-2026-6222
     package: golang.org/x/image@v0.21.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/image/vp8l.Decode reached from code.gitea.io/gitea/modules/avatar.ProcessAvatarImage'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4668,9 +5320,11 @@ rows:
       - GO-2026-5066
     package: golang.org/x/image@v0.21.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -4680,9 +5334,11 @@ rows:
       - GO-2026-6036
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4692,9 +5348,11 @@ rows:
       - GO-2026-5320
     package: github.com/yuin/goldmark@v1.7.8
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/yuin/goldmark/renderer/html.*Renderer.renderAutoLink, github.com/yuin/goldmark/renderer/html.*Renderer.renderImage, github.com/yuin/goldmark/renderer/html.*Renderer.renderLink reached from code.gitea.io/gitea/modules/markup/markdown.*ASTTransformer.Transform'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4713,9 +5371,11 @@ rows:
       - GO-2026-6048
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4725,9 +5385,11 @@ rows:
       - GO-2026-6065
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4737,9 +5399,11 @@ rows:
       - GO-2026-6064
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4749,9 +5413,11 @@ rows:
       - GO-2026-6078
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4761,9 +5427,11 @@ rows:
       - GO-2026-6045
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4773,9 +5441,11 @@ rows:
       - GO-2026-6034
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4785,9 +5455,11 @@ rows:
       - GO-2026-6042
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4797,9 +5469,11 @@ rows:
       - GO-2026-6072
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4809,9 +5483,11 @@ rows:
       - GO-2026-6037
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4820,9 +5496,11 @@ rows:
       - GO-2026-6629
     package: golang.org/x/text@v0.21.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -4832,9 +5510,11 @@ rows:
       - GO-2026-5970
     package: golang.org/x/text@v0.21.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/text/unicode/norm.Form.Append, golang.org/x/text/unicode/norm.Form.AppendString, golang.org/x/text/unicode/norm.Form.FirstBoundaryInString, golang.org/x/text/unicode/norm.Form.IsNormalString, golang.org/x/text/unicode/norm.Form.Properties, golang.org/x/text/unicode/norm.Form.PropertiesString, golang.org/x/text/unicode/norm.Form.QuickSpan, golang.org/x/text/unicode/norm.Form.String reached from code.gitea.io/gitea/models/user.NormalizeUserName'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4851,9 +5531,11 @@ rows:
       - GO-2026-6303
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4870,9 +5552,11 @@ rows:
       - GO-2026-6355
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -4889,9 +5573,11 @@ rows:
       - GO-2026-6180
     package: golang.org/x/mod@v0.22.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: vulnerable_symbol_unresolved
@@ -4901,9 +5587,11 @@ rows:
       - GO-2026-6179
     package: golang.org/x/mod@v0.22.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: vulnerable_symbol_unresolved
@@ -4914,9 +5602,11 @@ rows:
       - GO-2026-6035
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4926,9 +5616,11 @@ rows:
       - GO-2026-6027
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4938,9 +5630,11 @@ rows:
       - GO-2026-6054
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4950,9 +5644,11 @@ rows:
       - GO-2026-6038
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4962,9 +5658,11 @@ rows:
       - GO-2026-6075
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4974,9 +5672,11 @@ rows:
       - GO-2026-6041
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4986,9 +5686,11 @@ rows:
       - GO-2026-6077
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -4998,9 +5700,11 @@ rows:
       - GO-2026-6056
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5010,9 +5714,11 @@ rows:
       - GO-2026-6046
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5022,9 +5728,11 @@ rows:
       - GO-2026-6044
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5034,9 +5742,11 @@ rows:
       - GO-2026-6079
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5046,9 +5756,11 @@ rows:
       - GO-2026-6060
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5058,9 +5770,11 @@ rows:
       - GO-2026-6028
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5070,9 +5784,11 @@ rows:
       - GO-2026-6053
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5082,9 +5798,11 @@ rows:
       - GO-2026-6070
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5094,9 +5812,11 @@ rows:
       - GO-2026-6062
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5106,9 +5826,11 @@ rows:
       - GO-2026-6073
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5118,9 +5840,11 @@ rows:
       - GO-2026-6055
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5130,9 +5854,11 @@ rows:
       - GO-2026-6047
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5142,9 +5868,11 @@ rows:
       - GO-2026-6080
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5154,9 +5882,11 @@ rows:
       - GO-2026-6084
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5166,9 +5896,11 @@ rows:
       - GO-2026-6058
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5178,9 +5910,11 @@ rows:
       - GO-2026-6086
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5190,9 +5924,11 @@ rows:
       - GO-2026-6050
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5202,9 +5938,11 @@ rows:
       - GO-2026-6067
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5214,9 +5952,11 @@ rows:
       - GO-2026-6066
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5226,9 +5966,11 @@ rows:
       - GO-2026-6069
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5238,9 +5980,11 @@ rows:
       - GO-2026-6040
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5250,9 +5994,11 @@ rows:
       - GO-2026-6049
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5262,9 +6008,11 @@ rows:
       - GO-2026-6071
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5274,9 +6022,11 @@ rows:
       - GO-2026-5841
     package: github.com/klauspost/compress@v1.17.11
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -5287,9 +6037,11 @@ rows:
       - GO-2026-6213
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -5300,9 +6052,11 @@ rows:
       - GO-2026-6214
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -5313,9 +6067,11 @@ rows:
       - GO-2026-5774
     package: github.com/go-chi/chi/v5@v5.1.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5325,9 +6081,11 @@ rows:
       - GO-2026-5777
     package: github.com/go-chi/chi/v5@v5.1.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/go-chi/chi/v5/middleware.RealIP reached from code.gitea.io/gitea/modules/web.*Router.Any'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -5345,9 +6103,11 @@ rows:
       - GO-2026-5775
     package: github.com/go-chi/chi/v5@v5.1.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/go-chi/chi/v5/middleware.RealIP reached from code.gitea.io/gitea/modules/web.*Router.Any'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -5364,9 +6124,11 @@ rows:
       - GO-2026-6860
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -5382,9 +6144,11 @@ rows:
       - GO-2026-6354
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -5402,9 +6166,11 @@ rows:
       - GO-2026-6441
     package: google.golang.org/grpc@v1.67.1
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -5414,9 +6180,11 @@ rows:
       - GO-2026-6348
     package: google.golang.org/grpc@v1.67.1
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -5426,9 +6194,11 @@ rows:
       - GO-2026-6443
     package: google.golang.org/grpc@v1.67.1
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -5437,9 +6207,11 @@ rows:
       - GO-2026-6601
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5448,9 +6220,11 @@ rows:
       - GO-2026-6602
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5459,9 +6233,11 @@ rows:
       - GO-2026-6858
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5470,9 +6246,11 @@ rows:
       - GO-2026-6857
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5481,9 +6259,11 @@ rows:
       - GO-2026-6856
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5492,9 +6272,11 @@ rows:
       - GO-2026-6855
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5503,9 +6285,11 @@ rows:
       - GO-2026-6854
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5514,9 +6298,11 @@ rows:
       - GO-2026-6853
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5525,9 +6311,11 @@ rows:
       - GO-2026-6852
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5536,9 +6324,11 @@ rows:
       - GO-2026-6851
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5547,9 +6337,11 @@ rows:
       - GO-2026-6850
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5558,9 +6350,11 @@ rows:
       - GO-2026-6849
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5569,9 +6363,11 @@ rows:
       - GO-2026-6848
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: go_toolchain_unresolved
@@ -5580,9 +6376,11 @@ rows:
       - GO-2026-6866
     package: golang.org/x/net@v0.34.0
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: golang.org/x/net/html.Render reached from code.gitea.io/gitea/modules/markup.PostProcessDefault'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -5598,9 +6396,11 @@ rows:
       - GO-2026-6859
     package: '-'
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:
@@ -5615,9 +6415,11 @@ rows:
       - GO-2026-5091
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5626,9 +6428,11 @@ rows:
       - GO-2023-2048
     package: github.com/cyphar/filepath-securejoin@v0.3.6
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5636,9 +6440,11 @@ rows:
       - GHSA-77vh-xpmg-72qh
     package: github.com/opencontainers/image-spec@v1.1.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5647,9 +6453,11 @@ rows:
       - GO-2024-2453
     package: github.com/cloudflare/circl@v1.5.0
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5658,9 +6466,11 @@ rows:
       - GO-2026-6061
     package: google.golang.org/grpc@v1.67.1
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -5669,9 +6479,11 @@ rows:
       - GO-2023-2153
     package: google.golang.org/grpc@v1.67.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5680,9 +6492,11 @@ rows:
       - GO-2026-6074
     package: code.gitea.io/gitea@v1.23.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5691,9 +6505,11 @@ rows:
       - GO-2026-5693
     package: github.com/go-git/go-git/v5@v5.13.1
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: imported, vulnerable function not called
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: refutation_withheld
@@ -5703,9 +6519,11 @@ rows:
       - GO-2024-2978
     package: google.golang.org/grpc@v1.67.1
     target: gitea
-    truth: unknown
+    comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: undetermined
       reason: advisory_unknown_to_analyzer
@@ -5713,9 +6531,11 @@ rows:
       - GO-2026-5932
     package: golang.org/x/crypto@v0.32.0
     target: gitea
-    truth: not_reachable
+    comparator_observed: not_reachable
     basis: required, vulnerable package never imported
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: not_exploitable
       reason: vulnerable_symbol_unreachable
@@ -5723,9 +6543,11 @@ rows:
       - GO-2026-6905
     package: github.com/blakesmith/ar@v0.0.0-20190502131153-809d4375e1fb
     target: gitea
-    truth: reachable
+    comparator_observed: reachable
     basis: 'symbol-level: github.com/blakesmith/ar.*Reader.Read reached from code.gitea.io/gitea/modules/git.ParseCatFileTreeLine'
     source: govulncheck v1.9.0
+    adjudicated:
+      status: unknown
     engine_expected:
       verdict: reachable_candidate
     path_review:

@@ -54,6 +54,9 @@ const (
 	// KindLedger is a showcase scan whose rows differ from its ledger, or a ledger that does not
 	// match the pinned build scope.
 	KindLedger = "ledger_mismatch"
+	// KindIncompleteScan is a showcase scan that did not see the whole build: an empty or short package
+	// inventory, a tool or toolchain failure, or fewer ledger rows answered than the ledger holds.
+	KindIncompleteScan = "incomplete_scan"
 )
 
 // Failure is one reason a repository failed the floor.

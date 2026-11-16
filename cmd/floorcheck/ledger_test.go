@@ -26,9 +26,9 @@ header:
 rows:
 `
 
-func ledgerRow(advisory, pkg, truth, verdict, reason, gap string) string {
-	r := "  - advisory: [" + advisory + "]\n    package: " + pkg + "\n    target: app\n    truth: " + truth +
-		"\n    basis: b\n    source: s\n    engine_expected: {verdict: " + verdict + ", reason: " + reason + "}\n"
+func ledgerRow(advisory, pkg, observed, verdict, reason, gap string) string {
+	r := "  - advisory: [" + advisory + "]\n    package: " + pkg + "\n    target: app\n    comparator_observed: " + observed +
+		"\n    basis: b\n    source: s\n    adjudicated: {status: unknown}\n    engine_expected: {verdict: " + verdict + ", reason: " + reason + "}\n"
 	if gap != "" {
 		r += "    gap: \"" + gap + "\"\n"
 	}
@@ -43,10 +43,10 @@ func TestParseLedger(t *testing.T) {
 		{"valid", good, ""},
 		{"gap on disagreement", ledgerRow("A-1", "m@v1", "reachable", "undetermined", "refutation_withheld", "#790"), ""},
 		{"disagreement without a gap", ledgerRow("A-1", "m@v1", "reachable", "undetermined", "refutation_withheld", ""), "needs a gap"},
-		{"unknown truth claims nothing", ledgerRow("A-1", "m@v1", "unknown", "undetermined", "x", ""), ""},
+		{"unknown observation claims nothing", ledgerRow("A-1", "m@v1", "unknown", "undetermined", "x", ""), ""},
 		{"duplicate row", good + good, "duplicate row"},
 		{"unsorted alias set", ledgerRow("GHSA-1, CVE-1", "m@v1", "unknown", "undetermined", "x", ""), "not sorted"},
-		{"bad truth", ledgerRow("A-1", "m@v1", "maybe", "undetermined", "x", ""), "truth \"maybe\""},
+		{"bad observation", ledgerRow("A-1", "m@v1", "maybe", "undetermined", "x", ""), "comparator_observed \"maybe\""},
 		{"unknown field", good + "    colour: red\n", "colour"},
 	} {
 		_, err := parseLedger([]byte(ledgerHeaderYAML + tc.rows))

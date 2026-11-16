@@ -11,14 +11,25 @@ import (
 
 var testPath = []string{"app/x.Handler", "net/http.Server.Serve", "m/p.Parser.Parse"}
 
+var testBound = BoundTo{Target: "app@c1", Component: "m@v1",
+	Analysis: Analysis{AssayVersion: "v", CorpusRelease: "corpus-92d72057330c", GoVersion: "1.23.12"}}
+
+const testBoundYAML = "{target: app@c1, component: m@v1, analysis: {assay_version: v, corpus_release: corpus-92d72057330c, go_version: 1.23.12}}"
+
 // reviewYAML is a path_review block (and, with extra, further row keys) for the row ledgerRow writes.
 func reviewYAML(status, extra string) string {
-	pr := newPathReview(testPath)
+	pr := newPathReview(testPath, testBound)
 	y := "    path_review:\n      path: [" + strings.Join(testPath, ", ") + "]\n      hops: 3\n      path_sha: " + pr.PathSHA + "\n      status: " + status + "\n"
 	if status != StatusUnreviewed {
-		y += "      by: Eric\n      date: 2026-11-16\n      note: read it\n"
+		y += "      by: Eric\n      date: 2026-11-16\n      note: read it\n      bound_to: " + testBoundYAML + "\n"
 	}
 	return y + extra
+}
+
+// adjudicate gives a row ledgerRow wrote a reviewer's conclusion.
+func adjudicate(row string) string {
+	return strings.Replace(row, "adjudicated: {status: unknown}",
+		"adjudicated: {status: reachable, by: Eric, date: 2026-11-16, evidence: \"x.go:1\", bound_to: "+testBoundYAML+"}", 1)
 }
 
 func TestPathReviewRules(t *testing.T) {
@@ -30,10 +41,11 @@ func TestPathReviewRules(t *testing.T) {
 		{"seeded unreviewed", reach + reviewYAML(StatusUnreviewed, ""), ""},
 		{"missing block", reach, "no path_review block"},
 		{"block on a row that is not reachable", notReach + reviewYAML(StatusUnreviewed, ""), "not reachable_candidate"},
-		{"reviewed real and featured", reach + reviewYAML(StatusReal, "    featured: true\n"), ""},
+		{"reviewed real and featured", adjudicate(reach) + reviewYAML(StatusReal, "    featured: true\n"), ""},
 		{"featured while unreviewed", reach + reviewYAML(StatusUnreviewed, "    featured: true\n"), "only a real path may be featured"},
 		{"featured while artifact", reach + reviewYAML(StatusArtifact, "    featured: true\n"), "only a real path may be featured"},
-		{"featured without a block", notReach + "    featured: true\n", "featured: true needs"},
+		{"featured without a block", adjudicate(notReach) + "    featured: true\n", "featured: true needs"},
+		{"reviewed without bound_to", reach + strings.Replace(reviewYAML(StatusReal, ""), "      bound_to: "+testBoundYAML+"\n", "", 1), "needs a bound_to"},
 		{"real without a reviewer", reach + strings.Replace(reviewYAML(StatusReal, ""), "      by: Eric\n", "", 1), "needs by, date and note"},
 		{"unknown status", reach + reviewYAML("maybe", ""), "status \"maybe\""},
 		{"hand-edited path", reach + strings.Replace(reviewYAML(StatusUnreviewed, ""), "m/p.Parser.Parse]", "m/p.Other]", 1), "does not hash the path"},
@@ -99,7 +111,7 @@ func TestPathChangeAndSeed(t *testing.T) {
 	b := "scip-go gomod m v1 m/p/Parse()."
 	c := "scip-go gomod m v1 m/p/Other()."
 	row := LedgerRow{Advisory: []string{"A-1"}, Package: "m@v1", Target: "app", EngineExpected: Engine{Verdict: report.VerdictReachableCandidate}}
-	row.PathReview = newPathReview([]string{"app/x.Handler", "m/p.Parse"})
+	row.PathReview = newPathReview([]string{"app/x.Handler", "m/p.Parse"}, testBound)
 	l := Ledger{Header: LedgerHeader{Target: "app"}, Rows: []LedgerRow{row}}
 
 	same := engineRows([]report.AdvisoryFinding{rcFinding("A-1", a, b)})
@@ -115,13 +127,16 @@ func TestPathChangeAndSeed(t *testing.T) {
 
 	// Seeding keeps a review while the path holds and resets it, and the featured flag, when it moves.
 	row.PathReview.Status, row.PathReview.By, row.PathReview.Date, row.PathReview.Note = StatusReal, "Eric", "2026-11-16", "ok"
-	row.Featured, row.Truth, row.Basis, row.Source = true, TruthReachable, "b", "s"
+	row.PathReview.BoundTo = &BoundTo{Target: "app@c1", Component: "m@v1", Symbol: "m/p.Parse", Analysis: testBound.Analysis}
+	row.Featured, row.ComparatorObserved, row.Basis, row.Source = true, TruthReachable, "b", "s"
+	row.Adjudicated = Adjudicated{Status: TruthReachable, By: "Eric", Date: "2026-11-16", Evidence: "x.go:1", BoundTo: row.PathReview.BoundTo}
+	in := scanInputs{Commit: "c1", AssayVersion: "v", CorpusRelease: "corpus-92d72057330c", GoVersion: "1.23.12"}
 	prior := Ledger{Rows: []LedgerRow{row}}
-	kept := seedLedger(LedgerHeader{Target: "app"}, report.Report{Advisories: []report.AdvisoryFinding{rcFinding("A-1", a, b)}}, Evidence{}, &prior)
+	kept := seedLedger(LedgerHeader{Target: "app"}, report.Report{Advisories: []report.AdvisoryFinding{rcFinding("A-1", a, b)}}, Evidence{}, &prior, in)
 	if r := kept.Rows[0]; r.PathReview.Status != StatusReal || !r.Featured {
 		t.Errorf("unchanged path lost its review: %+v featured=%v", r.PathReview, r.Featured)
 	}
-	reset := seedLedger(LedgerHeader{Target: "app"}, report.Report{Advisories: []report.AdvisoryFinding{rcFinding("A-1", a, c)}}, Evidence{}, &prior)
+	reset := seedLedger(LedgerHeader{Target: "app"}, report.Report{Advisories: []report.AdvisoryFinding{rcFinding("A-1", a, c)}}, Evidence{}, &prior, in)
 	if r := reset.Rows[0]; r.PathReview.Status != StatusUnreviewed || r.PathReview.By != "" || r.Featured || r.PathReview.Path[1] != "m/p.Other" {
 		t.Errorf("changed path kept its review: %+v featured=%v", r.PathReview, r.Featured)
 	}
@@ -132,7 +147,7 @@ func TestPathChangeAndSeed(t *testing.T) {
 
 func TestReviewAid(t *testing.T) {
 	row := LedgerRow{Advisory: []string{"A-1"}, Package: "m@v1", EngineExpected: Engine{Verdict: report.VerdictReachableCandidate},
-		PathReview: newPathReview([]string{"app/x.Handler", "bytes.Buffer.ReadFrom", "example.com/m/p.Read"})}
+		PathReview: newPathReview([]string{"app/x.Handler", "bytes.Buffer.ReadFrom", "example.com/m/p.Read"}, testBound)}
 	skipped := LedgerRow{Advisory: []string{"A-2"}, Package: "m@v1", EngineExpected: Engine{Verdict: report.VerdictUndetermined}}
 	var out bytes.Buffer
 	reachable, dyn := writeReviewAid(&out, Ledger{Header: LedgerHeader{MainModule: "app"}, Rows: []LedgerRow{row, skipped}})

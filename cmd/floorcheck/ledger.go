@@ -16,8 +16,8 @@ import (
 // LedgerSchema names the floor/expect/<target>.yaml format.
 const LedgerSchema = "ferralon.floor-ledger.v1"
 
-// Truth values: what a human (or, here, the comparator) says is the case, kept apart from what Assay
-// emits today.
+// Conclusion values, shared by comparator_observed (what the comparator says) and adjudicated.status
+// (what a reviewer concludes), both kept apart from what Assay emits today.
 const (
 	TruthReachable    = "reachable"
 	TruthNotReachable = "not_reachable"
@@ -70,21 +70,25 @@ type Comparator struct {
 	Evidence string `yaml:"evidence"`
 }
 
-// LedgerRow is one expectation. Truth is the comparator-derived column, EngineExpected is what Assay
-// emits today, and Gap names the tracker issue when the two differ.
+// LedgerRow is one expectation. ComparatorObserved is what the comparator said (seeded mechanically; it
+// is an observation, not ground truth), Adjudicated is a person's conclusion, EngineExpected is what
+// Assay emits today, and Gap names the tracker issue when the comparator and the engine differ.
 type LedgerRow struct {
 	// Advisory is the alias set, sorted: every id the engine files the vulnerability under.
-	Advisory       []string `yaml:"advisory"`
-	Package        string   `yaml:"package"`
-	Target         string   `yaml:"target"`
-	Truth          string   `yaml:"truth"`
-	Basis          string   `yaml:"basis"`
-	Source         string   `yaml:"source"`
-	EngineExpected Engine   `yaml:"engine_expected"`
-	Gap            string   `yaml:"gap,omitempty"`
+	Advisory []string `yaml:"advisory"`
+	Package  string   `yaml:"package"`
+	Target   string   `yaml:"target"`
+	// ComparatorObserved, Basis and Source go together: the comparator's reading, why, and where from.
+	ComparatorObserved string      `yaml:"comparator_observed"`
+	Basis              string      `yaml:"basis"`
+	Source             string      `yaml:"source"`
+	Adjudicated        Adjudicated `yaml:"adjudicated"`
+	EngineExpected     Engine      `yaml:"engine_expected"`
+	Gap                string      `yaml:"gap,omitempty"`
 	// PathReview is on every row whose engine_expected verdict is reachable_candidate, and only those.
 	PathReview *PathReview `yaml:"path_review,omitempty"`
-	// Featured marks a row a demo shows; allowed only once its path_review status is real.
+	// Featured marks a row a demo shows; allowed only once its path_review status is real (reachable
+	// rows) and a reviewer has adjudicated it.
 	Featured bool `yaml:"featured,omitempty"`
 }
 
@@ -171,8 +175,8 @@ func (l Ledger) validate(needReview bool) error {
 			return fmt.Errorf("row %d (%s): advisory ids are not sorted", i+1, r.Key())
 		case r.Target != h.Target:
 			return fmt.Errorf("row %d (%s): target %q is not the ledger's %q", i+1, r.Key(), r.Target, h.Target)
-		case !slices.Contains(truths, r.Truth):
-			return fmt.Errorf("row %d (%s): truth %q is not one of %s", i+1, r.Key(), r.Truth, strings.Join(truths, ", "))
+		case !slices.Contains(truths, r.ComparatorObserved):
+			return fmt.Errorf("row %d (%s): comparator_observed %q is not one of %s", i+1, r.Key(), r.ComparatorObserved, strings.Join(truths, ", "))
 		case r.Basis == "" || r.Source == "":
 			return fmt.Errorf("row %d (%s): basis and source are required", i+1, r.Key())
 		case r.EngineExpected.Verdict == "":
@@ -181,18 +185,20 @@ func (l Ledger) validate(needReview bool) error {
 			return fmt.Errorf("row %d: duplicate row %s", i+1, r.Key())
 		case r.validatePathReview(needReview) != nil:
 			return fmt.Errorf("row %d (%s): %w", i+1, r.Key(), r.validatePathReview(needReview))
-		case disagrees(r.Truth, r.EngineExpected) && r.Gap == "":
-			return fmt.Errorf("row %d (%s): truth %s and engine_expected %s differ, so the row needs a gap", i+1, r.Key(), r.Truth, r.EngineExpected)
+		case r.validateAdjudicated() != nil:
+			return fmt.Errorf("row %d (%s): %w", i+1, r.Key(), r.validateAdjudicated())
+		case disagrees(r.ComparatorObserved, r.EngineExpected) && r.Gap == "":
+			return fmt.Errorf("row %d (%s): comparator_observed %s and engine_expected %s differ, so the row needs a gap", i+1, r.Key(), r.ComparatorObserved, r.EngineExpected)
 		}
 		seen[r.Key()] = true
 	}
 	return nil
 }
 
-// disagrees reports whether truth and the engine's verdict contradict each other. `unknown` and
-// `conditional` truths claim nothing to contradict.
-func disagrees(truth string, e Engine) bool {
-	switch truth {
+// disagrees reports whether the comparator's observation and the engine's verdict contradict each
+// other. `unknown` and `conditional` claim nothing to contradict.
+func disagrees(observed string, e Engine) bool {
+	switch observed {
 	case TruthReachable:
 		return e.Verdict != report.VerdictReachableCandidate
 	case TruthNotReachable:
@@ -214,6 +220,8 @@ type engineRow struct {
 	Engine   Engine
 	// Path is the call path of a reachable_candidate, as qualified hops.
 	Path []string
+	// Confidence is that finding's symbol_confidence.
+	Confidence string
 }
 
 // packageInstance names the resolved package instance a finding concerns: module@version.
@@ -301,14 +309,16 @@ func engineRows(advisories []report.AdvisoryFinding) []engineRow {
 			row.Advisory = append(row.Advisory, idsOf(f)...)
 			e := engineOf(f)
 			var path []string
+			var conf string
 			if e.Verdict == report.VerdictReachableCandidate {
 				path, _ = callPath(f)
+				conf = string(f.Evidence.SymbolConfidence)
 			}
 			// Equal verdicts keep the path that sorts first, so the row never depends on report order.
 			if row.Engine.Verdict == "" || strength[e.Verdict] > strength[row.Engine.Verdict] ||
 				(strength[e.Verdict] == strength[row.Engine.Verdict] && (e.Reason < row.Engine.Reason ||
 					(e.Reason == row.Engine.Reason && slices.Compare(path, row.Path) < 0))) {
-				row.Engine, row.Path = e, path
+				row.Engine, row.Path, row.Confidence = e, path, conf
 			}
 		}
 		for _, row := range sets {
@@ -328,6 +338,9 @@ type LedgerDiff struct {
 	// Lines is one line per differing row, in key order: missing, extra or changed, with the old and
 	// new value.
 	Lines []string
+	// Matched is how many ledger rows the scan answers: the engine emitted a row under the key, or the
+	// ledger expects none (not_emitted) and it emitted none.
+	Matched int
 }
 
 // compareLedger compares the engine's rows for target with the ledger's engine_expected: any missing,
@@ -355,6 +368,9 @@ func compareLedger(l Ledger, rows []engineRow) LedgerDiff {
 	for _, k := range keys {
 		w, inLedger := want[k]
 		g, inReport := got[k]
+		if inLedger && (inReport || w.EngineExpected.Verdict == VerdictNotEmitted) {
+			d.Matched++
+		}
 		switch {
 		case inLedger && !inReport && w.EngineExpected.Verdict == VerdictNotEmitted:
 			// the engine still emits nothing for it, as the ledger expects

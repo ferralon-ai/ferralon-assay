@@ -495,3 +495,12 @@ func TestDiffVerb(t *testing.T) {
 		}
 	}
 }
+
+func TestScanEnvPathWithoutInheritedPath(t *testing.T) {
+	for _, base := range [][]string{nil, {"PATH="}} {
+		p, _ := envValue(scanEnv(base, ScenarioBuild{}, "/scanner"), "PATH")
+		if p != "/scanner" {
+			t.Errorf("base %q: PATH %q, want only the scanner directory (an empty entry puts the working directory on PATH)", base, p)
+		}
+	}
+}

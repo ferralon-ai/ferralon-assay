@@ -308,7 +308,8 @@ func subjectRepo(repo string) (string, error) {
 		return "", bad
 	}
 	parts := strings.Split(strings.TrimSuffix(strings.TrimSuffix(u.Path, "/"), ".git"), "/")
-	if len(parts) != 3 || parts[0] != "" || !ghName.MatchString(parts[1]) || !ghName.MatchString(parts[2]) {
+	if len(parts) != 3 || parts[0] != "" || !ghName.MatchString(parts[1]) || !ghName.MatchString(parts[2]) ||
+		strings.Trim(parts[1], ".") == "" || strings.Trim(parts[2], ".") == "" {
 		return "", bad
 	}
 	return parts[1] + "/" + parts[2], nil

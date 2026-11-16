@@ -566,7 +566,10 @@ func scanEnv(base []string, b ScenarioBuild, scannerDir string) []string {
 			env = append(env, kv)
 		}
 	}
-	env = append(env, "PATH="+scannerDir+string(os.PathListSeparator)+path, "GOFLAGS=", "GOWORK=off",
+	if path != "" {
+		path = string(os.PathListSeparator) + path
+	}
+	env = append(env, "PATH="+scannerDir+path, "GOFLAGS=", "GOWORK=off",
 		"ASSAY_ISSUE=0", "ASSAY_PR_COMMENT=0", "ASSAY_CODE_SCANNING=0")
 	if b.Go != "" {
 		env = append(env, "GOTOOLCHAIN=go"+b.Go)

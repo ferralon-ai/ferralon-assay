@@ -71,6 +71,9 @@ type AssessConfig struct {
 	// InventoryMemo is the scan's memo of codebase_inventory's checkout-constant reads; nil repeats
 	// them per advisory. See WithInventoryMemo.
 	InventoryMemo *InventoryMemo
+	// SelectModule pins the affected_packages[] element the assessment adjudicates to the one naming
+	// this module, rather than the first the build carries. See WithSelectedModule.
+	SelectModule string
 }
 
 // AssessOption customizes the free-stage set built by AssessStages.
@@ -81,6 +84,14 @@ type AssessOption func(*AssessConfig)
 // behavior (no real analysis) — so existing tests and the default path are unchanged.
 func WithPlugin(p plugin.LanguagePlugin) AssessOption {
 	return func(c *AssessConfig) { c.Plugin = p }
+}
+
+// WithSelectedModule makes the assessment adjudicate the affected package naming module, the way a
+// scan that found only that package would, instead of the first affected package the build carries.
+// SiblingInstances names the modules a finding fans out to. A module the advisory does not name or
+// the build does not carry leaves the selection as if unset.
+func WithSelectedModule(module string) AssessOption {
+	return func(c *AssessConfig) { c.SelectModule = module }
 }
 
 // WithCheckout injects a Checkout into the codebase_inventory stage. When absent, that stage uses a
@@ -188,7 +199,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 	}
 	stages := []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, memo: cfg.InventoryMemo},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
 		maliciousPresence{},
 		disqualificationDiscovery{},
 	}
@@ -214,7 +225,7 @@ func SBOMStages(opts ...AssessOption) []Stage {
 	}
 	return []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, memo: cfg.InventoryMemo},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
 	}
 }
 
@@ -922,6 +933,9 @@ type codebaseInventory struct {
 	// go.work path relative to the checkout root, or "" to take the go.work the go command finds.
 	// See ResolveGoWorkspace.
 	subjectGoWork string
+	// selectModule pins the select-by-target pick to the affected package naming this module. Empty
+	// picks the first the build carries.
+	selectModule string
 }
 
 func (codebaseInventory) Name() string              { return "codebase_inventory" }
@@ -1323,7 +1337,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			// may sit inside its own. It is selected with no version, so the version axis stays open.
 			// The presence scan goes on past it to the first package with a resolved copy.
 			switch {
-			case !selected && (dep.Version != "" || dep.Found || rootPkg):
+			case !selected && (dep.Version != "" || dep.Found || rootPkg) && (s.selectModule == "" || pkg.Module == s.selectModule):
 				resolved, partialityFlags, isRoot = dep, flags, rootPkg
 				selectedModule, selectedCoordinate = pkg.Module, pkg.Coordinate
 				selected = true
@@ -2993,12 +3007,35 @@ func countedReachPaths(paths []plugin.ReachPath, a reachAttribution) []plugin.Re
 			own = append(own, p)
 		case owner == ownerNone:
 			unattributed = append(unattributed, p)
+		case a.isSibling(o.Module):
+			// Another major version of the selected module is its own package instance, with its own
+			// finding: its code is never this one's path.
 		case everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown):
 		default:
 			other = append(other, p)
 		}
 	}
 	return slices.Concat(own, unattributed, other)
+}
+
+// SiblingInstances returns the other major versions of the selected Go module that the build carries
+// and that are not provably outside the advisory's affected ranges. Each is a package instance of
+// its own: the assessment adjudicated the selected one, and a finding for a sibling is the same
+// advisory assessed with WithSelectedModule. It is nil for another language, an unselected package
+// or when no such sibling is present.
+func SiblingInstances(store artifact.Store, caseID string) []string {
+	a, ok := readReachAttribution(store, caseID)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, o := range a.others {
+		if a.isSibling(o.Module) && !everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown) && !slices.Contains(out, o.Module) {
+			out = append(out, o.Module)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // pathOwner is which package a reach path's sink is attributed to.
@@ -3028,6 +3065,20 @@ func (a reachAttribution) owner(pkg string) (presentRanges, pathOwner) {
 		}
 	}
 	return other, owner
+}
+
+// isSibling reports whether module is another major version of a selected module: the same module
+// path but for its major-version suffix, which makes it a distinct package instance in the build.
+func (a reachAttribution) isSibling(module string) bool {
+	if module == "" {
+		return false
+	}
+	for _, n := range a.selected {
+		if n != module && plugin.GoModuleFamily(n) == plugin.GoModuleFamily(module) {
+			return true
+		}
+	}
+	return false
 }
 
 // ownedLength is the length of the match by which the package named name owns import path pkg,

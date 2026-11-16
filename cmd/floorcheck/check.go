@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
@@ -44,6 +45,7 @@ const (
 	KindTruncated      = "scan_truncated"
 	KindUngroundedNE   = "ungrounded_not_exploitable"
 	KindUngroundedDisq = "ungrounded_disqualified"
+	KindPathOutside    = "path_outside_module"
 )
 
 // Failure is one reason a repository failed the floor.
@@ -148,6 +150,38 @@ func groundsOf(f report.AdvisoryFinding) grounds {
 	}
 }
 
+// pathOutsideModule reports whether a Go reachable_candidate row's call path never enters the row's own
+// module: no frame lies under the package's module path, so the path belongs to another package
+// instance (another major version of the module, say) and the row points the fix at the wrong one. A
+// row with no package (the toolchain), a standard-library row ("-" or "stdlib") and a row that
+// records no frames are exempt: there is nothing to compare.
+func pathOutsideModule(f report.AdvisoryFinding) bool {
+	if f.Verdict != report.VerdictReachableCandidate || f.Package == nil || !strings.EqualFold(f.Package.Ecosystem, "go") {
+		return false
+	}
+	module := f.Package.Name
+	if module == "" || module == "-" || module == "stdlib" || len(f.Evidence.CallPath) == 0 {
+		return false
+	}
+	for _, fr := range f.Evidence.CallPath {
+		if frameInModule(fr.Symbol, module) {
+			return false
+		}
+	}
+	return true
+}
+
+// frameInModule reports whether a call-path frame's symbol lies in module. A SCIP id
+// ("scip-go gomod <module> <version> <package>/<descriptor>") names its module in the third field,
+// compared whole, so github.com/x/y does not claim a frame of github.com/x/y/v5. Any other symbol is
+// read as a package-qualified name under the module's path.
+func frameInModule(symbol, module string) bool {
+	if f := strings.Fields(symbol); len(f) > 2 && f[0] == "scip-go" {
+		return f[2] == module
+	}
+	return symbol == module || strings.HasPrefix(symbol, module+"/") || strings.HasPrefix(symbol, module+".")
+}
+
 // findingLabel names a finding in the summary: its advisory id and, when it has one, its package.
 func findingLabel(f report.AdvisoryFinding) string {
 	if f.Package == nil {
@@ -188,6 +222,13 @@ func assessReport(res *RepoResult, r report.Report) {
 		res.Verdicts[f.Verdict]++
 		if f.Verdict == report.VerdictUndetermined {
 			reasons[f.UndeterminedReason]++
+		}
+		if pathOutsideModule(f) {
+			res.Failures = append(res.Failures, Failure{
+				Kind:     KindPathOutside,
+				Detail:   fmt.Sprintf("%s: the reachable path has no frame under its own module %s", findingLabel(f), f.Package.Name),
+				Findings: []string{findingLabel(f)},
+			})
 		}
 		switch groundsOf(f) {
 		case groundsMissing:

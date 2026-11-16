@@ -430,3 +430,52 @@ func TestSummarizeLanes(t *testing.T) {
 		}
 	}
 }
+
+func TestPathOutsideModule(t *testing.T) {
+	frames := func(syms ...string) []report.CallFrame {
+		var out []report.CallFrame
+		for _, s := range syms {
+			out = append(out, report.CallFrame{Symbol: s})
+		}
+		return out
+	}
+	const (
+		entry = "scip-go gomod example.com/app . example.com/app/main()."
+		v4    = "scip-go gomod github.com/golang-jwt/jwt/v4 v4.5.1 github.com/golang-jwt/jwt/v4/Parser#ParseUnverified()."
+		v5    = "scip-go gomod github.com/golang-jwt/jwt/v5 v5.2.1 github.com/golang-jwt/jwt/v5/Parser#ParseUnverified()."
+	)
+	for _, tc := range []struct {
+		name string
+		v    report.Verdict
+		pkg  *report.Package
+		path []report.CallFrame
+		want bool
+	}{
+		{"v5 path on the v4 row", report.VerdictReachableCandidate, &report.Package{Ecosystem: "Go", Name: "github.com/golang-jwt/jwt/v4"}, frames(entry, v5), true},
+		{"v5 path on the unversioned row", report.VerdictReachableCandidate, &report.Package{Ecosystem: "Go", Name: "github.com/golang-jwt/jwt"}, frames(entry, v5), true},
+		{"v5 path on the v5 row", report.VerdictReachableCandidate, &report.Package{Ecosystem: "Go", Name: "github.com/golang-jwt/jwt/v5"}, frames(entry, v5), false},
+		{"one frame under the module is enough", report.VerdictReachableCandidate, &report.Package{Ecosystem: "Go", Name: "github.com/golang-jwt/jwt/v4"}, frames(entry, v5, v4), false},
+		{"plain symbol under the module", report.VerdictReachableCandidate, &report.Package{Ecosystem: "Go", Name: "golang.org/x/net"}, frames("golang.org/x/net/http2.Transport"), false},
+		{"stdlib row", report.VerdictReachableCandidate, &report.Package{Ecosystem: "Go", Name: "-"}, frames(entry), false},
+		{"no package", report.VerdictReachableCandidate, nil, frames(entry), false},
+		{"no frames", report.VerdictReachableCandidate, &report.Package{Ecosystem: "Go", Name: "github.com/golang-jwt/jwt/v4"}, nil, false},
+		{"another ecosystem", report.VerdictReachableCandidate, &report.Package{Ecosystem: "npm", Name: "left-pad"}, frames("other"), false},
+		{"not a reachable row", report.VerdictUndetermined, &report.Package{Ecosystem: "Go", Name: "github.com/golang-jwt/jwt/v4"}, frames(entry, v5), false},
+	} {
+		f := report.AdvisoryFinding{Verdict: tc.v, Package: tc.pkg, Evidence: report.EvidenceSummary{CallPath: tc.path}}
+		if got := pathOutsideModule(f); got != tc.want {
+			t.Errorf("%s: pathOutsideModule = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestEvaluate_PathOutsideModuleFailsTheRowByName(t *testing.T) {
+	row := `{"advisory":{"id":"CVE-2025-30204","source":"osv"},"package":{"ecosystem":"Go","name":"github.com/golang-jwt/jwt/v4","version":"v4.5.1","direct":true},"verdict":"reachable_candidate","evidence":{"reachable_path":"advisory symbol reachable","call_path":[{"symbol":"scip-go gomod github.com/golang-jwt/jwt/v5 v5.2.1 github.com/golang-jwt/jwt/v5/Parser#ParseUnverified()."}]}}`
+	res := evaluate(Target{Repo: "ferralon-demo/x", Language: "go"}, "", withReport(ok(), reportJSON(row, "")))
+	if res.Pass || len(res.Failures) != 1 || res.Failures[0].Kind != KindPathOutside {
+		t.Fatalf("result = %+v, want one %s failure", res, KindPathOutside)
+	}
+	if d := res.Failures[0].Detail; !strings.Contains(d, "CVE-2025-30204") || strings.Contains(d, "\n") {
+		t.Errorf("detail %q does not name the row on one line", d)
+	}
+}

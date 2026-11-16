@@ -262,6 +262,11 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 		}
 		b.AddPartiality(partialityNotes(st, assessmentID)...)
 		assessed = append(assessed, advisory)
+		sibs, sibNotes := siblingInstanceFindings(analysis, areq, st, assessmentID, assessOpts, sbom.Packages, mods, invNotes)
+		for _, sf := range sibs {
+			b.AddFinding(sf)
+		}
+		b.AddPartiality(sibNotes...)
 	}
 	if cut > 0 {
 		b.AddPartiality(cutShortNote(cut, len(admitted.Admitted), stopCause(analysis)))

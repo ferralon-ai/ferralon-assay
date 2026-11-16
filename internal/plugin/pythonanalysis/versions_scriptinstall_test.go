@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"context"
+	"maps"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -1078,6 +1079,44 @@ func TestResolveVersions_UnboundLockScope(t *testing.T) {
 				if r := resolveVersion(t, dir, name); !r.Found || r.Match.Resolved != tt.resolved {
 					t.Errorf("%s = %+v found %v, want found, resolved %v", name, r.Match, r.Found, tt.resolved)
 				}
+			}
+		})
+	}
+}
+
+// pip install --upgrade (or -U) of a requirements file read here installs what that file lists,
+// so it records the install as it does without the flag; beside anything else the flag is
+// still no allowed form. The last row is the shape a Python script runs through subprocess:
+// the backstop runs it from a directory it does not know, so its -r binds no file and it
+// withholds with or without --upgrade.
+func TestResolveVersions_PipUpgradeRequirements(t *testing.T) {
+	const reqs = "jinja2==3.1.4\n"
+	tests := []struct {
+		name     string
+		files    map[string]string
+		resolved bool
+	}{
+		{"--upgrade -r", map[string]string{"install.sh": "#!/bin/sh\npip install --upgrade -r requirements.txt\n"}, true},
+		{"-U -r", map[string]string{"install.sh": "#!/bin/sh\npip install -U -r requirements.txt\n"}, true},
+		{"-r then --upgrade", map[string]string{"install.sh": "#!/bin/sh\npython3 -m pip install -q -r requirements.txt --upgrade\n"}, true},
+		{"--upgrade in a Dockerfile", map[string]string{"Dockerfile": "FROM python:3.12\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install --no-cache-dir --upgrade -r requirements.txt\n"}, true},
+		{"--upgrade -r of a file not read here", map[string]string{"install.sh": "#!/bin/sh\npip install --upgrade -r unread.txt\n"}, false},
+		{"--upgrade beside a read and an unread file", map[string]string{"install.sh": "#!/bin/sh\npip install --upgrade -r requirements.txt -r unread.txt\n"}, false},
+		{"--upgrade with no -r", map[string]string{"install.sh": "#!/bin/sh\npip install --upgrade jinja2\n"}, false},
+		{"--pre -r", map[string]string{"install.sh": "#!/bin/sh\npip install --pre -r requirements.txt\n"}, false},
+		{"--upgrade-strategy", map[string]string{"install.sh": "#!/bin/sh\npip install --upgrade --upgrade-strategy eager -r requirements.txt\n"}, false},
+		{"clustered -qU", map[string]string{"install.sh": "#!/bin/sh\npip install -qU -r requirements.txt\n"}, false},
+		{"subprocess argv in a script a Makefile runs", map[string]string{
+			"initial_setup.py": "import subprocess\nresult = subprocess.call([\"pip\", \"install\", \"--upgrade\", \"-r\", \"requirements.txt\"])\n",
+			"Makefile":         "setup:\n\tpython initial_setup.py\n"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"requirements.txt": reqs}
+			maps.Copy(files, tt.files)
+			r := resolveVersion(t, writeTree(t, files), "jinja2")
+			if !r.Found || r.Match.Resolved != tt.resolved || r.Partiality.Complete != tt.resolved {
+				t.Fatalf("jinja2 = %+v %+v, want resolved and complete %v", r.Match, r.Partiality, tt.resolved)
 			}
 		})
 	}

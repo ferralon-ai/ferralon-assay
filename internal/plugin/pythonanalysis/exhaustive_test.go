@@ -101,7 +101,7 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"Pipfile without a lock", map[string]string{"Pipfile": "[packages]\npyjwt = \"*\"\n"}, false},
 		{"HATCH.toml in another case", map[string]string{"HATCH.toml": "[envs.default]\ndependencies = [\"pyjwt\"]\n"}, false},
 		{"environment.yml", map[string]string{"environment.yml": "dependencies:\n  - pip:\n    - pyjwt\n"}, false},
-		{"tox.ini with deps", map[string]string{"tox.ini": "[testenv]\ndeps = pyjwt\n"}, false},
+		{"tox.ini with deps", map[string]string{"tox.ini": "[testenv]\ndeps = requests\n"}, false},
 		// tox installs the project into each env it makes, resolving its dependencies itself.
 		{"tox.ini without deps", map[string]string{"tox.ini": "[tox]\nenvlist = py312\n"}, false},
 		{"noxfile.py installing", map[string]string{"noxfile.py": "def tests(session):\n    session.install(\"pyjwt\")\n"}, false},

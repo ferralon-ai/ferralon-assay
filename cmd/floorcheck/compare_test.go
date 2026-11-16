@@ -209,6 +209,18 @@ func TestMaliciousAlwaysWrong(t *testing.T) {
 	}
 }
 
+// withAdvisories is fx carrying an advisories directory that holds ids.
+func withAdvisories(fx Fixture, ids ...string) Fixture {
+	fx.AdvisoryIDs = ids
+	return fx
+}
+
+// aliased is f with its advisory also known by aliases.
+func aliased(f report.AdvisoryFinding, aliases ...string) report.AdvisoryFinding {
+	f.Advisory.Aliases = aliases
+	return f
+}
+
 func TestCompareFixture(t *testing.T) {
 	note := func(reason string) report.PartialityNote { return report.PartialityNote{Reason: reason, Detail: "d"} }
 	met := expect(TruthReachable, rc)
@@ -254,6 +266,12 @@ func TestCompareFixture(t *testing.T) {
 		{name: "partial does not tolerate another reason", fx: testFixture(ScanPartial, []string{"tool_failure:govulncheck"}, met),
 			obs:     observation{report: floorReport(t, good, note("tool_failure:govulncheck"), note(report.ReasonScanCutShort)), hasReport: true},
 			outcome: OutcomeIncomplete, incomplete: []string{KindTruncated}, exit: 2},
+		{name: "every carried advisory assessed", fx: withAdvisories(testFixture(ScanComplete, nil, met), "GO-1"),
+			obs: observation{report: floorReport(t, good), hasReport: true}, outcome: OutcomePass},
+		{name: "carried advisory not assessed", fx: withAdvisories(testFixture(ScanComplete, nil, met), "GO-1", "GO-2"),
+			obs: observation{report: floorReport(t, good), hasReport: true}, outcome: OutcomeIncomplete, incomplete: []string{KindIncompleteScan}, exit: 2},
+		{name: "carried advisory assessed under an alias", fx: withAdvisories(testFixture(ScanComplete, nil, met), "GO-1", "CVE-1"),
+			obs: observation{report: floorReport(t, []report.AdvisoryFinding{aliased(fv("GO-1", rc), "CVE-1")}), hasReport: true}, outcome: OutcomePass},
 		{name: "non-failure partiality is not compared", fx: testFixture(ScanComplete, nil, met),
 			obs: observation{report: floorReport(t, good, note("no_manifest")), hasReport: true}, outcome: OutcomePass},
 		{name: "regressed", fx: testFixture(ScanComplete, nil, expect(TruthUnreachable, ne)),

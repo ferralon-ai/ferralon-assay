@@ -1,6 +1,6 @@
 name: Floor run
 
-# The floor is a diagnostic test suite: every fixture under floor/fixtures/ pins a repository at a full
+# The floor is a diagnostic test suite: every fixture under cmd/floorcheck/fixtures/ pins a repository at a full
 # commit, its toolchain, and the advisories it is scanned against (the ones adjudicated for it, each
 # pinned by sha256 in the fixture's intel/). `floorcheck run` scans each fixture with the scanner built
 # from this commit and judges the report against the fixture's expect.yaml. Exit 1 means an adjudicated
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       fixtures:
-        description: "Fixture directory names under floor/fixtures/, space-separated. Empty runs every fixture."
+        description: "Fixture directory names under cmd/floorcheck/fixtures/, space-separated. Empty runs every fixture."
         required: false
         default: ""
       scan-timeout:
@@ -73,8 +73,8 @@ jobs:
           fi
           fc="$RUNNER_TEMP/floor-bin/floorcheck"
           read -r -a names <<< "$SELECTED"
-          "$fc" validate --fixtures-root floor/fixtures "${names[@]}"
-          all="$("$fc" list --fixtures-root floor/fixtures)"
+          "$fc" validate --fixtures-root cmd/floorcheck/fixtures "${names[@]}"
+          all="$("$fc" list --fixtures-root cmd/floorcheck/fixtures)"
           if [ "${#names[@]}" -eq 0 ]; then
             matrix="$all"
           else
@@ -104,10 +104,10 @@ jobs:
       max-parallel: 40
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
-      # floor/ holds the fixtures and their advisories; nothing else is needed.
+      # The fixtures and their advisories; nothing else is needed.
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: floor
+          sparse-checkout: cmd/floorcheck/fixtures
           persist-credentials: false
 
       - uses: actions/download-artifact@v4
@@ -146,22 +146,31 @@ jobs:
           bin="$RUNNER_TEMP/floor-bin"
           chmod +x "$bin"/*
           rc=0
-          "$bin/floorcheck" run "$FIXTURE" --out "$RUNNER_TEMP/floor-obs" --fixtures-root floor/fixtures \
+          "$bin/floorcheck" run "$FIXTURE" --out "$RUNNER_TEMP/floor-obs" --fixtures-root cmd/floorcheck/fixtures \
             --scanner "$bin/ferralon-assay" --work "$RUNNER_TEMP/floor-work" --scan-timeout "$SCAN_TIMEOUT" || rc=$?
           echo "exit=$rc" >> "$GITHUB_OUTPUT"
-          mkdir -p "$RUNNER_TEMP/floor-obs"
-          # The disk this fixture needed (checkout, module and build caches), for sizing the runners.
-          {
-            echo "fixture=$FIXTURE"
-            echo "exit=$rc"
-            echo "work_kb=$(du -sk "$RUNNER_TEMP/floor-work" 2>/dev/null | cut -f1)"
-            echo "home_kb=$(du -sk "$HOME" 2>/dev/null | cut -f1)"
-            df -k --output=used,avail / | tail -n 1 | awk '{print "root_used_kb=" $1 "\nroot_avail_kb=" $2}'
-          } > "$RUNNER_TEMP/floor-obs/footprint.txt"
           if [ -f "$RUNNER_TEMP/floor-obs/summary.md" ]; then
             cat "$RUNNER_TEMP/floor-obs/summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
           exit "$rc"
+
+      # The disk this fixture needed (checkout, module and build caches), for sizing the runners. Its
+      # own step, so a run that failed or hit the job timeout still records it.
+      - name: Record the disk footprint
+        if: always()
+        env:
+          FIXTURE: ${{ matrix.name }}
+          RUN_EXIT: ${{ steps.run.outputs.exit }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/floor-obs"
+          {
+            echo "fixture=$FIXTURE"
+            echo "exit=${RUN_EXIT:-none}"
+            echo "work_kb=$(du -sk "$RUNNER_TEMP/floor-work" 2>/dev/null | cut -f1)"
+            echo "home_kb=$(du -sk "$HOME" 2>/dev/null | cut -f1)"
+            df -k --output=used,avail / | tail -n 1 | awk '{print "root_used_kb=" $1 "\nroot_avail_kb=" $2}'
+          } > "$RUNNER_TEMP/floor-obs/footprint.txt"
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -207,10 +216,10 @@ jobs:
           {
             echo "## Floor run"
             echo
-            echo "| Fixture | Outcome | Regressed | Met | Improved | Incomplete | Drift |"
-            echo "|---|---|---|---|---|---|---|"
-            jq -r 'sort_by(.fixture)[] | "| \(.fixture) | \(.outcome) | \(.counts.regressed) | \(.counts.met) | \(.counts.improved) | \(.counts.incomplete) | \(.drift) |"' all.json
-            for m in $missing; do echo "| $m | no observation | | | | | |"; done
+            echo "| Fixture | Outcome | Regressed | Met | Improved | Incomplete | Unexpected | Drift |"
+            echo "|---|---|---|---|---|---|---|---|"
+            jq -r 'sort_by(.fixture)[] | "| \(.fixture) | \(.outcome) | \(.counts.regressed) | \(.counts.met) | \(.counts.improved) | \(.counts.incomplete) | \(.unexpected) | \(.drift) |"' all.json
+            for m in $missing; do echo "| $m | no observation | | | | | | |"; done
           } >> "$GITHUB_STEP_SUMMARY"
           if jq -e 'any(.[]; .outcome == "regressed")' all.json > /dev/null; then
             echo "::error::A fixture regressed."

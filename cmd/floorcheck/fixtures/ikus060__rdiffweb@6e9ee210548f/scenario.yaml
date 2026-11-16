@@ -3,7 +3,7 @@ repo: https://github.com/ikus060/rdiffweb
 commit: 6e9ee210548f6d3210704cac302cfc7cdb239765
 lang: python
 build:
-  python: "3.12"
+  python: "3.10"
 intel:
   policy: floor-fixture
   advisories: { path: intel/advisories/manifest.json, sha256: "289ae1fbce7fbd5069e7eee840bf5323924d1ea47e09f70ca633d336559b7e1e" }

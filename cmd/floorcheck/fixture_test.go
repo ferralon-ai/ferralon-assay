@@ -241,6 +241,8 @@ func TestLoadFixtureRejects(t *testing.T) {
 		{name: "node on a python scenario", scenario: laneScenario("python", `  node: "20"`), kind: KindFixtureInvalid, msg: "build.node belongs"},
 		{name: "python on a js scenario", scenario: laneScenario("js", `  python: "3.12"`), kind: KindFixtureInvalid, msg: "build.python belongs"},
 		{name: "jdk not a major", scenario: laneScenario("java", `  jdk: "17.0.2"`), kind: KindFixtureInvalid, msg: "JDK major"},
+		{name: "apt name with shell syntax", scenario: laneScenario("python", "  apt: [\"libfoo-dev;id\"]"), kind: KindFixtureInvalid, msg: "Debian package name"},
+		{name: "apt name reads as an option", scenario: laneScenario("python", "  apt: [\"-y\"]"), kind: KindFixtureInvalid, msg: "Debian package name"},
 		{name: "python without its minor", scenario: laneScenario("python", `  python: "3"`), kind: KindFixtureInvalid, msg: "Python version"},
 		{name: "short commit", scenario: strings.Replace(scenarioYAML(sharedIntel()), testCommit, "0123456", 1), kind: KindFixtureInvalid, msg: "full 40-hex"},
 		{name: "unknown scenario field", scenario: scenarioYAML(sharedIntel()) + "extra: 1\n", kind: KindFixtureInvalid, msg: "not found"},
@@ -300,6 +302,7 @@ func TestLoadFixtureLanes(t *testing.T) {
 		"kotlin":      laneScenario("kotlin", `  jdk: "21"`),
 		"js":          laneScenario("js", `  node: "20"`),
 		"python":      laneScenario("python", `  python: "3.12"`),
+		"java apt":    laneScenario("java", "  jdk: \"17\"\n  apt: [libfuse-dev, libgtk-4-dev, g++]"),
 		"python bare": strings.Replace(laneScenario("python", ""), "build:\n\n", "", 1),
 	} {
 		if _, err := loadFixture(f.fixture(t, strings.ReplaceAll(name, " ", "-"), sc, expectYAML), f.root, defaultRules); err != nil {

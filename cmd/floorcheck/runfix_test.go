@@ -531,16 +531,16 @@ func TestCheckFixtureVerb(t *testing.T) {
 func TestListVerb(t *testing.T) {
 	f := newTestFloor(t)
 	f.fixture(t, "b", laneScenario("java", `  jdk: "17"`), "x")
-	f.fixture(t, "a", scenarioYAML(sharedIntel()), "x")
+	f.fixture(t, "a", strings.Replace(scenarioYAML(sharedIntel()), "  cgo: false\n", "  cgo: true\n  apt: [libfuse-dev, libvirt-dev]\n", 1), "x")
 	f.fixture(t, "c", laneScenario("python", `  python: "3.12"`), "x")
 	write(t, f.fixtures, "d/notes.txt", "x")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"list", "--fixtures-root", f.fixtures}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	want := `[{"name":"a","lang":"go","go":"1.23.12","jdk":"","node":"","python":""},` +
-		`{"name":"b","lang":"java","go":"","jdk":"17","node":"","python":""},` +
-		`{"name":"c","lang":"python","go":"","jdk":"","node":"","python":"3.12"}]`
+	want := `[{"name":"a","lang":"go","go":"1.23.12","jdk":"","node":"","python":"","apt":"libfuse-dev libvirt-dev"},` +
+		`{"name":"b","lang":"java","go":"","jdk":"17","node":"","python":"","apt":""},` +
+		`{"name":"c","lang":"python","go":"","jdk":"","node":"","python":"3.12","apt":""}]`
 	if got := strings.TrimSpace(stdout.String()); got != want {
 		t.Errorf("list =\n%s\nwant\n%s", got, want)
 	}

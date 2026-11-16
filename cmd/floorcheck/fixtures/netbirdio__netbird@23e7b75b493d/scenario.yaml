@@ -6,7 +6,8 @@ build:
   go: 1.26.10
   goos: linux
   goarch: amd64
-  cgo: false
+  cgo: true
+  apt: [libgtk-4-dev, libwebkitgtk-6.0-dev, libsoup-3.0-dev, libgl1-mesa-dev, xorg-dev, libpcap-dev]
 intel:
   policy: floor-fixture
   advisories: { path: intel/advisories/manifest.json, sha256: "6bd6c103a3e0055c4d19f3ea550b7d3ba451f0aced114c663718b17a15e499de" }

@@ -73,7 +73,7 @@ A Go dependency advisory gets per-advisory govulncheck evidence. `reachable_cand
 | Path-bearing `reachable_candidate` (govulncheck `-mode=source -scan=symbol`) | Complete |  |
 | `not_exploitable` on resolved + searched symbols | Complete |  |
 | Target-conditional symbol absent ground | Complete |  |
-| Withhold on unsearched methods | Complete |  |
+| Withhold on unsearched methods (counts exported methods of exported package-level types in library entry points; the rest are covered by library escape) | Complete |  |
 | Withhold on library escape (importable package reaches the refuted module) | Partial | [GO-LIBRARY-ESCAPE](#go-library-escape) |
 | Withhold on excluded files | Partial | [GO-EXCLUDED-FILES](#go-excluded-files) |
 | Outside-build first-party advisory ground (module search) | Partial | [GO-VENDORED](#go-vendored), [GO-MULTIPACKAGE-ADVISORY](#go-multipackage-advisory), [GO-LOCAL-REPLACE](#go-local-replace) |

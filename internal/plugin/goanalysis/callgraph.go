@@ -449,6 +449,23 @@ func (s *ssaProgram) memberFuncs(m ssa.Member) []*ssa.Function {
 // method of a type outside those packages that an alias names.
 // govulncheck searches none of them, so it can miss a call into a vulnerable module made only there.
 func unsearchedMethods(pkgs []*packages.Package) []*types.Func {
+	var out []*types.Func
+	for _, m := range unsearchedMethodsOf(pkgs) {
+		out = append(out, m.fn)
+	}
+	return out
+}
+
+// unsearchedMethod is a method unsearchedMethods returns, with the package whose type reaches it
+// and that type.
+type unsearchedMethod struct {
+	fn   *types.Func
+	pkg  *packages.Package
+	recv *types.TypeName
+}
+
+// unsearchedMethodsOf is unsearchedMethods with each method's reaching package and type.
+func unsearchedMethodsOf(pkgs []*packages.Package) []unsearchedMethod {
 	top := map[*types.Package]bool{}
 	for _, p := range pkgs {
 		if p.Types != nil && !isMain(p) {
@@ -463,7 +480,7 @@ func unsearchedMethods(pkgs []*packages.Package) []*types.Func {
 		named, ok := types.Unalias(recv).(*types.Named)
 		return ok && top[fn.Pkg()] && named.TypeParams().Len() == 0 && named.Obj().Parent() == fn.Pkg().Scope()
 	}
-	var out []*types.Func
+	var out []unsearchedMethod
 	for _, p := range pkgs {
 		if !top[p.Types] || p.TypesInfo == nil {
 			continue
@@ -490,7 +507,7 @@ func unsearchedMethods(pkgs []*packages.Package) []*types.Func {
 						continue
 					}
 					seen[fn] = true
-					out = append(out, fn)
+					out = append(out, unsearchedMethod{fn, p, tn})
 				}
 			}
 		}

@@ -62,7 +62,7 @@ func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 		}, moduleFinding, true},
 		{"a method promoted into a type declared in a library function", map[string]string{
 			"internal/lib/lib.go": lib + "func New() any {\n\ttype s struct{ vulnmod.T }\n\treturn s{}\n}\n",
-		}, moduleFinding, true},
+		}, moduleFinding, false},
 		{"an alias to an instantiation of the module's generic type", map[string]string{
 			"internal/lib/lib.go": lib + "type A = vulnmod.G[int]\n",
 		}, moduleFinding, true},
@@ -90,18 +90,19 @@ func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, plugin.LibraryEntrypoints{})
-			if err != nil {
-				t.Fatal(err)
+			module := "pkg:golang/example.com/vulnmod"
+			if tc.scanned.imports != nil {
+				module = "pkg:golang/stdlib"
 			}
+			res := withholdForUnsearchedMethods(plugin.ReachabilityResult{
+				Partiality: plugin.Complete(),
+				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: module},
+			}, tc.scanned, load.Packages, entrypoints{pkgs: load.Packages})
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}
 			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonUnsearchedMethods); declared != tc.withheld {
 				t.Errorf("unsearched_methods declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
-			}
-			if declaresExcluded(res.Partiality.Reasons) {
-				t.Errorf("excluded_files declared with nothing left out (partiality %+v)", res.Partiality)
 			}
 		})
 	}
@@ -305,7 +306,7 @@ func TestWithholdForUnsearchedMethods_VulnerablePackages(t *testing.T) {
 			if incompleteLoad(load.Packages, nil) {
 				t.Fatal("load incomplete")
 			}
-			res := withholdForUnsearchedMethods(narrowedRefutation(), tc.scanned, load.Packages)
+			res := withholdForUnsearchedMethods(narrowedRefutation(), tc.scanned, load.Packages, entrypoints{pkgs: load.Packages})
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
@@ -412,8 +413,8 @@ func TestNarrowedGates_StandardLibraryWidening(t *testing.T) {
 		reason string
 		run    func(plugin.ReachabilityResult, vulnScan, []*packages.Package, entrypoints) plugin.ReachabilityResult
 	}{
-		{"unsearched methods", plugin.PartialReasonUnsearchedMethods, func(r plugin.ReachabilityResult, s vulnScan, pkgs []*packages.Package, _ entrypoints) plugin.ReachabilityResult {
-			return withholdForUnsearchedMethods(r, s, pkgs)
+		{"unsearched methods", plugin.PartialReasonUnsearchedMethods, func(r plugin.ReachabilityResult, s vulnScan, pkgs []*packages.Package, e entrypoints) plugin.ReachabilityResult {
+			return withholdForUnsearchedMethods(r, s, pkgs, e)
 		}},
 		{"library escape", plugin.PartialReasonLibraryEscape, withholdForLibraryEscape},
 	}
@@ -465,11 +466,54 @@ func TestWithholdForUnsearchedMethods_DeclaringPackageNotLoaded(t *testing.T) {
 		t.Fatal("internal/lib not loaded")
 	}
 	lib.Imports = map[string]*packages.Package{}
-	res := withholdForUnsearchedMethods(narrowedRefutation(), narrowedScans.narrow, []*packages.Package{lib})
+	res := withholdForUnsearchedMethods(narrowedRefutation(), narrowedScans.narrow, []*packages.Package{lib}, entrypoints{pkgs: []*packages.Package{lib}})
 	if res.Refutation != nil {
 		t.Fatal("refutation stands, want withheld")
 	}
 	if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonUnsearchedMethods) {
 		t.Errorf("unsearched_methods not declared (partiality %+v)", res.Partiality)
+	}
+}
+
+// TestWithholdForUnsearchedMethods_EntryPoints: only an exported method of an exported package-level
+// type in an entry package counts, and the Cause names the method and the entry package.
+func TestWithholdForUnsearchedMethods_EntryPoints(t *testing.T) {
+	const lib = "package lib\n\nimport \"example.com/vulnmod\"\n\n"
+	const generic = "type Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { vulnmod.Bad() }\n"
+	cases := []struct {
+		name     string
+		files    map[string]string
+		decl     plugin.LibraryEntrypoints
+		withheld bool
+	}{
+		{"an unexported generic type in an entry package", map[string]string{"lib/lib.go": lib + "type pool[T any] struct{ v T }\n\nfunc (*pool[T]) Get() { vulnmod.Bad() }\n"}, plugin.LibraryEntrypoints{}, false},
+		{"an exported generic type in an entry package", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{}, true},
+		{"an exported generic type outside the entry set", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsPaths, Include: []string{"other"}}, false},
+		{"an exported generic type, entry points none", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsNone}, false},
+		{"an exported generic type, entry path listed", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsPaths, Include: []string{"lib"}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{
+				"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+				"main.go":             "package main\n\nfunc main() {}\n",
+				"other/other.go":      "package other\n",
+				"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+				"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Bad() {}\n",
+			}
+			dir := writeTree(t, merge(files, tc.files))
+			load, err := LoadProgram(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
+			res := withholdForUnsearchedMethods(narrowedRefutation(), scanned, load.Packages, resolveEntrypoints(load.Packages, tc.decl, dir))
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
+			}
+			if c := res.Partiality.Cause; tc.withheld && (!strings.Contains(c, "Dispatch") || !strings.Contains(c, "example.com/m/lib")) {
+				t.Errorf("cause %q does not name the method and entry package", res.Partiality.Cause)
+			}
+		})
 	}
 }

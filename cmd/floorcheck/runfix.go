@@ -317,6 +317,9 @@ type scanRunner interface {
 	// warmGoModules fills the module cache with a Go subject's build list, since the scanner resolves
 	// a workspace's module graph offline.
 	warmGoModules(ctx context.Context, dir string, env []string, log io.Writer) error
+	// restoreCheckout returns dir to its commit, undoing what the warm-up wrote (go.sum and
+	// go.work.sum entries), so the checkout can be reused; it returns the paths it restored.
+	restoreCheckout(ctx context.Context, dir string) ([]string, error)
 	scan(ctx context.Context, req scanRequest) (exitCode int, err error)
 }
 
@@ -497,39 +500,56 @@ func runOne(ctx context.Context, o runOptions, name string, sr scanRunner) (Fixt
 		defer log.Close()
 		req := scanRequest{Scanner: o.scanner, Args: scanArgs(fx, target, outDir, o.scanTimeout),
 			Env: scanEnv(os.Environ(), fx.Scenario.Build, filepath.Dir(o.scanner)), OutDir: outDir, Log: log}
+		var notes []string
 		if fx.Scenario.Lang == "go" {
 			// A failed warm-up is left for the scan to report: it names what it could not resolve. Its
 			// own deadline keeps a stalled download from outrunning the job.
 			wctx, cancel := context.WithTimeout(ctx, warmTimeout)
 			defer cancel()
 			if err := sr.warmGoModules(wctx, target, warmEnv(req.Env), log); err != nil {
+				notes = append(notes, "module warm-up failed: "+err.Error())
 				fmt.Fprintf(log, "floorcheck: warming the module cache: %v\n", err)
 			}
+			// The scan reads what the warm-up wrote; the checkout goes back to its commit after it.
+			defer func() {
+				if restored, err := sr.restoreCheckout(ctx, target); err != nil {
+					fmt.Fprintf(log, "floorcheck: restoring the checkout: %v\n", err)
+				} else if len(restored) > 0 {
+					fmt.Fprintf(log, "floorcheck: the module warm-up changed %s; restored\n", strings.Join(restored, ", "))
+				}
+			}()
 		}
-		var obs observation
-		switch code, err := sr.scan(ctx, req); {
-		case err != nil:
-			obs.scanFailed = "the scanner did not run: " + err.Error()
-		case code != 0:
-			obs.scanFailed = fmt.Sprintf("the scanner exited %d", code)
-		}
-		if data, err := os.ReadFile(filepath.Join(outDir, fileReport)); err == nil {
-			obs.report, obs.hasReport = data, true
-		}
-		var prior *report.Report
-		priorName := ""
-		if o.prior != "" {
-			if p, err := readObservedReport(filepath.Join(o.prior, name)); err == nil {
-				prior, priorName = &p, filepath.Join(o.prior, name, fileReport)
-			}
-		}
-		return compareFixture(fx, obs, prior, priorName, defaultRules)
+		res := scanAndCompare(ctx, o, name, fx, sr, req, outDir)
+		res.Notes = notes
+		return res
 	}()
 	js, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
 		return res, err
 	}
 	return res, os.WriteFile(filepath.Join(outDir, fileResult), append(js, '\n'), 0o644)
+}
+
+// scanAndCompare runs a checked-out fixture's scan and compares its report with the fixture.
+func scanAndCompare(ctx context.Context, o runOptions, name string, fx Fixture, sr scanRunner, req scanRequest, outDir string) FixtureResult {
+	var obs observation
+	switch code, err := sr.scan(ctx, req); {
+	case err != nil:
+		obs.scanFailed = "the scanner did not run: " + err.Error()
+	case code != 0:
+		obs.scanFailed = fmt.Sprintf("the scanner exited %d", code)
+	}
+	if data, err := os.ReadFile(filepath.Join(outDir, fileReport)); err == nil {
+		obs.report, obs.hasReport = data, true
+	}
+	var prior *report.Report
+	priorName := ""
+	if o.prior != "" {
+		if p, err := readObservedReport(filepath.Join(o.prior, name)); err == nil {
+			prior, priorName = &p, filepath.Join(o.prior, name, fileReport)
+		}
+	}
+	return compareFixture(fx, obs, prior, priorName, defaultRules)
 }
 
 // scanArgs is the scanner's command line for a fixture: the flags floor/scan.sh passes, from the
@@ -666,6 +686,44 @@ func (execRunner) warmGoModules(ctx context.Context, dir string, env []string, l
 	cmd.Dir, cmd.Env = dir, env
 	cmd.Stdout, cmd.Stderr = log, log
 	return cmd.Run()
+}
+
+// restoreCheckout undoes the warm-up's writes: a changed tracked file is checked out again and a
+// new untracked file is removed. Anything else (a deletion, a new directory) is refused, so a
+// checkout it cannot account for stays as it is and the next run refuses to reuse it.
+func (execRunner) restoreCheckout(ctx context.Context, dir string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "status", "--porcelain", "-z", "--untracked-files=all")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git status: %w", err)
+	}
+	var restored []string
+	for _, e := range strings.Split(string(out), "\x00") {
+		if e == "" {
+			continue
+		}
+		if len(e) < 4 {
+			return restored, fmt.Errorf("unexpected status entry %q", e)
+		}
+		st, path := e[:2], e[3:]
+		switch st {
+		case " M":
+			if b, err := exec.CommandContext(ctx, "git", "-C", dir, "checkout", "-q", "--", path).CombinedOutput(); err != nil {
+				return restored, fmt.Errorf("git checkout %s: %w: %s", path, err, strings.TrimSpace(string(b)))
+			}
+		case "??":
+			if strings.HasSuffix(path, "/") {
+				return restored, fmt.Errorf("%s: the warm-up left a directory", path)
+			}
+			if err := os.Remove(filepath.Join(dir, filepath.FromSlash(path))); err != nil {
+				return restored, err
+			}
+		default:
+			return restored, fmt.Errorf("%s: status %q is not a warm-up write", path, st)
+		}
+		restored = append(restored, path)
+	}
+	return restored, nil
 }
 
 func (execRunner) scan(ctx context.Context, req scanRequest) (int, error) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,9 @@ type fakeRunner struct {
 	requests  []scanRequest
 	checkouts []string
 	warms     []warmCall
+	warmErr   error
+	// events is the order of warm-ups, scans and restores, each "<kind> <fixture>".
+	events []string
 }
 
 type warmCall struct {
@@ -38,7 +42,13 @@ type warmCall struct {
 func (r *fakeRunner) warmGoModules(ctx context.Context, dir string, env []string, _ io.Writer) error {
 	_, bounded := ctx.Deadline()
 	r.warms = append(r.warms, warmCall{dir, env, bounded})
-	return nil
+	r.events = append(r.events, "warm "+filepath.Base(dir))
+	return r.warmErr
+}
+
+func (r *fakeRunner) restoreCheckout(_ context.Context, dir string) ([]string, error) {
+	r.events = append(r.events, "restore "+filepath.Base(dir))
+	return []string{"go.sum"}, nil
 }
 
 func (r *fakeRunner) checkout(_ context.Context, repo, commit, dir string) error {
@@ -49,6 +59,7 @@ func (r *fakeRunner) checkout(_ context.Context, repo, commit, dir string) error
 func (r *fakeRunner) scan(_ context.Context, req scanRequest) (int, error) {
 	r.requests = append(r.requests, req)
 	name := filepath.Base(req.OutDir)
+	r.events = append(r.events, "scan "+name)
 	if data, ok := r.reports[name]; ok {
 		if err := os.WriteFile(filepath.Join(req.OutDir, fileReport), data, 0o644); err != nil {
 			return 0, err
@@ -223,8 +234,82 @@ func TestRunWarmsOnlyGo(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	runFixtures(context.Background(), []string{"--out", t.TempDir(), "--fixtures-root", f.fixtures, "--scanner", fakeScanner(t),
 		"--work", t.TempDir()}, fr, &stdout, &stderr)
-	if len(fr.requests) != 1 || len(fr.warms) != 0 {
+	if len(fr.requests) != 1 || len(fr.warms) != 0 || len(fr.events) != 1 {
 		t.Errorf("%d scans, %d warm-ups: want the python fixture scanned and not warmed\n%s", len(fr.requests), len(fr.warms), stderr.String())
+	}
+}
+
+// TestRunRestoresAfterScan: the warm-up's writes stay for the scan and are undone after it, and a failed
+// warm-up is recorded on the result.
+func TestRunRestoresAfterScan(t *testing.T) {
+	for _, warmErr := range []error{nil, errors.New("exit status 1")} {
+		f := newTestFloor(t)
+		f.fixture(t, "a", scenarioYAML(sharedIntel()), expectYAML)
+		fr := &fakeRunner{warmErr: warmErr}
+		out := t.TempDir()
+		var stdout, stderr bytes.Buffer
+		runFixtures(context.Background(), []string{"--out", out, "--fixtures-root", f.fixtures, "--scanner", fakeScanner(t),
+			"--work", t.TempDir()}, fr, &stdout, &stderr)
+		if want := []string{"warm a", "scan a", "restore a"}; !slices.Equal(fr.events, want) {
+			t.Errorf("events %v, want %v", fr.events, want)
+		}
+		var res FixtureResult
+		data, err := os.ReadFile(filepath.Join(out, "a", fileResult))
+		if err != nil || json.Unmarshal(data, &res) != nil {
+			t.Fatalf("result.json: %v", err)
+		}
+		failed := slices.ContainsFunc(res.Notes, func(n string) bool { return strings.HasPrefix(n, "module warm-up failed: ") })
+		if failed != (warmErr != nil) {
+			t.Errorf("warm-up error %v, notes %v", warmErr, res.Notes)
+		}
+		if log, _ := os.ReadFile(filepath.Join(out, "a", fileScanLog)); !strings.Contains(string(log), "changed go.sum; restored") {
+			t.Errorf("scan.log does not name the restored files:\n%s", log)
+		}
+	}
+}
+
+// TestRestoreCheckout: a changed tracked file and a new file are undone; a deletion is refused.
+func TestRestoreCheckout(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	write(t, dir, "go.sum", "a\n")
+	write(t, dir, "sub/go.mod", "module m\n")
+	git("add", ".")
+	git("commit", "-q", "-m", "c")
+	write(t, dir, "go.sum", "a\nb\n")
+	write(t, dir, "go.work.sum", "w\n")
+	write(t, dir, "sub/go.sum", "s\n")
+	restored, err := execRunner{}.restoreCheckout(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(restored)
+	if want := []string{"go.sum", "go.work.sum", "sub/go.sum"}; !slices.Equal(restored, want) {
+		t.Errorf("restored %v, want %v", restored, want)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, "go.sum")); string(data) != "a\n" {
+		t.Errorf("go.sum is %q, want the committed content", data)
+	}
+	for _, p := range []string{"go.work.sum", "sub/go.sum"} {
+		if _, err := os.Stat(filepath.Join(dir, p)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s still exists", p)
+		}
+	}
+	if err := os.Remove(filepath.Join(dir, "sub/go.mod")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (execRunner{}).restoreCheckout(context.Background(), dir); err == nil {
+		t.Error("a deleted tracked file was accepted as a warm-up write")
 	}
 }
 

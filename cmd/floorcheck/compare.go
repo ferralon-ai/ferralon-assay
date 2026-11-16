@@ -146,6 +146,9 @@ type FixtureResult struct {
 	// when there was none to compare with.
 	DriftBase string   `json:"drift_base,omitempty"`
 	Drift     []Change `json:"drift,omitempty"`
+	// Notes are what the harness did around the scan that a reader needs, such as a failed module
+	// warm-up; they never change the outcome.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // exit is the fixture's exit status: 1 regressed, 2 incomplete, 0 otherwise.

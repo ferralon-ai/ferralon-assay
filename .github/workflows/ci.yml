@@ -80,12 +80,8 @@ jobs:
 
   # The C/C++ lane is its own module (it links the cgx SDK, which the host binary must not): the
   # root ./... does not reach it, so it has its own job.
-  #
-  # Tracker #792: this job is EXPECTED to be red until the cgx SDK pin is repinned. The pinned
-  # commit (plugins/cfamily/cfamilycgx/engine_pin.go) was orphaned by a force-push, so a cold
-  # module cache cannot fetch it. The job is kept out of `test` so Go-only changes are not blocked.
   cfamily:
-    name: cfamily (cgx pin, tracker #792)
+    name: cfamily
     needs: cfamily-changes
     if: needs.cfamily-changes.outputs.run == 'true'
     runs-on: ubuntu-latest

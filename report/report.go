@@ -42,6 +42,7 @@ package report
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -1252,6 +1253,32 @@ type Subject struct {
 	ResolvedCommit string `json:"resolved_commit"`
 }
 
+// groundedBy returns the bases a verdict may rest on, and false for a verdict that carries no
+// grounds set of its own. A not_exploitable rests on a refutation: the version or symbol axis, a
+// reachability search, or a held static refutation. A disqualified rests on the version or symbol
+// axis, or on an intake basis recording that the advisory was not adjudicable against this subject.
+// Neither set contains BasisNone.
+func groundedBy(v Verdict) ([]verdict.NonExploitableBasis, bool) {
+	switch v {
+	case VerdictNotExploitable:
+		return []verdict.NonExploitableBasis{
+			verdict.BasisVersionNotAffected,
+			verdict.BasisSymbolAbsent,
+			verdict.BasisSymbolUnreachable,
+			verdict.BasisStaticRefutation,
+		}, true
+	case VerdictDisqualified:
+		return []verdict.NonExploitableBasis{
+			verdict.BasisVersionNotAffected,
+			verdict.BasisSymbolAbsent,
+			verdict.BasisAdvisoryEcosystemMismatch,
+			verdict.BasisNoManifestEntry,
+		}, true
+	default:
+		return nil, false
+	}
+}
+
 // Validate enforces the Report invariants and returns the first violation found.
 // It is the structural guard for inv. 5 and basic completeness:
 //
@@ -1259,9 +1286,10 @@ type Subject struct {
 //   - Every AdvisoryFinding.Verdict must satisfy Verdict.Valid — no `exploitable` /
 //     `reasoned_*` may appear in an OSS Report.
 //   - A reachable_candidate must NOT carry a not-exploitability Basis (a candidate
-//     has no refutation grounds); a disqualified / not_exploitable finding SHOULD
-//     carry grounds (Basis or Detail) but an empty grounds is tolerated rather than
-//     rejected, so a minimally-populated Report still validates.
+//     has no refutation grounds). A not_exploitable or disqualified finding MUST carry
+//     a Basis from its verdict's set (groundedBy): a refutation or "safe" verdict with
+//     no named grounds is an ungrounded claim, and a reader cannot tell it from one
+//     that rests on nothing.
 //   - An undetermined finding must NOT carry a Basis (it has no grounds at all) and
 //     MUST carry an UndeterminedReason; no other verdict may carry one.
 //   - The reachability basis (vulnerable_symbol_unreachable) is valid only on a
@@ -1296,6 +1324,10 @@ func (r Report) Validate() error {
 		if f.Evidence.Basis == verdict.BasisSymbolUnreachable && f.Verdict != VerdictNotExploitable {
 			return fmt.Errorf("report: advisory %q carries basis %q but verdict is %q (a reachability refutation grounds only a not_exploitable)",
 				f.Advisory.ID, f.Evidence.Basis, f.Verdict)
+		}
+		if grounds, ok := groundedBy(f.Verdict); ok && !slices.Contains(grounds, f.Evidence.Basis) {
+			return fmt.Errorf("report: advisory %q is %s but its basis %q is not one of %q (the verdict is a claim about the subject and must name the grounds it rests on)",
+				f.Advisory.ID, f.Verdict, f.Evidence.Basis, grounds)
 		}
 		if f.Verdict == VerdictUndetermined && f.UndeterminedReason == "" {
 			return fmt.Errorf("report: advisory %q is undetermined but carries no undetermined_reason (an unexplained non-verdict is silent suppression)",

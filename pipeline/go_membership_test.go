@@ -107,7 +107,7 @@ func TestGoModRequiresFeedsIntakeGuard(t *testing.T) {
 	dir := writeTree(t, map[string]string{"go.mod": "module m\n\ngo 1.16\n", "go.sum": goBenchSum})
 	for mod, wantDisq := range map[string]bool{"golang.org/x/crypto": false, "golang.org/x/text": true} {
 		coord, has, known := intakeManifestMembership(ctx, artifact.NewMemStore(), "", dir, workspaceFor(t, dir), mod)
-		disq, reason := intakeDisqualify("go", "go", coord, has, known)
+		disq, reason := intakeDisqualify([]string{"go"}, "go", coord, has, known)
 		if disq != wantDisq || (disq && reason != ReasonNoManifestEntry) {
 			t.Errorf("%s: intakeDisqualify = (%v, %q), want disqualified=%v", mod, disq, reason, wantDisq)
 		}

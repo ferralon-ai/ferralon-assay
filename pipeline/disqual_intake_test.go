@@ -31,33 +31,38 @@ import (
 func TestIntakeDisqualify(t *testing.T) {
 	cases := []struct {
 		name                       string
-		advEco, codeEco, coord     string
+		advEcos                    []string
+		codeEco, coord             string
 		manifestHas, manifestKnown bool
 		wantDisq                   bool
 		wantReason                 string
 	}{
 		// Guard 1: provable ecosystem mismatch → disqualify.
-		{"npm advisory under maven codebase", "npm", "maven", "", false, false, true, ReasonAdvisoryEcosystemMismatch},
-		{"native/generic advisory under go codebase", "generic", "golang", "", false, false, true, ReasonAdvisoryEcosystemMismatch},
-		{"nuget advisory under go codebase", "nuget", "golang", "", false, false, true, ReasonAdvisoryEcosystemMismatch},
+		{"npm advisory under maven codebase", []string{"npm"}, "maven", "", false, false, true, ReasonAdvisoryEcosystemMismatch},
+		{"native/generic advisory under go codebase", []string{"generic"}, "golang", "", false, false, true, ReasonAdvisoryEcosystemMismatch},
+		{"nuget advisory under go codebase", []string{"nuget"}, "golang", "", false, false, true, ReasonAdvisoryEcosystemMismatch},
 		// Guard 1: matching ecosystem → proceed.
-		{"matching golang ecosystem", "golang", "golang", "", false, false, false, ReasonInsufficient},
+		{"matching golang ecosystem", []string{"golang"}, "golang", "", false, false, false, ReasonInsufficient},
+		// Guard 1 over every affected package: one entry in the codebase's ecosystem is a match.
+		{"cargo primary with a golang stdlib entry under go codebase", []string{"cargo", "golang"}, "golang", "", false, false, false, ReasonInsufficient},
+		{"pure cargo advisory under go codebase", []string{"cargo", "cargo"}, "golang", "", false, false, true, ReasonAdvisoryEcosystemMismatch},
+		{"one unparseable entry is uncertain", []string{"cargo", ""}, "golang", "", false, false, false, ReasonInsufficient},
 		// Guard 1 fail-open: an unknown ecosystem on either side never disqualifies.
-		{"advisory ecosystem unknown", "", "golang", "", false, false, false, ReasonInsufficient},
-		{"codebase ecosystem unknown", "npm", "", "", false, false, false, ReasonInsufficient},
-		{"both ecosystems unknown", "", "", "", false, false, false, ReasonInsufficient},
+		{"advisory ecosystem unknown", nil, "golang", "", false, false, false, ReasonInsufficient},
+		{"codebase ecosystem unknown", []string{"npm"}, "", "", false, false, false, ReasonInsufficient},
+		{"both ecosystems unknown", nil, "", "", false, false, false, ReasonInsufficient},
 		// Guard 2: named coordinate provably absent from a readable manifest → disqualify.
-		{"coordinate absent from readable manifest", "golang", "golang", "example.com/absent", false, true, true, ReasonNoManifestEntry},
+		{"coordinate absent from readable manifest", []string{"golang"}, "golang", "example.com/absent", false, true, true, ReasonNoManifestEntry},
 		// Guard 2: coordinate present in manifest → proceed.
-		{"coordinate present in manifest", "golang", "golang", "golang.org/x/text", true, true, false, ReasonInsufficient},
+		{"coordinate present in manifest", []string{"golang"}, "golang", "golang.org/x/text", true, true, false, ReasonInsufficient},
 		// Guard 2 fail-open: empty coordinate (first-party/app sink) → proceed.
-		{"first-party sink carries no coordinate", "golang", "golang", "", false, true, false, ReasonInsufficient},
+		{"first-party sink carries no coordinate", []string{"golang"}, "golang", "", false, true, false, ReasonInsufficient},
 		// Guard 2 fail-open: manifest unreadable → proceed (absence not provable).
-		{"manifest unreadable", "golang", "golang", "example.com/absent", false, false, false, ReasonInsufficient},
+		{"manifest unreadable", []string{"golang"}, "golang", "example.com/absent", false, false, false, ReasonInsufficient},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			disq, reason := intakeDisqualify(tc.advEco, tc.codeEco, tc.coord, tc.manifestHas, tc.manifestKnown)
+			disq, reason := intakeDisqualify(tc.advEcos, tc.codeEco, tc.coord, tc.manifestHas, tc.manifestKnown)
 			if disq != tc.wantDisq {
 				t.Fatalf("disqualified = %v, want %v (reason %q)", disq, tc.wantDisq, reason)
 			}
@@ -452,5 +457,57 @@ func TestIntakeRun_ModuleNamedButManifestUnreadable_FailsOpen(t *testing.T) {
 	res := runDisqual(t, store, caseID)
 	if res.Disqualified {
 		t.Fatalf("unreadable manifest must fail open, got %+v", res)
+	}
+}
+
+// extractAdvisoryEcosystem reads every package the advisory affects: the CVE-2026-111943 shape
+// (cargo primary, golang stdlib entry) carries the codebase's ecosystem, so it proceeds.
+func TestExtractAdvisoryEcosystemReadsEveryEntry(t *testing.T) {
+	store := artifact.NewMemStore()
+	put := func(id, payload string) {
+		if _, err := store.Put(&artifact.Artifact{AssessmentID: id, Type: artifact.TypeNormalizedAdvisory, Payload: []byte(payload)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("multi", `{"purl":"pkg:cargo/rustls-webpki","affected_packages":[{"coordinate":"rustls-webpki","purl":"pkg:cargo/rustls-webpki"},{"coordinate":"stdlib","purl":"pkg:golang/stdlib"}]}`)
+	put("cargo", `{"purl":"pkg:cargo/rustls-webpki","affected_packages":[{"coordinate":"rustls-webpki","purl":"pkg:cargo/rustls-webpki"}]}`)
+	for id, wantDisq := range map[string]bool{"multi": false, "cargo": true} {
+		disq, reason := intakeDisqualify(extractAdvisoryEcosystem(store, id, "golang"), "golang", "", false, false)
+		if disq != wantDisq || (disq && reason != ReasonAdvisoryEcosystemMismatch) {
+			t.Errorf("%s: intakeDisqualify = (%v, %q), want disqualified=%v", id, disq, reason, wantDisq)
+		}
+	}
+}
+
+// The intake ecosystem guard refutes only when the advisory names nothing in the codebase's
+// ecosystem: the Go standard library is in every Go build, whatever PURL type its record spells,
+// and one in-ecosystem package of a multi-ecosystem record keeps the advisory adjudicable.
+func TestIntakeRun_GoToolchainEcosystem(t *testing.T) {
+	stdlibRanges := []map[string]any{{"upper_exclusive": "1.23.8", "scheme": "go-toolchain"}}
+	cases := []struct {
+		name     string
+		advisory map[string]any
+		wantDisq bool
+	}{
+		{"stdlib scheme, foreign PURL type", map[string]any{"purl": "pkg:generic/stdlib", "affected_ranges": stdlibRanges}, false},
+		{"stdlib PURL", map[string]any{"purl": "pkg:golang/stdlib", "affected_ranges": stdlibRanges}, false},
+		{"stdlib element beside a foreign scalar", map[string]any{"purl": "pkg:generic/net-http", "affected_packages": []map[string]any{{"purl": "pkg:generic/stdlib", "affected_ranges": stdlibRanges}}}, false},
+		{"golang element beside a foreign scalar", map[string]any{"purl": "pkg:npm/left-pad", "affected_packages": []map[string]any{{"purl": "pkg:golang/golang.org/x/net"}}}, false},
+		{"foreign npm advisory", map[string]any{"purl": "pkg:npm/left-pad"}, true},
+		{"foreign scalar and element", map[string]any{"purl": "pkg:npm/left-pad", "affected_packages": []map[string]any{{"purl": "pkg:nuget/DotNetNuke.Core"}}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			putJSON(t, store, "case", artifact.TypeNormalizedAdvisory, tc.advisory)
+			putJSON(t, store, "case", artifact.TypeInventory, map[string]any{"language": "go", "build_dir": ""})
+			res := runDisqual(t, store, "case")
+			if res.Disqualified != tc.wantDisq {
+				t.Fatalf("disqualified = %v, want %v (%+v)", res.Disqualified, tc.wantDisq, res)
+			}
+			if tc.wantDisq && res.Reason != ReasonAdvisoryEcosystemMismatch {
+				t.Fatalf("reason = %q, want %q", res.Reason, ReasonAdvisoryEcosystemMismatch)
+			}
+		})
 	}
 }

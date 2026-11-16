@@ -104,7 +104,7 @@ Go limits are mostly scoped to the advisory they affect: the withholds in group 
 
 | Feature | Status | Caveats |
 |---|---|---|
-| Per-advisory withholds (unsearched methods, library escape, excluded files) | Complete |  |
+| Per-advisory withholds (unsearched methods, library escape, excluded files) | Partial | [GO-EXCLUDED-FILES](#go-excluded-files): files excluded by build constraints alone do not withhold, and the finding is decided for the scanned platform only |
 | cgo bounded to scoped limits | Partial | [GO-CGO](#go-cgo) |
 | Reflective call / template Execute, reached from entry points | Partial | [GO-REFLECT-CALL](#go-reflect-call) |
 | `plugin.Open` reached | Partial | [GO-PLUGIN-LOAD](#go-plugin-load) |
@@ -176,6 +176,8 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 **Trigger.** A first-party file excluded by build constraints on the analysed platform (or otherwise left out of the load) that calls into the refuted module.
 
 **Effect.** The refutation is withheld with `excluded_files`, or `excluded_files:assembly`, `excluded_files:linkname` or `excluded_files:cgo_include` naming what the file reaches. The withhold is scoped to the advisory, and the row is `undetermined` with `refutation_withheld`.
+
+**Exception: build constraints alone.** When every file that may call into the module is one the scanned platform leaves out by its build constraints (a `GOOS` or `GOARCH` file-name suffix, or a `//go:build` line the scan's tags do not satisfy), the left-out-file engine traced each one to a possible call, and nothing failed closed on the way (no assembly, `//go:linkname`, cgo include, unresolved import, or failed step), the refutation is kept and the result declares `excluded_files:build_constraint` beside it. The row clears to `not_exploitable` (`evidence.basis` `vulnerable_symbol_unreachable`) through the usual path, provided no other did-not-run limit applies; `unsearched_methods`, `library_escape`, `reflection:call`, any other `excluded_files` form and a failed step still withhold it. The scope is on the finding: `evidence.detail` says which `GOOS`, `GOARCH` and build tags the decision holds for and how many files built only for other platforms or tags may call into the module and were not analyzed, so other platforms were not checked. The limit is still disclosed at scan level. Where the scan's platform is not the one that ships, scan once per platform.
 
 ### GO-CGO
 

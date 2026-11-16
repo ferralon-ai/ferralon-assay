@@ -79,8 +79,13 @@ func TestDisqualDetail_NonAdjudicatedAxesClaimNoComparison(t *testing.T) {
 			// The structured half of the same claim. An absent Basis is how this Report
 			// states "no refutation grounds" (report.go:94); a reason code that adjudicated
 			// nothing must not carry grounds a consumer can act on.
-			if f.Evidence.Basis != verdict.BasisNone {
-				t.Errorf("basis = %q, want none: reason %q adjudicated nothing", f.Evidence.Basis, reason)
+			// An intake reason names itself as the basis; an unrecognized one states none.
+			want := verdict.NonExploitableBasis(reason)
+			if reason == "some_axis_added_later" {
+				want = verdict.BasisNone
+			}
+			if f.Evidence.Basis != want {
+				t.Errorf("basis = %q, want %q for reason %q", f.Evidence.Basis, want, reason)
 			}
 		})
 	}

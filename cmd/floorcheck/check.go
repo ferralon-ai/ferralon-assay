@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
@@ -51,9 +52,13 @@ const (
 	KindTruncated      = "scan_truncated"
 	KindUngroundedNE   = "ungrounded_not_exploitable"
 	KindUngroundedDisq = "ungrounded_disqualified"
+	KindPathOutside    = "path_outside_module"
 	// KindLedger is a showcase scan whose rows differ from its ledger, or a ledger that does not
 	// match the pinned build scope.
 	KindLedger = "ledger_mismatch"
+	// KindIncompleteScan is a showcase scan that did not see the whole build: an empty or short package
+	// inventory, a tool or toolchain failure, or fewer ledger rows answered than the ledger holds.
+	KindIncompleteScan = "incomplete_scan"
 )
 
 // Failure is one reason a repository failed the floor.
@@ -145,9 +150,9 @@ const (
 //
 //   - not_exploitable needs one of the four refutation bases (verdict.NonExploitableBasis).
 //   - disqualified on the version or symbol axis carries that axis's basis
-//     (version_not_in_affected_range, vulnerable_symbol_absent); one with no basis is an intake
-//     disqualification (advisory_ecosystem_mismatch, no_manifest_entry), where no comparison was made
-//     and there is nothing to check; any other basis cannot ground a disqualification.
+//     (version_not_in_affected_range, vulnerable_symbol_absent); one with an intake basis
+//     (advisory_ecosystem_mismatch, no_manifest_entry), or none in an older report, made no
+//     comparison and has nothing to check; any other basis cannot ground a disqualification.
 func groundsOf(f report.AdvisoryFinding) grounds {
 	switch f.Verdict {
 	case report.VerdictNotExploitable:
@@ -162,7 +167,9 @@ func groundsOf(f report.AdvisoryFinding) grounds {
 		switch f.Evidence.Basis {
 		case verdict.BasisVersionNotAffected, verdict.BasisSymbolAbsent:
 			return groundsPresent
-		case verdict.BasisNone:
+		case verdict.BasisNone, verdict.BasisAdvisoryEcosystemMismatch, verdict.BasisNoManifestEntry:
+			// No basis (an older report) or an intake basis: no comparison ran, so there is
+			// nothing to check.
 			return groundsUnverifiable
 		default:
 			return groundsMissing
@@ -170,6 +177,38 @@ func groundsOf(f report.AdvisoryFinding) grounds {
 	default:
 		return groundsNotChecked
 	}
+}
+
+// pathOutsideModule reports whether a Go reachable_candidate row's call path never enters the row's own
+// module: no frame lies under the package's module path, so the path belongs to another package
+// instance (another major version of the module, say) and the row points the fix at the wrong one. A
+// row with no package (the toolchain), a standard-library row ("-" or "stdlib") and a row that
+// records no frames are exempt: there is nothing to compare.
+func pathOutsideModule(f report.AdvisoryFinding) bool {
+	if f.Verdict != report.VerdictReachableCandidate || f.Package == nil || !strings.EqualFold(f.Package.Ecosystem, "go") {
+		return false
+	}
+	module := f.Package.Name
+	if module == "" || module == "-" || module == "stdlib" || len(f.Evidence.CallPath) == 0 {
+		return false
+	}
+	for _, fr := range f.Evidence.CallPath {
+		if frameInModule(fr.Symbol, module) {
+			return false
+		}
+	}
+	return true
+}
+
+// frameInModule reports whether a call-path frame's symbol lies in module. A SCIP id
+// ("scip-go gomod <module> <version> <package>/<descriptor>") names its module in the third field,
+// compared whole, so github.com/x/y does not claim a frame of github.com/x/y/v5. Any other symbol is
+// read as a package-qualified name under the module's path.
+func frameInModule(symbol, module string) bool {
+	if f := strings.Fields(symbol); len(f) > 2 && f[0] == "scip-go" {
+		return f[2] == module
+	}
+	return symbol == module || strings.HasPrefix(symbol, module+"/") || strings.HasPrefix(symbol, module+".")
 }
 
 // findingLabel names a finding in the summary: its advisory id and, when it has one, its package.
@@ -212,6 +251,13 @@ func assessReport(res *RepoResult, r report.Report) {
 		res.Verdicts[f.Verdict]++
 		if f.Verdict == report.VerdictUndetermined {
 			reasons[f.UndeterminedReason]++
+		}
+		if pathOutsideModule(f) {
+			res.Failures = append(res.Failures, Failure{
+				Kind:     KindPathOutside,
+				Detail:   fmt.Sprintf("%s: the reachable path has no frame under its own module %s", findingLabel(f), f.Package.Name),
+				Findings: []string{findingLabel(f)},
+			})
 		}
 		switch groundsOf(f) {
 		case groundsMissing:

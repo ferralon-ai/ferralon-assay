@@ -6,6 +6,8 @@
 package pipeline
 
 import (
+	"strings"
+
 	"golang.org/x/mod/semver"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -199,13 +201,53 @@ func compareVersions(a, b, scheme string) (int, bool) {
 		}
 		return compareGoToolchain(x, y), true
 	case "", "gomod":
-		if !semver.IsValid(a) || !semver.IsValid(b) || semver.Prerelease(a) != "" || semver.Prerelease(b) != "" {
-			return 0, false
-		}
-		return semver.Compare(a, b), true
+		return compareGoModVersions(a, b)
 	default:
 		return 0, false
 	}
+}
+
+// canonicalGoModVersion reads a Go-module version or bound into the "v"-prefixed semver the x/mod
+// comparator takes. OSV Go records write bounds without the "v" (0.17.0), and Docker-style versions
+// carry numeric leading zeros (18.09.8); the zeros are stripped only when the string is otherwise
+// invalid semver. ok is false when no reading yields valid semver.
+func canonicalGoModVersion(v string) (string, bool) {
+	if v == "" {
+		return "", false
+	}
+	if v[0] != 'v' {
+		v = "v" + v
+	}
+	if semver.IsValid(v) {
+		return v, true
+	}
+	core, rest := v[1:], ""
+	if i := strings.IndexAny(core, "-+"); i >= 0 {
+		core, rest = core[:i], core[i:]
+	}
+	parts := strings.Split(core, ".")
+	for i, p := range parts {
+		if len(p) > 1 && p[0] == '0' {
+			parts[i] = strings.TrimLeft(p, "0")
+			if parts[i] == "" {
+				parts[i] = "0"
+			}
+		}
+	}
+	v = "v" + strings.Join(parts, ".") + rest
+	return v, semver.IsValid(v)
+}
+
+// compareGoModVersions orders module version a against bound b. b is canonicalized and may be a
+// pre-release or pseudo-version, ordered by semver.Compare as govulncheck does. a is the installed
+// version as go.mod writes it, so it must already be "v"-prefixed semver, and a pre-release a stays
+// unordered: an installed pseudo-version against a bound fails open.
+func compareGoModVersions(a, b string) (int, bool) {
+	cb, bok := canonicalGoModVersion(b)
+	if !semver.IsValid(a) || !bok || semver.Prerelease(a) != "" {
+		return 0, false
+	}
+	return semver.Compare(a, cb), true
 }
 
 // withDisagreeingLegacyRanges adds the advisory-level legacy ranges to the element they describe when

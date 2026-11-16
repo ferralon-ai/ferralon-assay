@@ -177,7 +177,7 @@ func TestAddCaveats(t *testing.T) {
 	}}
 	results := map[string]*scanResult{
 		"o/web": withReport(ok(), reportJSON(dnrA+","+dnrB, uninspectRun)),
-		"o/api": withReport(ok(), reportJSON(dnrA+","+neUngrounded, uninspectRun+","+uninspectPkg)),
+		"o/api": withReport(Meta{Repo: "ferralon-demo/x", Outcome: "failure", ExitCode: intp(1)}, reportJSON(dnrA+","+neGrounded, uninspectRun+","+uninspectPkg)),
 		"o/svc": withReport(ok(), reportJSON(neGrounded, "")),
 	}
 	s := summarize(tg, results, "", "")

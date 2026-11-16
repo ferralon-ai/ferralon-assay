@@ -1,6 +1,11 @@
 package report
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/ferralon-ai/ferralon-assay/verdict"
+)
 
 // Upgrade brings a decoded Report up to the current SchemaVersion, returning an error
 // for any schema_version it does not recognize. It is the migration path required by
@@ -15,6 +20,9 @@ import "fmt"
 // document on the ref is only replaced when a run writes state for its own reasons. A
 // read-only consumer therefore never has to know v1 or v2 existed.
 //
+// Every recognized version also gets backfillDisqualBasis: a disqualification written before
+// every disqualification carried a basis reads with the basis its detail names, at any version.
+//
 // Refusing an unrecognized version is deliberate and is what the contract requires of
 // every reader: a document from a FUTURE schema may have changed the meaning of a field
 // this code reads, and guessing at it is how a reader silently reports a verdict the
@@ -22,11 +30,11 @@ import "fmt"
 func Upgrade(r Report) (Report, error) {
 	switch r.SchemaVersion {
 	case SchemaVersion:
-		return r, nil
+		return backfillDisqualBasis(r), nil
 	case SchemaVersionV2:
-		return upgradeV2(r), nil
+		return backfillDisqualBasis(upgradeV2(r)), nil
 	case SchemaVersionV1:
-		return upgradeV2(upgradeV1(r)), nil
+		return backfillDisqualBasis(upgradeV2(upgradeV1(r))), nil
 	case "":
 		return Report{}, fmt.Errorf("report: document carries no schema_version (uninterpretable)")
 	default:
@@ -162,6 +170,62 @@ func dropUnstampedPriority(r Report) Report {
 			out = append([]AdvisoryFinding(nil), r.Advisories...)
 		}
 		out[i].Priority = nil
+	}
+	if out != nil {
+		r.Advisories = out
+	}
+	return r
+}
+
+// disqualDetailBasis pairs each fixed intake-disqualification detail line with the basis it
+// records. These are the only disqualifications released scanners wrote without a basis; a version
+// or symbol disqualification always carried its basis, so a stored one without it is refused rather
+// than handed the strongest grounds. The lines are the scanner's own (trigger's disqualDetail),
+// duplicated here because report cannot import trigger; a trigger test holds the two in step.
+var disqualDetailBasis = []struct {
+	detail string
+	basis  verdict.NonExploitableBasis
+}{
+	{"the advisory targets a different ecosystem than this codebase; no version or symbol comparison was performed", verdict.BasisAdvisoryEcosystemMismatch},
+	{"the advisory's package is not installed by the build: its dependency manifest or build graph has no entry for it; no version or symbol comparison was performed", verdict.BasisNoManifestEntry},
+	// The no-manifest-entry line as v0.2 through v0.5 wrote it.
+	{"the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed", verdict.BasisNoManifestEntry},
+}
+
+// DisqualBasisFromDetail returns the basis a disqualification's detail line names, or BasisNone
+// when the detail is not one the scanner writes. It matches on prefix: the scanner may append the
+// advisory source it relied on after the fixed line.
+func DisqualBasisFromDetail(detail string) verdict.NonExploitableBasis {
+	for _, d := range disqualDetailBasis {
+		if strings.HasPrefix(detail, d.detail) {
+			return d.basis
+		}
+	}
+	return verdict.BasisNone
+}
+
+// backfillDisqualBasis gives every disqualified finding with no basis the basis its detail names.
+// Scanners through v0.6.0 wrote intake disqualifications (ecosystem mismatch, no manifest entry) with
+// an empty basis and the grounds only in the detail; Validate now requires the basis, so without
+// this a StateStore written by those versions would not read. A detail the scanner never writes
+// stays without a basis and Validate rejects the row: guessing the grounds of a disqualification is
+// the one thing this must not do. A not_exploitable is never backfilled; no released scanner wrote
+// one without a basis.
+func backfillDisqualBasis(r Report) Report {
+	var out []AdvisoryFinding
+	for i := range r.Advisories {
+		f := r.Advisories[i]
+		if f.Verdict != VerdictDisqualified || f.Evidence.Basis != verdict.BasisNone {
+			continue
+		}
+		b := DisqualBasisFromDetail(f.Evidence.Detail)
+		if b == verdict.BasisNone {
+			continue
+		}
+		if out == nil {
+			out = append([]AdvisoryFinding(nil), r.Advisories...)
+		}
+		out[i].Evidence.Basis = b
 	}
 	if out != nil {
 		r.Advisories = out

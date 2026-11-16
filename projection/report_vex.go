@@ -14,8 +14,8 @@
 //
 //	report.VerdictDisqualified       → OpenVEX "not_affected"        (justification: vulnerable_code_not_present
 //	                                                                   when a version/symbol axis adjudicated the
-//	                                                                   subject; otherwise an impact_statement saying
-//	                                                                   no basis was recorded)
+//	                                                                   subject; for an intake basis an impact_statement
+//	                                                                   saying no basis maps to a justification)
 //	report.VerdictNotExploitable     → OpenVEX "not_affected"        (justification by Evidence.Basis:
 //	                                                                   vulnerable_code_not_present when the symbol
 //	                                                                   is absent, vulnerable_code_not_in_execute_path
@@ -131,12 +131,12 @@ func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact, a
 	case report.VerdictDisqualified:
 		// A disqualification is not_affected under every axis; the status is verdict-driven
 		// (inv. 5) and does not vary. The justification follows the Evidence basis, because
-		// only some axes have one. A disqualification carrying no basis was never adjudicated on
-		// either axis (the advisory belongs to another ecosystem, or its package is absent from
-		// the manifest): there are no grounds for vulnerable_code_not_present, which is a
-		// strictly stronger claim than "not adjudicable here". The OpenVEX spec requires a
-		// not_affected statement to carry a justification or an impact_statement, so that case
-		// states in the impact_statement that no basis was recorded.
+		// only some axes have one. An intake disqualification was never adjudicated on either axis
+		// (the advisory belongs to another ecosystem, or the build installs no such package):
+		// there are no grounds for vulnerable_code_not_present, which is a strictly stronger claim
+		// than "not adjudicable here". The OpenVEX spec requires a not_affected statement to carry
+		// a justification or an impact_statement, so that case states in the impact_statement that
+		// no recorded basis maps to a justification.
 		just := notAffectedJustification(f.Evidence.Basis)
 		if just == "" {
 			return VEXStatusNotAffected, "", unjustifiedImpact(f.Evidence.Detail), ""
@@ -191,6 +191,10 @@ func notAffectedJustification(basis verdict.NonExploitableBasis) string {
 		return VEXJustNotPresent
 	case verdict.BasisSymbolUnreachable:
 		return VEXJustNotInExecutePath
+	case verdict.BasisAdvisoryEcosystemMismatch, verdict.BasisNoManifestEntry:
+		// Intake bases: nothing was adjudicated, so no justification is earned. Stated here so
+		// the next intake code is a decision, not a fallthrough.
+		return ""
 	default:
 		return ""
 	}
@@ -207,6 +211,10 @@ func basisGrounds(basis verdict.NonExploitableBasis) string {
 		return "the vulnerable code is absent from the build"
 	case verdict.BasisSymbolUnreachable:
 		return "the vulnerable code is in the build, and no path from an entry point reaches it"
+	case verdict.BasisAdvisoryEcosystemMismatch:
+		return "the advisory targets a different ecosystem than this codebase"
+	case verdict.BasisNoManifestEntry:
+		return "the advisory's package is not in the dependency manifest or build graph"
 	default:
 		return ""
 	}

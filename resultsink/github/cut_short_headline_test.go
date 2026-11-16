@@ -40,7 +40,7 @@ func TestBothSurfaces_CutShort_HeadlineNamesTheStop(t *testing.T) {
 		{
 			name:         "cut short",
 			r:            cutShortReport(),
-			wantHeadline: "**Partial coverage — no reachable candidates in what was assessed.** 1 advisory finding(s) are grounded-safe (1 not exploitable, 0 disqualified, 2 not assessed). " + cutShortTail,
+			wantHeadline: "**Partial coverage — no call path found in what was assessed.** 1 advisory finding(s) are closed (1 exposure ruled out for this scan scope, 0 outside the affected range, 2 exposure assessment incomplete). " + cutShortTail,
 			wantLine:     "The scan was cut short before it finished (`2 of 3 advisories were not assessed: the scan reached its 30m time limit`).",
 		},
 		{

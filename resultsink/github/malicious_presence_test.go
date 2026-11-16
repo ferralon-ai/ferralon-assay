@@ -50,8 +50,8 @@ func TestTier0_MaliciousPresent_LeadsHeadlineAndErrorsAnnotation(t *testing.T) {
 	}
 	s := string(summary)
 	for _, want := range []string{
-		"known-malicious package(s) present", // headline leads with the decisive verdict
-		"| Malicious package present | 1 |",  // counts-table row
+		"known-malicious package(s) present",                              // headline leads with the decisive verdict
+		"| Malicious package present (`malicious_package_present`) | 1 |", // counts-table row
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("summary missing %q\n---\n%s", want, s)

@@ -182,8 +182,8 @@ func TestReportHTML_UndeterminedRendersAsNotAssessed(t *testing.T) {
 	html := string(out)
 
 	for _, want := range []string{
-		`<span class="badge notassessed">Not assessed</span>`,
-		"2 advisories not assessed",
+		`<span class="badge notassessed">Exposure assessment incomplete</span>`,
+		"2 advisories with exposure assessment incomplete",
 		report.ReasonGoToolchainNotScanned,
 		`id="n-undetermined"`,
 	} {
@@ -198,7 +198,7 @@ func TestReportHTML_UndeterminedRendersAsNotAssessed(t *testing.T) {
 	}
 	// The badge must not reuse the not_exploitable class: a reader scanning colours would read an
 	// unassessed advisory as a grounded-safe one.
-	if strings.Contains(html, `<span class="badge info">Not assessed</span>`) {
+	if strings.Contains(html, `<span class="badge info">Exposure assessment incomplete</span>`) {
 		t.Error("the not-assessed badge reuses the not_exploitable class")
 	}
 }
@@ -219,8 +219,8 @@ func TestReportHTML_NoDoubleCountWhenARowAndAResidualNoteShareAnID(t *testing.T)
 	}
 	html := string(out)
 	// Two rows plus one genuinely withheld id = three, not five.
-	if !strings.Contains(html, "3 advisories not assessed") {
-		t.Errorf("coverage heading does not read \"3 advisories not assessed\"; the two ids that are also rows were counted twice")
+	if !strings.Contains(html, "3 advisories with exposure assessment incomplete") {
+		t.Errorf("coverage heading does not read \"3 advisories with exposure assessment incomplete\"; the two ids that are also rows were counted twice")
 	}
 }
 

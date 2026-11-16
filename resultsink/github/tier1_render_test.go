@@ -85,7 +85,7 @@ func TestTier1Body_RendersGradeEPSSKEV(t *testing.T) {
 
 	for _, want := range []string{
 		// New table header columns.
-		"| Advisory | Package | Grade | Entry point | EPSS | KEV | Candidate path |",
+		"| Advisory | Package | Grade | Entry point | EPSS | KEV | Call path |",
 		// Attacker-tainted candidate: grade, entry point + controllability, EPSS, KEV.
 		"`attacker_tainted`",
 		"`GET /api/ingest` (http_route) — attacker-controllable",
@@ -112,7 +112,7 @@ func TestTier1Body_RendersGradeEPSSKEV(t *testing.T) {
 
 	// inv. 5: the body must never assert exploitability or surface forbidden verdicts.
 	for _, forbidden := range []string{"affected", "::error", "Exploitable", "Affected"} {
-		if strings.Contains(body, forbidden) {
+		if strings.Contains(withoutApprovedLabel(body), forbidden) {
 			t.Errorf("inv.5 violation: body contains %q", forbidden)
 		}
 	}
@@ -147,7 +147,7 @@ func TestTier1Body_OmitsAbsentIntel(t *testing.T) {
 	// The body must never print a "not KEV" / "not listed" style negation for the
 	// EPSS-only candidate.
 	for _, forbidden := range []string{"not KEV", "not listed", "Not KEV", "KEV: no"} {
-		if strings.Contains(body, forbidden) {
+		if strings.Contains(withoutApprovedLabel(body), forbidden) {
 			t.Errorf("renderer printed a KEV negation %q; absent KEV must render nothing", forbidden)
 		}
 	}
@@ -166,7 +166,7 @@ func TestTier1Body_NoCandidates_NoIntelSection(t *testing.T) {
 		Build()
 	body := renderedTier1Body(t, resultsink.Result{Report: r})
 
-	for _, absent := range []string{"### Reachable candidates", "EPSS/KEV intel snapshot:", "| Grade |"} {
+	for _, absent := range []string{"### Call path found", "EPSS/KEV intel snapshot:", "| Grade |"} {
 		if strings.Contains(body, absent) {
 			t.Errorf("no-candidate body should not contain %q\n%s", absent, body)
 		}

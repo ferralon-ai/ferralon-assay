@@ -9,23 +9,28 @@ import (
 )
 
 // ShowcaseSummary is the showcase lane's part of the floor summary: what the lane pins and how the
-// ledgers' truth column lines up with what Assay is expected to emit.
+// ledgers' comparator observations line up with what Assay is expected to emit.
 type ShowcaseSummary struct {
 	CorpusRelease string `json:"corpus_release"`
 	GoVersion     string `json:"go_version"`
-	// TruthByEngine counts ledger rows by truth, then by engine_expected verdict.
-	TruthByEngine map[string]map[report.Verdict]int `json:"truth_by_engine"`
+	// ObservedByEngine counts ledger rows by comparator_observed, then by engine_expected verdict.
+	ObservedByEngine map[string]map[report.Verdict]int `json:"observed_by_engine"`
+	// AdjudicatedByStatus counts ledger rows by adjudicated.status.
+	AdjudicatedByStatus map[string]int `json:"adjudicated_by_status"`
 }
 
-// showcaseSummary tallies the ledgers' truth against their engine_expected verdicts.
+// showcaseSummary tallies the ledgers' comparator observations against their engine_expected verdicts,
+// and their adjudications.
 func showcaseSummary(sc *Showcase, ledgers map[string]Ledger) *ShowcaseSummary {
-	s := &ShowcaseSummary{CorpusRelease: sc.CorpusRelease, GoVersion: sc.GoVersion, TruthByEngine: map[string]map[report.Verdict]int{}}
+	s := &ShowcaseSummary{CorpusRelease: sc.CorpusRelease, GoVersion: sc.GoVersion,
+		ObservedByEngine: map[string]map[report.Verdict]int{}, AdjudicatedByStatus: map[string]int{}}
 	for _, l := range ledgers {
 		for _, r := range l.Rows {
-			if s.TruthByEngine[r.Truth] == nil {
-				s.TruthByEngine[r.Truth] = map[report.Verdict]int{}
+			if s.ObservedByEngine[r.ComparatorObserved] == nil {
+				s.ObservedByEngine[r.ComparatorObserved] = map[report.Verdict]int{}
 			}
-			s.TruthByEngine[r.Truth][r.EngineExpected.Verdict]++
+			s.ObservedByEngine[r.ComparatorObserved][r.EngineExpected.Verdict]++
+			s.AdjudicatedByStatus[r.Adjudicated.Status]++
 		}
 	}
 	return s
@@ -67,13 +72,14 @@ func evaluateShowcase(t Target, sc *Showcase, kind string, lg *Ledger, lgErr err
 	res := evaluate(t, sc.Policy, sr)
 	res.Lane = kind
 	var lines []string
-	var scanRows []engineRow
 	if sr != nil && sr.hasReport {
 		if r, err := decodeReport(sr.report); err == nil {
-			scanRows = engineRows(r.Advisories)
+			scanRows := engineRows(r.Advisories)
 			res.Reasons = reasonCounts(r.Advisories)
 			if lg != nil {
-				lines = compareLedger(*lg, scanRows).Lines
+				d := compareLedger(*lg, scanRows)
+				lines = append(d.Lines, boundDiffs(*lg, scanRows, scanInputsOf(sc, r, sr.meta))...)
+				res.Failures = append(res.Failures, incompleteScan(r, *lg, d.Matched)...)
 			}
 		}
 	}
@@ -86,7 +92,7 @@ func evaluateShowcase(t Target, sc *Showcase, kind string, lg *Ledger, lgErr err
 			fail = &Failure{Kind: KindLedger, Detail: "the ledger's build scope is not the pinned one", Findings: bad}
 		} else if len(lines) > 0 {
 			fail = &Failure{Kind: KindLedger,
-				Detail:   fmt.Sprintf("%d rows differ from floor/expect/%s.yaml (update the ledger in the same change: docs/floor.md)", len(lines), t.Name()),
+				Detail:   fmt.Sprintf("%d differences from floor/expect/%s.yaml (update the ledger in the same change: docs/floor.md)", len(lines), t.Name()),
 				Findings: lines}
 		}
 	}
@@ -128,14 +134,14 @@ func (s Summary) showcaseMarkdown() string {
 		fmt.Fprintf(&b, "| %s | %s | `%s` | %s | %s | %s | %d | %s |\n", cell(repoName(r.Repo)), scan,
 			cell(r.CorpusRelease), cell(r.GoVersion), formatDuration(r.DurationSeconds), mem, diff, cell(formatReasonMap(r.Reasons)))
 	}
-	b.WriteString("\n**Truth × engine_expected** (ledger rows):\n\n| truth |")
+	b.WriteString("\n**comparator_observed × engine_expected** (ledger rows; the comparator is an observation, not ground truth):\n\n| comparator_observed |")
 	columns := append(slices.Clone(verdictOrder), VerdictNotEmitted)
 	for _, v := range columns {
 		fmt.Fprintf(&b, " %s |", v)
 	}
 	b.WriteString("\n|---|" + strings.Repeat("---|", len(columns)) + "\n")
 	for _, tr := range truths {
-		row, ok := s.Showcase.TruthByEngine[tr]
+		row, ok := s.Showcase.ObservedByEngine[tr]
 		if !ok {
 			continue
 		}
@@ -145,6 +151,7 @@ func (s Summary) showcaseMarkdown() string {
 		}
 		b.WriteString("\n")
 	}
+	fmt.Fprintf(&b, "\n**Adjudicated** (a reviewer's conclusions, apart from the comparator): %s\n", formatReasonMap(s.Showcase.AdjudicatedByStatus))
 	for _, r := range s.Repos {
 		if len(r.Drift) > 0 {
 			fmt.Fprintf(&b, "\n**Floating drift, %s** (report-only, %d rows):\n\n", repoName(r.Repo), len(r.Drift))

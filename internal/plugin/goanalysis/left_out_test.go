@@ -127,7 +127,7 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
 			}
 			res := withholdForLeftOutFiles(context.Background(), refuted, vulnScan{}, load.Packages, release, dir, append(os.Environ(), "GOWORK=off"))
-			if withheld := res.Refutation == nil; withheld != tc.withheld {
+			if withheld := leftOutDeclared(res); withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
 			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
@@ -209,8 +209,10 @@ func TestWithholdForLeftOutFiles_StepFails(t *testing.T) {
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
 			}
 			res := withholdForLeftOutFiles(context.Background(), refuted, vulnScan{}, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
-			if res.Refutation != nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles) {
-				t.Fatalf("result %+v, want the refutation withheld as excluded_files", res)
+			// A step that fails withholds; a left-out file that calls the module, with every step
+			// succeeding, is a build-constraint limit and the refutation stands for the scanned platform.
+			if !declaresExcluded(res.Partiality.Reasons) || (res.Refutation == nil) != tc.failed || leftOutKept(res) == tc.failed {
+				t.Fatalf("result %+v, want excluded_files declared, withheld only when a step failed (%v)", res, tc.failed)
 			}
 			if failed := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure); failed != tc.failed {
 				t.Errorf("tool_failure declared = %v, want %v (partiality %+v)", failed, tc.failed, res.Partiality)
@@ -302,7 +304,7 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 			}
 			scanned := vulnScan{imports: map[string][]string{"stdlib": tc.vulnerable}}
 			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
-			if withheld := res.Refutation == nil; withheld != tc.withheld {
+			if withheld := leftOutDeclared(res); withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
 			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
@@ -396,7 +398,7 @@ func TestWithholdForLeftOutFiles_VulnerablePackages(t *testing.T) {
 			}
 			scanned := vulnScan{imports: map[string][]string{"example.com/vulnmod": tc.vulnerable}, wholeModule: map[string]bool{"example.com/vulnmod": tc.wholeModule}}
 			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
-			if withheld := res.Refutation == nil; withheld != tc.withheld {
+			if withheld := leftOutDeclared(res); withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
 			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
@@ -437,7 +439,7 @@ func TestWithholdForLeftOutFiles_UnreadableModuleGraph(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			env := append(append(os.Environ(), "GOWORK=off"), tc.env...)
 			res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), dir, env)
-			if withheld := res.Refutation == nil; withheld != tc.withheld {
+			if withheld := leftOutDeclared(res); withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
 			if failed := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure); failed != tc.withheld {
@@ -468,8 +470,8 @@ func TestWithholdForLeftOutFiles_NoAdvisoryEntry(t *testing.T) {
 	}
 	scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod/blake"}}}}}
 	res := withholdForLeftOutFiles(context.Background(), refuted, scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
-	if res.Refutation != nil {
-		t.Fatal("refutation stands, want it withheld")
+	if !leftOutKept(res) {
+		t.Fatalf("result %+v, want the refutation kept under excluded_files:build_constraint", res)
 	}
 }
 
@@ -618,7 +620,7 @@ func TestReconciledResult_WithholdsForLeftOutFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if withheld := res.Refutation == nil; withheld != tc.withheld {
+			if withheld := leftOutDeclared(res); withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}
 			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
@@ -663,7 +665,7 @@ func TestReconciledResult_RunnerGoDiffers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if withheld := res.Refutation == nil; withheld != tc.withheld {
+			if withheld := leftOutDeclared(res); withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}
 			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
@@ -798,10 +800,10 @@ func TestReconciledResult_FloorExcludes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if withheld := res.Refutation == nil; withheld != tc.withheld {
+			if withheld := leftOutDeclared(res); withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}
-			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFiles); declared != tc.withheld {
+			if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
 				t.Errorf("excluded_files declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 		})

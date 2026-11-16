@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -281,6 +282,42 @@ func dependencyHolds(ctx context.Context, buildDir, p string) bool {
 	// can name a module whose path the main module has since absorbed. In vendor mode the go
 	// command still loads such a path from the main module's own tree.
 	return held > 0 && !main && !(vendored && mainTreeHolds(buildDir, mainPath, p))
+}
+
+// otherMajorHolds reports whether a module of buildDir's build list other than the main module is a
+// major version of the module family import path p belongs to: it differs from p's own module only
+// by its major-version suffix. A build list that cannot be read holds nothing.
+func otherMajorHolds(ctx context.Context, buildDir, p string) bool {
+	ctx, cancel := context.WithTimeout(ctx, moduleSearchTimeout)
+	defer cancel()
+	mods, err := listModules(ctx, buildDir)
+	if errors.Is(err, errVendorMode) {
+		mods, err = vendoredModules(buildDir)
+	}
+	if err != nil {
+		return false
+	}
+	for _, m := range mods {
+		if !m.Main && sameModuleFamily(m.Path, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameModuleFamily reports whether module path mod is a major version of the module family import
+// path p lies in, or the other way round: p may name a package below the module.
+func sameModuleFamily(mod, p string) bool {
+	fam := plugin.GoModuleFamily(mod)
+	if fam == mod {
+		return false
+	}
+	for q := p; q != "" && q != "."; q = path.Dir(q) {
+		if plugin.GoModuleFamily(q) == fam {
+			return true
+		}
+	}
+	return false
 }
 
 // mainTreeHolds reports whether the main module mainPath, rooted at buildDir, has a directory for

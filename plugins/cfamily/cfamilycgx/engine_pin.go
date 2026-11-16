@@ -13,15 +13,13 @@ import (
 // plugins/cfamily/go.mod (a test checks it), and PinnedWasmSHA256 is the SHA-256 of the module
 // built from that same commit. A module, or an SDK in the build, that does not match is refused
 // as tool_failure:cgx_engine_mismatch before anything runs.
-// Tracker #792: the commit pinned below was orphaned by a cgx force-push, so the CI job
-// "cfamily (cgx pin, tracker #792)" is expected to be red until the pin is repinned.
 const (
 	// SDKModule is the cgx Go SDK's module path.
 	SDKModule = "github.com/ferralon-ai/cgx/sdk/go"
-	// PinnedSDKVersion is the SDK pseudo-version, cgx commit 408aaf273779.
-	PinnedSDKVersion = "v0.0.0-20261013083326-408aaf273779"
+	// PinnedSDKVersion is the SDK pseudo-version, cgx commit 919f1ca4dd9c.
+	PinnedSDKVersion = "v0.0.0-20261022212448-919f1ca4dd9c"
 	// PinnedWasmSHA256 is the SHA-256 of cgx.wasm built from the same commit.
-	PinnedWasmSHA256 = "2ad98275ac3b9dea5277a769e03eb550753696bab6b5ff0e96219e4bc3e8fb48"
+	PinnedWasmSHA256 = "95ebe0bd3248230ece6ae68bec84bea2ca40aec86a687f1d9b9beffb66a51d05"
 )
 
 // readBuildInfo is debug.ReadBuildInfo, swappable in tests.

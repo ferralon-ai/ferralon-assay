@@ -55,6 +55,37 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 	return store, a.ID, nil
 }
 
+// siblingInstanceFindings returns a finding for each other major version of the assessed Go module
+// that the build carries (pipeline.SiblingInstances): the same advisory assessed once more with that
+// instance selected, so each package instance has its own verdict and call path. A sibling the scan
+// stopped before, or whose assessment failed, still gets its row, with no package, as for any advisory.
+func siblingInstanceFindings(analysis context.Context, areq assessment.Request, st artifact.Store, assessmentID string, opts []pipeline.AssessOption, sbom []report.Package, mods goModules, invNotes []report.PartialityNote) ([]report.AdvisoryFinding, []report.PartialityNote) {
+	var (
+		findings []report.AdvisoryFinding
+		notes    []report.PartialityNote
+	)
+	for _, module := range pipeline.SiblingInstances(st, assessmentID) {
+		sst, sid, stopped, err := assessWithin(analysis, areq, append(opts[:len(opts):len(opts)], pipeline.WithSelectedModule(module))...)
+		if stopped {
+			findings = append(findings, cutShortFinding(areq.Vulnerability))
+			continue
+		}
+		if err != nil {
+			findings = append(findings, assessFailureFinding(areq.Vulnerability, err))
+			notes = append(notes, assessFailureNote(areq.Vulnerability, err))
+			continue
+		}
+		advisory, pkg := advisoryFromArtifacts(sst, sid, areq, sbom)
+		f := withInventoryLimits(findingInBuild(sst, sid, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(sst, sid))
+		findings = append(findings, f)
+		if note, ok := limitNoteFor(f); ok {
+			notes = append(notes, note)
+		}
+		notes = append(notes, partialityNotes(sst, sid)...)
+	}
+	return findings, notes
+}
+
 // finding maps one advisory's S1–S6 artifacts into a single report.AdvisoryFinding,
 // applying the deterministic verdict rule (inv. 5):
 //
@@ -986,13 +1017,12 @@ func shortDigest(d string) string {
 	return algo + ":" + hex[:12]
 }
 
-// disqualBasis records the refutation grounds a disqualification stands on. Only the version and
-// symbol axes are grounded refutations: an adjudicated comparison ran against the subject and
-// cleared it. The intake codes (advisory ecosystem mismatch, no manifest entry) record that the
-// advisory is not adjudicable against this subject at all — no comparison ran, so there are no
-// grounds to state, and the honest Basis is none. That is already how this Report says it:
-// report.go:94 requires an empty Basis wherever there are no refutation grounds to state, and
-// Validate enforces it for the candidate and undetermined verdicts.
+// disqualBasis records the grounds a disqualification stands on. The version and symbol axes are
+// grounded refutations: an adjudicated comparison ran against the subject and cleared it. The
+// intake codes (advisory ecosystem mismatch, no manifest entry) record that the advisory is not
+// adjudicable against this subject at all; they carry their own basis, so a reader sees why the
+// row is disqualified, but no comparison ran and the basis grounds no refutation (Validate keeps
+// it off every other verdict, and floorcheck counts it as unverifiable).
 //
 // An unrecognized reason code lands on none for the same reason, and a stronger one: an axis this
 // function cannot name has no standing to claim grounds it cannot describe.
@@ -1002,6 +1032,10 @@ func disqualBasis(reason string) verdict.NonExploitableBasis {
 		return verdict.BasisVersionNotAffected
 	case pipeline.ReasonSymbolAbsent:
 		return verdict.BasisSymbolAbsent
+	case pipeline.ReasonAdvisoryEcosystemMismatch:
+		return verdict.BasisAdvisoryEcosystemMismatch
+	case pipeline.ReasonNoManifestEntry:
+		return verdict.BasisNoManifestEntry
 	default:
 		return verdict.BasisNone
 	}
@@ -1290,6 +1324,7 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 		versionHeld = len(kept) < len(reasons)
 		reasons = kept
 	}
+	reasons = withoutBuildConstraintLimit(store, assessmentID, pkg, reasons)
 	switch {
 	case len(reasons) == 0:
 		return "", false
@@ -1306,6 +1341,25 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	return report.ReasonAnalysisDidNotRun, true
 }
 
+// withoutBuildConstraintLimit drops, from the limits a refutation would be withheld by, the one the
+// Go lane declares beside a refutation it kept for the scanned platform: every file the build left out
+// that may call into the module was left out by its build constraints alone
+// (plugin.PartialReasonExcludedFilesBuildConstraint). The refutation's detail names the platform and
+// tags it holds for and says other platforms were not checked, so the finding states its scope; the
+// limit still reaches the scan-level disclosure, which reads the footprint. It drops only while the
+// assessment holds that refutation on the admitted package, and every other limit stays.
+func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg *report.Package, reasons []string) []string {
+	if !slices.Contains(reasons, plugin.PartialReasonExcludedFilesBuildConstraint) {
+		return reasons
+	}
+	reach, _ := reachabilityResult(store, assessmentID)
+	admitted, _, ok := admittedPackage(store, assessmentID, pkg)
+	if r := reach.Refutation; !ok || r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
+		return reasons
+	}
+	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return r == plugin.PartialReasonExcludedFilesBuildConstraint })
+}
+
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a
 // refutation its completed search would have supported: each leaves that search intact and says code
 // it did not cover may contradict it. A limit can also be declared when its coverage check cannot run
@@ -1313,13 +1367,14 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 // not listed: it means `go env` failed, which puts the search's own build configuration in doubt, so
 // it keeps analysis_did_not_run.
 var refutationWithheldReasons = map[string]bool{
-	plugin.PartialReasonExcludedFiles:           true,
-	plugin.PartialReasonExcludedFilesAssembly:   true,
-	plugin.PartialReasonExcludedFilesLinkname:   true,
-	plugin.PartialReasonExcludedFilesCgoInclude: true,
-	plugin.PartialReasonUnsearchedMethods:       true,
-	plugin.PartialReasonLibraryEscape:           true,
-	plugin.PartialReasonReflectiveCall:          true,
+	plugin.PartialReasonExcludedFiles:                true,
+	plugin.PartialReasonExcludedFilesAssembly:        true,
+	plugin.PartialReasonExcludedFilesLinkname:        true,
+	plugin.PartialReasonExcludedFilesCgoInclude:      true,
+	plugin.PartialReasonExcludedFilesBuildConstraint: true,
+	plugin.PartialReasonUnsearchedMethods:            true,
+	plugin.PartialReasonLibraryEscape:                true,
+	plugin.PartialReasonReflectiveCall:               true,
 }
 
 // withoutVersionLimits drops, one occurrence each, the limits the inventory recorded against
@@ -1398,10 +1453,11 @@ var outsideBuildExempt = map[string]bool{
 	// The module graph does not depend on GOOS, GOARCH or build tags, and the module search reads
 	// every .go file whatever its build constraints. The assembly, linkname targets and C a left-out
 	// file reaches call only Go code compiled into the build, which comes from a listed module.
-	plugin.PartialReasonExcludedFiles:           true,
-	plugin.PartialReasonExcludedFilesAssembly:   true,
-	plugin.PartialReasonExcludedFilesLinkname:   true,
-	plugin.PartialReasonExcludedFilesCgoInclude: true,
+	plugin.PartialReasonExcludedFiles:                true,
+	plugin.PartialReasonExcludedFilesAssembly:        true,
+	plugin.PartialReasonExcludedFilesLinkname:        true,
+	plugin.PartialReasonExcludedFilesCgoInclude:      true,
+	plugin.PartialReasonExcludedFilesBuildConstraint: true,
 }
 
 // outsideBuildBlocked reports whether a step outsideBuildGrounds rests on may not have run: the

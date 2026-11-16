@@ -146,7 +146,7 @@ func hasCutShort(notes []report.PartialityNote) bool {
 // inventoryCutShort reports whether notes declare an inventory the scan stopped before resolving.
 func inventoryCutShort(notes []report.PartialityNote) bool {
 	for _, n := range notes {
-		if n.Reason == report.ReasonScanCutShort && n.Detail == inventoryLimitDetail {
+		if n.Reason == report.ReasonScanCutShort && isInventoryLimit(n) {
 			return true
 		}
 	}

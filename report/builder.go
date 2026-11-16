@@ -79,14 +79,13 @@ func (b *Builder) AddFinding(f AdvisoryFinding) *Builder {
 	return b
 }
 
-// Disqualified records an advisory the scan ruled out for this subject. basis carries the
-// refutation grounds the disqualification stands on: verdict.BasisVersionNotAffected when the
-// resolved version is outside the advisory's affected range, verdict.BasisSymbolAbsent when the
-// vulnerable symbol is absent from the built artifact, and verdict.BasisNone when the advisory
-// was never adjudicated on either axis — it belongs to another ecosystem, or its package is
-// absent from the manifest. Those are disqualified because nothing here could be compared, not
-// because a comparison cleared them, and an empty basis is how this Report says so. detail is
-// the neutral one-line grounds.
+// Disqualified records an advisory the scan ruled out for this subject. basis carries the grounds
+// the disqualification stands on and is required (Validate rejects any other):
+// verdict.BasisVersionNotAffected when the resolved version is outside the advisory's affected
+// range, verdict.BasisSymbolAbsent when the vulnerable symbol is absent from the built artifact,
+// and verdict.BasisAdvisoryEcosystemMismatch or verdict.BasisNoManifestEntry for an intake
+// disqualification, where nothing here could be compared: the advisory belongs to another
+// ecosystem, or the build installs no such package. detail is the neutral one-line grounds.
 func (b *Builder) Disqualified(adv Advisory, pkg *Package, basis verdict.NonExploitableBasis, detail string) *Builder {
 	return b.AddFinding(AdvisoryFinding{
 		Advisory: adv,

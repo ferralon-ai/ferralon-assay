@@ -1082,3 +1082,21 @@ func TestPackageFromPURL(t *testing.T) {
 		}
 	}
 }
+
+func TestSameModuleFamily(t *testing.T) {
+	for _, tt := range []struct {
+		mod, p string
+		want   bool
+	}{
+		{"github.com/golang-jwt/jwt/v5", "github.com/golang-jwt/jwt/v4", true},
+		{"github.com/golang-jwt/jwt/v5", "github.com/golang-jwt/jwt/v4/sub", true},
+		{"github.com/golang-jwt/jwt/v5", "github.com/golang-jwt/jwt", true},
+		{"github.com/golang-jwt/jwt/v5", "github.com/golang-jwt/other", false},
+		{"github.com/golang-jwt/jwt", "github.com/golang-jwt/jwt/v4", false},
+		{"golang.org/x/net", "golang.org/x/net/idna", false},
+	} {
+		if got := sameModuleFamily(tt.mod, tt.p); got != tt.want {
+			t.Errorf("sameModuleFamily(%q, %q) = %v, want %v", tt.mod, tt.p, got, tt.want)
+		}
+	}
+}

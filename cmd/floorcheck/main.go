@@ -50,13 +50,16 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: floorcheck matrix|check|seed|paths [flags]")
+		fmt.Fprintln(stderr, "usage: floorcheck matrix|check|seed|paths|packet|run|list|diff [flags]")
 		return 2
 	}
 	switch args[0] {
 	case "matrix":
 		return runMatrix(args[1:], stdout, stderr)
 	case "check":
+		if hasReportFlag(args[1:]) {
+			return runCheckFixture(args[1:], stdout, stderr)
+		}
 		return runCheck(args[1:], stdout, stderr)
 	case "seed":
 		return runSeed(args[1:], stdout, stderr)
@@ -64,8 +67,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPaths(args[1:], stdout, stderr)
 	case "packet":
 		return runPacket(args[1:], stdout, stderr)
+	case "run":
+		return runRun(args[1:], stdout, stderr)
+	case "list":
+		return runList(args[1:], stdout, stderr)
+	case "diff":
+		return runDiff(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "floorcheck: unknown command %q (want matrix, check, seed, paths or packet)\n", args[0])
+		fmt.Fprintf(stderr, "floorcheck: unknown command %q (want matrix, check, seed, paths, packet, run, list or diff)\n", args[0])
 		return 2
 	}
 }

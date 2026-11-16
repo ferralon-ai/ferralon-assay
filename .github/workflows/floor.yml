@@ -8,10 +8,13 @@ name: Floor run
 # scan failed, the scan was cut short). The run never changes an expectation: those change by hand, in
 # the PR that moves them.
 #
-# Run it by hand (Actions → Floor run → Run workflow), naming fixtures or leaving the selector empty for
-# all of them. Locally: `go run ./cmd/floorcheck run <fixture…> --out DIR --scanner <ferralon-assay>`.
+# It runs every fixture nightly on main. Run it by hand (Actions → Floor run → Run workflow), naming
+# fixtures or leaving the selector empty for all of them. Locally:
+# `go run ./cmd/floorcheck run <fixture…> --out DIR --scanner <ferralon-assay>`.
 
 on:
+  schedule:
+    - cron: "43 8 * * *" # nightly, off the hour (08:43 UTC)
   workflow_dispatch:
     inputs:
       fixtures:
@@ -62,7 +65,7 @@ jobs:
         id: plan
         env:
           SELECTED: ${{ inputs.fixtures }}
-          SCAN_TIMEOUT: ${{ inputs.scan-timeout }}
+          SCAN_TIMEOUT: ${{ inputs.scan-timeout || '40m' }}
         run: |
           set -euo pipefail
           # The scan budget must end inside the fixture job's timeout, or a slow scan is killed with
@@ -152,7 +155,7 @@ jobs:
         id: run
         env:
           FIXTURE: ${{ matrix.name }}
-          SCAN_TIMEOUT: ${{ inputs.scan-timeout }}
+          SCAN_TIMEOUT: ${{ inputs.scan-timeout || '40m' }}
         run: |
           set -uo pipefail
           bin="$RUNNER_TEMP/floor-bin"

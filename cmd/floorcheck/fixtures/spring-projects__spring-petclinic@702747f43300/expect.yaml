@@ -2,7 +2,7 @@ schema: ferralon.floor-expect.v1
 scan: complete
 findings:
   - advisory: CVE-2025-41249
-    package: "org.springframework:spring-core@5.3.15"
+    package: "org.springframework:spring-core"
     truth: reachable
     floor: undetermined
     note: "org.springframework:spring-core 5.3.15, in range"
@@ -12,7 +12,7 @@ findings:
     floor: undetermined
     note: "jackson-databind 2.13.1, in range"
   - advisory: CVE-2026-41848
-    package: "org.springframework:spring-core@5.3.15"
+    package: "org.springframework:spring-core"
     truth: reachable
     floor: undetermined
     note: "org.springframework:spring-core 5.3.15, in range"

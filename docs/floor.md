@@ -7,9 +7,11 @@ pinned by sha256). Its `expect.yaml` lists the expected finding per advisory: th
 and the weakest verdict that still counts as met. Expectations change only by hand, in the PR that
 moves the finding.
 
-A person starts every run. `.github/workflows/floor.yml` runs only by `workflow_dispatch`, with a
-`fixtures` selector (empty runs all of them): it builds the scanner and `floorcheck` once, then runs
-one matrix job per fixture. Locally, `floorcheck run <fixture>… --out DIR` does the same scan and
+`.github/workflows/floor.yml` runs every fixture nightly on `main`, and by hand through
+`workflow_dispatch` with a `fixtures` selector (empty runs all of them): it builds the scanner and
+`floorcheck` once, then runs one matrix job per fixture. Each job installs the runtimes the fixture's
+`scenario.yaml` pins, and the Debian packages its `build.apt` names (C headers a cgo build needs).
+Locally, `floorcheck run <fixture>… --out DIR` does the same scan and
 comparison. A fixture passes when its scan is complete, every advisory it carries was assessed, and
 every finding meets its floor. A worse verdict is a regression (exit 1); a scan that failed, was cut
 short or left an advisory unassessed is incomplete (exit 2).

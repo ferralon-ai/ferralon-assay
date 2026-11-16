@@ -57,8 +57,16 @@ func TestFloorWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(w.On) != 1 {
-		t.Errorf("triggers = %d, want only workflow_dispatch", len(w.On))
+	if len(w.On) != 2 {
+		t.Errorf("triggers = %d, want only schedule and workflow_dispatch", len(w.On))
+	}
+	var schedule []struct {
+		Cron string `yaml:"cron"`
+	}
+	if node, ok := w.On["schedule"]; !ok {
+		t.Error("no schedule trigger: the floor runs every fixture nightly")
+	} else if err := node.Decode(&schedule); err != nil || len(schedule) != 1 || !regexp.MustCompile(`^\S+ \S+ \* \* \*$`).MatchString(schedule[0].Cron) {
+		t.Errorf("schedule %+v (%v): want one daily cron", schedule, err)
 	}
 	var dispatch struct {
 		Inputs map[string]struct {
@@ -258,6 +266,18 @@ func TestFloorWorkflowScanTimeoutBound(t *testing.T) {
 		t.Fatal("the plan step's timeout check no longer precedes floorcheck")
 	}
 	check := run[:i]
+	// A scheduled run has no inputs: every step that reads the budget falls back to one the check admits.
+	fallback := regexp.MustCompile(`SCAN_TIMEOUT: \$\{\{ inputs\.scan-timeout \|\| '([^']*)' \}\}`)
+	data := string(readWorkflow(t))
+	if refs, fbs := strings.Count(data, "inputs.scan-timeout"), fallback.FindAllStringSubmatch(data, -1); len(fbs) != refs {
+		t.Errorf("%d of %d scan-timeout reads fall back to a default; a scheduled run would pass an empty budget", len(fbs), refs)
+	} else {
+		for _, m := range fbs {
+			if code, out := runScript(t, t.TempDir(), check, "SCAN_TIMEOUT="+m[1]); code != 0 {
+				t.Errorf("scheduled budget %q refused: exit %d\n%s", m[1], code, out)
+			}
+		}
+	}
 	for in, want := range map[string]int{"40m": 0, "1m": 0, "60m": 0, "61m": 1, "0m": 1, "2h": 1, "40": 1, "": 1, "40m; true": 1, "0060m": 1, "08m": 1} {
 		if code, out := runScript(t, t.TempDir(), check, "SCAN_TIMEOUT="+in); code != want {
 			t.Errorf("scan-timeout %q: exit %d, want %d\n%s", in, code, want, out)

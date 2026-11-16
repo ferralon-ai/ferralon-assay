@@ -70,7 +70,7 @@ func TestTier1Issue_CreatesThenOverwritesSameIssue(t *testing.T) {
 
 	// inv. 5.
 	for _, forbidden := range []string{"affected", "::error"} {
-		if strings.Contains(mock.issues[len(mock.issues)-1].Body, forbidden) {
+		if strings.Contains(withoutApprovedLabel(mock.issues[len(mock.issues)-1].Body), forbidden) {
 			t.Errorf("inv.5 violation: dashboard body contains %q", forbidden)
 		}
 	}

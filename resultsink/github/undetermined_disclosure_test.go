@@ -61,9 +61,9 @@ func TestSinks_AllUndeterminedScanNeverReadsAsNoFindings(t *testing.T) {
 			t.Errorf("%s reads as a clean scan on a run that established nothing\n---\n%s", surface, body)
 		}
 		for _, want := range []string{
-			"No verdict was established for any of the 4 advisories evaluated.",
+			"Exposure assessment incomplete for all 4 advisories evaluated.",
 			"This run is not a complete assessment of the codebase.",
-			"| Not assessed (no verdict established) | 4 |",
+			"| Exposure assessment incomplete (`undetermined`) | 4 |",
 		} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s missing %q\n---\n%s", surface, want, body)
@@ -81,13 +81,13 @@ func TestSinks_UndeterminedNeverJoinsTheGroundedSafeCount(t *testing.T) {
 		"Tier-0": renderedTier0Summary(t, r),
 		"Tier-1": renderedTier1Body(t, resultsink.Result{Report: r}),
 	} {
-		if !strings.Contains(body, "2 advisory finding(s) are grounded-safe (1 not exploitable, 1 disqualified, 1 not assessed)") {
+		if !strings.Contains(body, "2 advisory finding(s) are closed (1 exposure ruled out for this scan scope, 1 outside the affected range, 1 exposure assessment incomplete)") {
 			t.Errorf("%s does not count 2 grounded-safe and disclose 1 unassessed\n---\n%s", surface, body)
 		}
 		if strings.Contains(body, "3 advisory finding(s) are grounded-safe") {
 			t.Errorf("%s folded the unassessed advisory into the grounded-safe count\n---\n%s", surface, body)
 		}
-		if !strings.Contains(body, "| Not assessed (no verdict established) | 1 |") {
+		if !strings.Contains(body, "| Exposure assessment incomplete (`undetermined`) | 1 |") {
 			t.Errorf("%s counts table omits the unassessed row\n---\n%s", surface, body)
 		}
 	}
@@ -105,7 +105,7 @@ func TestSinks_CandidateHeadlineStillDisclosesUnassessed(t *testing.T) {
 		Build()
 
 	body := renderedTier0Summary(t, r)
-	if !strings.Contains(body, "(0 not exploitable, 0 disqualified, 1 not assessed.)") {
+	if !strings.Contains(body, "(0 exposure ruled out for this scan scope, 0 outside the affected range, 1 exposure assessment incomplete.)") {
 		t.Errorf("candidate headline does not disclose the unassessed advisory\n---\n%s", body)
 	}
 	if !strings.Contains(body, "This run is not a complete assessment of the codebase.") {
@@ -123,7 +123,7 @@ func TestSinks_FullyResolvedScanPanelIsUnchanged(t *testing.T) {
 		if strings.Contains(body, "not assessed") {
 			t.Errorf("%s mentions unassessed advisories on a fully-resolved scan\n---\n%s", surface, body)
 		}
-		if !strings.Contains(body, "**No reachable candidates.** 2 advisory finding(s) are grounded-safe (1 not exploitable, 1 disqualified).") {
+		if !strings.Contains(body, "**No call path found.** 2 advisory finding(s) are closed (1 exposure ruled out for this scan scope, 1 outside the affected range).") {
 			t.Errorf("%s headline changed on a scan with nothing to disclose\n---\n%s", surface, body)
 		}
 	}
@@ -155,7 +155,7 @@ func TestTier0_FailedAssessmentIsCountedAsNotAssessed(t *testing.T) {
 	body := renderedTier0Summary(t, r)
 	for _, want := range []string{
 		"An analysis step did not complete (`reachability_ingress (GO-2021-0113)`). That advisory has no verdict and is counted as not assessed.",
-		"| Not assessed (no verdict established) | 1 |",
+		"| Exposure assessment incomplete (`undetermined`) | 1 |",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Tier-0 summary is missing %q:\n%s", want, body)

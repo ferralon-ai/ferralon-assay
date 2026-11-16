@@ -247,6 +247,50 @@ tag. It carries the symbol the call path ends at and `symbol_confidence` (`high`
 `floorcheck seed` reads `meta.json` beside `report.json` for the scanner commit, corpus release and Go
 version, and falls back to the lane's pins for the last two.
 
+### Review a row
+
+A reviewer judges one row from its **packet**, not from the ledger and a checkout assembled by hand:
+
+```
+floorcheck packet -target gitea -row CVE-2025-47911 \
+    -report report.json -source ./src [-modcache DIR] [-goroot DIR] [-verify-links]
+floorcheck packet -target gitea -featured -report report.json -source ./src
+```
+
+`-row` takes a row's full key or any advisory id of its alias set, and a reachable row only (a row with no
+`path_review` has no path to read); an id that names several reachable rows is refused with their keys.
+`-featured` writes every featured row. Each row gets a directory, `<target>-<CVE>-<module>-<version>/`, of
+`packet.md` (for reading) and `packet.json` (the same, for tools), under `floor/expect/packets/` unless `-out` says
+otherwise. The packet holds:
+
+- **the row as stored**, and any note on it, such as an `ATTRIBUTION MISMATCH` where the path ends in a module other
+  than the row's component;
+- **the call path, one hop per line**: kind (target, dependency or stdlib), a likely interface dispatch marked, a
+  GitHub permalink at the pinned upstream commit for a target hop, one at the exact module version (or the Go release
+  tag, for the standard library) for a dependency hop, and the versioned pkg.go.dev entry. The file and line are the
+  declaration of the hop's function in the **build the header pins** (GOOS, GOARCH, tags, cgo, tests excluded), read from
+  `-source` (a checkout at the pinned commit, which the command refuses to read from any other), from `-modcache`
+  (default `go env GOMODCACHE`) and from `-goroot` (the pinned toolchain's). A target hop's file and line come from the
+  report when it has them (the source's own declaration wins where the two differ, and the packet says so). A hop with no
+  file and line says why (`source not available here`, a name declared twice in the build, a module at a host with no
+  line link) and carries no link: nothing is guessed. `-verify-links` fetches each permalink's file and records
+  whether the linked line declares the function;
+- **the analysis inputs**: Assay version and commit, corpus release and digest, Go toolchain, policy, GOOS/GOARCH, build
+  tags, test scope, and the exact scan command. A reviewed row's `bound_to` supplies the Assay inputs; for an unreviewed
+  row they come from `-report` and its `meta.json`, and read `not recorded` without them;
+- **Assay's raw finding** for the row (from `-report`: the pinned scan's `report.json`, downloaded from the floor run)
+  and **govulncheck's entry** for the same advisory and instance, from `floor/expect/evidence/`;
+- **a rerun section**: the commands that reproduce the row from a clean machine.
+
+A packet decides nothing. Read the path, hop by hop, against the source it links to. Decide `real`, `artifact` or
+`unclear` for the path, and an `adjudicated` status for the row, then record both in the ledger in a pull request that
+names the reviewer ([Path review](#path-review), [Comparator and adjudication](#comparator-and-adjudication)); the one who
+edits the file does not review their own change. A changed path or analysis puts the row back to `unreviewed`, and a
+packet is generated again from the new scan. The committed packets under `floor/expect/packets/` are the worked
+example: the five gitea shortlist rows and the traefik one. They were generated from the pinned sources with
+`-verify-links` and no `-report`, so they carry no raw Assay finding and no scanner commit; regenerate them with the
+nightly pinned scan's `report.json` to add both.
+
 ### Incomplete scans
 
 A broken toolchain once produced a clean-looking scan of zero packages. A clean-looking report has no

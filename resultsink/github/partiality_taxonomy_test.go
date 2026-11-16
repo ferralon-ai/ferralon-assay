@@ -48,7 +48,7 @@ func goScanReport(extra ...report.PartialityNote) report.Report {
 
 // The clean-scan headline for the one-finding Go fixture. A scan whose only limits
 // are inherent must emit this VERBATIM.
-const goCleanHeadline = "**No reachable candidates.** 1 advisory finding(s) are grounded-safe (1 not exploitable, 0 disqualified)."
+const goCleanHeadline = "**No call path found.** 1 advisory finding(s) are closed (1 exposure ruled out for this scan scope, 0 outside the affected range)."
 
 // AC — THE motivating case. A Go scan whose only partiality is reflection and
 // dynamic dispatch reads clean in the headline, and carries its limits in the footer.
@@ -69,7 +69,7 @@ func TestBothSurfaces_InherentLimitsOnly_HeadlineCleanFooterPresent(t *testing.T
 			}
 		}
 		// And it sits BELOW the results: it qualifies nothing above it.
-		if i, j := strings.Index(s, limitsFooterLabel), strings.Index(s, "| Verdict | Count |"); i < 0 || j < 0 || i < j {
+		if i, j := strings.Index(s, limitsFooterLabel), strings.Index(s, "| Result | Count | Next action |"); i < 0 || j < 0 || i < j {
 			t.Errorf("%s: the limits footer must follow the counts table (footer@%d, table@%d)\n---\n%s", name, i, j, s)
 		}
 	}
@@ -112,7 +112,7 @@ func TestBothSurfaces_DidNotRunReasons_StillQualifyHeadline(t *testing.T) {
 			if strings.Contains(s, goCleanHeadline) {
 				t.Errorf("%s/%s: emitted the unqualified clean headline on a run that skipped a step\n---\n%s", name, reason, s)
 			}
-			for _, want := range []string{"**Partial coverage — no reachable candidates in what was assessed.**", wantHeadlineTail, disclosureHeading} {
+			for _, want := range []string{"**Partial coverage — no call path found in what was assessed.**", wantHeadlineTail, disclosureHeading} {
 				if !strings.Contains(s, want) {
 					t.Errorf("%s/%s: missing %q\n---\n%s", name, reason, want, s)
 				}
@@ -255,7 +255,7 @@ func TestInherentLimits_LeaveCountsAndVerdictsIdentical(t *testing.T) {
 		Build()
 
 	countsThroughResults := func(s string) string {
-		i := strings.Index(s, "| Verdict | Count |")
+		i := strings.Index(s, "| Result | Count | Next action |")
 		if i < 0 {
 			t.Fatalf("no counts table in:\n%s", s)
 		}

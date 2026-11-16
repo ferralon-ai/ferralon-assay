@@ -54,10 +54,10 @@ func TestTier0_WritesSummaryAndAnnotations(t *testing.T) {
 	for _, want := range []string{
 		"## " + brand.Tier0SummaryHeading, // brand-derived, not hardcoded — see brand/brand_identity.go
 		"github.com/example/widget",
-		"Reachable candidate",
-		"| Reachable candidate | 2 |",
-		"| Not exploitable | 1 |",
-		"| Disqualified | 1 |",
+		"Call path found",
+		"| Call path found (`reachable_candidate`) | 2 |",
+		"| Exposure ruled out for this scan scope (`not_exploitable`) | 1 |",
+		"| Outside the affected range (`disqualified`) | 1 |",
 		"CVE-2023-39325",
 		"net/http.Handler",
 	} {
@@ -82,7 +82,7 @@ func TestTier0_WritesSummaryAndAnnotations(t *testing.T) {
 	}
 	// inv. 5: never "error", never "affected", never "exploitable" (without negation).
 	for _, forbidden := range []string{"::error", "affected"} {
-		if strings.Contains(ann, forbidden) || strings.Contains(s, forbidden) {
+		if strings.Contains(ann, forbidden) || strings.Contains(withoutApprovedLabel(s), forbidden) {
 			t.Errorf("inv.5 violation: surface contains %q", forbidden)
 		}
 	}
@@ -141,7 +141,7 @@ func TestTier0_NoCandidates_NoAnnotations(t *testing.T) {
 		t.Errorf("expected no annotations for a candidate-free report, got:\n%s", annotations.String())
 	}
 	summary, _ := os.ReadFile(summaryPath)
-	if !strings.Contains(string(summary), "No reachable candidates") {
+	if !strings.Contains(string(summary), "No call path found") {
 		t.Errorf("expected clean headline, got:\n%s", summary)
 	}
 }
@@ -178,4 +178,10 @@ func TestTier0_AnnotationEscaping(t *testing.T) {
 	if !strings.Contains(line, "%0A") || !strings.Contains(line, "%25") {
 		t.Errorf("expected percent-encoded data, got: %q", line)
 	}
+}
+
+// withoutApprovedLabel removes the approved "Outside the affected range" label, whose wording holds
+// the word the inv. 5 checks forbid as a verdict.
+func withoutApprovedLabel(s string) string {
+	return strings.NewReplacer("Outside the affected range", "", "outside the affected range", "").Replace(s)
 }

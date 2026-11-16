@@ -50,7 +50,7 @@ func TestTier0Summary_RangeAbsentSection(t *testing.T) {
 			name:    "no range at all",
 			finding: rangeAbsentFinding("PYSEC-2015-17", requests, "app.views.fetch"),
 			want: []string{
-				"### Reachable, with no version range to check",
+				"### Call path found, with no version range to check",
 				"- `requests` `2.32.3` (`PyPI`) is reachable from `app.views.fetch` and is named in `PYSEC-2015-17`. " +
 					"The advisory does not give a version range Assay can check `2.32.3` against. " +
 					"Confirm with the advisory or the maintainer whether `2.32.3` is affected.",
@@ -158,7 +158,7 @@ func TestTier0Summary_RangeAbsentSection(t *testing.T) {
 					t.Errorf("summary contains %q\n---\n%s", w, body)
 				}
 			}
-			if !strings.Contains(body, "| Not assessed (no verdict established) | 1 |") {
+			if !strings.Contains(body, "| Exposure assessment incomplete (`undetermined`) | 1 |") {
 				t.Errorf("range-absent row left the counts table\n---\n%s", body)
 			}
 		})

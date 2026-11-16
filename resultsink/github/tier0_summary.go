@@ -182,17 +182,20 @@ func candidateMessage(f report.AdvisoryFinding) string {
 	if f.Package != nil {
 		fmt.Fprintf(&b, " (%s)", f.Package.Label())
 	}
-	b.WriteString(": reachable candidate path found")
+	b.WriteString(": " + strings.ToLower(report.VerdictLabel(report.VerdictReachableCandidate)) + " (" + string(report.VerdictReachableCandidate) + ")")
 	if f.Evidence.ReachablePath != "" {
 		fmt.Fprintf(&b, " — %s", f.Evidence.ReachablePath)
 	}
-	b.WriteString(". A candidate for exploitability, not a proof.")
+	b.WriteString(". A candidate for exploitability, not a proof. " + report.VerdictNextAction(report.VerdictReachableCandidate))
 	return b.String()
 }
 
 // counts tallies findings by verdict for the summary headline.
 type counts struct {
 	candidate, notExploitable, disqualified, undetermined, maliciousPresent int
+	// causes and reasons break the undetermined count down: by cause group, and by raw reason code.
+	causes  map[report.UndeterminedCause]int
+	reasons map[string]int
 }
 
 func tally(r report.Report) counts {
@@ -207,6 +210,12 @@ func tally(r report.Report) counts {
 			c.disqualified++
 		case report.VerdictUndetermined:
 			c.undetermined++
+			if c.causes == nil {
+				c.causes, c.reasons = map[report.UndeterminedCause]int{}, map[string]int{}
+			}
+			f := r.Advisories[i]
+			c.causes[report.CauseOfReason(f.UndeterminedReason)]++
+			c.reasons[f.UndeterminedReason]++
 		case report.VerdictMaliciousPresent:
 			c.maliciousPresent++
 		}
@@ -229,6 +238,8 @@ func renderSummary(r report.Report, fetch []resultsink.DependencyFetchNote) stri
 	var b strings.Builder
 
 	b.WriteString("## " + brand.Tier0SummaryHeading + "\n\n")
+	// Coverage first: a partial scan must not read as all-clear, so its status precedes everything.
+	b.WriteString(coverageStatus(r, c))
 
 	if r.Subject.Repo != "" {
 		fmt.Fprintf(&b, "**Repository:** `%s`  \n", r.Subject.Repo)
@@ -260,11 +271,12 @@ func renderSummary(r report.Report, fetch []resultsink.DependencyFetchNote) stri
 	b.WriteString(assumptionsBlock(r))
 
 	b.WriteString(countsTable(c))
+	b.WriteString(undeterminedCauseTable(c))
 
 	if c.candidate > 0 {
-		b.WriteString("### Reachable candidates\n\n")
-		b.WriteString("These advisories have a reachable code path. A candidate is **not** a proof of exploitability: proving it requires observing the path execute, which this scan does not do.\n\n")
-		b.WriteString("| Advisory | Package | Candidate path |\n|---|---|---|\n")
+		b.WriteString("### Call path found\n\n")
+		b.WriteString("These advisories have a call path to the vulnerable code. A call path is **not** a proof of exploitability: proving it requires observing the path execute, which this scan does not do.\n\n")
+		b.WriteString("| Advisory | Package | Call path |\n|---|---|---|\n")
 		for _, f := range candidates(r) {
 			pkg := "—"
 			if f.Package != nil {
@@ -280,7 +292,7 @@ func renderSummary(r report.Report, fetch []resultsink.DependencyFetchNote) stri
 	}
 
 	if absent := rangeAbsent(r); len(absent) > 0 {
-		b.WriteString("### Reachable, with no version range to check\n\n")
+		b.WriteString("### Call path found, with no version range to check\n\n")
 		for _, f := range absent {
 			fmt.Fprintf(&b, "- %s\n", rangeAbsentLine(f))
 		}
@@ -383,14 +395,14 @@ func headline(c counts, tail string) string {
 		// The decisive OSS "affected" leads the headline: a known-malicious package is present.
 		// This is not a candidate owing follow-up — it is a determined finding that owes
 		// remediation, so it outranks every other line.
-		h := fmt.Sprintf("**%d known-malicious package(s) present** — remove or replace. (%d reachable candidate(s), %d not exploitable, %d disqualified%s.)",
+		h := fmt.Sprintf("**%d known-malicious package(s) present** — remove or replace. (%d call path(s) found, %d exposure ruled out for this scan scope, %d outside the affected range%s.)",
 			c.maliciousPresent, c.candidate, c.notExploitable, c.disqualified, notAssessedTail(c))
 		if partial {
 			h += " " + tail
 		}
 		return h
 	case c.candidate > 0:
-		h := fmt.Sprintf("**%d reachable candidate(s)** found — review below. (%d not exploitable, %d disqualified%s.)",
+		h := fmt.Sprintf("**%d call path(s) found** — review below. (%d exposure ruled out for this scan scope, %d outside the affected range%s.)",
 			c.candidate, c.notExploitable, c.disqualified, notAssessedTail(c))
 		if partial {
 			h += " " + tail
@@ -398,16 +410,16 @@ func headline(c counts, tail string) string {
 		return h
 	case c.groundedSafe() > 0:
 		if partial {
-			return fmt.Sprintf("**Partial coverage — no reachable candidates in what was assessed.** %d advisory finding(s) are grounded-safe (%d not exploitable, %d disqualified%s). %s",
+			return fmt.Sprintf("**Partial coverage — no call path found in what was assessed.** %d advisory finding(s) are closed (%d exposure ruled out for this scan scope, %d outside the affected range%s). %s",
 				c.groundedSafe(), c.notExploitable, c.disqualified, notAssessedTail(c), tail)
 		}
-		return fmt.Sprintf("**No reachable candidates.** %d advisory finding(s) are grounded-safe (%d not exploitable, %d disqualified).",
+		return fmt.Sprintf("**No call path found.** %d advisory finding(s) are closed (%d exposure ruled out for this scan scope, %d outside the affected range).",
 			c.groundedSafe(), c.notExploitable, c.disqualified)
 	case c.undetermined > 0:
 		// Nothing was refuted and nothing was found: every advisory evaluated is unassessed.
 		// This case exists so the line cannot fall through to "no advisory findings", which
 		// would be the silent clean scan with extra steps.
-		return fmt.Sprintf("**No verdict was established for any of the %d advisor%s evaluated.** %s",
+		return fmt.Sprintf("**Exposure assessment incomplete for all %d advisor%s evaluated.** No verdict was established. %s",
 			c.undetermined, plural(c.undetermined, "y", "ies"), tail)
 	default:
 		if partial {
@@ -437,7 +449,7 @@ func notAssessedTail(c counts) string {
 	if c.undetermined == 0 {
 		return ""
 	}
-	return fmt.Sprintf(", %d not assessed", c.undetermined)
+	return fmt.Sprintf(", %d exposure assessment incomplete", c.undetermined)
 }
 
 func plural(n int, one, many string) string {
@@ -815,18 +827,67 @@ func limitsFooter(r report.Report) string {
 // is never folded into a neighbouring row to keep the shape constant.
 func countsTable(c counts) string {
 	var b strings.Builder
-	b.WriteString("| Verdict | Count |\n|---|---:|\n")
-	if c.maliciousPresent > 0 {
-		fmt.Fprintf(&b, "| Malicious package present | %d |\n", c.maliciousPresent)
+	b.WriteString("| Result | Count | Next action |\n|---|---:|---|\n")
+	row := func(v report.Verdict, n int) {
+		fmt.Fprintf(&b, "| %s | %d | %s |\n", report.VerdictLabelWithCode(v), n, report.VerdictNextAction(v))
 	}
-	fmt.Fprintf(&b, "| Reachable candidate | %d |\n", c.candidate)
-	fmt.Fprintf(&b, "| Not exploitable | %d |\n", c.notExploitable)
-	fmt.Fprintf(&b, "| Disqualified | %d |\n", c.disqualified)
+	if c.maliciousPresent > 0 {
+		fmt.Fprintf(&b, "| %s | %d | Remove or replace this dependency. |\n", report.VerdictLabelWithCode(report.VerdictMaliciousPresent), c.maliciousPresent)
+	}
+	row(report.VerdictReachableCandidate, c.candidate)
+	row(report.VerdictNotExploitable, c.notExploitable)
+	row(report.VerdictDisqualified, c.disqualified)
 	if c.undetermined > 0 {
-		fmt.Fprintf(&b, "| Not assessed (no verdict established) | %d |\n", c.undetermined)
+		row(report.VerdictUndetermined, c.undetermined)
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+// undeterminedCauseTable groups the undetermined findings by cause, each group with its count, its one
+// next action and the raw reason codes behind it, or "" when nothing is undetermined.
+func undeterminedCauseTable(c counts) string {
+	if c.undetermined == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**Exposure assessment incomplete, by cause**\n\n")
+	b.WriteString("| Cause | Advisories | Next action | Reason codes |\n|---|---:|---|---|\n")
+	for _, cause := range report.UndeterminedCauses {
+		n := c.causes[cause]
+		if n == 0 {
+			continue
+		}
+		var codes []string
+		for reason, k := range c.reasons {
+			if report.CauseOfReason(reason) == cause {
+				codes = append(codes, fmt.Sprintf("%s ×%d", mdCode(reason), k))
+			}
+		}
+		sort.Strings(codes)
+		fmt.Fprintf(&b, "| %s | %d | %s | %s |\n", cause.Title(), n, cause.NextAction(), mdCell(strings.Join(codes, ", ")))
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// coverageStatus is the plain-words coverage line that opens a summary when the scan is partial: cut
+// short, a tool failed, no analyzer ran or nothing was inventoried. It renders nothing for a scan that
+// covered what it set out to, so a line that appears on every run cannot carry any signal.
+func coverageStatus(r report.Report, c counts) string {
+	switch {
+	case noAnalyzerRan(r):
+		return "**Coverage: nothing was assessed.** No analyzer ran for this codebase's language. This is not a clean result.\n\n"
+	case c.causes[report.CauseScanIncomplete] > 0 || slices.ContainsFunc(r.Partiality, func(n report.PartialityNote) bool {
+		return n.Reason == report.ReasonScanCutShort || n.Reason == plugin.PartialReasonToolFailure || strings.HasPrefix(n.Reason, plugin.PartialReasonToolFailure+":")
+	}):
+		return "**Coverage: partial — the scan did not complete.** Advisories it did not finish are shown as exposure assessment incomplete, never as clear. Fix the scan and run it again.\n\n"
+	case hasCoverageGap(r):
+		return "**Coverage: partial.** Part of the codebase could not be assessed, so the counts cover only what was. See the coverage details below.\n\n"
+	case len(r.Advisories) == 0 && len(r.SBOM.Packages) == 0 && !nothingMatched(r):
+		return "**Coverage: nothing was inventoried.** The scan found no packages to assess, so no advisory was checked. This is not a clean result.\n\n"
+	}
+	return ""
 }
 
 // candidates returns the reachable_candidate findings in stable order.

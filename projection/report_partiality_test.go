@@ -212,8 +212,8 @@ func TestReportHTML_WithheldAdvisoriesRenderAsAPanel(t *testing.T) {
 
 	for _, want := range []string{
 		"Coverage limits",
-		"3 advisories not assessed",
-		"not assessed",
+		"3 advisories with exposure assessment incomplete",
+		"exposure assessment incomplete",
 		"no verdict",
 		report.ReasonGoToolchainNotScanned,
 		"CVE-2023-39325", "CVE-2023-45283", "GO-2021-0264",

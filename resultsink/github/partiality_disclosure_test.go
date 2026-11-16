@@ -71,7 +71,7 @@ func TestTier0_NoManifestScan_DisclosesPartialCoverage(t *testing.T) {
 		}
 	}
 	// The disclosure qualifies the counts, so it must precede them.
-	if i, j := strings.Index(s, disclosureHeading), strings.Index(s, "| Verdict | Count |"); i < 0 || j < 0 || i > j {
+	if i, j := strings.Index(s, disclosureHeading), strings.Index(s, "| Result | Count | Next action |"); i < 0 || j < 0 || i > j {
 		t.Errorf("disclosure must precede the counts table (disclosure@%d, table@%d)\n---\n%s", i, j, s)
 	}
 }
@@ -119,6 +119,7 @@ func TestDisclosure_LeavesVerdictsAndCountsByteIdentical(t *testing.T) {
 			// TestPartialityHeadline_LeavesCountsAndVerdictsIdentical.
 			if isHeadlineLine(line) ||
 				strings.HasPrefix(line, disclosureHeading) ||
+				strings.HasPrefix(line, "**Coverage:") ||
 				strings.HasPrefix(line, "- Installed") ||
 				strings.HasPrefix(line, "> [!NOTE]") ||
 				strings.HasPrefix(line, "> "+disclosureHeading) ||
@@ -225,7 +226,7 @@ func TestDisclosure_ReasonWithFileName_RenderedAsCode(t *testing.T) {
 // The exact clean-scan headline for the two-finding fixture. Its ABSENCE is what B1
 // buys on a partial scan; its byte-identical presence on a clean scan is the
 // silent-when-clean guarantee.
-const cleanGroundedSafeHeadline = "**No reachable candidates.** 2 advisory finding(s) are grounded-safe (1 not exploitable, 1 disqualified)."
+const cleanGroundedSafeHeadline = "**No call path found.** 2 advisory finding(s) are closed (1 exposure ruled out for this scan scope, 1 outside the affected range)."
 
 // The qualifier a partiality-present headline carries on every branch.
 const wantHeadlineTail = "This run is not a complete assessment of the codebase."
@@ -265,13 +266,13 @@ func TestBothSurfaces_PartialScan_HeadlineDoesNotClaimSafety(t *testing.T) {
 		if strings.Contains(s, cleanGroundedSafeHeadline) {
 			t.Errorf("%s: partial scan emitted the unqualified clean headline %q\n---\n%s", name, cleanGroundedSafeHeadline, s)
 		}
-		for _, want := range []string{"**Partial coverage — no reachable candidates in what was assessed.**", wantHeadlineTail} {
+		for _, want := range []string{"**Partial coverage — no call path found in what was assessed.**", wantHeadlineTail} {
 			if !strings.Contains(s, want) {
 				t.Errorf("%s: headline missing %q\n---\n%s", name, want, s)
 			}
 		}
 		// The counts themselves are still reported, unchanged, in the headline.
-		if !strings.Contains(s, "2 advisory finding(s) are grounded-safe (1 not exploitable, 1 disqualified)") {
+		if !strings.Contains(s, "2 advisory finding(s) are closed (1 exposure ruled out for this scan scope, 1 outside the affected range)") {
 			t.Errorf("%s: headline dropped its counts\n---\n%s", name, s)
 		}
 	}
@@ -297,7 +298,7 @@ func TestBothSurfaces_PartialScan_ZeroFindings_HeadlineDoesNotClaimClean(t *test
 func TestBothSurfaces_PartialScan_WithCandidates_HeadlineKeepsCountsAndQualifies(t *testing.T) {
 	partial := candidateReport(report.PartialityNote{Reason: "no_manifest", Ecosystem: "npm"})
 	for name, s := range bothSurfaces(t, partial) {
-		if !strings.Contains(s, "**1 reachable candidate(s)** found — review below. (1 not exploitable, 0 disqualified.) "+wantHeadlineTail) {
+		if !strings.Contains(s, "**1 call path(s) found** — review below. (1 exposure ruled out for this scan scope, 0 outside the affected range.) "+wantHeadlineTail) {
 			t.Errorf("%s: candidate headline must keep its counts verbatim and append only the qualifier\n---\n%s", name, s)
 		}
 	}
@@ -317,7 +318,7 @@ func TestBothSurfaces_CleanScan_HeadlineByteIdentical(t *testing.T) {
 		}
 	}
 	for name, s := range bothSurfaces(t, candidateReport()) {
-		if !strings.Contains(s, "**1 reachable candidate(s)** found — review below. (1 not exploitable, 0 disqualified.)\n") {
+		if !strings.Contains(s, "**1 call path(s) found** — review below. (1 exposure ruled out for this scan scope, 0 outside the affected range.)\n") {
 			t.Errorf("%s: clean candidate headline changed\n---\n%s", name, s)
 		}
 	}
@@ -334,7 +335,7 @@ func TestBothSurfaces_CleanScan_HeadlineByteIdentical(t *testing.T) {
 func TestPartialityHeadline_LeavesCountsAndVerdictsIdentical(t *testing.T) {
 	note := report.PartialityNote{Reason: "no_manifest", Ecosystem: "npm"}
 	fromCounts := func(s string) string {
-		i := strings.Index(s, "| Verdict | Count |")
+		i := strings.Index(s, "| Result | Count | Next action |")
 		if i < 0 {
 			t.Fatalf("no counts table in:\n%s", s)
 		}
@@ -370,10 +371,10 @@ func TestPartialityHeadline_LeavesCountsAndVerdictsIdentical(t *testing.T) {
 // isHeadlineLine reports whether a rendered line is the one-line verdict headline, in
 // either its plain or its partiality-qualified form.
 func isHeadlineLine(line string) bool {
-	return strings.HasPrefix(line, "**No reachable candidates.**") ||
+	return strings.HasPrefix(line, "**No call path found.**") ||
 		strings.HasPrefix(line, "**No advisory findings.**") ||
 		strings.HasPrefix(line, "**Partial coverage — ") ||
-		strings.Contains(line, "reachable candidate(s)** found")
+		strings.Contains(line, "call path(s) found**")
 }
 
 // collapseBlankRuns squashes runs of blank lines so the comparison above is not

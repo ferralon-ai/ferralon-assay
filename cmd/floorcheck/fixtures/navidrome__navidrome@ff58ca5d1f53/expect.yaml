@@ -2,7 +2,7 @@ schema: ferralon.floor-expect.v1
 scan: complete
 findings:
   - advisory: CVE-2026-114437
-    package: "-"
+    package: "github.com/go-chi/chi/v5@v5.3.2"
     truth: reachable
     floor: undetermined
     note: "Pin go.mod:24 chi/v5 v5.3.2"

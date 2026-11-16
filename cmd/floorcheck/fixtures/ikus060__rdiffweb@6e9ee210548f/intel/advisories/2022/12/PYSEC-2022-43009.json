@@ -1,0 +1,52 @@
+{
+  "affected": [
+    {
+      "coordinate": "rdiffweb",
+      "fixed_versions": [
+        "2.5.5"
+      ],
+      "purl": "pkg:pypi/rdiffweb",
+      "ranges": [
+        {
+          "fixed": "2.5.5",
+          "upper_exclusive": "2.5.5"
+        }
+      ],
+      "version_scheme": "pep440"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "2.5.5",
+      "fixed_version": "2.5.5"
+    }
+  ],
+  "aliases": [
+    "CVE-2022-4723",
+    "GHSA-7q4r-x5qg-mmcp"
+  ],
+  "coordinate": "rdiffweb",
+  "cwes": [
+    "CWE-770"
+  ],
+  "fix": {
+    "upstream_commit": "https://github.com/ikus060/rdiffweb/commit/6e9ee210548f6d3210704cac302cfc7cdb239765"
+  },
+  "purl": "pkg:pypi/rdiffweb",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "Allocation of Resources Without Limits or Throttling (CWE-770): Allocation of Resources Without Limits or Throttling in GitHub repository ikus060/rdiffweb prior to 2.5.5.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "sink_kind": "resource_exhaustion",
+  "symbol_provenance": "diff-lexed",
+  "symbols": [
+    "rdiffweb.controller.page_pref_mfa.PagePrefMfa.default",
+    "rdiffweb.controller.page_pref_mfa.validate",
+    "rdiffweb.core.config.get_parser",
+    "rdiffweb.tools.ratelimit.check_ratelimit"
+  ],
+  "version_scheme": "pypi",
+  "vuln_id": "PYSEC-2022-43009",
+  "withdrawn": false
+}

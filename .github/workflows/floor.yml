@@ -1,79 +1,38 @@
 name: Floor run
 
-# The nightly floor run: scan every repository in floor/targets.json (the demo repositories, and the
-# pinned lane of real repositories at fixed commits, and the showcase lane: real applications at fixed
-# commits on a pinned corpus release and Go toolchain, held to an expected-verdict ledger under
-# floor/expect/, with a report-only twin scan on the floating corpus) with the scanner built from this commit, and
-# fail on any not_exploitable finding without grounds, a disqualified finding on a basis that cannot
-# ground it, or a scan that failed, timed out or was cut short. The summary shows,
-# per language, what Assay returned on each repository. docs/floor.md is the reference: what the run
-# checks and why, how to add a target, the secrets and their scopes, and how to read the summary.
+# The floor is a diagnostic test suite: every fixture under cmd/floorcheck/fixtures/ pins a repository at a full
+# commit, its toolchain, and the advisories it is scanned against (the ones adjudicated for it, each
+# pinned by sha256 in the fixture's intel/). `floorcheck run` scans each fixture with the scanner built
+# from this commit and judges the report against the fixture's expect.yaml. Exit 1 means an adjudicated
+# finding regressed; exit 2 means a fixture could not be judged (a pin did not verify, the checkout or
+# scan failed, the scan was cut short). The run never changes an expectation: those change by hand, in
+# the PR that moves them.
 #
-# Secrets:
-#   FLOOR_DEMO_TOKEN     read-only token for checking out the demo repositories. Without it the run
-#                        scans nothing and ends with a notice, never a failure.
-#   FLOOR_SLACK_WEBHOOK  optional Slack incoming-webhook URL. Set, a failed run posts a short alert
-#                        there; unset, the run says so in a notice and posts nothing.
+# Run it by hand (Actions → Floor run → Run workflow), naming fixtures or leaving the selector empty for
+# all of them. Locally: `go run ./cmd/floorcheck run <fixture…> --out DIR --scanner <ferralon-assay>`.
 
 on:
-  schedule:
-    - cron: "43 8 * * *" # nightly, off the hour (08:43 UTC)
   workflow_dispatch:
+    inputs:
+      fixtures:
+        description: "Fixture directory names under cmd/floorcheck/fixtures/, space-separated. Empty runs every fixture."
+        required: false
+        default: ""
+      scan-timeout:
+        description: "Per-fixture scan budget in whole minutes, 1m to 60m (the fixture job allows 90)."
+        required: false
+        default: "40m"
 
 permissions:
   contents: read
 
-concurrency:
-  group: floor
-  cancel-in-progress: false
-
-env:
-  # The corpus the demo repositories' own workflows read, and the signer its consumer documentation
-  # names (CONSUMING.md in the corpus repository). The policies come from floor/targets.json: the demo
-  # targets' policy, and the pinned lane's.
-  CORPUS_REPO: ferralon-ai/vulnerability-corpus
-  CORPUS_REF: main
-  CORPUS_SIGNER_IDENTITY: ferralon-intel-publisher@ferralon.iam.gserviceaccount.com
-  CORPUS_SIGNER_ISSUER: https://accounts.google.com
-
 jobs:
-  secrets:
-    name: Check secrets
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      demo-token: ${{ steps.check.outputs.demo-token }}
-      slack: ${{ steps.check.outputs.slack }}
-    steps:
-      - name: Check the floor secrets
-        id: check
-        env:
-          FLOOR_DEMO_TOKEN: ${{ secrets.FLOOR_DEMO_TOKEN }}
-          FLOOR_SLACK_WEBHOOK: ${{ secrets.FLOOR_SLACK_WEBHOOK }}
-        run: |
-          if [ -n "$FLOOR_DEMO_TOKEN" ]; then
-            echo "demo-token=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "demo-token=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Floor run skipped::Secret FLOOR_DEMO_TOKEN is not set, so no demo repo was scanned. Add it (docs/floor.md) and run the workflow again."
-          fi
-          if [ -n "$FLOOR_SLACK_WEBHOOK" ]; then
-            echo "slack=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "slack=false" >> "$GITHUB_OUTPUT"
-            if [ -n "$FLOOR_DEMO_TOKEN" ]; then
-              echo "::notice title=No Slack alert::Secret FLOOR_SLACK_WEBHOOK is not set, so a failed floor run is not posted to Slack."
-            fi
-          fi
-
-  build:
-    name: Build the scanner
-    needs: secrets
-    if: needs.secrets.outputs.demo-token == 'true'
+  plan:
+    name: Build and plan
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
-      matrix: ${{ steps.targets.outputs.matrix }}
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
 
@@ -82,7 +41,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Built once from this commit and shared with every scan job. The binaries carry the lookup
+      # Built once from this commit and shared with every fixture job. The analyzers carry the lookup
       # names the scanner resolves on PATH (assay-plugin-<lang>); the version names the commit.
       - name: Build the scanner, its analyzers and floorcheck
         run: |
@@ -97,67 +56,36 @@ jobs:
           done
           go build -trimpath -o "$bin/floorcheck" ./cmd/floorcheck
 
-      - name: Read the targets
-        id: targets
-        run: |
-          set -euo pipefail
-          "$RUNNER_TEMP/floor-bin/floorcheck" matrix -targets floor/targets.json | tee -a "$GITHUB_OUTPUT"
-
-      # Fetched once, one bundle per policy, so every repository is scanned against the same corpus
-      # release: the first fetch resolves the release and the rest name its tag. Each bundle is
-      # signature-checked and digest-pinned by the same scripts action.yml runs. The fetch script
-      # empties its destination, so each policy is fetched into its own directory and moved in.
-      - name: Fetch the advisory corpus bundles
+      # Every selected fixture's pins are verified before any runner is spent on it. The matrix carries
+      # each fixture's lane and runtime pins so the scan job installs exactly those runtimes.
+      - name: Verify the fixtures and plan the matrix
+        id: plan
         env:
-          POLICIES: ${{ steps.targets.outputs.policies }}
+          SELECTED: ${{ inputs.fixtures }}
+          SCAN_TIMEOUT: ${{ inputs.scan-timeout }}
         run: |
           set -euo pipefail
-          dest="$RUNNER_TEMP/floor-bin/corpus"
-          cosign_dir="$RUNNER_TEMP/floor-cosign"
-          DEST="$cosign_dir" bash scripts/install-cosign.sh
-          mkdir -p "$dest"
-          ref="$CORPUS_REF"
-          for policy in $POLICIES; do
-            out="$RUNNER_TEMP/corpus-$policy.out"
-            fetched="$RUNNER_TEMP/corpus-$policy"
-            PATH="$cosign_dir:$PATH" DEST="$fetched" CORPUS_REF="$ref" CORPUS_POLICY="$policy" GITHUB_OUTPUT="$out" \
-              bash scripts/fetch-corpus-bundle.sh
-            if [ ! -f "$fetched/$policy.jsonl.gz" ] || [ ! -f "$fetched/signals.json.gz" ]; then
-              echo "::error::The corpus release carries no verified $policy bundle and signals; the floor run reads only a verified bundle."
-              exit 1
-            fi
-            mv "$fetched/$policy.jsonl.gz" "$fetched/signals.json.gz" "$dest/"
-            ref="$(sed -n 's/^git-ref=//p' "$out" | tail -n 1)"
-          done
-          for policy in $POLICIES; do
-            if [ ! -f "$dest/$policy.jsonl.gz" ]; then
-              echo "::error::The $policy corpus bundle is missing after the fetch."
-              exit 1
-            fi
-          done
-          # The release every floating bundle came from, for the scan's meta.json.
-          printf '%s\n' "$ref" > "$dest/RELEASE"
-
-      # The showcase lane's pinned corpus release (floor/targets.json, showcase.corpus_release): the
-      # same fetch and the same checks, by the release's own tag instead of the latest.
-      - name: Fetch the showcase lane's pinned corpus bundle
-        if: steps.targets.outputs.showcase_corpus != ''
-        env:
-          SHOWCASE_POLICY: ${{ steps.targets.outputs.showcase_policy }}
-          SHOWCASE_CORPUS: ${{ steps.targets.outputs.showcase_corpus }}
-        run: |
-          set -euo pipefail
-          dest="$RUNNER_TEMP/floor-bin/corpus-pinned"
-          fetched="$RUNNER_TEMP/corpus-showcase"
-          mkdir -p "$dest"
-          PATH="$RUNNER_TEMP/floor-cosign:$PATH" DEST="$fetched" CORPUS_REF="$SHOWCASE_CORPUS" CORPUS_POLICY="$SHOWCASE_POLICY" \
-            GITHUB_OUTPUT="$RUNNER_TEMP/corpus-showcase.out" bash scripts/fetch-corpus-bundle.sh
-          if [ ! -f "$fetched/$SHOWCASE_POLICY.jsonl.gz" ] || [ ! -f "$fetched/signals.json.gz" ]; then
-            echo "::error::The pinned corpus release $SHOWCASE_CORPUS carries no verified $SHOWCASE_POLICY bundle and signals."
+          # The scan budget must end inside the fixture job's timeout, or a slow scan is killed with
+          # its observation unwritten.
+          if ! [[ "$SCAN_TIMEOUT" =~ ^([1-9][0-9]?)m$ ]] || (( BASH_REMATCH[1] < 1 || BASH_REMATCH[1] > 60 )); then
+            echo "::error::scan-timeout $SCAN_TIMEOUT: give whole minutes from 1m to 60m."
             exit 1
           fi
-          mv "$fetched/$SHOWCASE_POLICY.jsonl.gz" "$fetched/signals.json.gz" "$dest/"
-          printf '%s\n' "$SHOWCASE_CORPUS" > "$dest/RELEASE"
+          fc="$RUNNER_TEMP/floor-bin/floorcheck"
+          read -r -a names <<< "$SELECTED"
+          "$fc" validate --fixtures-root cmd/floorcheck/fixtures "${names[@]}"
+          all="$("$fc" list --fixtures-root cmd/floorcheck/fixtures)"
+          if [ "${#names[@]}" -eq 0 ]; then
+            matrix="$all"
+          else
+            matrix="$(jq -c --args '[.[] | select(.name as $n | $ARGS.positional | index($n))]' "${names[@]}" <<< "$all")"
+          fi
+          if [ "$(jq length <<< "$matrix")" -eq 0 ]; then
+            echo "::error::No fixture selected."
+            exit 1
+          fi
+          echo "matrix=$(jq -c '{include: .}' <<< "$matrix")" >> "$GITHUB_OUTPUT"
+          jq -r '"Fixtures: \(length)"' <<< "$matrix"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -166,204 +94,138 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
-  scan:
-    name: Scan ${{ matrix.name }}
-    needs: build
+  fixture:
+    name: ${{ matrix.name }}
+    needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.build.outputs.matrix) }}
+      max-parallel: 40
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
-      - name: Check out floor/
-        uses: actions/checkout@v4
+      # The fixtures and their advisories; nothing else is needed.
+      - uses: actions/checkout@v4
         with:
-          path: assay
-          sparse-checkout: floor
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: floor-bin
-          path: ${{ runner.temp }}/floor-bin
-
-      - name: Check out ${{ matrix.repo }}
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ matrix.repo }}
-          ref: ${{ matrix.ref }}
-          # The demo token reads the private demo repositories; the pinned lane's are public.
-          token: ${{ startsWith(matrix.repo, 'ferralon-demo/') && secrets.FLOOR_DEMO_TOKEN || github.token }}
-          path: target
+          sparse-checkout: cmd/floorcheck/fixtures
           persist-credentials: false
 
-      # The toolchain each demo repository's own workflow sets up before its scan; the showcase lane
-      # pins an exact release instead (floor/targets.json, showcase.go_version).
-      - uses: actions/setup-go@v5
-        if: matrix.language == 'go' && matrix.go_version == ''
-        with:
-          go-version-file: target/go.mod
-          cache: false
-      - uses: actions/setup-go@v5
-        if: matrix.go_version != ''
-        with:
-          go-version: ${{ matrix.go_version }}
-          cache: false
-      - name: Warm the module cache
-        if: matrix.language == 'go'
-        working-directory: target
-        run: go mod download
-      - uses: actions/setup-java@v4
-        if: matrix.language == 'java'
-        with:
-          distribution: temurin
-          java-version: "11"
-
-      - name: Scan
-        id: scan
-        timeout-minutes: 26
-        env:
-          BIN_DIR: ${{ runner.temp }}/floor-bin
-          TARGET_DIR: ${{ github.workspace }}/target
-          OUT_DIR: ${{ runner.temp }}/floor-out
-          POLICY: ${{ matrix.policy }}
-          SUBJECT_REPO: ${{ matrix.repo }}
-          REVISION: ${{ matrix.ref }}
-          HOUSE_CANARIES: ${{ matrix.include_house_canaries }}
-          SCAN_TIMEOUT: 22m
-          # Showcase entries only (empty elsewhere, and scan.sh unsets what is empty): the pinned
-          # corpus directory and the pinned build the ledger's header names.
-          CORPUS_DIR: ${{ matrix.corpus_dir }}
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: ${{ matrix.cgo }}
-          GOTOOLCHAIN: ${{ matrix.go_version != '' && 'local' || '' }}
-          MEASURE_PEAK: "true"
-        run: bash assay/floor/scan.sh
-
-      # Written whatever happened to the scan, so floorcheck can tell a failed scan from a clean one.
-      - name: Record the scan
-        if: always()
-        env:
-          OUT_DIR: ${{ runner.temp }}/floor-out
-          REPO: ${{ matrix.repo }}
-          POLICY: ${{ matrix.policy }}
-          OUTCOME: ${{ steps.scan.outcome }}
-          LANE: ${{ matrix.lane }}
-          LANGUAGE: ${{ matrix.language }}
-          CORPUS_DIR: ${{ matrix.corpus_dir }}
-          BIN_DIR: ${{ runner.temp }}/floor-bin
-        run: |
-          mkdir -p "$OUT_DIR"
-          num() { if [ -f "$OUT_DIR/$1" ]; then cat "$OUT_DIR/$1"; else echo null; fi; }
-          corpus="$(cat "$BIN_DIR/${CORPUS_DIR:-corpus}/RELEASE" 2>/dev/null || true)"
-          gover=""
-          if [ "$LANGUAGE" = go ]; then gover="$( (cd target && go env GOVERSION) 2>/dev/null || true)"; fi
-          jq -n --arg repo "$REPO" --arg policy "$POLICY" --arg commit "$GITHUB_SHA" --arg outcome "$OUTCOME" \
-            --arg lane "$LANE" --arg corpus "$corpus" --arg gover "$gover" \
-            --argjson exit_code "$(num exit_code)" --argjson duration "$(num duration_seconds)" --argjson peak "$(num peak_rss_kb)" \
-            '{repo: $repo, policy: $policy, assay_commit: $commit, outcome: $outcome,
-              exit_code: $exit_code, duration_seconds: $duration,
-              lane: $lane, corpus_release: $corpus, go_version: $gover, peak_rss_kb: $peak}' > "$OUT_DIR/meta.json"
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: floor-scan-${{ matrix.name }}
-          path: |
-            ${{ runner.temp }}/floor-out/meta.json
-            ${{ runner.temp }}/floor-out/report.json
-          retention-days: 14
-          if-no-files-found: warn
-
-  check:
-    name: Check the floor
-    needs: [build, scan]
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out floor/
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: floor
-
       - uses: actions/download-artifact@v4
         with:
           name: floor-bin
           path: ${{ runner.temp }}/floor-bin
 
-      - uses: actions/download-artifact@v4
+      # The runtimes the fixture pins. The harness also sets GOTOOLCHAIN to the pinned Go release, so a
+      # mismatched local toolchain would be replaced rather than used.
+      - uses: actions/setup-go@v5
+        if: matrix.go != ''
         with:
-          pattern: floor-scan-*
-          path: ${{ runner.temp }}/floor-results
+          go-version: ${{ matrix.go }}
+          cache: false
+      - uses: actions/setup-java@v4
+        if: matrix.jdk != ''
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+      - uses: actions/setup-node@v4
+        if: matrix.node != ''
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v5
+        if: matrix.python != ''
+        with:
+          python-version: ${{ matrix.python }}
 
-      - name: Run floorcheck
+      - name: Run the fixture
+        id: run
         env:
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FIXTURE: ${{ matrix.name }}
+          SCAN_TIMEOUT: ${{ inputs.scan-timeout }}
         run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/floor-results" floor-summary
-          chmod +x "$RUNNER_TEMP/floor-bin/floorcheck"
-          "$RUNNER_TEMP/floor-bin/floorcheck" check -targets floor/targets.json \
-            -results "$RUNNER_TEMP/floor-results" -assay-commit "$GITHUB_SHA" -run-url "$RUN_URL" \
-            -summary floor-summary/floor-summary.json -markdown floor-summary/floor-summary.md \
-            -alert floor-summary/floor-alert.txt
-
-      - name: Write the job summary
-        if: ${{ !cancelled() }}
-        run: |
-          if [ -f floor-summary/floor-summary.md ]; then
-            cat floor-summary/floor-summary.md >> "$GITHUB_STEP_SUMMARY"
+          set -uo pipefail
+          bin="$RUNNER_TEMP/floor-bin"
+          chmod +x "$bin"/*
+          rc=0
+          "$bin/floorcheck" run "$FIXTURE" --out "$RUNNER_TEMP/floor-obs" --fixtures-root cmd/floorcheck/fixtures \
+            --scanner "$bin/ferralon-assay" --work "$RUNNER_TEMP/floor-work" --scan-timeout "$SCAN_TIMEOUT" || rc=$?
+          echo "exit=$rc" >> "$GITHUB_OUTPUT"
+          if [ -f "$RUNNER_TEMP/floor-obs/summary.md" ]; then
+            cat "$RUNNER_TEMP/floor-obs/summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
+          exit "$rc"
 
-      - name: Gather the reports
-        if: ${{ !cancelled() }}
+      # The disk this fixture needed (checkout, module and build caches), for sizing the runners. Its
+      # own step, so a run that failed or hit the job timeout still records it.
+      - name: Record the disk footprint
+        if: always()
+        env:
+          FIXTURE: ${{ matrix.name }}
+          RUN_EXIT: ${{ steps.run.outputs.exit }}
         run: |
-          mkdir -p floor-summary/reports
-          if [ -d "$RUNNER_TEMP/floor-results" ]; then
-            cp -R "$RUNNER_TEMP/floor-results/." floor-summary/reports/
-          fi
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/floor-obs"
+          {
+            echo "fixture=$FIXTURE"
+            echo "exit=${RUN_EXIT:-none}"
+            echo "work_kb=$(du -sk "$RUNNER_TEMP/floor-work" 2>/dev/null | cut -f1)"
+            echo "home_kb=$(du -sk "$HOME" 2>/dev/null | cut -f1)"
+            df -k --output=used,avail / | tail -n 1 | awk '{print "root_used_kb=" $1 "\nroot_avail_kb=" $2}'
+          } > "$RUNNER_TEMP/floor-obs/footprint.txt"
 
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
+        if: always()
         with:
-          name: floor-summary
-          path: floor-summary
+          name: floor-obs-${{ matrix.name }}
+          path: ${{ runner.temp }}/floor-obs
           retention-days: 30
           if-no-files-found: warn
 
-  alert:
-    name: Alert on failure
-    needs: [secrets, build, scan, check]
-    # Only a run that scanned (the demo token is set), only when the webhook is set, and only when
-    # something failed.
-    if: >-
-      ${{ !cancelled() &&
-      needs.secrets.outputs.demo-token == 'true' &&
-      needs.secrets.outputs.slack == 'true' &&
-      (needs.build.result == 'failure' || needs.scan.result == 'failure' || needs.check.result == 'failure') }}
+  summary:
+    name: Floor summary
+    needs: [plan, fixture]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
-          name: floor-summary
-          path: floor-summary
+          pattern: floor-obs-*
+          path: floor-observations
 
-      - name: Post to Slack
+      # One table over every fixture's summary.json, read file by file so one unreadable summary costs
+      # only its own fixture. A fixture with no readable summary (its job was cancelled or timed out, or
+      # the file is damaged) counts as incomplete, never as passed.
+      - name: Summarize
         env:
-          FLOOR_SLACK_WEBHOOK: ${{ secrets.FLOOR_SLACK_WEBHOOK }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
         run: |
           set -euo pipefail
-          if [ -f floor-summary/floor-alert.txt ]; then
-            text="$(cat floor-summary/floor-alert.txt)"
-          else
-            text="$(printf '%s\n' \
-              "• Nightly Assay floor run failed before it could check the reports." \
-              "• The build or the check job failed; the run page says which." \
-              "• Run: $RUN_URL")"
+          shopt -s nullglob
+          : > fixtures.jsonl
+          for f in floor-observations/*/summary.json; do
+            if jq -c '.fixtures[]' "$f" > one.jsonl; then
+              cat one.jsonl >> fixtures.jsonl
+            else
+              echo "::warning::$f is not a readable summary; its fixture counts as incomplete."
+            fi
+          done
+          jq -s '.' fixtures.jsonl > all.json
+          jq -r '.include[].name' <<< "$MATRIX" | sort > planned.txt
+          jq -r '.[].fixture' all.json | sort > judged.txt
+          missing="$(comm -23 planned.txt judged.txt)"
+          {
+            echo "## Floor run"
+            echo
+            echo "| Fixture | Outcome | Regressed | Met | Improved | Incomplete | Unexpected | Drift |"
+            echo "|---|---|---|---|---|---|---|---|"
+            jq -r 'sort_by(.fixture)[] | "| \(.fixture) | \(.outcome) | \(.counts.regressed) | \(.counts.met) | \(.counts.improved) | \(.counts.incomplete) | \(.unexpected) | \(.drift) |"' all.json
+            for m in $missing; do echo "| $m | no observation | | | | | | |"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+          if jq -e 'any(.[]; .outcome == "regressed")' all.json > /dev/null; then
+            echo "::error::A fixture regressed."
+            exit 1
           fi
-          jq -n --arg text "$text" '{text: $text}' |
-            curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$FLOOR_SLACK_WEBHOOK" > /dev/null
+          if [ -n "$missing" ] || jq -e 'any(.[]; .outcome != "pass")' all.json > /dev/null; then
+            echo "::warning::Some fixtures could not be judged; they are incomplete, not passed."
+            exit 2
+          fi

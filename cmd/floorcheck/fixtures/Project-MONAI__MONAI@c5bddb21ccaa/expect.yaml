@@ -1,0 +1,13 @@
+schema: ferralon.floor-expect.v1
+scan: complete
+findings:
+  - advisory: GHSA-rghg-q7wp-9767
+    package: "-"
+    truth: not_affected
+    floor: undetermined
+    note: "c5bddb21 (2026-11-04) is 162 commits past 1.6.0 and the advisory says fixed in 1.6.0"
+  - advisory: GHSA-wg9g-w2j2-8pgr
+    package: "-"
+    truth: not_affected
+    floor: undetermined
+    note: "c5bddb21 (2026-11-04) is 162 commits past 1.6.0 and the advisory says fixed in 1.6.0"

@@ -1,0 +1,8 @@
+schema: ferralon.floor-expect.v1
+scan: complete
+findings:
+  - advisory: CVE-2026-119299
+    package: "github.com/gopacket/gopacket@v1.4.0"
+    truth: unreachable
+    floor: undetermined
+    note: "the only import is in a test file"

@@ -1,0 +1,18 @@
+schema: ferralon.floor-expect.v1
+scan: complete
+findings:
+  - advisory: CVE-2020-15250
+    package: "junit:junit@4.13.2"
+    truth: not_affected
+    floor: undetermined
+    note: "junit 4.13.2; range 4.7..<4.13.1"
+  - advisory: CVE-2026-8149
+    package: "org.bouncycastle:bcprov-lts8on@2.73.12.1"
+    truth: not_affected
+    floor: undetermined
+    note: "bcprov-lts8on 2.73.12.1; range 2.73.0..<2.73.11"
+  - advisory: GHSA-4h8f-2wvx-gg5w
+    package: "org.bouncycastle:bcprov-lts8on@2.73.12.1"
+    truth: not_affected
+    floor: undetermined
+    note: "bcprov-lts8on 2.73.12.1; range <2.73.6"

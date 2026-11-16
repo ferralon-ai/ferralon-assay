@@ -1,0 +1,8 @@
+schema: ferralon.floor-expect.v1
+scan: complete
+findings:
+  - advisory: CVE-2026-100841
+    package: "-"
+    truth: unreachable
+    floor: undetermined
+    note: "Fix commit; no answer."

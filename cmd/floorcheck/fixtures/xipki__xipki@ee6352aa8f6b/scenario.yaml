@@ -1,0 +1,10 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/xipki/xipki
+commit: ee6352aa8f6b33dd80c2070e1ff35c0e21bc0665
+lang: java
+build:
+  jdk: "17"
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "3228e27eb30b4c6b604a0460076158dc3ca22f2879b49ae864435cbfdb461a27" }
+  provenance: corpus-92d72057330c

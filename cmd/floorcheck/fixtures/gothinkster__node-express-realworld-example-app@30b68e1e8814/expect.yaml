@@ -1,0 +1,13 @@
+schema: ferralon.floor-expect.v1
+scan: complete
+findings:
+  - advisory: CVE-2025-15284
+    package: "qs"
+    truth: reachable
+    floor: reachable_candidate
+    note: "qs 6.11.0, range <6.14.1, in range"
+  - advisory: CVE-2026-2391
+    package: "qs"
+    truth: reachable
+    floor: reachable_candidate
+    note: "qs 6.11.0 (single copy in package-lock), range 6.7.0..6.14.2, in range"

@@ -1,0 +1,10 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/spring-petclinic/spring-petclinic-rest
+commit: afc8fc1d3b8ec8de69414482b3bd70a1da78cb95
+lang: java
+build:
+  jdk: "17"
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "cc340031953de434ac2daf94493b6afa86ffbe1224a250a1f14981998f04c96c" }
+  provenance: corpus-92d72057330c

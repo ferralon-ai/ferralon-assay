@@ -146,6 +146,9 @@ type FixtureResult struct {
 	// when there was none to compare with.
 	DriftBase string   `json:"drift_base,omitempty"`
 	Drift     []Change `json:"drift,omitempty"`
+	// Notes are what the harness did around the scan that a reader needs, such as a failed module
+	// warm-up; they never change the outcome.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // exit is the fixture's exit status: 1 regressed, 2 incomplete, 0 otherwise.
@@ -249,7 +252,8 @@ func compareFixture(fx Fixture, obs observation, prior *report.Report, priorName
 
 // completeness decodes the report and returns every reason the scan cannot be compared. "complete"
 // means no tool failure and no time-limit cut; a partial expectation tolerates exactly the reasons it
-// lists. Partiality notes that record no failure are never compared.
+// lists. Partiality notes that record no failure are never compared. Every advisory the fixture
+// carries must be assessed: a scan that dropped one is incomplete, whatever its expectations list.
 func completeness(fx Fixture, obs observation) (report.Report, []Failure) {
 	if obs.scanFailed != "" {
 		return report.Report{}, []Failure{{Kind: KindScanFailed, Detail: obs.scanFailed}}
@@ -286,6 +290,14 @@ func completeness(fx Fixture, obs observation) (report.Report, []Failure) {
 			detail += ": " + n.Detail
 		}
 		out = append(out, Failure{Kind: kind, Detail: detail})
+	}
+	for _, id := range fx.AdvisoryIDs {
+		if !slices.ContainsFunc(r.Advisories, func(f report.AdvisoryFinding) bool {
+			return f.Advisory.ID == id || slices.Contains(f.Advisory.Aliases, id)
+		}) {
+			out = append(out, Failure{Kind: KindIncompleteScan,
+				Detail: fmt.Sprintf("advisory %s was not assessed: the report has no finding for it", id)})
+		}
 	}
 	return r, out
 }

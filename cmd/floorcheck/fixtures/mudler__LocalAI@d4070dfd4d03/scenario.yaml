@@ -1,0 +1,13 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/mudler/LocalAI
+commit: d4070dfd4d0368ca1612915c95fd9ecdfb81e0bc
+lang: go
+build:
+  go: 1.26.0
+  goos: linux
+  goarch: amd64
+  cgo: false
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "0bb1613c5c9cb29774d41f296e8c36cd3f92900d0359825bfdaf27e0f615f516" }
+  provenance: corpus-92d72057330c

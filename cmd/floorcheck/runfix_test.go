@@ -30,12 +30,14 @@ type fakeRunner struct {
 }
 
 type warmCall struct {
-	dir string
-	env []string
+	dir     string
+	env     []string
+	bounded bool
 }
 
-func (r *fakeRunner) warmGoModules(_ context.Context, dir string, env []string, _ io.Writer) error {
-	r.warms = append(r.warms, warmCall{dir, env})
+func (r *fakeRunner) warmGoModules(ctx context.Context, dir string, env []string, _ io.Writer) error {
+	_, bounded := ctx.Deadline()
+	r.warms = append(r.warms, warmCall{dir, env, bounded})
 	return nil
 }
 
@@ -116,6 +118,9 @@ func TestRunFixtures(t *testing.T) {
 	warm := fr.warms[slices.IndexFunc(fr.warms, func(w warmCall) bool { return filepath.Base(w.dir) == "met" })]
 	if warm.dir != filepath.Join(work, "met") {
 		t.Errorf("warmed %s, want the checkout", warm.dir)
+	}
+	if !warm.bounded {
+		t.Error("the warm-up has no deadline of its own")
 	}
 	if v, ok := envValue(warm.env, "GOWORK"); ok {
 		t.Errorf("warm-up GOWORK=%s, want it unset so the subject's go.work picks the build list", v)

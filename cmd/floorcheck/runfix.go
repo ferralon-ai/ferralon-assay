@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -497,8 +498,11 @@ func runOne(ctx context.Context, o runOptions, name string, sr scanRunner) (Fixt
 		req := scanRequest{Scanner: o.scanner, Args: scanArgs(fx, target, outDir, o.scanTimeout),
 			Env: scanEnv(os.Environ(), fx.Scenario.Build, filepath.Dir(o.scanner)), OutDir: outDir, Log: log}
 		if fx.Scenario.Lang == "go" {
-			// A failed warm-up is left for the scan to report: it names what it could not resolve.
-			if err := sr.warmGoModules(ctx, target, warmEnv(req.Env), log); err != nil {
+			// A failed warm-up is left for the scan to report: it names what it could not resolve. Its
+			// own deadline keeps a stalled download from outrunning the job.
+			wctx, cancel := context.WithTimeout(ctx, warmTimeout)
+			defer cancel()
+			if err := sr.warmGoModules(wctx, target, warmEnv(req.Env), log); err != nil {
 				fmt.Fprintf(log, "floorcheck: warming the module cache: %v\n", err)
 			}
 		}
@@ -594,6 +598,10 @@ func scanEnv(base []string, b ScenarioBuild, scannerDir string) []string {
 	}
 	return env
 }
+
+// warmTimeout bounds a Go fixture's module warm-up; the fixture job allows 30 minutes beyond the
+// longest scan budget for it and the checkout.
+var warmTimeout = 15 * time.Minute
 
 // warmEnv is the scan's environment for `go mod download`: the same toolchain and caches, with GOWORK
 // left to Go so a subject's go.work selects the build list the scanner will read.

@@ -244,7 +244,7 @@ func TestFloorWorkflowScanTimeoutBound(t *testing.T) {
 		t.Fatal("the plan step's timeout check no longer precedes floorcheck")
 	}
 	check := run[:i]
-	for in, want := range map[string]int{"40m": 0, "1m": 0, "60m": 0, "61m": 1, "0m": 1, "2h": 1, "40": 1, "": 1, "40m; true": 1} {
+	for in, want := range map[string]int{"40m": 0, "1m": 0, "60m": 0, "61m": 1, "0m": 1, "2h": 1, "40": 1, "": 1, "40m; true": 1, "0060m": 1, "08m": 1} {
 		if code, out := runScript(t, t.TempDir(), check, "SCAN_TIMEOUT="+in); code != want {
 			t.Errorf("scan-timeout %q: exit %d, want %d\n%s", in, code, want, out)
 		}

@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           # The scan budget must end inside the fixture job's timeout, or a slow scan is killed with
           # its observation unwritten.
-          if ! [[ "$SCAN_TIMEOUT" =~ ^([0-9]+)m$ ]] || (( BASH_REMATCH[1] < 1 || BASH_REMATCH[1] > 60 )); then
+          if ! [[ "$SCAN_TIMEOUT" =~ ^([1-9][0-9]?)m$ ]] || (( BASH_REMATCH[1] < 1 || BASH_REMATCH[1] > 60 )); then
             echo "::error::scan-timeout $SCAN_TIMEOUT: give whole minutes from 1m to 60m."
             exit 1
           fi

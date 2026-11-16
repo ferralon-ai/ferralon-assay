@@ -21,6 +21,18 @@
       { "repo": "smari/wasa2il", "language": "python", "ref": "1ed4544587aeafb54bc515a217c867bfe4b7aede" }
     ]
   },
+  "showcase": {
+    "policy": "full",
+    "corpus_release": "corpus-92d72057330c",
+    "go_version": "1.23.12",
+    "goos": "linux",
+    "goarch": "amd64",
+    "cgo": false,
+    "targets": [
+      { "repo": "traefik/traefik", "language": "go", "tag": "v3.3.2", "ref": "020ab5f34703ea523895ab004825dbfa6f7de060" },
+      { "repo": "go-gitea/gitea", "language": "go", "tag": "v1.23.1", "ref": "fcbbc24cc43811f2fc2f99b2f88060bc360ec38f" }
+    ]
+  },
   "excluded": [
     {
       "repo": "ferralon-demo/gogs-symlink-chain",

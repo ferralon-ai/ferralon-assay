@@ -1189,3 +1189,19 @@ func realDir(t *testing.T, dir string) string {
 	}
 	return real
 }
+
+func TestParseMavenVersionBanner(t *testing.T) {
+	const jvm = "Java version: 17.0.9, vendor: Eclipse Adoptium, runtime: /opt/jdk\n"
+	for _, tc := range []struct{ name, out string }{
+		{"plain", "Apache Maven 3.6.3 (cecedd)\nMaven home: /m\n" + jvm},
+		{"coloured", "\x1b[1mApache Maven 3.6.3 (cecedd)\x1b[m\nMaven home: /m\n\x1b[1m" + jvm},
+		{"leading warning", "WARNING: An illegal reflective access operation has occurred\n\x1b[1;33mWARN\x1b[m x\nApache Maven 3.6.3 (cecedd)\n" + jvm},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v, j, err := parseMavenVersion([]byte(tc.out))
+			if err != nil || v != "3.6.3" || j.Version != "17.0.9" || j.Vendor != "Eclipse Adoptium" {
+				t.Fatalf("got %q %+v %v", v, j, err)
+			}
+		})
+	}
+}

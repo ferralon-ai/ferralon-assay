@@ -1,0 +1,4900 @@
+# Expected verdicts for go-gitea/gitea at fcbbc24cc438. docs/floor.md says how to read and update this file.
+schema: ferralon.floor-ledger.v1
+header:
+  target: gitea
+  repo: go-gitea/gitea
+  tag: v1.23.1
+  upstream_sha: fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+  entry_packages:
+    - 'govulncheck: ./...'
+    - 'assay: the entry points its Go analyzer discovers'
+  goos: linux
+  goarch: amd64
+  build_tags: []
+  cgo: false
+  test_scope: tests excluded
+  go_version: 1.23.12
+  corpus_release: corpus-92d72057330c
+  comparator:
+    name: govulncheck
+    version: v1.9.0
+    db_timestamp: "2026-11-11T02:51:11Z"
+    evidence: evidence/gitea.govulncheck.json
+rows:
+  - advisory:
+      - BIT-apisix-2023-44487
+      - BIT-aspnet-core-2023-44487
+      - BIT-contour-2023-44487
+      - BIT-dotnet-2023-44487
+      - BIT-dotnet-sdk-2023-44487
+      - BIT-envoy-2023-44487
+      - BIT-golang-2023-44487
+      - BIT-jenkins-2023-44487
+      - BIT-kong-2023-44487
+      - BIT-nginx-2023-44487
+      - BIT-nginx-gateway-2023-44487
+      - BIT-node-2023-44487
+      - BIT-node-min-2023-44487
+      - BIT-solr-2023-44487
+      - BIT-tomcat-2023-44487
+      - BIT-varnish-2023-44487
+      - CVE-2023-44487
+      - GHSA-qppj-fm5r-hxr3
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-brotli-2026-111497
+      - BIT-dotnet-2026-111497
+      - BIT-dotnet-sdk-2026-111497
+      - BIT-node-2026-111497
+      - BIT-node-min-2026-111497
+      - BIT-powershell-2026-111497
+      - CVE-2026-111497
+      - GHSA-9v8h-qqgm-4m35
+      - GHSA-c9gr-gmg4-2vqv
+      - GO-2026-6888
+      - PYSEC-2026-4322
+      - PYSEC-2026-4323
+    package: github.com/andybalholm/brotli@v1.1.1
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/andybalholm/brotli.*Reader.Read, github.com/andybalholm/brotli.decodeError.Error reached from code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-gitea-2020-13246
+      - CVE-2020-13246
+      - GHSA-g2qx-6ghw-67hm
+      - GO-2022-0830
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2021-28378
+      - CVE-2021-28378
+      - GHSA-g95p-88p4-76cm
+      - GO-2022-0832
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2021-29134
+      - CVE-2021-29134
+      - GHSA-h3q4-vmw4-cpr5
+      - GO-2022-0353
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2021-3382
+      - CVE-2021-3382
+      - GHSA-9f8c-pfvv-p4gm
+      - GO-2024-2757
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2021-45327
+      - CVE-2021-45327
+      - GHSA-jrpg-35hw-m4p9
+      - GO-2022-0310
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2021-45330
+      - CVE-2021-45330
+      - GHSA-pg38-r834-g45j
+      - GO-2022-0982
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2021-45331
+      - CVE-2021-45331
+      - GHSA-hfmf-q69j-6m5p
+      - GO-2022-0315
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2022-0905
+      - CVE-2022-0905
+      - GHSA-jr9c-h74f-2v28
+      - GO-2022-0609
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2022-1058
+      - CVE-2022-1058
+      - GHSA-4rqq-rxvc-v2rc
+      - GO-2024-2752
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2022-1928
+      - CVE-2022-1928
+      - GHSA-ph3w-2843-72mx
+      - GO-2022-0612
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2022-27313
+      - CVE-2022-27313
+      - GHSA-g7p7-x6w7-w6qg
+      - GO-2022-0442
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2022-30781
+      - CVE-2022-30781
+      - GHSA-p5f9-c9j9-g8qx
+      - GO-2022-0450
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2022-38183
+      - CVE-2022-38183
+      - GHSA-fhv8-m4j4-cww2
+      - GO-2024-2769
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2022-38795
+      - CVE-2022-38795
+      - GHSA-8j3v-68w3-3848
+      - GO-2023-1999
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2022-42968
+      - CVE-2022-42968
+      - GHSA-w8xw-7crf-h23x
+      - GO-2022-1065
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2023-3515
+      - CVE-2023-3515
+      - GHSA-cf6v-9j57-v6r6
+      - GO-2023-1894
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2025-68938
+      - CVE-2025-68938
+      - GHSA-cm54-pfmc-xrwx
+      - GO-2025-4258
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2025-68939
+      - CVE-2025-68939
+      - GHSA-263q-5cv3-xq9g
+      - GO-2025-4261
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2025-68940
+      - CVE-2025-68940
+      - GHSA-rrcw-5rjv-vj26
+      - GO-2025-4267
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2025-68941
+      - CVE-2025-68941
+      - GHSA-xfq3-qj7j-4565
+      - GO-2025-4268
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2025-68942
+      - CVE-2025-68942
+      - GHSA-898p-hh3p-hf9r
+      - GO-2025-4263
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2025-68943
+      - CVE-2025-68943
+      - GHSA-jhx5-4vr4-f327
+      - GO-2025-4266
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2025-68944
+      - CVE-2025-68944
+      - GHSA-f85h-c7m6-cfpm
+      - GO-2025-4264
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2025-68945
+      - CVE-2025-68945
+      - GHSA-7xq4-mwcp-q8fx
+      - GO-2025-4262
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2025-68946
+      - CVE-2025-68946
+      - GHSA-hq57-c72x-4774
+      - GO-2025-4265
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2025-69413
+      - CVE-2025-69413
+      - GHSA-pc73-rj2c-wvf9
+      - GO-2026-4274
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2026-0798
+      - CVE-2026-0798
+      - GHSA-8fwc-qjw5-rvgp
+      - GHSA-f4wq-6ww5-m56p
+      - GO-2026-4365
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2026-20736
+      - CVE-2026-20736
+      - GHSA-hgr3-x44x-33hx
+      - GHSA-jr6h-pwwp-c8g6
+      - GO-2026-4367
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2026-20750
+      - CVE-2026-20750
+      - GHSA-h4fh-pc4w-8w27
+      - GHSA-rw22-5hhq-pfpf
+      - GO-2026-4370
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2026-20800
+      - CVE-2026-20800
+      - GHSA-2vgv-hgv4-22mh
+      - GHSA-g54m-9f6g-wj7q
+      - GO-2026-4362
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2026-20883
+      - CVE-2026-20883
+      - GHSA-644v-xv3j-xgqg
+      - GHSA-j8xr-c56q-m8jj
+      - GO-2026-4368
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2026-20888
+      - CVE-2026-20888
+      - GHSA-9cgq-wp42-4rpq
+      - GHSA-ccq9-c5hv-cf64
+      - GO-2026-4366
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2026-20897
+      - CVE-2026-20897
+      - GHSA-393c-qgvj-3xph
+      - GHSA-rrq5-r9h5-pc7c
+      - GO-2026-4363
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2026-20904
+      - CVE-2026-20904
+      - GHSA-jrpc-w85r-hgqx
+      - GHSA-qqgv-v353-cv8p
+      - GO-2026-4369
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2026-20912
+      - CVE-2026-20912
+      - GHSA-4xx9-vc8v-87hv
+      - GHSA-vfmv-f93v-37mw
+      - GO-2026-4364
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-gitea-2026-60004
+      - CVE-2026-60004
+      - GHSA-rcr6-4jqh-j84m
+      - GO-2026-6433
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-golang-2020-16845
+      - CVE-2020-16845
+      - GHSA-q6gq-997w-f55g
+      - GO-2021-0142
+    package: github.com/ulikunitz/xz@v0.5.12
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-golang-2020-7919
+      - CVE-2020-7919
+      - GHSA-cjjc-xp8v-855w
+      - GO-2022-0229
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-golang-2021-31525
+      - CVE-2021-31525
+      - GHSA-h86h-8ppg-mxmh
+      - GO-2022-0236
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-golang-2021-33194
+      - CVE-2021-33194
+      - GHSA-83g2-8m93-v3w7
+      - GO-2021-0238
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-golang-2022-27664
+      - CVE-2022-27664
+      - GHSA-69cg-p879-7622
+      - GO-2022-0969
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-golang-2022-2879
+      - CVE-2022-2879
+      - GO-2022-1037
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2022-2880
+      - CVE-2022-2880
+      - GO-2022-1038
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2022-29526
+      - CVE-2022-29526
+      - GHSA-p782-xgp4-8hr8
+      - GO-2022-0493
+    package: golang.org/x/sys@v0.29.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-golang-2022-32190
+      - CVE-2022-32190
+      - GO-2022-0988
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2022-41715
+      - CVE-2022-41715
+      - GO-2022-1039
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2022-41716
+      - CVE-2022-41716
+      - GO-2022-1095
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2022-41717
+      - CVE-2022-41717
+      - GHSA-xrjj-mj9h-534m
+      - GO-2022-1144
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-golang-2022-41720
+      - CVE-2022-41720
+      - GO-2022-1143
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2022-41722
+      - CVE-2022-41722
+      - GO-2023-1568
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2022-41723
+      - CVE-2022-41723
+      - GHSA-vvpx-j8f3-3w6h
+      - GO-2023-1571
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-golang-2022-41724
+      - CVE-2022-41724
+      - GO-2023-1570
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2022-41725
+      - CVE-2022-41725
+      - GO-2023-1569
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-24531
+      - CVE-2023-24531
+      - GO-2024-2962
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-24532
+      - CVE-2023-24532
+      - GO-2023-1621
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-24534
+      - CVE-2023-24534
+      - GO-2023-1704
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-24536
+      - CVE-2023-24536
+      - GO-2023-1705
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-24537
+      - CVE-2023-24537
+      - GO-2023-1702
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-24538
+      - CVE-2023-24538
+      - GO-2023-1703
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-24539
+      - CVE-2023-24539
+      - GO-2023-1751
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-24540
+      - CVE-2023-24540
+      - GO-2023-1752
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-29400
+      - CVE-2023-29400
+      - GO-2023-1753
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-29402
+      - CVE-2023-29402
+      - GO-2023-1839
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-29403
+      - CVE-2023-29403
+      - GO-2023-1840
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-29404
+      - CVE-2023-29404
+      - GO-2023-1841
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-29405
+      - CVE-2023-29405
+      - GO-2023-1842
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-29406
+      - CVE-2023-29406
+      - GO-2023-1878
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-29409
+      - CVE-2023-29409
+      - GO-2023-1987
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-39318
+      - CVE-2023-39318
+      - GO-2023-2041
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-39319
+      - CVE-2023-39319
+      - GO-2023-2043
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-39320
+      - CVE-2023-39320
+      - GO-2023-2042
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-39321
+      - CVE-2023-39321
+      - GO-2023-2044
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-39322
+      - CVE-2023-39322
+      - GO-2023-2045
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-39323
+      - CVE-2023-39323
+      - GO-2023-2095
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-39325
+      - CVE-2023-39325
+      - GHSA-4374-p667-p6c8
+      - GO-2023-2102
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-golang-2023-39326
+      - CVE-2023-39326
+      - GO-2023-2382
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-45283
+      - CVE-2023-45283
+      - GO-2023-2185
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-45284
+      - CVE-2023-45284
+      - GO-2023-2186
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-45285
+      - CVE-2023-45285
+      - GO-2023-2383
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-45287
+      - CVE-2023-45287
+      - GO-2023-2375
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-45288
+      - CVE-2023-45288
+      - GHSA-4v7x-pqxf-cx7m
+      - GO-2024-2687
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - BIT-golang-2023-45289
+      - CVE-2023-45289
+      - GO-2024-2600
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2023-45290
+      - CVE-2023-45290
+      - GO-2024-2599
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-24783
+      - CVE-2024-24783
+      - GO-2024-2598
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-24784
+      - CVE-2024-24784
+      - GO-2024-2609
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-24785
+      - CVE-2024-24785
+      - GO-2024-2610
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-24787
+      - CVE-2024-24787
+      - GO-2024-2825
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-24788
+      - CVE-2024-24788
+      - GO-2024-2824
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-24789
+      - CVE-2024-24789
+      - GO-2024-2888
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-24790
+      - CVE-2024-24790
+      - GO-2024-2887
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-24791
+      - CVE-2024-24791
+      - GO-2024-2963
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-34155
+      - CVE-2024-34155
+      - GO-2024-3105
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-34156
+      - CVE-2024-34156
+      - GO-2024-3106
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-34158
+      - CVE-2024-34158
+      - GO-2024-3107
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-45336
+      - CVE-2024-45336
+      - GO-2025-3420
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2024-45341
+      - CVE-2024-45341
+      - GO-2025-3373
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-0913
+      - CVE-2025-0913
+      - GO-2025-3750
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-22866
+      - CVE-2025-22866
+      - GO-2025-3447
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-22871
+      - CVE-2025-22871
+      - GHSA-g9pc-8g42-g6vq
+      - GO-2025-3563
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: disqualified
+  - advisory:
+      - BIT-golang-2025-22873
+      - CVE-2025-22873
+      - GO-2026-4403
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-22874
+      - CVE-2025-22874
+      - GO-2025-3749
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-4673
+      - CVE-2025-4673
+      - GO-2025-3751
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-4674
+      - CVE-2025-4674
+      - GO-2025-3828
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-47906
+      - CVE-2025-47906
+      - GO-2025-3956
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-47907
+      - CVE-2025-47907
+      - GO-2025-3849
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-47910
+      - CVE-2025-47910
+      - GO-2025-3955
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-47912
+      - CVE-2025-47912
+      - GO-2025-4010
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-58183
+      - CVE-2025-58183
+      - GO-2025-4014
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-58185
+      - CVE-2025-58185
+      - GO-2025-4011
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-58186
+      - CVE-2025-58186
+      - GO-2025-4012
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-58187
+      - CVE-2025-58187
+      - GO-2025-4007
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-58188
+      - CVE-2025-58188
+      - GO-2025-4013
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-58189
+      - CVE-2025-58189
+      - GO-2025-4008
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-61723
+      - CVE-2025-61723
+      - GO-2025-4009
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-61724
+      - CVE-2025-61724
+      - GO-2025-4015
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-61725
+      - CVE-2025-61725
+      - GO-2025-4006
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-61726
+      - CVE-2025-61726
+      - GO-2026-4341
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-61727
+      - CVE-2025-61727
+      - GO-2025-4175
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-61728
+      - CVE-2025-61728
+      - GO-2026-4342
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-61729
+      - CVE-2025-61729
+      - GO-2025-4155
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-61730
+      - CVE-2025-61730
+      - GO-2026-4340
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2025-61731
+      - CVE-2025-61731
+      - GO-2026-4339
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-61732
+      - CVE-2025-61732
+      - GO-2026-4433
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-68119
+      - CVE-2025-68119
+      - GO-2026-4338
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2025-68121
+      - CVE-2025-68121
+      - GO-2026-4337
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-111943
+      - CVE-2026-111943
+      - GO-2026-6809
+      - RUSTSEC-2026-0381
+      - RUSTSEC-2026-0382
+      - RUSTSEC-2026-0383
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: disqualified
+  - advisory:
+      - BIT-golang-2026-25679
+      - CVE-2026-25679
+      - GO-2026-4601
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-27137
+      - CVE-2026-27137
+      - GO-2026-4599
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-27138
+      - CVE-2026-27138
+      - GO-2026-4600
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-27139
+      - CVE-2026-27139
+      - GO-2026-4602
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-27140
+      - CVE-2026-27140
+      - GO-2026-4871
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-27142
+      - CVE-2026-27142
+      - GO-2026-4603
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-27143
+      - CVE-2026-27143
+      - GO-2026-4868
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-27144
+      - CVE-2026-27144
+      - GO-2026-4867
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-32281
+      - CVE-2026-32281
+      - GO-2026-4946
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-32282
+      - CVE-2026-32282
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-32283
+      - CVE-2026-32283
+      - GO-2026-4870
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-32288
+      - CVE-2026-32288
+      - GO-2026-4869
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-32289
+      - CVE-2026-32289
+      - GO-2026-4865
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-33810
+      - CVE-2026-33810
+      - GO-2026-4866
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-33811
+      - CVE-2026-33811
+      - GO-2026-4981
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-33814
+      - CVE-2026-33814
+      - GO-2026-4918
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/http2.*Transport.NewClientConn, golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip reached from code.gitea.io/gitea/services/migrations.*GogsDownloader.RoundTrip'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-33818
+      - CVE-2026-33818
+      - GO-2026-5972
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-39817
+      - CVE-2026-39817
+      - GO-2026-4979
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-39819
+      - CVE-2026-39819
+      - GO-2026-4978
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-39820
+      - CVE-2026-39820
+      - GO-2026-4986
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-39822
+      - CVE-2026-39822
+      - GO-2026-4970
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-39823
+      - CVE-2026-39823
+      - GO-2026-4982
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-39825
+      - CVE-2026-39825
+      - GO-2026-4976
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-39826
+      - CVE-2026-39826
+      - GO-2026-4980
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-39836
+      - CVE-2026-39836
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-42499
+      - CVE-2026-42499
+      - GO-2026-4977
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-42501
+      - CVE-2026-42501
+      - GO-2026-4984
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-42504
+      - CVE-2026-42504
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-42505
+      - CVE-2026-42505
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-42507
+      - CVE-2026-42507
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-46600
+      - CVE-2026-46600
+      - GO-2026-5942
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: vulnerable_symbol_unresolved
+    gap: 'unfiled: undetermined/vulnerable_symbol_unresolved'
+  - advisory:
+      - BIT-golang-2026-56853
+      - CVE-2026-56853
+      - GO-2026-6089
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-56857
+      - CVE-2026-56857
+      - GO-2026-6604
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - BIT-golang-2026-56858
+      - CVE-2026-56858
+      - GO-2026-6091
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-56859
+      - CVE-2026-56859
+      - GO-2026-6088
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-56860
+      - CVE-2026-56860
+      - GO-2026-6218
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-56862
+      - CVE-2026-56862
+      - GO-2026-6090
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-56866
+      - CVE-2026-56866
+      - GO-2026-6605
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-78659
+      - CVE-2026-78659
+      - GO-2026-6603
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/http2.*writeData.String, golang.org/x/net/http2.ConfigureTransports, golang.org/x/net/http2.FrameHeader.String, golang.org/x/net/http2.FrameType.String, golang.org/x/net/http2.StreamError.Error, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip, golang.org/x/net/http2.stickyErrWriter.Write, golang.org/x/net/http2.transportResponseBody.Read reached from code.gitea.io/gitea/modules/translation/i18n.*locale.TrHTML'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-78660
+      - CVE-2026-78660
+      - GO-2026-6610
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/http2.*Transport.NewClientConn, golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip reached from code.gitea.io/gitea/services/migrations.*GogsDownloader.RoundTrip'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-78663
+      - CVE-2026-78663
+      - GO-2026-6612
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.*writeData.String, golang.org/x/net/http2.FrameType.String, golang.org/x/net/http2.StreamError.Error, golang.org/x/net/http2.chunkWriter.Write, golang.org/x/net/http2.headerFieldValueError.Error, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip, golang.org/x/net/http2.transportResponseBody.Read reached from code.gitea.io/gitea/modules/translation/i18n.*locale.TrHTML'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-78667
+      - CVE-2026-78667
+      - GO-2026-6609
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-78669
+      - CVE-2026-78669
+      - GO-2026-6611
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*bufferedWriterTimeoutWriter.Write, golang.org/x/net/http2.ConfigureTransports, golang.org/x/net/http2.ConnectionError.Error, golang.org/x/net/http2.SettingID.String, golang.org/x/net/http2.chunkWriter.Write, golang.org/x/net/http2.headerFieldNameError.Error, golang.org/x/net/http2.transportResponseBody.Close reached from code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-94439
+      - CVE-2026-94439
+      - GO-2026-6613
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-94440
+      - CVE-2026-94440
+      - GO-2026-6608
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-94448
+      - CVE-2026-94448
+      - GO-2026-6599
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-97030
+      - CVE-2026-97030
+      - GO-2026-6600
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-97031
+      - CVE-2026-97031
+      - GO-2026-6607
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - BIT-golang-2026-97032
+      - CVE-2026-97032
+      - GO-2026-6617
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/http2.*Transport.NewClientConn, golang.org/x/net/http2.*bufferedWriterTimeoutWriter.Write, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.FrameHeader.String, golang.org/x/net/http2.FrameType.String, golang.org/x/net/http2.chunkWriter.Write, golang.org/x/net/http2.headerFieldNameError.Error, golang.org/x/net/http2.stickyErrWriter.Write reached from code.gitea.io/gitea/modules/translation/i18n.*locale.TrHTML'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2018-15192
+      - GHSA-fg3x-rwq9-74cw
+      - GO-2023-1971
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2018-17847
+      - CVE-2018-17848
+      - GHSA-4r78-hx75-jjj2
+      - GHSA-mv93-wvcp-7m7r
+      - GO-2022-0197
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2018-18926
+      - GHSA-hf6f-jq25-8gq9
+      - GO-2022-0844
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2019-1010261
+      - GHSA-5rh7-6gfj-mc87
+      - GO-2023-1922
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2019-11254
+      - GHSA-wxc4-f4m6-wwqv
+      - GO-2020-0036
+    package: gopkg.in/yaml.v2@v2.4.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2019-11840
+      - GHSA-r5c5-pr8j-pfp7
+      - GO-2022-0209
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2019-11841
+      - GHSA-x3jr-pf6g-c48f
+      - GO-2023-1992
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2019-9512
+      - CVE-2019-9514
+      - GHSA-39qc-96h7-956f
+      - GHSA-hgr8-6h9x-f7q9
+      - GO-2022-0536
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2020-14040
+      - GHSA-5rcv-m4m3-hfh7
+      - GO-2020-0015
+    package: golang.org/x/text@v0.21.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2020-29652
+      - GHSA-3vm4-22fp-5rfm
+      - GO-2021-0227
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2020-7667
+      - GHSA-9423-6c93-gpp8
+      - GO-2020-0042
+      - SNYK-GOLANG-GITHUBCOMSASSOFTWAREGORPMUTILSCPIO-570427
+    package: github.com/sassoftware/go-rpmutils@v0.4.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2020-8918
+      - GHSA-5x29-3hr9-6wpw
+      - GO-2021-0095
+    package: github.com/google/go-tpm@v0.9.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2020-9283
+      - GHSA-ffhg-7mh4-33c4
+      - GO-2020-0012
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2021-29482
+      - GHSA-25xm-hr59-7c27
+      - GO-2020-0016
+    package: github.com/ulikunitz/xz@v0.5.12
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2021-38561
+      - GHSA-ppp9-7jff-5vj2
+      - GO-2021-0113
+    package: golang.org/x/text@v0.21.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2021-4235
+      - GHSA-r88r-gmrh-7j83
+      - GO-2021-0061
+    package: gopkg.in/yaml.v2@v2.4.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2021-43565
+      - GHSA-gwc9-m7rh-j2ww
+      - GO-2022-0968
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2022-21698
+      - GHSA-cg3q-j54f-5p7p
+      - GO-2022-0322
+    package: github.com/prometheus/client_golang@v1.20.5
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2022-27191
+      - GHSA-8c26-wmh5-6g9v
+      - GO-2021-0356
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2022-28948
+      - GHSA-hp87-p4gw-j4gq
+      - GO-2022-0603
+    package: gopkg.in/yaml.v3@v3.0.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2022-30636
+      - GO-2024-2961
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2022-3064
+      - GHSA-6q6q-88xp-6f2r
+      - GO-2022-0956
+    package: gopkg.in/yaml.v2@v2.4.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2022-31022
+      - GHSA-9w9f-6mg8-jp7w
+      - GO-2022-0470
+    package: github.com/blevesearch/bleve/v2@v2.4.2
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - CVE-2022-32149
+      - GHSA-69ch-w2m2-3vjp
+      - GO-2022-1059
+    package: golang.org/x/text@v0.21.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2022-32189
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2022-41721
+      - GHSA-fxg5-wq6x-vr4w
+      - GO-2023-1495
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2023-1732
+      - GHSA-2q89-485c-9j2x
+      - GO-2023-1765
+    package: github.com/cloudflare/circl@v1.5.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2023-22726
+      - GHSA-pc99-qmg4-rcff
+      - GO-2023-1504
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: package_version_unresolved
+  - advisory:
+      - CVE-2023-24535
+      - GHSA-hw7c-3rfg-p46j
+      - GO-2023-1631
+    package: google.golang.org/protobuf@v1.35.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2023-3978
+      - GHSA-2wrh-6pvc-2jm9
+      - GO-2023-1988
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2023-48795
+      - GHSA-45x7-px36-x8w8
+      - GO-2023-2402
+      - PYSEC-2026-1758
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2023-49568
+      - GHSA-mw99-9chc-xw7r
+      - GO-2024-2466
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2023-49569
+      - GHSA-449p-3h89-pw88
+      - GO-2024-2456
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2024-0406
+      - GHSA-rhh4-rh7c-7r5v
+      - GO-2024-2698
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: package_version_unresolved
+  - advisory:
+      - CVE-2024-24786
+      - GHSA-8r3f-844c-mc37
+      - GO-2024-2611
+    package: google.golang.org/protobuf@v1.35.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2024-24792
+      - GHSA-9phm-fm57-rhg8
+      - GO-2024-2937
+    package: golang.org/x/image@v0.21.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2024-45337
+      - GHSA-v778-237x-gjrc
+      - GO-2024-3321
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2024-45338
+      - GHSA-w32m-9786-jp63
+      - GO-2024-3333
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2024-51744
+      - GHSA-29wx-vh33-7x7r
+      - GO-2024-3250
+    package: github.com/golang-jwt/jwt/v4@v4.5.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2024-6104
+      - GHSA-v6v8-xj6m-xwqh
+      - GO-2024-2947
+    package: github.com/hashicorp/go-retryablehttp@v0.7.7
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2024-6886
+      - GHSA-4h4p-553m-46qh
+      - GO-2024-3056
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2024-8244
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2025-11579
+      - GHSA-rwvp-r38j-9rgg
+      - GO-2025-4020
+    package: github.com/nwaples/rardecode@v1.1.3
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/nwaples/rardecode.*cipherBlockReader.Read, github.com/nwaples/rardecode.*limitedReader.Read, github.com/nwaples/rardecode.init reached from code.gitea.io/gitea/modules/dump.init'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2025-21613
+      - GHSA-v725-9546-7q7m
+      - GO-2025-3368
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2025-21614
+      - GHSA-r9px-m959-cxf4
+      - GO-2025-3367
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2025-22868
+      - GHSA-6v2p-p543-phr9
+      - GO-2025-3488
+    package: golang.org/x/oauth2@v0.23.0
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2025-22869
+      - GHSA-hcg3-q754-cr77
+      - GO-2025-3487
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.*Request.Reply, golang.org/x/crypto/ssh.*extChannel.Read, golang.org/x/crypto/ssh.*extChannel.Write, golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/git.*Repository.GetLanguageStats'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2025-22870
+      - GHSA-qxp5-gwg8-xv66
+      - GO-2025-3503
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2025-22872
+      - GHSA-vvgc-356p-c3xw
+      - GO-2025-3595
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/html.*Tokenizer.Next, golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2025-29923
+      - GHSA-92cp-5422-2mw7
+      - GO-2025-3540
+    package: github.com/redis/go-redis/v9@v9.7.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/redis/go-redis/v9.*baseClient.initConn reached from code.gitea.io/gitea/modules/cache.*RedisCacher.Flush'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2025-30204
+      - GHSA-mh63-6h87-95cp
+      - GO-2025-3553
+    package: github.com/golang-jwt/jwt/v4@v4.5.1
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+    gap: 'unfiled: reachable_candidate'
+  - advisory:
+      - CVE-2025-30204
+      - GHSA-mh63-6h87-95cp
+      - GO-2025-3553
+    package: github.com/golang-jwt/jwt/v5@v5.2.1
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/golang-jwt/jwt/v5.*Parser.ParseUnverified reached from code.gitea.io/gitea/services/actions.TokenToTaskID'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_emitted
+    gap: 'unfiled: not_emitted'
+  - advisory:
+      - CVE-2025-3445
+      - GHSA-7vpp-9cxj-q8gv
+      - GO-2025-3605
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: package_version_unresolved
+  - advisory:
+      - CVE-2025-47911
+      - GHSA-w4gw-w5jq-g9jh
+      - GO-2026-4440
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2025-47913
+      - GHSA-56w8-48fp-6mgv
+      - GO-2025-4116
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh/agent.*agentKeyringSigner.Sign, golang.org/x/crypto/ssh/agent.*agentKeyringSigner.SignWithAlgorithm reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2025-47914
+      - GHSA-f6x5-jh6r-wrfv
+      - GO-2025-4135
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2025-58058
+      - GHSA-jc7w-c686-c4v9
+      - GO-2025-3922
+    package: github.com/ulikunitz/xz@v0.5.12
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/ulikunitz/xz.*Reader.Read, github.com/ulikunitz/xz.*Writer.Close, github.com/ulikunitz/xz.*Writer.Write, github.com/ulikunitz/xz.NewReader, github.com/ulikunitz/xz.init, github.com/ulikunitz/xz.noneHash.Write, github.com/ulikunitz/xz/lzma.*Writer2.Close, github.com/ulikunitz/xz/lzma.*chunkHeader.String reached from code.gitea.io/gitea/modules/packages/arch.ParsePackage'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2025-58181
+      - GHSA-j5w8-q4qc-rx2x
+      - GO-2025-4134
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2025-58190
+      - GO-2026-4441
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2025-59937
+      - GHSA-wpwj-69cm-q9c5
+      - GO-2025-3988
+    package: github.com/wneessen/go-mail@v0.5.2
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/wneessen/go-mail.*Msg.GetRecipients, github.com/wneessen/go-mail.*Msg.SetAddrHeader, github.com/wneessen/go-mail.*Msg.SetDateWithValue, github.com/wneessen/go-mail.*Msg.SetGenHeader, github.com/wneessen/go-mail.*Msg.WriteTo, github.com/wneessen/go-mail.*msgWriter.Write, github.com/wneessen/go-mail/smtp.*Client.Mail, github.com/wneessen/go-mail/smtp.*Client.Rcpt reached from code.gitea.io/gitea/modules/packages/rubygems.*MarshalEncoder.Encode'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2025-65637
+      - GHSA-4f99-4q7p-p3gh
+      - GO-2025-4188
+    package: github.com/sirupsen/logrus@v1.9.3
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2025-69725
+      - GHSA-mqqf-5wvp-8fh8
+      - GO-2026-4316
+    package: github.com/go-chi/chi/v5@v5.1.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2025-71405
+      - GHSA-vrw8-fxc6-2r93
+      - GO-2025-3770
+    package: github.com/go-chi/chi/v5@v5.1.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2025-8556
+      - GHSA-2x5j-vhc8-9cwm
+      - GO-2025-3754
+    package: github.com/cloudflare/circl@v1.5.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/cloudflare/circl/dh/x25519.KeyGen, github.com/cloudflare/circl/dh/x448.init, github.com/cloudflare/circl/internal/sha3.*State.Reset, github.com/cloudflare/circl/math/fp25519.P, github.com/cloudflare/circl/math/fp448.InvSqrt, github.com/cloudflare/circl/math/fp448.ToBytes, github.com/cloudflare/circl/sign/ed25519.PrivateKey.Seed, github.com/cloudflare/circl/sign/ed25519.Verify reached from code.gitea.io/gitea/services/packages/rpm.GetOrCreateKeyPair'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-114437
+      - GHSA-j6qf-3m9c-vwj3
+    package: github.com/go-chi/chi/v5@v5.1.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-116591
+      - GHSA-fpmh-frq8-7rj8
+      - GO-2026-6865
+    package: github.com/klauspost/compress@v1.17.11
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/klauspost/compress/fse.Compress, github.com/klauspost/compress/fse.Decompress, github.com/klauspost/compress/huff0.Compress1X, github.com/klauspost/compress/huff0.Compress4X, github.com/klauspost/compress/huff0.ReadTable reached from code.gitea.io/gitea/modules/zstd.*Writer.Close'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-1229
+      - GHSA-q9hv-hpm4-hj6x
+      - GO-2026-4550
+    package: github.com/cloudflare/circl@v1.5.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/cloudflare/circl/dh/x25519.KeyGen, github.com/cloudflare/circl/dh/x25519.init, github.com/cloudflare/circl/dh/x448.KeyGen, github.com/cloudflare/circl/internal/sha3.*State.Read, github.com/cloudflare/circl/math.init, github.com/cloudflare/circl/math/fp25519.Cmov, github.com/cloudflare/circl/math/fp25519.SetOne, github.com/cloudflare/circl/math/fp448.SetOne reached from code.gitea.io/gitea/services/packages/rpm.init'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-20706
+      - GHSA-cr4g-f395-h25h
+      - GO-2026-5334
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-20779
+      - GHSA-gx3v-q759-g323
+      - GO-2026-6057
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-20896
+      - GHSA-f75j-4cw6-rmx4
+      - GO-2026-6051
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-20909
+      - GHSA-fhq3-p242-2qpf
+      - GO-2026-6339
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-22547
+      - GHSA-922f-hfwp-p56f
+      - GO-2026-6338
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-22555
+      - GHSA-fhx7-m96w-mv29
+      - GO-2026-5365
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-22874
+      - GHSA-2r5c-gw76-rh3w
+      - GO-2026-6030
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-2303
+      - GHSA-cp6g-7hqx-qxhp
+      - GO-2026-5327
+    package: go.mongodb.org/mongo-driver@v1.17.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-23603
+      - GHSA-x77v-q46j-393g
+      - GO-2026-6083
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-24451
+      - GHSA-wrf9-r3h7-7x5v
+      - GO-2026-6081
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-24690
+      - GHSA-47rq-xp99-92mx
+      - GO-2026-6334
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-24791
+      - GHSA-wrr5-99h5-gq57
+      - GO-2026-5721
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-25038
+      - GHSA-v73x-hx65-6pf4
+      - GO-2026-6076
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-25680
+      - GHSA-5cv4-jp36-h3mw
+      - GO-2026-5028
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-25681
+      - GO-2026-5029
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-25712
+      - GHSA-37w2-86g3-h4qh
+      - GO-2026-6333
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-25714
+      - GHSA-8629-vc8r-5p58
+      - GO-2026-5243
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-25718
+      - GHSA-h697-89cp-24q8
+      - GO-2026-6340
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-25779
+      - GHSA-j5r2-4c8j-xc3m
+      - GO-2026-5448
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-25782
+      - GHSA-qm72-8prh-g92x
+      - GO-2026-6343
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-25934
+      - GHSA-37cx-329c-33x3
+      - GO-2026-4473
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/go-git/go-git/v5/plumbing.HashSlice.Len, github.com/go-git/go-git/v5/plumbing.HashSlice.Less, github.com/go-git/go-git/v5/plumbing/format/packfile.*scannerReader.Seek, github.com/go-git/go-git/v5/plumbing/transport/internal/common.NewClient, github.com/go-git/go-git/v5/utils/ioutil.*readerAtAsReader.Read, github.com/go-git/go-git/v5/utils/ioutil.init, github.com/go-git/go-git/v5/utils/merkletrie/noder.init, github.com/go-git/go-git/v5/utils/sync.init reached from code.gitea.io/gitea/modules/git.ParseCatFileTreeLine'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-26231
+      - GHSA-mm7c-rhg6-qr4r
+      - GO-2026-5510
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-26232
+      - GHSA-5v69-g2m3-3hq3
+      - GO-2026-6336
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-26247
+      - GHSA-m5ch-ppfx-xv3v
+      - GO-2026-6342
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-26292
+      - GHSA-rc56-rj3f-xggf
+      - GO-2026-6344
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-26307
+      - GHSA-h9c5-x7g8-4q7f
+      - GO-2026-6341
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-26958
+      - GHSA-fw7p-63qq-7hpr
+      - GO-2026-4503
+    package: filippo.io/edwards25519@v1.1.0
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-27136
+      - GO-2026-5030
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup.PostProcessDefault'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-27141
+      - GO-2026-4559
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-27657
+      - GHSA-4c8f-3m6h-m56r
+      - GO-2026-6335
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-27660
+      - GHSA-x92v-f5gc-r34v
+      - GO-2026-6347
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-27761
+      - GHSA-3pww-vcvm-3gmj
+      - GO-2026-6031
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-27771
+      - GHSA-8qw8-rq86-9pc2
+      - GO-2026-6017
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-27775
+      - GHSA-649p-mmhf-85c7
+      - GO-2026-6043
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-27779
+      - GHSA-v8f2-2ghq-9whv
+      - GO-2026-6345
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-27780
+      - GHSA-vhq7-fwwh-7hjf
+      - GO-2026-6346
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-27783
+      - GHSA-3fwp-p5rj-2pxf
+      - GO-2026-5081
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-28699
+      - GHSA-9r5x-wg6m-x2rc
+      - GO-2026-5299
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-28705
+      - GHSA-7jvx-g65v-r899
+      - GO-2026-6337
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-28737
+      - GHSA-9cpj-qc93-vw8v
+      - GO-2026-5286
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-28740
+      - GHSA-2m9v-5q2g-58vq
+      - GO-2026-6029
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-28744
+      - GHSA-cc8w-r4qh-3v65
+      - GO-2026-5321
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-32952
+      - GHSA-pjcq-xvwq-hhpj
+      - GO-2026-5543
+    package: github.com/Azure/go-ntlmssp@v0.0.0-20221128193559-754e69321358
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/Azure/go-ntlmssp.ProcessChallenge reached from code.gitea.io/gitea/services/mailer/sender.*ntlmAuth.Next'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-33186
+      - GHSA-p77j-4mvh-x3m3
+      - GO-2026-4762
+    package: google.golang.org/grpc@v1.67.1
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - CVE-2026-33762
+      - GHSA-gm2x-2g9h-ccm8
+      - GO-2026-4909
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/go-git/go-git/v5/plumbing/cache.init, github.com/go-git/go-git/v5/plumbing/format/pktline.init, github.com/go-git/go-git/v5/plumbing/protocol/packp/sideband.init, github.com/go-git/go-git/v5/plumbing/transport/client.init, github.com/go-git/go-git/v5/plumbing/transport/internal/common.NewClient, github.com/go-git/go-git/v5/utils/merkletrie/internal/frame.init, github.com/go-git/go-git/v5/utils/merkletrie/noder.init, github.com/go-git/go-git/v5/utils/sync.init$5 reached from code.gitea.io/gitea/services/actions.init'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-33809
+      - GHSA-44p7-9xx4-hf2g
+      - GO-2026-4815
+    package: golang.org/x/image@v0.21.0
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - CVE-2026-33812
+      - GO-2026-4962
+    package: golang.org/x/image@v0.21.0
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - CVE-2026-33813
+      - GO-2026-4961
+    package: golang.org/x/image@v0.21.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/image/webp.Decode, golang.org/x/image/webp.DecodeConfig reached from code.gitea.io/gitea/modules/avatar.ProcessAvatarImage'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-33817
+      - GHSA-6jwv-w5xf-7j27
+    package: go.etcd.io/bbolt@v1.3.11
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-34041
+      - GHSA-xmgr-9pqc-h5vw
+      - GO-2026-4891
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: package_version_unresolved
+  - advisory:
+      - CVE-2026-34042
+      - GHSA-x34h-54cw-9825
+      - GO-2026-4890
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: package_version_unresolved
+  - advisory:
+      - CVE-2026-34165
+      - GHSA-jhf3-xxhw-2wpp
+      - GO-2026-4910
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/go-git/go-git/v5/plumbing.Hash.IsZero, github.com/go-git/go-git/v5/plumbing/format/gitignore.NewMatcher, github.com/go-git/go-git/v5/plumbing/format/idxfile.objects.Less, github.com/go-git/go-git/v5/plumbing/storer.init, github.com/go-git/go-git/v5/plumbing/transport/file.init, github.com/go-git/go-git/v5/storage/filesystem.init, github.com/go-git/go-git/v5/utils/diff.init, github.com/go-git/go-git/v5/utils/ioutil.WriteNopCloser reached from code.gitea.io/gitea/services/actions.init'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-34966
+      - CVE-2026-59765
+      - GHSA-2wm4-vwp6-v7xc
+      - GO-2026-6039
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-39821
+      - GO-2026-5026
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/idna.ToASCII reached from code.gitea.io/gitea/services/migrations.*GogsDownloader.RoundTrip'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-39824
+      - GO-2026-5024
+    package: golang.org/x/sys@v0.29.0
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-39827
+      - GHSA-qpw4-5x99-6vjp
+      - GO-2026-5016
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-39828
+      - GHSA-45gg-vh54-h5m9
+      - GO-2026-5014
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-39829
+      - GHSA-w879-237q-wc7r
+      - GO-2026-5018
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn, golang.org/x/crypto/ssh.NewSignerFromKey, golang.org/x/crypto/ssh.ParseAuthorizedKey, golang.org/x/crypto/ssh.ParsePrivateKey, golang.org/x/crypto/ssh.ParsePublicKey reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-39830
+      - GHSA-vgwf-h737-ff37
+      - GO-2026-5017
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-39831
+      - GHSA-89gr-r52h-f8rx
+      - GO-2026-5019
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.*CertChecker.CheckCert, golang.org/x/crypto/ssh.*Certificate.Verify, golang.org/x/crypto/ssh.*skECDSAPublicKey.Verify, golang.org/x/crypto/ssh.*skEd25519PublicKey.Verify, golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/models/asymkey.VerifySSHKey'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-39832
+      - GHSA-f5wc-c3c7-36mc
+      - GO-2026-5006
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-39833
+      - GHSA-jppx-rxg9-jmrx
+      - GO-2026-5005
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-39834
+      - GHSA-rm3j-f69w-wqmq
+      - GO-2026-5020
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.*extChannel.Write, golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-39835
+      - GHSA-78mq-xcr3-xm33
+      - GO-2026-5015
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-41506
+      - GHSA-3xc5-wrhm-f963
+      - GO-2026-5105
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/go-git/go-git/v5/plumbing/transport/http.NewClient reached from code.gitea.io/gitea/services/actions.init'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-42500
+      - GO-2026-5031
+    package: golang.org/x/image@v0.21.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/image/bmp.Decode reached from code.gitea.io/gitea/modules/avatar.ProcessAvatarImage'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-42502
+      - GO-2026-5027
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup.PostProcessDefault'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-42506
+      - GO-2026-5025
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup.PostProcessDefault'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-42508
+      - GHSA-5cgq-3rg8-m6cv
+      - GO-2026-5021
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-42931
+      - GHSA-wwqq-x6w4-frm2
+      - GO-2026-6082
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-44740
+      - GHSA-m3xc-h892-ggx6
+      - GO-2026-5490
+    package: github.com/go-git/go-billy/v5@v5.6.1
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/go-git/go-billy/v5/helper/chroot.New reached from code.gitea.io/gitea/services/actions.init'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-44973
+      - GHSA-qw64-3x98-g7q2
+      - GO-2026-5597
+    package: github.com/go-git/go-billy/v5@v5.6.1
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/go-git/go-billy/v5/helper/chroot.New, github.com/go-git/go-billy/v5/osfs.New reached from code.gitea.io/gitea/services/actions.init'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-45022
+      - GHSA-389r-gv7p-r3rp
+      - GO-2026-5074
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-45570
+      - GHSA-m7cr-m3pv-hgrp
+      - GO-2026-5496
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/go-git/go-git/v5/plumbing.Hash.String, github.com/go-git/go-git/v5/plumbing.HashSlice.Less, github.com/go-git/go-git/v5/plumbing/format/gitignore.ParsePattern, github.com/go-git/go-git/v5/plumbing/format/packfile.*Error.Error, github.com/go-git/go-git/v5/plumbing/object.init, github.com/go-git/go-git/v5/utils/diff.init, github.com/go-git/go-git/v5/utils/merkletrie.init, github.com/go-git/go-git/v5/utils/sync.init$3 reached from code.gitea.io/gitea/routers/web/repo.UpdatePullRequestTarget'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-45571
+      - GHSA-crhj-59gh-8x96
+      - GO-2026-5336
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-46595
+      - GHSA-x527-x647-q7gg
+      - GO-2026-5023
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-46597
+      - GHSA-q4h4-gmj2-qvw2
+      - GO-2026-5013
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-46598
+      - GHSA-9m57-25v3-79x9
+      - GO-2026-5033
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-46599
+      - GHSA-q675-qj96-32m9
+      - GO-2026-5032
+    package: golang.org/x/image@v0.21.0
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - CVE-2026-46601
+      - GO-2026-5061
+    package: golang.org/x/image@v0.21.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/image/webp.Decode, golang.org/x/image/webp.DecodeConfig, golang.org/x/image/webp.init reached from code.gitea.io/gitea/modules/avatar.ProcessAvatarImage'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-46602
+      - GO-2026-5062
+    package: golang.org/x/image@v0.21.0
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - CVE-2026-46603
+      - GO-2026-6222
+    package: golang.org/x/image@v0.21.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/image/vp8l.Decode reached from code.gitea.io/gitea/modules/avatar.ProcessAvatarImage'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-46604
+      - GO-2026-5066
+    package: golang.org/x/image@v0.21.0
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - CVE-2026-50105
+      - GHSA-6cqf-375w-639g
+      - GO-2026-6036
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-5160
+      - GHSA-c97m-vxhj-p7j6
+      - GO-2026-5320
+    package: github.com/yuin/goldmark@v1.7.8
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/yuin/goldmark/renderer/html.*Renderer.renderAutoLink, github.com/yuin/goldmark/renderer/html.*Renderer.renderImage, github.com/yuin/goldmark/renderer/html.*Renderer.renderLink reached from code.gitea.io/gitea/modules/markup/markdown.*ASTTransformer.Transform'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-54481
+      - GHSA-94v3-77j7-vm48
+      - GO-2026-6048
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-55982
+      - GHSA-mg4f-x9v4-6h2p
+      - GO-2026-6065
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-55984
+      - GHSA-m932-crvm-gcp5
+      - GO-2026-6064
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-55987
+      - GHSA-vrhc-jjfc-m3m3
+      - GO-2026-6078
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-56443
+      - GHSA-7p4h-3gxq-x3h3
+      - GO-2026-6045
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-56654
+      - GHSA-683j-3ff6-hh2x
+      - GO-2026-6034
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-56657
+      - GHSA-4xjf-493q-98p3
+      - GO-2026-6042
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-56750
+      - GHSA-rgv6-xp99-6mgj
+      - GO-2026-6072
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-56755
+      - GHSA-6hm7-3pwj-22rm
+      - GO-2026-6037
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-56851
+      - GO-2026-6629
+    package: golang.org/x/text@v0.21.0
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-56852
+      - GO-2026-5970
+    package: golang.org/x/text@v0.21.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/text/unicode/norm.Form.Append, golang.org/x/text/unicode/norm.Form.AppendString, golang.org/x/text/unicode/norm.Form.FirstBoundaryInString, golang.org/x/text/unicode/norm.Form.IsNormalString, golang.org/x/text/unicode/norm.Form.Properties, golang.org/x/text/unicode/norm.Form.PropertiesString, golang.org/x/text/unicode/norm.Form.QuickSpan, golang.org/x/text/unicode/norm.Form.String reached from code.gitea.io/gitea/models/user.NormalizeUserName'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-56854
+      - GO-2026-6303
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-56855
+      - GO-2026-6355
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-56864
+      - GO-2026-6180
+    package: golang.org/x/mod@v0.22.0
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: vulnerable_symbol_unresolved
+    gap: 'unfiled: undetermined/vulnerable_symbol_unresolved'
+  - advisory:
+      - CVE-2026-56865
+      - GO-2026-6179
+    package: golang.org/x/mod@v0.22.0
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: vulnerable_symbol_unresolved
+    gap: 'unfiled: undetermined/vulnerable_symbol_unresolved'
+  - advisory:
+      - CVE-2026-57886
+      - GHSA-6c6r-5xr4-cr5m
+      - GO-2026-6035
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-57894
+      - GHSA-82f7-87hm-852x
+      - GO-2026-6027
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-57897
+      - GHSA-frpw-3h2q-4jj6
+      - GO-2026-6054
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58314
+      - GHSA-2fcr-jfvc-vgg2
+      - GO-2026-6038
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58418
+      - GHSA-rqhx-647v-wx32
+      - GO-2026-6075
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58419
+      - GHSA-44qc-pgvp-wx7v
+      - GO-2026-6041
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58421
+      - GHSA-v96j-25gv-g2w9
+      - GO-2026-6077
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58422
+      - GHSA-g9g6-qhrc-p3qc
+      - GO-2026-6056
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58423
+      - GHSA-7wvc-rvp7-w99x
+      - GO-2026-6046
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58424
+      - GHSA-777r-4v59-6486
+      - GO-2026-6044
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58425
+      - GHSA-vxv2-8j6r-pcpg
+      - GO-2026-6079
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58426
+      - GHSA-hg5r-vq93-9fv6
+      - GO-2026-6060
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58428
+      - GHSA-25gq-j9jx-43pg
+      - GO-2026-6028
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58429
+      - GHSA-fq2p-5p22-8g6j
+      - GO-2026-6053
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58432
+      - GHSA-q9pg-jj6x-j9p6
+      - GO-2026-6070
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58434
+      - GHSA-j2w3-9c3r-g83q
+      - GO-2026-6062
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58435
+      - GHSA-rh79-75qm-gwjr
+      - GO-2026-6073
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58436
+      - GHSA-fw57-jgch-pgf3
+      - GO-2026-6055
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58437
+      - GHSA-8p9h-49rc-qgxj
+      - GO-2026-6047
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58439
+      - GHSA-w5pg-649r-p6gg
+      - GO-2026-6080
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58441
+      - GHSA-xmj7-xj85-hfc3
+      - GO-2026-6084
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58442
+      - GHSA-h2x6-g7q6-344v
+      - GO-2026-6058
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58443
+      - GHSA-xxjv-752h-3vp2
+      - GO-2026-6086
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58444
+      - GHSA-cp3q-vrj2-ghhh
+      - GO-2026-6050
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58445
+      - GHSA-pgqf-926r-548m
+      - GO-2026-6067
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58507
+      - GHSA-p4mj-98mv-xq26
+      - GO-2026-6066
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58510
+      - GHSA-q423-49rw-g9mh
+      - GO-2026-6069
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-58511
+      - GHSA-3r5c-2xxx-h872
+      - GO-2026-6040
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-59763
+      - GHSA-9mq6-mqjj-c2c5
+      - GO-2026-6049
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-59766
+      - GHSA-qf2f-qh6p-7v89
+      - GO-2026-6071
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-63209
+      - GHSA-259r-337f-4rfw
+      - GO-2026-5841
+    package: github.com/klauspost/compress@v1.17.11
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-71556
+      - GHSA-hc8v-wwc9-vgxm
+      - GO-2026-6213
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-71557
+      - GHSA-qgq7-7hm3-q39j
+      - GO-2026-6214
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - CVE-2026-72815
+      - GHSA-3fxj-6jh8-hvhx
+      - GO-2026-5774
+    package: github.com/go-chi/chi/v5@v5.1.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - CVE-2026-72816
+      - GHSA-rjr7-jggh-pgcp
+      - GO-2026-5777
+    package: github.com/go-chi/chi/v5@v5.1.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/go-chi/chi/v5/middleware.RealIP reached from code.gitea.io/gitea/modules/web.*Router.Any'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-72817
+      - GHSA-9g5q-2w5x-hmxf
+      - GO-2026-5775
+    package: github.com/go-chi/chi/v5@v5.1.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/go-chi/chi/v5/middleware.RealIP reached from code.gitea.io/gitea/modules/web.*Router.Any'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-78661
+      - GO-2026-6860
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from code.gitea.io/gitea/modules/markup/orgmode.Render'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-78662
+      - GO-2026-6354
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/crypto/ssh.NewServerConn reached from code.gitea.io/gitea/modules/graceful.*Server.Serve'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-84303
+      - GHSA-qc2q-p7wx-3px3
+      - GO-2026-6441
+    package: google.golang.org/grpc@v1.67.1
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - CVE-2026-84304
+      - GHSA-vp52-pcj8-j9qc
+      - GO-2026-6348
+    package: google.golang.org/grpc@v1.67.1
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - CVE-2026-84445
+      - GHSA-2v4p-qf9q-27wj
+      - GO-2026-6443
+    package: google.golang.org/grpc@v1.67.1
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - CVE-2026-94444
+      - GO-2026-6601
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-94447
+      - GO-2026-6602
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97033
+      - GO-2026-6858
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97034
+      - GO-2026-6857
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97035
+      - GO-2026-6856
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97036
+      - GO-2026-6855
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97037
+      - GO-2026-6854
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97038
+      - GO-2026-6853
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97039
+      - GO-2026-6852
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97040
+      - GO-2026-6851
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97041
+      - GO-2026-6850
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97042
+      - GO-2026-6849
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97043
+      - GO-2026-6848
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: go_toolchain_unresolved
+  - advisory:
+      - CVE-2026-97045
+      - GO-2026-6866
+    package: golang.org/x/net@v0.34.0
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: golang.org/x/net/html.Render reached from code.gitea.io/gitea/modules/markup.PostProcessDefault'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - CVE-2026-97054
+      - GO-2026-6859
+    package: '-'
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate
+  - advisory:
+      - GHSA-3m6q-h5gj-7mrw
+      - GO-2026-5091
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - GHSA-6xv5-86q9-7xr8
+      - GO-2023-2048
+    package: github.com/cyphar/filepath-securejoin@v0.3.6
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - GHSA-77vh-xpmg-72qh
+    package: github.com/opencontainers/image-spec@v1.1.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - GHSA-9763-4f94-gfch
+      - GO-2024-2453
+    package: github.com/cloudflare/circl@v1.5.0
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - GHSA-hrxh-6v49-42gf
+      - GO-2026-6061
+    package: google.golang.org/grpc@v1.67.1
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - GHSA-m425-mq94-257g
+      - GO-2023-2153
+    package: google.golang.org/grpc@v1.67.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - GHSA-rjvx-x5h2-6px5
+      - GO-2026-6074
+    package: code.gitea.io/gitea@v1.23.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - GHSA-w5pp-99ch-qj29
+      - GO-2026-5693
+    package: github.com/go-git/go-git/v5@v5.13.1
+    target: gitea
+    truth: not_reachable
+    basis: imported, vulnerable function not called
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: refutation_withheld
+    gap: '#790'
+  - advisory:
+      - GHSA-xr7q-jx4m-x55m
+      - GO-2024-2978
+    package: google.golang.org/grpc@v1.67.1
+    target: gitea
+    truth: unknown
+    basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+  - advisory:
+      - GO-2026-5932
+    package: golang.org/x/crypto@v0.32.0
+    target: gitea
+    truth: not_reachable
+    basis: required, vulnerable package never imported
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: not_exploitable
+      reason: vulnerable_symbol_unreachable
+  - advisory:
+      - GO-2026-6905
+    package: github.com/blakesmith/ar@v0.0.0-20190502131153-809d4375e1fb
+    target: gitea
+    truth: reachable
+    basis: 'symbol-level: github.com/blakesmith/ar.*Reader.Read reached from code.gitea.io/gitea/modules/git.ParseCatFileTreeLine'
+    source: govulncheck v1.9.0
+    engine_expected:
+      verdict: reachable_candidate

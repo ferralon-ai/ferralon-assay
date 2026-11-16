@@ -18,16 +18,12 @@ on:
         required: false
         default: ""
       scan-timeout:
-        description: "Per-fixture scan budget (Go duration)."
+        description: "Per-fixture scan budget in whole minutes, 1m to 60m (the fixture job allows 90)."
         required: false
         default: "40m"
 
 permissions:
   contents: read
-
-concurrency:
-  group: floor
-  cancel-in-progress: false
 
 jobs:
   plan:
@@ -65,8 +61,15 @@ jobs:
         id: plan
         env:
           SELECTED: ${{ inputs.fixtures }}
+          SCAN_TIMEOUT: ${{ inputs.scan-timeout }}
         run: |
           set -euo pipefail
+          # The scan budget must end inside the fixture job's timeout, or a slow scan is killed with
+          # its observation unwritten.
+          if ! [[ "$SCAN_TIMEOUT" =~ ^([0-9]+)m$ ]] || (( BASH_REMATCH[1] < 1 || BASH_REMATCH[1] > 60 )); then
+            echo "::error::scan-timeout $SCAN_TIMEOUT: give whole minutes from 1m to 60m."
+            exit 1
+          fi
           fc="$RUNNER_TEMP/floor-bin/floorcheck"
           read -r -a names <<< "$SELECTED"
           "$fc" validate --fixtures-root floor/fixtures "${names[@]}"
@@ -94,7 +97,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 40
@@ -179,14 +182,24 @@ jobs:
           pattern: floor-obs-*
           path: floor-observations
 
-      # One table over every fixture's summary.json. A fixture whose job produced no summary (the job
-      # was cancelled or timed out) counts as incomplete, never as passed.
+      # One table over every fixture's summary.json, read file by file so one unreadable summary costs
+      # only its own fixture. A fixture with no readable summary (its job was cancelled or timed out, or
+      # the file is damaged) counts as incomplete, never as passed.
       - name: Summarize
         env:
           MATRIX: ${{ needs.plan.outputs.matrix }}
         run: |
           set -euo pipefail
-          jq -s '[.[].fixtures[]]' floor-observations/*/summary.json > all.json 2>/dev/null || echo '[]' > all.json
+          shopt -s nullglob
+          : > fixtures.jsonl
+          for f in floor-observations/*/summary.json; do
+            if jq -c '.fixtures[]' "$f" > one.jsonl; then
+              cat one.jsonl >> fixtures.jsonl
+            else
+              echo "::warning::$f is not a readable summary; its fixture counts as incomplete."
+            fi
+          done
+          jq -s '.' fixtures.jsonl > all.json
           jq -r '.include[].name' <<< "$MATRIX" | sort > planned.txt
           jq -r '.[].fixture' all.json | sort > judged.txt
           missing="$(comm -23 planned.txt judged.txt)"
@@ -202,7 +215,7 @@ jobs:
             echo "::error::A fixture regressed."
             exit 1
           fi
-          if [ -n "$missing" ] || jq -e 'any(.[]; .outcome != "met" and .outcome != "improved")' all.json > /dev/null; then
+          if [ -n "$missing" ] || jq -e 'any(.[]; .outcome != "pass")' all.json > /dev/null; then
             echo "::warning::Some fixtures could not be judged; they are incomplete, not passed."
             exit 2
           fi

@@ -1806,27 +1806,62 @@ func intakeDisqualify(advEco, codeEco, coordinate string, manifestHasCoord, mani
 	return false, ReasonInsufficient
 }
 
-// extractAdvisoryEcosystem reads the normalized advisory's PURL and returns its ecosystem token
-// (PURL-type namespace: "golang" | "maven" | "npm" | …), or "" when there is no parseable PURL —
-// the intake ecosystem axis then fails open (inv.5).
-func extractAdvisoryEcosystem(store artifact.Store, caseID string) string {
+// extractAdvisoryEcosystem reads the normalized advisory and returns the ecosystem token
+// (PURL-type namespace: "golang" | "maven" | "npm" | …) the intake ecosystem guard compares against
+// codeEco, or "" when there is no parseable PURL — the axis then fails open (inv.5).
+//
+// The guard may only refute when the advisory provably names NOTHING in the codebase's ecosystem.
+// A package the advisory names counts as being in codeEco when its PURL type says so, or when it is
+// the Go standard library/toolchain (toolchainSubject): the toolchain is part of every Go build, so
+// a stdlib advisory is never "another ecosystem" to a Go codebase whatever type token its record's
+// PURL spells. With no selected package the scalar primary stays the token the guard compares, but
+// any other affected package (or dropped element) in codeEco makes it return codeEco — one
+// ecosystem of a multi-ecosystem record is enough to keep the advisory adjudicable.
+func extractAdvisoryEcosystem(store artifact.Store, caseID, codeEco string) string {
 	// v3: the intake ecosystem guard must compare the SELECTED package's ecosystem, so a target on a
 	// secondary package is judged against the package it actually depends on. No selection (or a
 	// selected element with no PURL) → scalar PURL (unchanged).
 	if sel, ok := extractSelectedPackage(store, caseID); ok && sel.PURL != "" {
-		return purlEcosystem(sel.PURL)
+		return packageEcosystem(sel.PURL, sel.AffectedRanges, codeEco)
 	}
 	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
 	if err != nil || len(arts) == 0 {
 		return ""
 	}
 	var adv struct {
-		PURL string `json:"purl"`
+		PURL             string                    `json:"purl"`
+		AffectedRanges   []affectedRange           `json:"affected_ranges"`
+		AffectedPackages []advisoryAffectedPackage `json:"affected_packages"`
+		DroppedPackages  []string                  `json:"dropped_affected_packages"`
 	}
 	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
 		return ""
 	}
-	return purlEcosystem(adv.PURL)
+	primary := packageEcosystem(adv.PURL, adv.AffectedRanges, codeEco)
+	if codeEco == "" || primary == codeEco {
+		return primary
+	}
+	for _, p := range adv.AffectedPackages {
+		if packageEcosystem(p.PURL, p.AffectedRanges, codeEco) == codeEco {
+			return codeEco
+		}
+	}
+	for _, purl := range adv.DroppedPackages {
+		if purlEcosystem(purl) == codeEco {
+			return codeEco
+		}
+	}
+	return primary
+}
+
+// packageEcosystem is one affected package's ecosystem token: its PURL type, except that the Go
+// standard library/toolchain is "golang" however the record spells its PURL, and only when the
+// codebase is Go (the toolchain is in no other ecosystem's build).
+func packageEcosystem(purl string, rngs []affectedRange, codeEco string) string {
+	if codeEco == "golang" && toolchainSubject(purl, rngs) {
+		return "golang"
+	}
+	return purlEcosystem(purl)
 }
 
 // purlEcosystem extracts the type token from a package URL "pkg:<type>/<namespace>/<name>@<ver>".
@@ -2655,9 +2690,10 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	}
 	advModule, _ := extractAdvisoryModule(store, c.ID)
 	coordinate, manifestHas, manifestKnown := intakeManifestMembership(ctx, store, c.ID, buildDir, goWork, advModule)
+	codeEco := extractCodebaseEcosystem(store, c.ID)
 	if disq, reason := intakeDisqualify(
-		extractAdvisoryEcosystem(store, c.ID),
-		extractCodebaseEcosystem(store, c.ID),
+		extractAdvisoryEcosystem(store, c.ID, codeEco),
+		codeEco,
 		coordinate, manifestHas, manifestKnown,
 	); disq {
 		res := DisqualResult{Disqualified: true, Reason: reason}

@@ -42,7 +42,6 @@ func TestDecodeReport_OldShapeDisqualificationsReadWithTheirBasis(t *testing.T) 
 		disqRow("GO-3", "", legacy),
 		disqRow("GO-4", "", manifest+" (per advisory GO-4, record 0123abcd)"),
 		disqRow("GO-5", "version_not_in_affected_range", version),
-		disqRow("GO-6", "", version),
 		`{"advisory": {"id": "GO-7", "source": "osv"}, "verdict": "not_exploitable", "evidence": {"basis": "vulnerable_symbol_unreachable", "detail": "no path"}}`,
 	}
 	want := map[string]verdict.NonExploitableBasis{
@@ -51,7 +50,6 @@ func TestDecodeReport_OldShapeDisqualificationsReadWithTheirBasis(t *testing.T) 
 		"GO-3": verdict.BasisNoManifestEntry,
 		"GO-4": verdict.BasisNoManifestEntry,
 		"GO-5": verdict.BasisVersionNotAffected,
-		"GO-6": verdict.BasisVersionNotAffected,
 		"GO-7": verdict.BasisSymbolUnreachable,
 	}
 	for _, schema := range []string{report.SchemaVersion, report.SchemaVersionV2} {
@@ -73,11 +71,12 @@ func TestDecodeReport_OldShapeDisqualificationsReadWithTheirBasis(t *testing.T) 
 }
 
 // TestDecodeReport_UngroundedRowsStayRefused: the backfill names only a basis the detail states. A
-// disqualification whose detail names no axis, and a not_exploitable with no basis, are refused at
+// version or symbol disqualification without its basis, one whose detail names no axis, and a not_exploitable with no basis, are refused at
 // the boundary rather than given grounds nobody recorded.
 func TestDecodeReport_UngroundedRowsStayRefused(t *testing.T) {
 	for _, tc := range []struct{ name, row string }{
 		{"disqualified on an unnamed axis", disqRow("GO-1", "", "disqualified on an axis that is neither a version nor a symbol comparison; neither comparison was performed")},
+		{"version disqualification with no basis", disqRow("GO-1", "", "resolved dependency version is outside the advisory's affected range")},
 		{"disqualified with no detail", `{"advisory": {"id": "GO-1", "source": "osv"}, "verdict": "disqualified", "evidence": {}}`},
 		{"not_exploitable with no basis", `{"advisory": {"id": "GO-1", "source": "osv"}, "verdict": "not_exploitable", "evidence": {"detail": "the vulnerable symbol is absent from the built artifact"}}`},
 	} {

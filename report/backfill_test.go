@@ -6,15 +6,16 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
-// TestDisqualBasisFromDetail: each fixed disqualification line maps to its basis, with or without
+// TestDisqualBasisFromDetail: each fixed intake-disqualification line maps to its basis, with or without
 // the source attribution the scanner appends; anything else maps to none.
 func TestDisqualBasisFromDetail(t *testing.T) {
 	for _, tc := range []struct {
 		detail string
 		want   verdict.NonExploitableBasis
 	}{
-		{"resolved dependency version is outside the advisory's affected range", verdict.BasisVersionNotAffected},
-		{"the vulnerable symbol is absent from the built artifact", verdict.BasisSymbolAbsent},
+		// Version and symbol disqualifications always carried their basis; one without it is refused.
+		{"resolved dependency version is outside the advisory's affected range", verdict.BasisNone},
+		{"the vulnerable symbol is absent from the built artifact", verdict.BasisNone},
 		{"the advisory targets a different ecosystem than this codebase; no version or symbol comparison was performed", verdict.BasisAdvisoryEcosystemMismatch},
 		{"the advisory's package is not installed by the build: its dependency manifest or build graph has no entry for it; no version or symbol comparison was performed", verdict.BasisNoManifestEntry},
 		{"the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed", verdict.BasisNoManifestEntry},

@@ -177,15 +177,15 @@ func dropUnstampedPriority(r Report) Report {
 	return r
 }
 
-// disqualDetailBasis pairs each fixed detail line the scanner writes on a disqualification with the
-// basis it records. The lines are the scanner's own (trigger's disqualDetail), duplicated here
-// because report cannot import trigger; a trigger test holds the two in step.
+// disqualDetailBasis pairs each fixed intake-disqualification detail line with the basis it
+// records. These are the only disqualifications released scanners wrote without a basis; a version
+// or symbol disqualification always carried its basis, so a stored one without it is refused rather
+// than handed the strongest grounds. The lines are the scanner's own (trigger's disqualDetail),
+// duplicated here because report cannot import trigger; a trigger test holds the two in step.
 var disqualDetailBasis = []struct {
 	detail string
 	basis  verdict.NonExploitableBasis
 }{
-	{"resolved dependency version is outside the advisory's affected range", verdict.BasisVersionNotAffected},
-	{"the vulnerable symbol is absent from the built artifact", verdict.BasisSymbolAbsent},
 	{"the advisory targets a different ecosystem than this codebase; no version or symbol comparison was performed", verdict.BasisAdvisoryEcosystemMismatch},
 	{"the advisory's package is not installed by the build: its dependency manifest or build graph has no entry for it; no version or symbol comparison was performed", verdict.BasisNoManifestEntry},
 	// The no-manifest-entry line as v0.2 through v0.5 wrote it.

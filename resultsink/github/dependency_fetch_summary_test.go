@@ -73,7 +73,7 @@ func TestTier0_DependencyFetchOutcomes(t *testing.T) {
 					t.Errorf("summary missing %q\n---\n%s", w, s)
 				}
 			}
-			if i, j := strings.Index(s, "**Dependency code.**"), strings.Index(s, "| Verdict | Count |"); i < 0 || j < 0 || i > j {
+			if i, j := strings.Index(s, "**Dependency code.**"), strings.Index(s, "| Result | Count | Next action |"); i < 0 || j < 0 || i > j {
 				t.Errorf("the dependency code block must precede the counts (block@%d, table@%d)", i, j)
 			}
 			if body := renderedTier1Body(t, res); strings.Contains(body, reg) || strings.Contains(body, "Dependency code.") {

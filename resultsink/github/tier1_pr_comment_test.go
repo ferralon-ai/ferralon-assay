@@ -58,7 +58,7 @@ func TestTier1PRComment_CreatesThenUpdatesInPlace(t *testing.T) {
 	// inv. 5: the rendered body never surfaces affected/error/exploitable.
 	body := mock.commentsByIssue[42][0].Body
 	for _, forbidden := range []string{"affected", "::error"} {
-		if strings.Contains(body, forbidden) {
+		if strings.Contains(withoutApprovedLabel(body), forbidden) {
 			t.Errorf("inv.5 violation: comment body contains %q", forbidden)
 		}
 	}

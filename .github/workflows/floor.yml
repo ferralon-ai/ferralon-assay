@@ -1,7 +1,9 @@
 name: Floor run
 
 # The nightly floor run: scan every repository in floor/targets.json (the demo repositories, and the
-# pinned lane of real repositories at fixed commits) with the scanner built from this commit, and
+# pinned lane of real repositories at fixed commits, and the showcase lane: real applications at fixed
+# commits on a pinned corpus release and Go toolchain, held to an expected-verdict ledger under
+# floor/expect/, with a report-only twin scan on the floating corpus) with the scanner built from this commit, and
 # fail on any not_exploitable finding without grounds, a disqualified finding on a basis that cannot
 # ground it, or a scan that failed, timed out or was cut short. The summary shows,
 # per language, what Assay returned on each repository. docs/floor.md is the reference: what the run
@@ -133,6 +135,29 @@ jobs:
               exit 1
             fi
           done
+          # The release every floating bundle came from, for the scan's meta.json.
+          printf '%s\n' "$ref" > "$dest/RELEASE"
+
+      # The showcase lane's pinned corpus release (floor/targets.json, showcase.corpus_release): the
+      # same fetch and the same checks, by the release's own tag instead of the latest.
+      - name: Fetch the showcase lane's pinned corpus bundle
+        if: steps.targets.outputs.showcase_corpus != ''
+        env:
+          SHOWCASE_POLICY: ${{ steps.targets.outputs.showcase_policy }}
+          SHOWCASE_CORPUS: ${{ steps.targets.outputs.showcase_corpus }}
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/floor-bin/corpus-pinned"
+          fetched="$RUNNER_TEMP/corpus-showcase"
+          mkdir -p "$dest"
+          PATH="$RUNNER_TEMP/floor-cosign:$PATH" DEST="$fetched" CORPUS_REF="$SHOWCASE_CORPUS" CORPUS_POLICY="$SHOWCASE_POLICY" \
+            GITHUB_OUTPUT="$RUNNER_TEMP/corpus-showcase.out" bash scripts/fetch-corpus-bundle.sh
+          if [ ! -f "$fetched/$SHOWCASE_POLICY.jsonl.gz" ] || [ ! -f "$fetched/signals.json.gz" ]; then
+            echo "::error::The pinned corpus release $SHOWCASE_CORPUS carries no verified $SHOWCASE_POLICY bundle and signals."
+            exit 1
+          fi
+          mv "$fetched/$SHOWCASE_POLICY.jsonl.gz" "$fetched/signals.json.gz" "$dest/"
+          printf '%s\n' "$SHOWCASE_CORPUS" > "$dest/RELEASE"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -171,11 +196,17 @@ jobs:
           path: target
           persist-credentials: false
 
-      # The toolchain each demo repository's own workflow sets up before its scan.
+      # The toolchain each demo repository's own workflow sets up before its scan; the showcase lane
+      # pins an exact release instead (floor/targets.json, showcase.go_version).
       - uses: actions/setup-go@v5
-        if: matrix.language == 'go'
+        if: matrix.language == 'go' && matrix.go_version == ''
         with:
           go-version-file: target/go.mod
+          cache: false
+      - uses: actions/setup-go@v5
+        if: matrix.go_version != ''
+        with:
+          go-version: ${{ matrix.go_version }}
           cache: false
       - name: Warm the module cache
         if: matrix.language == 'go'
@@ -199,6 +230,14 @@ jobs:
           REVISION: ${{ matrix.ref }}
           HOUSE_CANARIES: ${{ matrix.include_house_canaries }}
           SCAN_TIMEOUT: 22m
+          # Showcase entries only (empty elsewhere, and scan.sh unsets what is empty): the pinned
+          # corpus directory and the pinned build the ledger's header names.
+          CORPUS_DIR: ${{ matrix.corpus_dir }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+          GOTOOLCHAIN: ${{ matrix.go_version != '' && 'local' || '' }}
+          MEASURE_PEAK: "true"
         run: bash assay/floor/scan.sh
 
       # Written whatever happened to the scan, so floorcheck can tell a failed scan from a clean one.
@@ -209,13 +248,22 @@ jobs:
           REPO: ${{ matrix.repo }}
           POLICY: ${{ matrix.policy }}
           OUTCOME: ${{ steps.scan.outcome }}
+          LANE: ${{ matrix.lane }}
+          LANGUAGE: ${{ matrix.language }}
+          CORPUS_DIR: ${{ matrix.corpus_dir }}
+          BIN_DIR: ${{ runner.temp }}/floor-bin
         run: |
           mkdir -p "$OUT_DIR"
           num() { if [ -f "$OUT_DIR/$1" ]; then cat "$OUT_DIR/$1"; else echo null; fi; }
+          corpus="$(cat "$BIN_DIR/${CORPUS_DIR:-corpus}/RELEASE" 2>/dev/null || true)"
+          gover=""
+          if [ "$LANGUAGE" = go ]; then gover="$( (cd target && go env GOVERSION) 2>/dev/null || true)"; fi
           jq -n --arg repo "$REPO" --arg policy "$POLICY" --arg commit "$GITHUB_SHA" --arg outcome "$OUTCOME" \
-            --argjson exit_code "$(num exit_code)" --argjson duration "$(num duration_seconds)" \
+            --arg lane "$LANE" --arg corpus "$corpus" --arg gover "$gover" \
+            --argjson exit_code "$(num exit_code)" --argjson duration "$(num duration_seconds)" --argjson peak "$(num peak_rss_kb)" \
             '{repo: $repo, policy: $policy, assay_commit: $commit, outcome: $outcome,
-              exit_code: $exit_code, duration_seconds: $duration}' > "$OUT_DIR/meta.json"
+              exit_code: $exit_code, duration_seconds: $duration,
+              lane: $lane, corpus_release: $corpus, go_version: $gover, peak_rss_kb: $peak}' > "$OUT_DIR/meta.json"
 
       - uses: actions/upload-artifact@v4
         if: always()

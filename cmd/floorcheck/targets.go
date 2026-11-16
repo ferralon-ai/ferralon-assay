@@ -20,7 +20,26 @@ type Targets struct {
 	Policy   string     `json:"policy"`
 	Targets  []Target   `json:"targets"`
 	Pinned   *Lane      `json:"pinned,omitempty"`
+	Showcase *Showcase  `json:"showcase,omitempty"`
 	Excluded []Excluded `json:"excluded,omitempty"`
+}
+
+// Showcase is the showcase lane: real applications at pinned commits, scanned on a pinned corpus
+// release and a pinned Go toolchain, and held to an expected-verdict ledger (floor/expect/<name>.yaml).
+// Each target is scanned twice: once on the pinned corpus, where a ledger mismatch fails the run, and
+// once on the floating corpus of the same policy, which is report-only.
+type Showcase struct {
+	Policy string `json:"policy"`
+	// CorpusRelease is the corpus release the pinned scan reads (corpus-<12 hex>). It moves only by a
+	// deliberate edit of this file.
+	CorpusRelease string `json:"corpus_release"`
+	// GoVersion is the exact toolchain both scans and the comparator run under.
+	GoVersion string `json:"go_version"`
+	// GOOS, GOARCH and CGO pin the build the scan loads, so the ledger holds on any runner.
+	GOOS    string   `json:"goos"`
+	GOARCH  string   `json:"goarch"`
+	CGO     bool     `json:"cgo"`
+	Targets []Target `json:"targets"`
 }
 
 // Lane is the pinned lane: real public repositories, each at a full commit, scanned under their own
@@ -31,19 +50,41 @@ type Lane struct {
 	Targets []Target `json:"targets"`
 }
 
+// Lane kinds. The demo lane's kind is empty.
+const (
+	laneDemo             = ""
+	lanePinned           = "pinned"
+	laneShowcase         = "showcase"
+	laneShowcaseFloating = "showcase-floating"
+)
+
 // lane is one policy and the targets scanned under it.
 type lane struct {
+	kind    string
 	policy  string
 	targets []Target
 }
 
-// lanes is every lane in run order: the demo targets, then the pinned lane when there is one.
+// lanes is every lane in run order: the demo targets, the pinned lane and then the showcase lane (and
+// its floating twin), when there are any.
 func (t Targets) lanes() []lane {
-	out := []lane{{t.Policy, t.Targets}}
+	out := []lane{{laneDemo, t.Policy, t.Targets}}
 	if t.Pinned != nil {
-		out = append(out, lane{t.Pinned.Policy, t.Pinned.Targets})
+		out = append(out, lane{lanePinned, t.Pinned.Policy, t.Pinned.Targets})
+	}
+	if t.Showcase != nil {
+		out = append(out, lane{laneShowcase, t.Showcase.Policy, t.Showcase.Targets},
+			lane{laneShowcaseFloating, t.Showcase.Policy, t.Showcase.Targets})
 	}
 	return out
+}
+
+// resultKey keys a scan result: a floating showcase scan shares its repository with the pinned one.
+func resultKey(repo, kind string) string {
+	if kind == laneShowcaseFloating {
+		return repo + "#floating"
+	}
+	return repo
 }
 
 // Target is one repository the floor run scans.
@@ -54,6 +95,8 @@ type Target struct {
 	Language string `json:"language"`
 	// Ref is the branch, tag or commit to scan. Empty is the default branch.
 	Ref string `json:"ref,omitempty"`
+	// Tag is the release tag Ref was resolved from, for the reader; the scan uses Ref.
+	Tag string `json:"tag,omitempty"`
 	// IncludeHouseCanaries mirrors the repository's own workflow setting include-house-canaries.
 	IncludeHouseCanaries bool `json:"include_house_canaries,omitempty"`
 }
@@ -83,6 +126,10 @@ var (
 	refPattern = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_./-]*$`)
 	// commitPattern is a full commit id, the only ref a pinned target may name.
 	commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	// corpusReleasePattern is a corpus release tag.
+	corpusReleasePattern = regexp.MustCompile(`^corpus-[0-9a-f]{12}$`)
+	// goVersionPattern is an exact Go release, the only toolchain the showcase lane may pin.
+	goVersionPattern = regexp.MustCompile(`^1\.[0-9]+\.[0-9]+$`)
 )
 
 // unboundedPolicy is the corpus policy only the pinned lane may use.
@@ -144,6 +191,31 @@ func (t Targets) validate() error {
 			}
 		}
 	}
+	if sc := t.Showcase; sc != nil {
+		switch {
+		case !policyPattern.MatchString(sc.Policy):
+			return fmt.Errorf("showcase: policy %q is not a policy id (lowercase letters, digits, '-')", sc.Policy)
+		case !corpusReleasePattern.MatchString(sc.CorpusRelease):
+			return fmt.Errorf("showcase: corpus_release %q is not a corpus release tag (corpus-<12 hex>), so the lane would not be pinned", sc.CorpusRelease)
+		case !goVersionPattern.MatchString(sc.GoVersion):
+			return fmt.Errorf("showcase: go_version %q is not an exact Go release (1.N.P)", sc.GoVersion)
+		case sc.GOOS == "" || sc.GOARCH == "":
+			return fmt.Errorf("showcase: goos and goarch are required")
+		case len(sc.Targets) == 0:
+			return fmt.Errorf("showcase: no targets")
+		}
+		for _, tg := range sc.Targets {
+			if !commitPattern.MatchString(tg.Ref) {
+				return fmt.Errorf("showcase: %s: ref %q is not a full commit id, so the lane would not be pinned", tg.Repo, tg.Ref)
+			}
+			if tg.Language != "go" {
+				return fmt.Errorf("showcase: %s: language %q, the lane's ledger and comparator are Go's", tg.Repo, tg.Language)
+			}
+			if err := checkTarget(tg, seen); err != nil {
+				return fmt.Errorf("showcase: %w", err)
+			}
+		}
+	}
 	for _, ex := range t.Excluded {
 		if !repoPattern.MatchString(ex.Repo) || ex.Reason == "" {
 			return fmt.Errorf("excluded %q needs owner/name and a reason", ex.Repo)
@@ -198,6 +270,14 @@ type matrixEntry struct {
 	Ref                  string `json:"ref"`
 	IncludeHouseCanaries bool   `json:"include_house_canaries"`
 	Policy               string `json:"policy"`
+	// Lane, CorpusDir, GoVersion, GOOS, GOARCH and CGO are set on showcase entries only: the scan
+	// reads the pinned corpus (CorpusDir) under the pinned toolchain and build.
+	Lane      string `json:"lane,omitempty"`
+	CorpusDir string `json:"corpus_dir,omitempty"`
+	GoVersion string `json:"go_version,omitempty"`
+	GOOS      string `json:"goos,omitempty"`
+	GOARCH    string `json:"goarch,omitempty"`
+	CGO       string `json:"cgo,omitempty"`
 }
 
 // matrixOutput renders the GitHub Actions step outputs the workflow's build job publishes: the scan
@@ -213,15 +293,30 @@ func matrixOutput(t Targets) (string, error) {
 			policies = append(policies, l.policy)
 		}
 		for _, tg := range l.targets {
-			m.Include = append(m.Include, matrixEntry{
+			e := matrixEntry{
 				Repo: tg.Repo, Name: tg.Name(), Language: tg.Language, Ref: tg.Ref,
 				IncludeHouseCanaries: tg.IncludeHouseCanaries, Policy: l.policy,
-			})
+			}
+			if sc := t.Showcase; sc != nil && (l.kind == laneShowcase || l.kind == laneShowcaseFloating) {
+				e.Lane, e.CorpusDir = l.kind, "corpus-pinned"
+				e.GoVersion, e.GOOS, e.GOARCH, e.CGO = sc.GoVersion, sc.GOOS, sc.GOARCH, "0"
+				if sc.CGO {
+					e.CGO = "1"
+				}
+				if l.kind == laneShowcaseFloating {
+					e.Name, e.CorpusDir = tg.Name()+"-floating", "corpus"
+				}
+			}
+			m.Include = append(m.Include, e)
 		}
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("matrix=%s\npolicies=%s\n", b, strings.Join(policies, " ")), nil
+	out := fmt.Sprintf("matrix=%s\npolicies=%s\n", b, strings.Join(policies, " "))
+	if t.Showcase != nil {
+		out += fmt.Sprintf("showcase_policy=%s\nshowcase_corpus=%s\n", t.Showcase.Policy, t.Showcase.CorpusRelease)
+	}
+	return out, nil
 }

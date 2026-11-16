@@ -82,6 +82,9 @@ type LanguagePlugin interface {
 type Partiality struct {
 	Complete bool     `json:"complete"`
 	Reasons  []string `json:"reasons,omitempty"` // canonical reason codes; see PartialReason*
+	// Cause names what the lane could not run: the command and its error. Disclosure only, the
+	// dependency inventory's note carries it after its fixed text.
+	Cause string `json:"cause,omitempty"`
 	// Scoped carries limits the lane can bound to the packages the hidden code could reach. Reasons
 	// stay run-wide; a scoped reason counts against an advisory exactly as a run-wide one unless its
 	// Targets exclude the advisory's package (trigger/assess.go). The ingress, reachability and
@@ -281,6 +284,15 @@ const (
 	// PartialReasonExcludedFilesCgoInclude localises excluded_files: a file the build left out
 	// includes C headers through cgo, whose code the analyzer does not read.
 	PartialReasonExcludedFilesCgoInclude = PartialReasonExcludedFiles + ":cgo_include"
+	// PartialReasonExcludedFilesBuildConstraint localises excluded_files: every file the build left out
+	// that may call into the module was left out only by its build constraints (GOOS or GOARCH in the
+	// file name or a //go:build line) and the analyzer traced it to a possible call, with no other
+	// limit on it (no assembly, linkname, cgo include, unresolved import or failed step). Unlike its
+	// siblings it is declared beside the refutation, which the analyzer keeps, and states that the
+	// refutation holds for the scanned platform only; Refutation.Detail names that scope. A caller that
+	// accepts a refutation for the scanned platform clears it (trigger.withoutBuildConstraintLimit);
+	// the scan still discloses it as a limit.
+	PartialReasonExcludedFilesBuildConstraint = PartialReasonExcludedFiles + ":build_constraint"
 	// PartialReasonUnsearchedMethods (loud): exported methods a caller can invoke that the analyzer's
 	// search never started from (Go: a method of a generic type, or one promoted by embedding from a
 	// type outside the search) may call into the module it found no path to, so its refutation does

@@ -610,7 +610,9 @@ func isMain(p *packages.Package) bool {
 // localisations of it naming the assembly, //go:linkname or cgo #include the file reaches, and
 // tool_failure beside it when the check withholds because one of its own steps failed. An advisory
 // that lists no vulnerable package in the module, or lists the module once with none, makes every
-// package of it count.
+// package of it count. When every such file is one that build constraints alone leave out and the
+// check traced each with nothing failing closed, the refutation is kept with its scope stated and
+// the result declares excluded_files:build_constraint instead (see leftOutCallers).
 func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
@@ -622,8 +624,20 @@ func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult,
 		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
 		return res
 	}
-	counts, reasons, failed := leftOutCallers(ctx, pkgs, module, scanned.countingPackages(module), scanned.vulnerableSymbols(module), release, buildDir, env)
+	counts, reasons, failed, constrained := leftOutCallers(ctx, pkgs, module, scanned.countingPackages(module), scanned.vulnerableSymbols(module), release, buildDir, env)
 	if !counts {
+		if constrained == 0 {
+			return res
+		}
+		// Every file that may call into the module is one the scan's build configuration leaves out by
+		// its build constraints, and the engine traced each with nothing failing closed. The refutation
+		// stands for the scanned platform: it keeps, saying so, and the limit is declared beside it for
+		// a caller that accepts that scope to clear.
+		kept := *r
+		kept.Detail = fmt.Sprintf("%s; scope: decided for GOOS=%s GOARCH=%s with %s only, and %d file(s) built only for other platforms or build tags may call into %s and were not analyzed, so other platforms were not checked",
+			r.Detail, envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH), tagsDetail(goflagsTags(env)), constrained, module)
+		res.Refutation = &kept
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFilesBuildConstraint)
 		return res
 	}
 	res.Refutation = nil

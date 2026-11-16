@@ -109,11 +109,17 @@ func sbomFromInventory(inv plugin.DependencyInventory, ecosystem string) (report
 // prior Report's notes back by it (inventoryLimits).
 const inventoryLimitDetail = "dependency inventory not fully resolved; the SBOM may omit packages for this ecosystem"
 
+// isInventoryLimit reports whether n is a whole-graph inventory note, with or without the cause the
+// lane named after the fixed text.
+func isInventoryLimit(n report.PartialityNote) bool {
+	return strings.HasPrefix(n.Detail, inventoryLimitDetail)
+}
+
 // inventoryLimits returns the whole-graph inventory notes among notes.
 func inventoryLimits(notes []report.PartialityNote) []report.PartialityNote {
 	var out []report.PartialityNote
 	for _, n := range notes {
-		if n.Detail == inventoryLimitDetail {
+		if isInventoryLimit(n) {
 			out = append(out, n)
 		}
 	}
@@ -272,12 +278,16 @@ func inventoryPartialityNotes(p plugin.Partiality, ecosystem string) []report.Pa
 	if len(reasons) == 0 {
 		reasons = []string{report.ReasonUnspecifiedLimit}
 	}
+	detail := inventoryLimitDetail
+	if p.Cause != "" {
+		detail += ": " + p.Cause
+	}
 	notes := make([]report.PartialityNote, 0, len(reasons))
 	for _, r := range reasons {
 		n := report.PartialityNote{
 			Reason:    r,
 			Ecosystem: ecosystem,
-			Detail:    inventoryLimitDetail,
+			Detail:    detail,
 			Path:      strings.Join(paths[r], ", "),
 		}
 		if !unbounded[r] {

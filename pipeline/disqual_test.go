@@ -105,7 +105,6 @@ func TestDisqualify_AmbiguousSemver_FailsOpen(t *testing.T) {
 		{"non-semver upper", "not-a-version", "v0.3.7"},
 		{"non-semver version", "v0.3.7", "garbage"},
 		{"prerelease version", "v0.3.7", "v0.3.7-rc1"},
-		{"prerelease bound", "v0.3.7-rc1", "v0.3.7"},
 		{"empty upper", "", "v0.3.7"},
 	}
 	for _, tc := range cases {

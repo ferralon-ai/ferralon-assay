@@ -146,7 +146,7 @@ func (defaultSchemeSource) Lookup(string) (AdvisoryFacts, bool) {
 	return AdvisoryFacts{
 		Module:         "example.com/dep",
 		PURL:           "pkg:cargo/example-dep", // unrecognized type ⇒ schemeFromPURL == ""
-		AffectedRanges: []Range{{Fixed: "v1.5.0", FixedVersion: "v1.5.0"}},
+		AffectedRanges: []Range{{Fixed: "1.5.0", FixedVersion: "1.5.0"}},
 		Provenance:     Provenance{Source: "synthetic", TrustTier: TrustFirstParty},
 	}, true
 }

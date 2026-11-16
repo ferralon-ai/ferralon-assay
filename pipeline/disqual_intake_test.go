@@ -472,9 +472,42 @@ func TestExtractAdvisoryEcosystemReadsEveryEntry(t *testing.T) {
 	put("multi", `{"purl":"pkg:cargo/rustls-webpki","affected_packages":[{"coordinate":"rustls-webpki","purl":"pkg:cargo/rustls-webpki"},{"coordinate":"stdlib","purl":"pkg:golang/stdlib"}]}`)
 	put("cargo", `{"purl":"pkg:cargo/rustls-webpki","affected_packages":[{"coordinate":"rustls-webpki","purl":"pkg:cargo/rustls-webpki"}]}`)
 	for id, wantDisq := range map[string]bool{"multi": false, "cargo": true} {
-		disq, reason := intakeDisqualify(extractAdvisoryEcosystem(store, id), "golang", "", false, false)
+		disq, reason := intakeDisqualify(extractAdvisoryEcosystem(store, id, "golang"), "golang", "", false, false)
 		if disq != wantDisq || (disq && reason != ReasonAdvisoryEcosystemMismatch) {
 			t.Errorf("%s: intakeDisqualify = (%v, %q), want disqualified=%v", id, disq, reason, wantDisq)
 		}
+	}
+}
+
+// The intake ecosystem guard refutes only when the advisory names nothing in the codebase's
+// ecosystem: the Go standard library is in every Go build, whatever PURL type its record spells,
+// and one in-ecosystem package of a multi-ecosystem record keeps the advisory adjudicable.
+func TestIntakeRun_GoToolchainEcosystem(t *testing.T) {
+	stdlibRanges := []map[string]any{{"upper_exclusive": "1.23.8", "scheme": "go-toolchain"}}
+	cases := []struct {
+		name     string
+		advisory map[string]any
+		wantDisq bool
+	}{
+		{"stdlib scheme, foreign PURL type", map[string]any{"purl": "pkg:generic/stdlib", "affected_ranges": stdlibRanges}, false},
+		{"stdlib PURL", map[string]any{"purl": "pkg:golang/stdlib", "affected_ranges": stdlibRanges}, false},
+		{"stdlib element beside a foreign scalar", map[string]any{"purl": "pkg:generic/net-http", "affected_packages": []map[string]any{{"purl": "pkg:generic/stdlib", "affected_ranges": stdlibRanges}}}, false},
+		{"golang element beside a foreign scalar", map[string]any{"purl": "pkg:npm/left-pad", "affected_packages": []map[string]any{{"purl": "pkg:golang/golang.org/x/net"}}}, false},
+		{"foreign npm advisory", map[string]any{"purl": "pkg:npm/left-pad"}, true},
+		{"foreign scalar and element", map[string]any{"purl": "pkg:npm/left-pad", "affected_packages": []map[string]any{{"purl": "pkg:nuget/DotNetNuke.Core"}}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			putJSON(t, store, "case", artifact.TypeNormalizedAdvisory, tc.advisory)
+			putJSON(t, store, "case", artifact.TypeInventory, map[string]any{"language": "go", "build_dir": ""})
+			res := runDisqual(t, store, "case")
+			if res.Disqualified != tc.wantDisq {
+				t.Fatalf("disqualified = %v, want %v (%+v)", res.Disqualified, tc.wantDisq, res)
+			}
+			if tc.wantDisq && res.Reason != ReasonAdvisoryEcosystemMismatch {
+				t.Fatalf("reason = %q, want %q", res.Reason, ReasonAdvisoryEcosystemMismatch)
+			}
+		})
 	}
 }

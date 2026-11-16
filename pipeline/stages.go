@@ -27,7 +27,6 @@ import (
 	"strings"
 
 	"golang.org/x/mod/modfile"
-	"golang.org/x/mod/semver"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -1825,15 +1824,21 @@ func ecosystemsMismatch(advEcos []string, codeEco string) bool {
 }
 
 // extractAdvisoryEcosystem reads the normalized advisory's package ecosystems (PURL-type namespace:
-// "golang" | "maven" | "npm" | …): the selected package's alone when one was selected, else the
-// scalar primary's and every affected_packages[] entry's, with "" for a PURL that does not parse —
+// "golang" | "maven" | "npm" | …) for the intake ecosystem guard to compare against codeEco: the
+// selected package's alone when one was selected, else the scalar primary's, every
+// affected_packages[] entry's and every dropped element's, with "" for a PURL that does not parse —
 // the intake ecosystem axis then fails open (inv.5).
-func extractAdvisoryEcosystem(store artifact.Store, caseID string) []string {
+//
+// A package counts as being in codeEco when its PURL type says so, or when it is the Go standard
+// library/toolchain (packageEcosystem): the toolchain is part of every Go build, so a stdlib
+// advisory is never "another ecosystem" to a Go codebase whatever type token its record's PURL
+// spells.
+func extractAdvisoryEcosystem(store artifact.Store, caseID, codeEco string) []string {
 	// v3: the intake ecosystem guard must compare the SELECTED package's ecosystem, so a target on a
 	// secondary package is judged against the package it actually depends on. No selection (or a
 	// selected element with no PURL) → scalar PURL (unchanged).
 	if sel, ok := extractSelectedPackage(store, caseID); ok && sel.PURL != "" {
-		return []string{purlEcosystem(sel.PURL)}
+		return []string{packageEcosystem(sel.PURL, sel.AffectedRanges, codeEco)}
 	}
 	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
 	if err != nil || len(arts) == 0 {
@@ -1841,16 +1846,31 @@ func extractAdvisoryEcosystem(store artifact.Store, caseID string) []string {
 	}
 	var adv struct {
 		PURL             string                    `json:"purl"`
+		AffectedRanges   []affectedRange           `json:"affected_ranges"`
 		AffectedPackages []advisoryAffectedPackage `json:"affected_packages"`
+		DroppedPackages  []string                  `json:"dropped_affected_packages"`
 	}
 	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
 		return nil
 	}
-	ecos := []string{purlEcosystem(adv.PURL)}
+	ecos := []string{packageEcosystem(adv.PURL, adv.AffectedRanges, codeEco)}
 	for _, p := range adv.AffectedPackages {
-		ecos = append(ecos, purlEcosystem(p.PURL))
+		ecos = append(ecos, packageEcosystem(p.PURL, p.AffectedRanges, codeEco))
+	}
+	for _, purl := range adv.DroppedPackages {
+		ecos = append(ecos, packageEcosystem(purl, nil, codeEco))
 	}
 	return ecos
+}
+
+// packageEcosystem is one affected package's ecosystem token: its PURL type, except that the Go
+// standard library/toolchain is "golang" however the record spells its PURL, and only when the
+// codebase is Go (the toolchain is in no other ecosystem's build).
+func packageEcosystem(purl string, rngs []affectedRange, codeEco string) string {
+	if codeEco == "golang" && toolchainSubject(purl, rngs) {
+		return "golang"
+	}
+	return purlEcosystem(purl)
 }
 
 // purlEcosystem extracts the type token from a package URL "pkg:<type>/<namespace>/<name>@<ver>".
@@ -2240,13 +2260,11 @@ func versionOutsideUpper(ver string, rng affectedRange) (outside bool, ok bool) 
 		return goToolchainVersionOutsideRange(ver, rng.UpperExclusive)
 	}
 	upper := rng.UpperExclusive
-	if !semver.IsValid(ver) || !semver.IsValid(upper) {
+	cmp, ok := compareGoModVersions(ver, upper)
+	if !ok {
 		return false, false
 	}
-	if semver.Prerelease(ver) != "" || semver.Prerelease(upper) != "" {
-		return false, false
-	}
-	return semver.Compare(ver, upper) >= 0, true
+	return cmp >= 0, true
 }
 
 // extractAffectedRange reads the advisory's full affected set (one or more disjoint ranges) from
@@ -2681,9 +2699,10 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	}
 	advModule, _ := extractAdvisoryModule(store, c.ID)
 	coordinate, manifestHas, manifestKnown := intakeManifestMembership(ctx, store, c.ID, buildDir, goWork, advModule)
+	codeEco := extractCodebaseEcosystem(store, c.ID)
 	if disq, reason := intakeDisqualify(
-		extractAdvisoryEcosystem(store, c.ID),
-		extractCodebaseEcosystem(store, c.ID),
+		extractAdvisoryEcosystem(store, c.ID, codeEco),
+		codeEco,
 		coordinate, manifestHas, manifestKnown,
 	); disq {
 		res := DisqualResult{Disqualified: true, Reason: reason}

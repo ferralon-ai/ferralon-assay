@@ -23,6 +23,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"slices"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -54,7 +56,10 @@ type reportHTMLView struct {
 	// together they gate the "not assessed" heading, which must read as a first-class result and
 	// not as a footnote: an advisory unassessed for honesty that renders nowhere is
 	// indistinguishable from one that was never in the corpus.
-	Limits            []reportHTMLLimit
+	Limits []reportHTMLLimit
+	// CoverageStatus opens the page when the scan is partial (cut short, a tool failed, nothing
+	// inventoried); empty for a scan that covered what it set out to.
+	CoverageStatus    string
 	WithheldCount     int
 	UndeterminedCount int
 	DataJSON          template.JS
@@ -105,6 +110,10 @@ type reportHTMLFinding struct {
 	// alongside the human sentence so a reader can match it to the coverage limit above and to
 	// the same code in the SARIF and JSON.
 	UndeterminedReason string
+	// NextAction is the one next step for the verdict; for an undetermined row it is the cause
+	// group's, named by Cause.
+	NextAction string
+	Cause      string
 	// Priority / intel fields — zero values mean "not present"; the template gates on HasPriority,
 	// and on HasEPSS / KEVListed for each value, which it shows with its own stamp.
 	HasPriority       bool
@@ -210,6 +219,8 @@ func ProjectReportHTML(r report.Report) ([]byte, error) {
 		view.WithheldCount += len(withheld)
 	}
 
+	view.CoverageStatus = reportHTMLCoverageStatus(r, view)
+
 	var buf bytes.Buffer
 	if err := reportHTMLTemplate.Execute(&buf, view); err != nil {
 		return nil, fmt.Errorf("projection/report_html: render: %w", err)
@@ -251,6 +262,11 @@ func reportHTMLFindingFrom(f report.AdvisoryFinding) reportHTMLFinding {
 		Annotations:        annotationDetails(f.Annotations),
 		Path:               f.Evidence.ReachablePath,
 		UndeterminedReason: f.UndeterminedReason,
+		NextAction:         report.VerdictNextAction(f.Verdict),
+	}
+	if f.Verdict == report.VerdictUndetermined {
+		cause := report.CauseOfReason(f.UndeterminedReason)
+		out.Cause, out.NextAction = cause.Title(), cause.NextAction()
 	}
 	if out.Detail == "" && (f.Verdict == report.VerdictDisqualified || f.Verdict == report.VerdictNotExploitable) {
 		out.Detail = basisGrounds(f.Evidence.Basis)
@@ -349,6 +365,28 @@ func reportHTMLLimitLabel(reason string) string {
 	}
 }
 
+// reportHTMLCoverageStatus is the plain-words coverage line that opens the page for a partial scan,
+// or "" for a scan that covered what it set out to.
+func reportHTMLCoverageStatus(r report.Report, v reportHTMLView) string {
+	cutOrFailed := slices.ContainsFunc(r.Partiality, func(n report.PartialityNote) bool {
+		return n.Reason == report.ReasonScanCutShort || n.Reason == plugin.PartialReasonToolFailure ||
+			strings.HasPrefix(n.Reason, plugin.PartialReasonToolFailure+":")
+	})
+	for i := range r.Advisories {
+		if r.Advisories[i].Verdict == report.VerdictUndetermined &&
+			report.CauseOfReason(r.Advisories[i].UndeterminedReason) == report.CauseScanIncomplete {
+			cutOrFailed = true
+		}
+	}
+	switch {
+	case cutOrFailed:
+		return "Coverage: partial — the scan did not complete. Advisories it did not finish are shown as exposure assessment incomplete, never as clear. Fix the scan and run it again."
+	case v.Total == 0 && len(r.SBOM.Packages) == 0 && len(r.Partiality) == 0:
+		return "Coverage: nothing was inventoried. The scan found no packages to assess, so no advisory was checked. This is not a clean result."
+	}
+	return ""
+}
+
 func reportHTMLGradeLabel(g report.ReachabilityGrade) string {
 	switch g {
 	case report.GradeAttackerTainted:
@@ -361,24 +399,25 @@ func reportHTMLGradeLabel(g report.ReachabilityGrade) string {
 }
 
 func reportHTMLLabel(v report.Verdict) (label, severity string) {
+	label = report.VerdictLabel(v)
 	switch v {
 	case report.VerdictMaliciousPresent:
 		// The one decisive OSS "affected": a known-malicious package is present. Its own badge
 		// class, the strongest in the palette — never the candidate colour.
-		return "Malicious package present", "affected"
+		return label, "affected"
 	case report.VerdictDisqualified:
-		return "Disqualified", "ok"
+		return label, "ok"
 	case report.VerdictNotExploitable:
-		return "Not exploitable", "info"
+		return label, "info"
 	case report.VerdictReachableCandidate:
-		return "Reachable candidate", "candidate"
+		return label, "candidate"
 	case report.VerdictUndetermined:
 		// Its own badge class, sharing the coverage-limits panel's colour. Deliberately not
 		// "info" (the not_exploitable class): a reader scanning badge colours must not read an
-		// unassessed advisory as a grounded-safe one.
-		return "Not assessed", "notassessed"
+		// incomplete assessment as a ruled-out one.
+		return label, "notassessed"
 	default:
-		return string(v), "info"
+		return label, "info"
 	}
 }
 

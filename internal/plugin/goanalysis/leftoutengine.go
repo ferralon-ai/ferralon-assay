@@ -787,21 +787,29 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 // a func- or interface-typed parameter (routed), a method name (method-name-in-R) or a dynamic
 // call (dynamic-call-and-R-address-taken). Each of those is tested against R directly.
 func (row *lofRow) counts(path string) (counts bool, reasons []string, failed bool) {
+	counts, reasons, failed, _ = row.countsWhy(path)
+	return counts, reasons, failed
+}
+
+// countsWhy is counts plus whether a file that counts does so on the engine's own finding (analyzed):
+// its declaration closure may reach the advisory's vulnerable symbols, and nothing failed closed on
+// the way. A file that counts because the engine could not read, load or bound it is not analyzed.
+func (row *lofRow) countsWhy(path string) (counts bool, reasons []string, failed, analyzed bool) {
 	e := row.e
 	if e.Fail != "" {
-		return true, nil, true
+		return true, nil, true, false
 	}
 	f, ok := e.file(path)
 	if !ok {
-		return true, nil, false
+		return true, nil, false, false
 	}
 	if f.Dropped || f.Excluded {
-		return false, nil, false
+		return false, nil, false, false
 	}
 	if !row.sLoaded {
 		linked := slices.ContainsFunc(f.Links, func(id int32) bool { return row.inPkg(e.Strs[id]) })
 		if !linked {
-			return len(f.LinkFC) > 0, nil, lofFailed(f.LinkFC)
+			return len(f.LinkFC) > 0, nil, lofFailed(f.LinkFC), false
 		}
 	}
 	fc := f.FC
@@ -809,7 +817,7 @@ func (row *lofRow) counts(path string) (counts bool, reasons []string, failed bo
 		fc = append(slices.Clone(fc), f.FCStd...)
 	}
 	if len(fc) > 0 || (row.stdlib && e.FailStd != "") {
-		return true, lofAnnotated(fc), lofFailed(fc)
+		return true, lofAnnotated(fc), lofFailed(fc), false
 	}
 	var r *lofReach
 	if f.Novel {
@@ -826,15 +834,16 @@ func (row *lofRow) counts(path string) (counts bool, reasons []string, failed bo
 	hit := func(ids []int32) bool { return slices.ContainsFunc(ids, func(id int32) bool { return r.syms[id] }) }
 	switch {
 	case hit(f.Funcs), hit(f.TypeMeth), hit(f.NewMeth):
-		return true, nil, false
+		return true, nil, false, true
 	case slices.ContainsFunc(f.Methods, func(id int32) bool { return r.names[id] }):
-		return true, nil, false
+		return true, nil, false, true
 	case (f.Dyn || f.Vars) && r.addr:
-		return true, nil, false
+		return true, nil, false, true
 	case (f.Reflect || f.Sink) && (r.addr || len(r.names) > 0):
-		return true, nil, false
+		return true, nil, false, true
 	}
-	return slices.ContainsFunc(f.Src, func(s [2]int32) bool { return row.inS(e.Strs[s[0]], e.Strs[s[1]]) }), nil, false
+	hits := slices.ContainsFunc(f.Src, func(s [2]int32) bool { return row.inS(e.Strs[s[0]], e.Strs[s[1]]) })
+	return hits, nil, false, hits
 }
 
 // lofAnnotations maps the fail-closed items the gate names to the reason a withheld refutation

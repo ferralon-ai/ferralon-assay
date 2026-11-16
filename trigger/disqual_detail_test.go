@@ -8,7 +8,6 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
-	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
 // seedDisqualReason records a disqualifying discovery artifact carrying an explicit reason
@@ -79,8 +78,8 @@ func TestDisqualDetail_NonAdjudicatedAxesClaimNoComparison(t *testing.T) {
 			// The structured half of the same claim. An absent Basis is how this Report
 			// states "no refutation grounds" (report.go:94); a reason code that adjudicated
 			// nothing must not carry grounds a consumer can act on.
-			if f.Evidence.Basis != verdict.BasisNone {
-				t.Errorf("basis = %q, want none: reason %q adjudicated nothing", f.Evidence.Basis, reason)
+			if string(f.Evidence.Basis) != reason {
+				t.Errorf("basis = %q, want %q: an intake disqualification names its reason", f.Evidence.Basis, reason)
 			}
 		})
 	}

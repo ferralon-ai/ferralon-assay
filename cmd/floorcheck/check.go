@@ -121,9 +121,9 @@ const (
 //
 //   - not_exploitable needs one of the four refutation bases (verdict.NonExploitableBasis).
 //   - disqualified on the version or symbol axis carries that axis's basis
-//     (version_not_in_affected_range, vulnerable_symbol_absent); one with no basis is an intake
-//     disqualification (advisory_ecosystem_mismatch, no_manifest_entry), where no comparison was made
-//     and there is nothing to check; any other basis cannot ground a disqualification.
+//     (version_not_in_affected_range, vulnerable_symbol_absent); one with an intake basis
+//     (advisory_ecosystem_mismatch, no_manifest_entry), or none in an older report, made no
+//     comparison and has nothing to check; any other basis cannot ground a disqualification.
 func groundsOf(f report.AdvisoryFinding) grounds {
 	switch f.Verdict {
 	case report.VerdictNotExploitable:
@@ -138,7 +138,9 @@ func groundsOf(f report.AdvisoryFinding) grounds {
 		switch f.Evidence.Basis {
 		case verdict.BasisVersionNotAffected, verdict.BasisSymbolAbsent:
 			return groundsPresent
-		case verdict.BasisNone:
+		case verdict.BasisNone, verdict.BasisAdvisoryEcosystemMismatch, verdict.BasisNoManifestEntry:
+			// No basis (an older report) or an intake basis: no comparison ran, so there is
+			// nothing to check.
 			return groundsUnverifiable
 		default:
 			return groundsMissing

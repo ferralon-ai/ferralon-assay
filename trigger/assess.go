@@ -986,13 +986,12 @@ func shortDigest(d string) string {
 	return algo + ":" + hex[:12]
 }
 
-// disqualBasis records the refutation grounds a disqualification stands on. Only the version and
-// symbol axes are grounded refutations: an adjudicated comparison ran against the subject and
-// cleared it. The intake codes (advisory ecosystem mismatch, no manifest entry) record that the
-// advisory is not adjudicable against this subject at all — no comparison ran, so there are no
-// grounds to state, and the honest Basis is none. That is already how this Report says it:
-// report.go:94 requires an empty Basis wherever there are no refutation grounds to state, and
-// Validate enforces it for the candidate and undetermined verdicts.
+// disqualBasis records the grounds a disqualification stands on. The version and symbol axes are
+// grounded refutations: an adjudicated comparison ran against the subject and cleared it. The
+// intake codes (advisory ecosystem mismatch, no manifest entry) record that the advisory is not
+// adjudicable against this subject at all; they carry their own basis, so a reader sees why the
+// row is disqualified, but no comparison ran and the basis grounds no refutation (Validate keeps
+// it off every other verdict, and floorcheck counts it as unverifiable).
 //
 // An unrecognized reason code lands on none for the same reason, and a stronger one: an axis this
 // function cannot name has no standing to claim grounds it cannot describe.
@@ -1002,6 +1001,10 @@ func disqualBasis(reason string) verdict.NonExploitableBasis {
 		return verdict.BasisVersionNotAffected
 	case pipeline.ReasonSymbolAbsent:
 		return verdict.BasisSymbolAbsent
+	case pipeline.ReasonAdvisoryEcosystemMismatch:
+		return verdict.BasisAdvisoryEcosystemMismatch
+	case pipeline.ReasonNoManifestEntry:
+		return verdict.BasisNoManifestEntry
 	default:
 		return verdict.BasisNone
 	}

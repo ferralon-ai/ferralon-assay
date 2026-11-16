@@ -202,7 +202,7 @@ type ListEntry struct {
 func runList(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	root := flags.String("fixtures-root", "floor/fixtures", "the fixtures directory")
+	root := flags.String("fixtures-root", "cmd/floorcheck/fixtures", "the fixtures directory")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -235,7 +235,7 @@ func runList(args []string, stdout, stderr io.Writer) int {
 func runValidate(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("validate", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	root := flags.String("fixtures-root", "floor/fixtures", "the fixtures directory")
+	root := flags.String("fixtures-root", "cmd/floorcheck/fixtures", "the fixtures directory")
 	floorRoot := flags.String("floor-root", "", "the floor directory shared intel resolves under (default: the parent of -fixtures-root)")
 	names, err := parseInterspersed(flags, args)
 	if err != nil {
@@ -352,7 +352,7 @@ func runFixtures(ctx context.Context, args []string, sr scanRunner, stdout, stde
 	flags.SetOutput(stderr)
 	var o runOptions
 	flags.StringVar(&o.out, "out", "", "the observation directory to write (required)")
-	flags.StringVar(&o.fixtureRoot, "fixtures-root", "floor/fixtures", "the fixtures directory")
+	flags.StringVar(&o.fixtureRoot, "fixtures-root", "cmd/floorcheck/fixtures", "the fixtures directory")
 	flags.StringVar(&o.floorRoot, "floor-root", "", "the floor directory shared intel resolves under (default: the parent of -fixtures-root)")
 	flags.StringVar(&o.scanner, "scanner", "ferralon-assay", "the scanner binary; its directory goes first on PATH for the analyzers")
 	flags.StringVar(&o.prior, "prior", "", "an earlier observation directory the unexpected findings are diffed against")

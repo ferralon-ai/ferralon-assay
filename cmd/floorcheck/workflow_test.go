@@ -98,8 +98,8 @@ func TestFloorWorkflow(t *testing.T) {
 	}
 	for _, tc := range []struct{ job, want string }{
 		{"plan", "SELECTED: ${{ inputs.fixtures }}"},
-		{"plan", `"$fc" validate --fixtures-root floor/fixtures "${names[@]}"`},
-		{"plan", `"$fc" list --fixtures-root floor/fixtures`},
+		{"plan", `"$fc" validate --fixtures-root cmd/floorcheck/fixtures "${names[@]}"`},
+		{"plan", `"$fc" list --fixtures-root cmd/floorcheck/fixtures`},
 		{"plan", "actions/upload-artifact@v4"},
 		{"fixture", `"$bin/floorcheck" run "$FIXTURE"`},
 		{"fixture", "FIXTURE: ${{ matrix.name }}"},

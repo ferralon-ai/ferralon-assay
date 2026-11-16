@@ -22,7 +22,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
-// Fixture formats. A fixture is a directory floor/fixtures/<owner>__<repo>@<sha12>/ holding a
+// Fixture formats. A fixture is a directory cmd/floorcheck/fixtures/<owner>__<repo>@<sha12>/ holding a
 // scenario.yaml (the pinned inputs) and an expect.yaml (the adjudicated truth for a few findings).
 const (
 	ScenarioSchema = "ferralon.floor-scenario.v1"

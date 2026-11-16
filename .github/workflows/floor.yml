@@ -1,6 +1,6 @@
 name: Floor run
 
-# The floor is a diagnostic test suite: every fixture under floor/fixtures/ pins a repository at a full
+# The floor is a diagnostic test suite: every fixture under cmd/floorcheck/fixtures/ pins a repository at a full
 # commit, its toolchain, and the advisories it is scanned against (the ones adjudicated for it, each
 # pinned by sha256 in the fixture's intel/). `floorcheck run` scans each fixture with the scanner built
 # from this commit and judges the report against the fixture's expect.yaml. Exit 1 means an adjudicated
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       fixtures:
-        description: "Fixture directory names under floor/fixtures/, space-separated. Empty runs every fixture."
+        description: "Fixture directory names under cmd/floorcheck/fixtures/, space-separated. Empty runs every fixture."
         required: false
         default: ""
       scan-timeout:
@@ -73,8 +73,8 @@ jobs:
           fi
           fc="$RUNNER_TEMP/floor-bin/floorcheck"
           read -r -a names <<< "$SELECTED"
-          "$fc" validate --fixtures-root floor/fixtures "${names[@]}"
-          all="$("$fc" list --fixtures-root floor/fixtures)"
+          "$fc" validate --fixtures-root cmd/floorcheck/fixtures "${names[@]}"
+          all="$("$fc" list --fixtures-root cmd/floorcheck/fixtures)"
           if [ "${#names[@]}" -eq 0 ]; then
             matrix="$all"
           else
@@ -146,7 +146,7 @@ jobs:
           bin="$RUNNER_TEMP/floor-bin"
           chmod +x "$bin"/*
           rc=0
-          "$bin/floorcheck" run "$FIXTURE" --out "$RUNNER_TEMP/floor-obs" --fixtures-root floor/fixtures \
+          "$bin/floorcheck" run "$FIXTURE" --out "$RUNNER_TEMP/floor-obs" --fixtures-root cmd/floorcheck/fixtures \
             --scanner "$bin/ferralon-assay" --work "$RUNNER_TEMP/floor-work" --scan-timeout "$SCAN_TIMEOUT" || rc=$?
           echo "exit=$rc" >> "$GITHUB_OUTPUT"
           mkdir -p "$RUNNER_TEMP/floor-obs"

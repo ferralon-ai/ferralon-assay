@@ -35,6 +35,17 @@ func declaresExcluded(reasons []string) bool {
 	})
 }
 
+// leftOutDeclared reports whether res declares a limit for files the build left out, whether it
+// withheld the refutation or kept it for the scanned platform (excluded_files:build_constraint).
+func leftOutDeclared(res plugin.ReachabilityResult) bool {
+	return declaresExcluded(res.Partiality.Reasons)
+}
+
+// leftOutKept reports whether res kept its refutation under the build-constraint limit.
+func leftOutKept(res plugin.ReachabilityResult) bool {
+	return res.Refutation != nil && slices.Contains(res.Partiality.Reasons, plugin.PartialReasonExcludedFilesBuildConstraint)
+}
+
 // lofRun loads dir as the build, under the load's own toolchain unless unknown is set, and puts a
 // refutation of module, whose vulnerable symbols are symbols, through withholdForLeftOutFiles.
 // prepare, when set, runs between the load and the gate.
@@ -73,9 +84,9 @@ func lofRunCtx(t *testing.T, base context.Context, dir, module string, symbols m
 	// One scan's run cache, as the host gives it: the gate and the engine read below share one build.
 	ctx := WithRunCacheDir(base, t.TempDir())
 	res := withholdForLeftOutFiles(ctx, refuted, scanned, load.Packages, release, dir, env)
-	withheld := res.Refutation == nil
-	if declared := declaresExcluded(res.Partiality.Reasons); declared != withheld {
-		t.Errorf("excluded_files declared = %v, withheld = %v (partiality %+v)", declared, withheld, res.Partiality)
+	withheld := leftOutDeclared(res)
+	if (res.Refutation == nil) != (withheld && !leftOutKept(res)) {
+		t.Errorf("refutation = %+v with excluded_files declared = %v (partiality %+v)", res.Refutation, withheld, res.Partiality)
 	}
 	e := loadLofEngine(ctx, load.Packages, release, dir, env)
 	root, err := filepath.EvalSymlinks(dir)

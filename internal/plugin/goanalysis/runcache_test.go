@@ -181,7 +181,7 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 				if err != nil {
 					t.Fatalf("advisory %d: %v", i, err)
 				}
-				if withheld := res.Refutation == nil; withheld != tc.withheld {
+				if withheld := leftOutDeclared(res); withheld != tc.withheld {
 					t.Fatalf("advisory %d: withheld = %v, want %v (partiality %+v)", i, withheld, tc.withheld, res.Partiality)
 				}
 				if declared := declaresExcluded(res.Partiality.Reasons); declared != tc.withheld {
@@ -229,7 +229,7 @@ func TestReachabilityCarriesFloorToLoad(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if withheld := res.Refutation == nil; withheld != tc.withheld {
+			if withheld := leftOutDeclared(res); withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v (partiality %+v)", withheld, tc.withheld, res.Partiality)
 			}
 		})

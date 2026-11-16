@@ -511,8 +511,11 @@ func runOne(ctx context.Context, o runOptions, name string, sr scanRunner) (Fixt
 				fmt.Fprintf(log, "floorcheck: warming the module cache: %v\n", err)
 			}
 			// The scan reads what the warm-up wrote; the checkout goes back to its commit after it.
+			// A cancelled run still restores, so the next run on this --work can reuse the checkout.
 			defer func() {
-				if restored, err := sr.restoreCheckout(ctx, target); err != nil {
+				rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+				defer cancel()
+				if restored, err := sr.restoreCheckout(rctx, target); err != nil {
 					fmt.Fprintf(log, "floorcheck: restoring the checkout: %v\n", err)
 				} else if len(restored) > 0 {
 					fmt.Fprintf(log, "floorcheck: the module warm-up changed %s; restored\n", strings.Join(restored, ", "))

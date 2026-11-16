@@ -111,6 +111,10 @@ func TestFloorWorkflow(t *testing.T) {
 		{"fixture", "actions/upload-artifact@v4\nalways()"},
 		{"fixture", "sparse-checkout: cmd/floorcheck/fixtures"},
 		{"fixture", "\nalways()\nset -uo pipefail\nmkdir -p \"$RUNNER_TEMP/floor-obs\""},
+		{"fixture", "RUN_EXIT: ${{ steps.run.outputs.exit }}"},
+		{"fixture", `echo "work_kb=$(du -sk "$RUNNER_TEMP/floor-work"`},
+		{"fixture", "df -k --output=used,avail /"},
+		{"fixture", `} > "$RUNNER_TEMP/floor-obs/footprint.txt"`},
 		{"summary", "pattern: floor-obs-*"},
 		{"summary", "GITHUB_STEP_SUMMARY"},
 	} {

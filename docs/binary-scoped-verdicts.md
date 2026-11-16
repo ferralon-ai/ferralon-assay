@@ -22,7 +22,9 @@ something to rule out (a refutation withheld, or a path that does not begin in a
 
 A shipped `main` package is a `main` package with compiled files, in a main module of the build, with
 no `example`, `examples`, `test`, `tests` or `testdata` element below the module path. A `main` under
-`cmd/` counts. The scope is **all** the shipped mains together: govulncheck reports one path per
+`cmd/` counts, and so does a generator or release tool the build compiles (traefik has four besides
+`cmd/traefik`): the scan cannot tell which mains are shipped, and including one only makes the claim
+harder to earn. The scope is **all** the shipped mains together: govulncheck reports one path per
 symbol, so which of several binaries reach an advisory cannot be told from one run, and the claim is
 made only when none of them does.
 
@@ -88,18 +90,20 @@ shows it beside the row's own label, and the SARIF message ends with it.
 The finding keeps its own statement, for the module's package, with the library view's status. For
 each scoped verdict, a second statement follows it:
 
-- `products`: one per binary, `@id` the **binary**: `pkg:golang/<module>@<scanned commit>#<target>`, for
-  example `pkg:golang/github.com/traefik/traefik/v3@020ab5f3…#cmd/traefik`. The vulnerable dependency's
-  purl is the product's `subcomponents[].@id`.
+- `products`: one per binary, `@id` the **binary**: `pkg:golang/<module>@<scanned commit>?binary=<target>`,
+  for example `pkg:golang/github.com/traefik/traefik/v3@020ab5f3…?binary=cmd/traefik`. The vulnerable
+  dependency's purl is the product's `subcomponents[].@id`.
 - `status`: `not_affected`, `justification`: `vulnerable_code_not_in_execute_path`, and an
   `impact_statement` with the sentence above.
 
-**Why this identifier.** A purl's *subpath* is the purl's own way to name a part of a package, so the
-binary is named by the one thing a Go build names it by, where its `main` package is built. The
-version is the scanned commit, because the scan knows no release of the repository. A `main` at the module
-root has no subpath, and the purl is the module's own. An OpenVEX consumer matches a statement on the
-product it ships, so the module-level statement, whose product is the dependency, no longer has to carry
-a claim only some callers can rely on.
+**Why this identifier.** The product has to be the binary, and a purl names a package, so the binary is
+the module's purl plus a `binary` qualifier carrying the directory its `main` package is built from,
+the one name a Go build gives it. The qualifier is on every binary, a `main` at the module root
+included (`?binary=.`), so no binary's identifier is the module's own purl: that one names the library
+view, and a scoped statement must never be read as a claim about it. The version is the scanned commit,
+because the scan knows no release of the repository. An OpenVEX consumer matches a statement on the
+product it ships, so it finds `not_affected` for the binary it runs and the library view's status for the
+module.
 
 ## SARIF
 

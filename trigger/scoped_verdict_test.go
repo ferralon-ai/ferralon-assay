@@ -72,7 +72,7 @@ func TestFinding_ScopedVerdict(t *testing.T) {
 			t.Errorf("%s: library statement = %+v, want the module's under_investigation", tc.name, lib)
 		}
 		if bin.Status != projection.VEXStatusNotAffected || bin.Justification != projection.VEXJustNotInExecutePath ||
-			bin.Products[0].ID != "pkg:golang/example.com/m@abc123#cmd/tool" ||
+			bin.Products[0].ID != "pkg:golang/example.com/m@abc123?binary=cmd/tool" ||
 			bin.Products[0].Subcomponents[0].ID != "pkg:golang/golang.org/x/net@v0.1.0" ||
 			!strings.Contains(bin.ImpactStatement, "Not reachable from the shipped binary `cmd/tool`; still possible when this module is imported as a library.") {
 			t.Errorf("%s: binary statement = %+v", tc.name, bin)

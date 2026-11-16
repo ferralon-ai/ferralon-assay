@@ -133,23 +133,20 @@ func scopedVEXStatement(r report.Report, f report.AdvisoryFinding, sv report.Sco
 }
 
 // binaryProductID is the OpenVEX product identifier of a shipped binary: the purl of the module it is
-// built from, at the scanned commit when the report has one, with the main package's directory as the
-// purl subpath ("pkg:golang/github.com/traefik/traefik/v3@<commit>#cmd/traefik"). The subpath is what
-// a purl provides for a part of a package, and names the binary by where it is built, the one name a
-// Go build gives it. A main package at the module root has no subpath: the purl is the module's own.
-// A scope that records no module falls back to the scanned repository's coordinates.
+// built from, at the scanned commit when the report has one, with a `binary` qualifier naming the main
+// package's directory ("pkg:golang/github.com/traefik/traefik/v3@<commit>?binary=cmd/traefik"). The
+// qualifier is on every binary, a main at the module root included ("?binary=."), so no binary's
+// identifier is ever the module's own purl, which names the library view. A scope that records no
+// module falls back to the scanned repository's coordinates.
 func binaryProductID(module, target string, subj report.Subject) string {
 	if module == "" {
-		return reportProductID(nil, subj) + "#" + target
+		return reportProductID(nil, subj) + "?binary=" + target
 	}
 	id := "pkg:golang/" + module
 	if subj.ResolvedCommit != "" {
 		id += "@" + subj.ResolvedCommit
 	}
-	if target != "." {
-		id += "#" + target
-	}
-	return id
+	return id + "?binary=" + target
 }
 
 // MarshalReportVEX projects and JSON-encodes (indented) in one call.

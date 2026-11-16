@@ -116,7 +116,27 @@ const (
 	// which never runs a proof engine at all); grouped under the same field because both
 	// are grounded refutations, never proofs.
 	BasisStaticRefutation NonExploitableBasis = "static_refutation"
+	// BasisAdvisoryEcosystemMismatch: intake found the advisory targets a different ecosystem
+	// than the codebase. It is the basis of a report `disqualified` finding ONLY: no version or
+	// symbol comparison ran, so it grounds no refutation and is never valid on a PoE or on a
+	// not_exploitable finding.
+	BasisAdvisoryEcosystemMismatch NonExploitableBasis = "advisory_ecosystem_mismatch"
+	// BasisNoManifestEntry: intake found the advisory's package absent from the dependency
+	// manifest or build graph. Like BasisAdvisoryEcosystemMismatch it records that nothing was
+	// adjudicated, and is valid only on a report `disqualified` finding.
+	BasisNoManifestEntry NonExploitableBasis = "no_manifest_entry"
 )
+
+// IsIntake reports whether b is one of the two intake-disqualification bases, which say the
+// advisory is not adjudicable against this subject rather than grounding a refutation.
+func (b NonExploitableBasis) IsIntake() bool {
+	switch b {
+	case BasisAdvisoryEcosystemMismatch, BasisNoManifestEntry:
+		return true
+	default:
+		return false
+	}
+}
 
 // CompletionStatus records why analysis ended, orthogonal to the verdict (RFC 0003).
 type CompletionStatus string
@@ -350,6 +370,9 @@ func (p PoE) Validate() error {
 	// be the inverted inv.5 violation (a disqualification masquerading as a proof of a working
 	// patch — exactly the re-scan-only basis RFC 0010 rejects), and on an exploitable verdict
 	// it is incoherent. Reject both structurally.
+	if p.NonExploitableBasis.IsIntake() {
+		return fmt.Errorf("verdict: non_exploitable_basis %q is an intake-disqualification basis: it records that nothing was adjudicated, so it grounds no verdict", p.NonExploitableBasis)
+	}
 	if p.NonExploitableBasis != BasisNone {
 		if p.Strength != StrengthReasoned || p.Direction != DirectionNotExploitable {
 			return fmt.Errorf("verdict: non_exploitable_basis %q is only valid on a reasoned not_exploitable verdict (inv.5: a grounded refutation is reasoned, never proven)", p.NonExploitableBasis)

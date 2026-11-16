@@ -24,7 +24,7 @@ schema, `Validate`) and fails the repository for any of these reasons:
 | Kind | Meaning |
 |---|---|
 | `ungrounded_not_exploitable` | A `not_exploitable` finding whose `evidence.basis` is empty or isn't one of `version_not_in_affected_range`, `vulnerable_symbol_absent`, `vulnerable_symbol_unreachable` or `static_refutation`. |
-| `ungrounded_disqualified` | A `disqualified` finding whose basis is something other than a version or symbol basis. |
+| `ungrounded_disqualified` | A `disqualified` finding whose basis is something other than a version, symbol or intake basis. |
 | `scan_truncated` | The scan hit its time limit (a `scan_cut_short` limit on the report), so some advisories weren't assessed. |
 | `ledger_mismatch` | A showcase target's pinned scan differs from its ledger (`floor/expect/<name>.yaml`) by a missing, extra or changed row, by a reviewed row whose `bound_to` inputs are not the scan's, or the ledger's header is not the pinned scope, or the ledger breaks its own rules (a featured row that is not fully reviewed). See [The showcase lane](#the-showcase-lane). |
 | `incomplete_scan` | A showcase scan that did not see the whole build: see [Incomplete scans](#incomplete-scans). |
@@ -40,8 +40,9 @@ grounds. `evidence.detail` is human-readable text, not grounds.
 
 **`disqualified` findings.** On the version or symbol axis, the report carries that axis's basis
 (`trigger/assess.go`, `disqualBasis`), and floorcheck checks it. An intake disqualification
-(`advisory_ecosystem_mismatch`, `no_manifest_entry`) carries no basis, because no comparison was
-made, so there is nothing to check. These findings are counted as unverifiable in the summary but
+carries its own basis, `advisory_ecosystem_mismatch` or `no_manifest_entry`, which says why the
+row is disqualified. No comparison was made, so there is nothing to check. (Reports written before
+this change carry no basis on these rows, which floorcheck treats the same way.) These findings are counted as unverifiable in the summary but
 don't fail the repository.
 
 `undetermined` never fails a repository. It is the honest result when nothing was established, and

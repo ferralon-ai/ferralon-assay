@@ -1796,8 +1796,8 @@ func buildAffectedRanges(ranges []Range, upperExclusive, scheme string) []affect
 // tokens are compared in one namespace (see languageEcosystem / purlEcosystem); manifestKnown is
 // false whenever the manifest could not be read, so absence is only "provable" against a manifest
 // actually parsed.
-func intakeDisqualify(advEco, codeEco, coordinate string, manifestHasCoord, manifestKnown bool) (bool, string) {
-	if advEco != "" && codeEco != "" && advEco != codeEco {
+func intakeDisqualify(advEcos []string, codeEco, coordinate string, manifestHasCoord, manifestKnown bool) (bool, string) {
+	if ecosystemsMismatch(advEcos, codeEco) {
 		return true, ReasonAdvisoryEcosystemMismatch
 	}
 	if coordinate != "" && manifestKnown && !manifestHasCoord {
@@ -1806,27 +1806,43 @@ func intakeDisqualify(advEco, codeEco, coordinate string, manifestHasCoord, mani
 	return false, ReasonInsufficient
 }
 
-// extractAdvisoryEcosystem reads the normalized advisory and returns the ecosystem token
-// (PURL-type namespace: "golang" | "maven" | "npm" | …) the intake ecosystem guard compares against
-// codeEco, or "" when there is no parseable PURL — the axis then fails open (inv.5).
+// ecosystemsMismatch reports a PROVABLE ecosystem mismatch: the codebase's ecosystem is known, the
+// advisory names at least one ecosystem, every one is known, and none is the codebase's. An advisory
+// is judged by every package it affects, so one entry in the codebase's ecosystem (a Rust primary
+// with a Go stdlib entry, against a Go codebase) is a match, and one unparseable entry is
+// uncertainty, which fails open (inv.5).
+func ecosystemsMismatch(advEcos []string, codeEco string) bool {
+	if codeEco == "" || len(advEcos) == 0 {
+		return false
+	}
+	for _, e := range advEcos {
+		if e == "" || e == codeEco {
+			return false
+		}
+	}
+	return true
+}
+
+// extractAdvisoryEcosystem reads the normalized advisory's package ecosystems (PURL-type namespace:
+// "golang" | "maven" | "npm" | …) for the intake ecosystem guard to compare against codeEco: the
+// selected package's alone when one was selected, else the scalar primary's, every
+// affected_packages[] entry's and every dropped element's, with "" for a PURL that does not parse —
+// the intake ecosystem axis then fails open (inv.5).
 //
-// The guard may only refute when the advisory provably names NOTHING in the codebase's ecosystem.
-// A package the advisory names counts as being in codeEco when its PURL type says so, or when it is
-// the Go standard library/toolchain (toolchainSubject): the toolchain is part of every Go build, so
-// a stdlib advisory is never "another ecosystem" to a Go codebase whatever type token its record's
-// PURL spells. With no selected package the scalar primary stays the token the guard compares, but
-// any other affected package (or dropped element) in codeEco makes it return codeEco — one
-// ecosystem of a multi-ecosystem record is enough to keep the advisory adjudicable.
-func extractAdvisoryEcosystem(store artifact.Store, caseID, codeEco string) string {
+// A package counts as being in codeEco when its PURL type says so, or when it is the Go standard
+// library/toolchain (packageEcosystem): the toolchain is part of every Go build, so a stdlib
+// advisory is never "another ecosystem" to a Go codebase whatever type token its record's PURL
+// spells.
+func extractAdvisoryEcosystem(store artifact.Store, caseID, codeEco string) []string {
 	// v3: the intake ecosystem guard must compare the SELECTED package's ecosystem, so a target on a
 	// secondary package is judged against the package it actually depends on. No selection (or a
 	// selected element with no PURL) → scalar PURL (unchanged).
 	if sel, ok := extractSelectedPackage(store, caseID); ok && sel.PURL != "" {
-		return packageEcosystem(sel.PURL, sel.AffectedRanges, codeEco)
+		return []string{packageEcosystem(sel.PURL, sel.AffectedRanges, codeEco)}
 	}
 	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
 	if err != nil || len(arts) == 0 {
-		return ""
+		return nil
 	}
 	var adv struct {
 		PURL             string                    `json:"purl"`
@@ -1835,23 +1851,16 @@ func extractAdvisoryEcosystem(store artifact.Store, caseID, codeEco string) stri
 		DroppedPackages  []string                  `json:"dropped_affected_packages"`
 	}
 	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
-		return ""
+		return nil
 	}
-	primary := packageEcosystem(adv.PURL, adv.AffectedRanges, codeEco)
-	if codeEco == "" || primary == codeEco {
-		return primary
-	}
+	ecos := []string{packageEcosystem(adv.PURL, adv.AffectedRanges, codeEco)}
 	for _, p := range adv.AffectedPackages {
-		if packageEcosystem(p.PURL, p.AffectedRanges, codeEco) == codeEco {
-			return codeEco
-		}
+		ecos = append(ecos, packageEcosystem(p.PURL, p.AffectedRanges, codeEco))
 	}
 	for _, purl := range adv.DroppedPackages {
-		if purlEcosystem(purl) == codeEco {
-			return codeEco
-		}
+		ecos = append(ecos, packageEcosystem(purl, nil, codeEco))
 	}
-	return primary
+	return ecos
 }
 
 // packageEcosystem is one affected package's ecosystem token: its PURL type, except that the Go

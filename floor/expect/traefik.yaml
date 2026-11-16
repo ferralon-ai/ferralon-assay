@@ -20,6 +20,7 @@ header:
     version: v1.9.0
     db_timestamp: "2026-11-11T02:51:11Z"
     evidence: evidence/traefik.govulncheck.json
+  main_module: github.com/traefik/traefik/v3
 rows:
   - advisory:
       - BIT-apisix-2023-44487
@@ -68,6 +69,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - github.com/andybalholm/brotli.decodeError.Error
+      hops: 2
+      path_sha: 348fd72c0f52b950
+      status: unreviewed
   - advisory:
       - BIT-consul-2021-3121
       - BIT-protobuf-2021-3121
@@ -972,6 +980,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/plugins.Client.Check
+        - net/url.URL.Parse
+      hops: 2
+      path_sha: 7990ac4570c446fd
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-58183
       - CVE-2025-58183
@@ -995,6 +1010,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/provider/acme.Account.GetPrivateKey
+        - crypto/x509.ParsePKCS1PrivateKey
+        - encoding/asn1.Unmarshal
+      hops: 3
+      path_sha: eceb8f748a7e887c
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-58186
       - CVE-2025-58186
@@ -1006,6 +1029,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/cmd/healthcheck.Do
+        - net/http.Client.Head
+      hops: 2
+      path_sha: f14755e41f36fcd1
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-58187
       - CVE-2025-58187
@@ -1017,6 +1047,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/provider/acme.Account.GetPrivateKey
+        - crypto/x509.ParsePKCS1PrivateKey
+      hops: 2
+      path_sha: 4366d94c3d1de851
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-58188
       - CVE-2025-58188
@@ -1028,6 +1065,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/tls.VerifyPeerCertificate
+        - github.com/traefik/traefik/v3/pkg/tls.verifyChain
+        - crypto/x509.Certificate.Verify
+      hops: 3
+      path_sha: 243da350e5dcdd26
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-58189
       - CVE-2025-58189
@@ -1039,6 +1084,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/proxy/fast.writeDetector.Write
+        - crypto/tls.Conn.Write
+      hops: 2
+      path_sha: e3901134c6692686
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61723
       - CVE-2025-61723
@@ -1050,6 +1102,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/tls.Certificate.GetCertificateFromBytes
+        - crypto/tls.X509KeyPair
+        - encoding/pem.Decode
+      hops: 3
+      path_sha: de31af68b98728a9
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61724
       - CVE-2025-61724
@@ -1085,6 +1145,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/tracing.Tracer.CaptureServerRequest
+        - github.com/traefik/traefik/v3/pkg/tracing.Tracer.safeURL
+        - net/url.URL.Query
+      hops: 3
+      path_sha: 1b9dada2397c3536
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61727
       - CVE-2025-61727
@@ -1096,6 +1164,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/tls.VerifyPeerCertificate
+        - github.com/traefik/traefik/v3/pkg/tls.verifyChain
+        - crypto/x509.Certificate.Verify
+      hops: 3
+      path_sha: 243da350e5dcdd26
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61728
       - CVE-2025-61728
@@ -1119,6 +1195,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/tls.VerifyPeerCertificate
+        - github.com/traefik/traefik/v3/pkg/tls.verifyChain
+        - crypto/x509.Certificate.Verify
+      hops: 3
+      path_sha: 243da350e5dcdd26
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61730
       - CVE-2025-61730
@@ -1130,6 +1214,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/proxy/fast.writeDetector.Write
+        - crypto/tls.Conn.Write
+      hops: 2
+      path_sha: e3901134c6692686
+      status: unreviewed
   - advisory:
       - BIT-golang-2025-61731
       - CVE-2025-61731
@@ -1177,6 +1268,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/proxy/fast.writeDetector.Write
+        - crypto/tls.Conn.Write
+      hops: 2
+      path_sha: e3901134c6692686
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-111943
       - CVE-2026-111943
@@ -1191,6 +1289,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/tls.VerifyPeerCertificate
+        - github.com/traefik/traefik/v3/pkg/tls.verifyChain
+        - crypto/x509.Certificate.Verify
+      hops: 3
+      path_sha: 243da350e5dcdd26
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-25679
       - CVE-2026-25679
@@ -1202,6 +1308,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/plugins.Client.Check
+        - net/url.URL.Parse
+      hops: 2
+      path_sha: 7990ac4570c446fd
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-27137
       - CVE-2026-27137
@@ -1237,6 +1350,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/provider/file.Provider.Provide
+        - os.ReadDir
+      hops: 2
+      path_sha: f058035b8b116c88
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-27140
       - CVE-2026-27140
@@ -1260,6 +1380,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.Balancer.ServeHTTP
+        - net/http.ServeMux.ServeHTTP
+        - net/rpc.debugHTTP.ServeHTTP
+        - html/template.Template.Execute
+      hops: 4
+      path_sha: 828fe4719f153127
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-27143
       - CVE-2026-27143
@@ -1295,6 +1424,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/tls.VerifyPeerCertificate
+        - github.com/traefik/traefik/v3/pkg/tls.verifyChain
+        - crypto/x509.Certificate.Verify
+      hops: 3
+      path_sha: 243da350e5dcdd26
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-32282
       - CVE-2026-32282
@@ -1317,6 +1454,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/proxy/fast.writeDetector.Write
+        - crypto/tls.Conn.Write
+      hops: 2
+      path_sha: e3901134c6692686
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-32288
       - CVE-2026-32288
@@ -1340,6 +1484,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - html/template.Error.Error
+      hops: 2
+      path_sha: e045e495feea32c2
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-33810
       - CVE-2026-33810
@@ -1375,6 +1526,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/proxy/httputil.wrapper.RoundTrip
+        - golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip
+      hops: 2
+      path_sha: f61a845aa46adbe6
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-33818
       - CVE-2026-33818
@@ -1386,6 +1544,14 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/provider/acme.Account.GetPrivateKey
+        - crypto/x509.ParsePKCS1PrivateKey
+        - encoding/asn1.Unmarshal
+      hops: 3
+      path_sha: eceb8f748a7e887c
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-39817
       - CVE-2026-39817
@@ -1445,6 +1611,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.Balancer.ServeHTTP
+        - net/http.ServeMux.ServeHTTP
+        - net/rpc.debugHTTP.ServeHTTP
+        - html/template.Template.Execute
+      hops: 4
+      path_sha: 828fe4719f153127
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-39825
       - CVE-2026-39825
@@ -1456,6 +1631,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.Balancer.ServeHTTP
+        - net/http/httputil.ReverseProxy.ServeHTTP
+      hops: 2
+      path_sha: b3cd003b0fcfadf0
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-39826
       - CVE-2026-39826
@@ -1467,6 +1649,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.Balancer.ServeHTTP
+        - net/http.ServeMux.ServeHTTP
+        - net/rpc.debugHTTP.ServeHTTP
+        - html/template.Template.Execute
+      hops: 4
+      path_sha: 828fe4719f153127
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-39836
       - CVE-2026-39836
@@ -1477,6 +1668,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/udp.Listen
+        - net.ListenConfig.ListenPacket
+      hops: 2
+      path_sha: 19b87da6f4cae206
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-42499
       - CVE-2026-42499
@@ -1511,6 +1709,18 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/provider/kubernetes/crd/generated/clientset/versioned/typed/traefikio/v1alpha1.serversTransportTCPs.Watch
+        - k8s.io/client-go/rest.Request.Watch
+        - k8s.io/client-go/rest.Request.newStreamWatcher
+        - k8s.io/client-go/rest.handleWarnings
+        - k8s.io/apimachinery/pkg/util/net.ParseWarningHeaders
+        - k8s.io/apimachinery/pkg/util/net.ParseWarningHeader
+        - mime.WordDecoder.DecodeHeader
+      hops: 7
+      path_sha: a9e3cc54ea803425
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-42505
       - CVE-2026-42505
@@ -1521,6 +1731,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/proxy/fast.writeDetector.Write
+        - crypto/tls.Conn.Write
+      hops: 2
+      path_sha: e3901134c6692686
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-42507
       - CVE-2026-42507
@@ -1531,6 +1748,16 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/middlewares/capture.readCounter.Read
+        - net/http.body.Read
+        - net/http.body.readLocked
+        - net/http.body.readTrailer
+        - net/textproto.Reader.ReadMIMEHeader
+      hops: 5
+      path_sha: b7d717da851fea40
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-46600
       - CVE-2026-46600
@@ -1555,6 +1782,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/server.NewTCPEntryPoint
+        - github.com/traefik/traefik/v3/pkg/server.createHTTPServer
+        - github.com/traefik/traefik/v3/pkg/server.createHTTPServer$5
+        - net/http.Server.Serve
+      hops: 4
+      path_sha: faad86dfa00284bb
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-56857
       - CVE-2026-56857
@@ -1578,6 +1814,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.Balancer.ServeHTTP
+        - net/http.ServeMux.ServeHTTP
+        - net/rpc.debugHTTP.ServeHTTP
+        - html/template.Template.Execute
+      hops: 4
+      path_sha: 828fe4719f153127
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-56859
       - CVE-2026-56859
@@ -1589,6 +1834,21 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/provider/acme.Provider.Provide
+        - github.com/traefik/traefik/v3/pkg/provider/acme.Provider.renewCertificates
+        - github.com/go-acme/lego/v4/certificate.Certifier.RenewWithOptions
+        - github.com/go-acme/lego/v4/certificate.Certifier.ObtainForCSR
+        - github.com/go-acme/lego/v4/certificate.Certifier.getForCSR
+        - github.com/go-acme/lego/v4/platform/wait.For
+        - github.com/go-acme/lego/v4/providers/dns/nifcloud.changeRecord$1
+        - github.com/go-acme/lego/v4/providers/dns/nifcloud/internal.Client.GetChange
+        - github.com/go-acme/lego/v4/providers/dns/nifcloud/internal.Client.do
+        - encoding/xml.Unmarshal
+      hops: 10
+      path_sha: 7e7fcfc65b760be1
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-56860
       - CVE-2026-56860
@@ -1600,6 +1860,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/plugins.Client.Check
+        - net/url.URL.Parse
+      hops: 2
+      path_sha: 7990ac4570c446fd
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-56862
       - CVE-2026-56862
@@ -1611,6 +1878,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/proxy/fast.writeDetector.Write
+        - crypto/tls.Conn.Write
+      hops: 2
+      path_sha: e3901134c6692686
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-56866
       - CVE-2026-56866
@@ -1622,6 +1896,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/cmd/healthcheck.Do
+        - net/http.Client.Head
+      hops: 2
+      path_sha: f14755e41f36fcd1
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-78659
       - CVE-2026-78659
@@ -1633,6 +1914,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - golang.org/x/net/http2.ConnectionError.Error
+      hops: 2
+      path_sha: 5a37667167be84df
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-78660
       - CVE-2026-78660
@@ -1644,6 +1932,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/proxy/httputil.wrapper.RoundTrip
+        - golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip
+      hops: 2
+      path_sha: f61a845aa46adbe6
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-78663
       - CVE-2026-78663
@@ -1655,6 +1950,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - golang.org/x/net/http2.ConnectionError.Error
+      hops: 2
+      path_sha: 5a37667167be84df
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-78667
       - CVE-2026-78667
@@ -1666,6 +1968,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/api/dashboard.Handler.ServeHTTP
+        - net/http.fileHandler.ServeHTTP
+      hops: 2
+      path_sha: 60fe695a86b19a76
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-78669
       - CVE-2026-78669
@@ -1677,6 +1986,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - golang.org/x/net/http2.ConnectionError.Error
+      hops: 2
+      path_sha: 5a37667167be84df
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-94439
       - CVE-2026-94439
@@ -1688,6 +2004,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/cmd/healthcheck.Do
+        - net/http.Client.Head
+      hops: 2
+      path_sha: f14755e41f36fcd1
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-94440
       - CVE-2026-94440
@@ -1699,6 +2022,16 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/middlewares/capture.readCounter.Read
+        - net/http.body.Read
+        - net/http.body.readLocked
+        - net/http.body.readTrailer
+        - net/textproto.Reader.ReadMIMEHeader
+      hops: 5
+      path_sha: b7d717da851fea40
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-94448
       - CVE-2026-94448
@@ -1710,6 +2043,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.Balancer.ServeHTTP
+        - net/http.ServeMux.ServeHTTP
+        - net/rpc.debugHTTP.ServeHTTP
+        - html/template.Template.Execute
+      hops: 4
+      path_sha: 828fe4719f153127
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-97030
       - CVE-2026-97030
@@ -1721,6 +2063,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/server/service/loadbalancer/wrr.Balancer.ServeHTTP
+        - net/http.ServeMux.ServeHTTP
+        - net/rpc.debugHTTP.ServeHTTP
+        - html/template.Template.Execute
+      hops: 4
+      path_sha: 828fe4719f153127
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-97031
       - CVE-2026-97031
@@ -1732,6 +2083,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/proxy/fast.writeDetector.Write
+        - crypto/tls.Conn.Write
+      hops: 2
+      path_sha: e3901134c6692686
+      status: unreviewed
   - advisory:
       - BIT-golang-2026-97032
       - CVE-2026-97032
@@ -1743,6 +2101,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - golang.org/x/net/http2.ConnectionError.Error
+      hops: 2
+      path_sha: 5a37667167be84df
+      status: unreviewed
   - advisory:
       - CVE-2014-3499
       - GHSA-wxj3-qwv4-cvfm
@@ -2894,6 +3259,25 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/provider/acme.Provider.Provide
+        - github.com/traefik/traefik/v3/pkg/provider/acme.Provider.renewCertificates
+        - github.com/go-acme/lego/v4/certificate.Certifier.RenewWithOptions
+        - github.com/go-acme/lego/v4/certificate.Certifier.Obtain
+        - github.com/go-acme/lego/v4/challenge/resolver.Prober.Solve
+        - github.com/go-acme/lego/v4/challenge/resolver.sequentialSolve
+        - github.com/go-acme/lego/v4/challenge/dns01.Challenge.PreSolve
+        - github.com/go-acme/lego/v4/providers/dns/allinkl.DNSProvider.Present
+        - github.com/go-acme/lego/v4/providers/dns/allinkl/internal.Client.AddDNSSettings
+        - github.com/go-acme/lego/v4/providers/dns/allinkl/internal.Client.do
+        - github.com/go-viper/mapstructure/v2.Decode
+        - github.com/go-viper/mapstructure/v2.Decoder.Decode
+        - github.com/go-viper/mapstructure/v2.Decoder.decode
+        - github.com/go-viper/mapstructure/v2.Decoder.decodeBool
+      hops: 14
+      path_sha: 5fe565e7b091a668
+      status: unreviewed
   - advisory:
       - CVE-2025-22868
       - GHSA-6v2p-p543-phr9
@@ -2931,6 +3315,18 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/server/service.smartRoundTripper.RoundTrip
+        - net/http.Transport.RoundTrip
+        - net/http.Transport.roundTrip
+        - net/http.Transport.connectMethodForRequest
+        - github.com/volcengine/volc-sdk-golang/base.volcProxy$1
+        - golang.org/x/net/http/httpproxy.config.proxyForURL
+        - golang.org/x/net/http/httpproxy.config.useProxy
+      hops: 7
+      path_sha: a3214523aa21f560
+      status: unreviewed
   - advisory:
       - CVE-2025-22872
       - GHSA-vvgc-356p-c3xw
@@ -2968,6 +3364,21 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/provider/kv.storeWrapper.WatchTree
+        - github.com/kvtools/redis.Store.WatchTree
+        - github.com/kvtools/redis.newSubscribe
+        - github.com/redis/go-redis/v9.Client.PSubscribe
+        - github.com/redis/go-redis/v9.PubSub.PSubscribe
+        - github.com/redis/go-redis/v9.PubSub.subscribe
+        - github.com/redis/go-redis/v9.PubSub.conn
+        - github.com/redis/go-redis/v9.pubSub$1
+        - github.com/redis/go-redis/v9.baseClient.newConn
+        - github.com/redis/go-redis/v9.baseClient.initConn
+      hops: 10
+      path_sha: c6a30ae8b2a2f14f
+      status: unreviewed
   - advisory:
       - CVE-2025-30204
       - GHSA-mh63-6h87-95cp
@@ -3114,6 +3525,17 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/provider/acme.Provider.Provide
+        - github.com/traefik/traefik/v3/pkg/provider/acme.Provider.renewCertificates
+        - github.com/traefik/traefik/v3/pkg/provider/acme.Provider.getClient
+        - github.com/go-acme/lego/v4/lego.NewClient
+        - github.com/go-acme/lego/v4/acme/api.New
+        - github.com/go-acme/lego/v4/acme/api/internal/sender.NewDoer
+      hops: 6
+      path_sha: 92f4dff49d31a47d
+      status: unreviewed
   - advisory:
       - CVE-2025-58181
       - GHSA-j5w8-q4qc-rx2x
@@ -3150,6 +3572,16 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/server.http3server.Start
+        - github.com/quic-go/quic-go/http3.Server.Serve
+        - github.com/quic-go/quic-go/http3.Server.setupListenerForConn
+        - github.com/quic-go/quic-go/http3.init$1
+        - github.com/quic-go/quic-go.ListenEarly
+      hops: 5
+      path_sha: 87fcf32ad42dfb50
+      status: unreviewed
   - advisory:
       - CVE-2025-64329
       - GHSA-m6hq-p25p-ffr2
@@ -3173,6 +3605,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - github.com/quic-go/quic-go/http3.Error.Error
+      hops: 2
+      path_sha: 4fcd9429e0579a76
+      status: unreviewed
   - advisory:
       - CVE-2025-65637
       - GHSA-4f99-4q7p-p3gh
@@ -3253,6 +3692,16 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/middlewares/compress.responseWriter.Flush
+        - github.com/klauspost/compress/zstd.Encoder.Write
+        - github.com/klauspost/compress/zstd.Encoder.nextBlock
+        - github.com/klauspost/compress/zstd.blockEnc.encode
+        - github.com/klauspost/compress/huff0.Compress1X
+      hops: 5
+      path_sha: bfb18778ec47d9cc
+      status: unreviewed
   - advisory:
       - CVE-2026-128085
       - GHSA-q7gw-24fr-5p69
@@ -3300,6 +3749,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - go.opentelemetry.io/otel/sdk/trace.errUnsupportedSampler.Error
+      hops: 2
+      path_sha: a2c6dfc6ee20c069
+      status: unreviewed
   - advisory:
       - CVE-2026-25680
       - GHSA-5cv4-jp36-h3mw
@@ -3492,6 +3948,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - github.com/docker/docker/client.errConnectionFailed.Error
+      hops: 2
+      path_sha: aba5f458bd805a5b
+      status: unreviewed
   - advisory:
       - CVE-2026-34040
       - GHSA-x744-4wpc-v9h2
@@ -3503,6 +3966,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - github.com/docker/docker/client.errConnectionFailed.Error
+      hops: 2
+      path_sha: aba5f458bd805a5b
+      status: unreviewed
   - advisory:
       - CVE-2026-34986
       - GHSA-78h2-9frx-2jm8
@@ -3514,6 +3984,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/cmd/traefik.init
+        - github.com/spiffe/go-spiffe/v2/workloadapi.init
+        - github.com/spiffe/go-spiffe/v2/bundle/jwtbundle.init
+        - github.com/go-jose/go-jose/v4.init
+      hops: 4
+      path_sha: 4836d9d8286ea6a7
+      status: unreviewed
   - advisory:
       - CVE-2026-35051
       - GHSA-6384-m2mw-rf54
@@ -3548,6 +4027,16 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/server/service.h2cTransportWrapper.RoundTrip
+        - golang.org/x/net/http2.Transport.RoundTrip
+        - golang.org/x/net/http2.Transport.RoundTripOpt
+        - golang.org/x/net/http2.authorityAddr
+        - golang.org/x/net/idna.ToASCII
+      hops: 5
+      path_sha: b70cc8022ab9fd6b
+      status: unreviewed
   - advisory:
       - CVE-2026-39824
       - GO-2026-5024
@@ -3700,6 +4189,18 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/types.OTelLog.NewLoggerProvider
+        - go.opentelemetry.io/otel/sdk/log.NewBatchProcessor
+        - go.opentelemetry.io/otel/sdk/log.newBufferExporter
+        - go.opentelemetry.io/otel/sdk/log.exportSync
+        - go.opentelemetry.io/otel/sdk/log.exportSync$1
+        - go.opentelemetry.io/otel/sdk/log.exportData.DoExport
+        - go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp.Exporter.Export
+      hops: 7
+      path_sha: dd1ac4f83a035236
+      status: unreviewed
   - advisory:
       - CVE-2026-39882
       - GHSA-w8rr-5gcm-pp58
@@ -3735,6 +4236,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/types.OTelLog.NewLoggerProvider
+        - go.opentelemetry.io/otel/sdk/resource.New
+      hops: 2
+      path_sha: d0b22865d0896279
+      status: unreviewed
   - advisory:
       - CVE-2026-40611
       - GHSA-qqx8-2xmm-jrv8
@@ -3759,6 +4267,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - github.com/quic-go/quic-go/http3.Error.Error
+      hops: 2
+      path_sha: 4fcd9429e0579a76
+      status: unreviewed
   - advisory:
       - CVE-2026-40912
       - GHSA-6jwx-7vp4-9847
@@ -4160,6 +4675,17 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/rules.NewParser
+        - golang.org/x/text/cases.Caser.String
+        - golang.org/x/text/transform.String
+        - golang.org/x/text/cases.titleCaser.Transform
+        - golang.org/x/text/cases.ltLower
+        - golang.org/x/text/unicode/norm.Form.Properties
+      hops: 6
+      path_sha: 80b7641588e92c16
+      status: unreviewed
   - advisory:
       - CVE-2026-56854
       - GO-2026-6303
@@ -4351,6 +4877,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
+        - go.opentelemetry.io/otel/sdk/trace.errUnsupportedSampler.Error
+      hops: 2
+      path_sha: a2c6dfc6ee20c069
+      status: unreviewed
   - advisory:
       - CVE-2026-81870
       - GHSA-8wmf-6v46-5gfg
@@ -4386,6 +4919,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/types.init
+        - go.opentelemetry.io/otel/exporters/otlp/otlptrace.init
+      hops: 2
+      path_sha: be4eb9be74b5f57f
+      status: unreviewed
   - advisory:
       - CVE-2026-81870
       - GHSA-8wmf-6v46-5gfg
@@ -4409,6 +4949,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/types.init
+        - go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.init
+      hops: 2
+      path_sha: 3818597b44598762
+      status: unreviewed
   - advisory:
       - CVE-2026-81872
       - GHSA-hjf4-fphr-2h65
@@ -4420,6 +4967,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/logs.SetupOTelLogger
+        - go.opentelemetry.io/otel/sdk/log.LoggerProvider.Logger
+      hops: 2
+      path_sha: 87848c3cf0964c91
+      status: unreviewed
   - advisory:
       - CVE-2026-84303
       - GHSA-qc2q-p7wx-3px3
@@ -4443,6 +4997,15 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/plugins.Client.Download
+        - io.Copy
+        - io.copyBuffer
+        - google.golang.org/grpc/mem.writer.Write
+      hops: 4
+      path_sha: 64fbf03635c76b55
+      status: unreviewed
   - advisory:
       - CVE-2026-84445
       - GHSA-2v4p-qf9q-27wj
@@ -4729,6 +5292,13 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/cmd/healthcheck.Do
+        - net/http.Client.Head
+      hops: 2
+      path_sha: f14755e41f36fcd1
+      status: unreviewed
   - advisory:
       - GHSA-3wqc-mwfx-672p
     package: github.com/traefik/traefik/v3@v3.3.2
@@ -4869,6 +5439,16 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/provider/acme.init
+        - github.com/go-acme/lego/v4/providers/dns.init
+        - github.com/go-acme/lego/v4/providers/dns/allinkl.init
+        - github.com/go-acme/lego/v4/providers/dns/allinkl/internal.init
+        - github.com/go-viper/mapstructure/v2.init
+      hops: 5
+      path_sha: 061823c59b134aca
+      status: unreviewed
   - advisory:
       - GHSA-gv8r-9rw9-9697
       - GO-2026-4530
@@ -4890,6 +5470,17 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/integration/helloworld.greeterClient.StreamExample
+        - google.golang.org/grpc.clientStream.CloseSend
+        - google.golang.org/grpc.clientStream.withRetry
+        - google.golang.org/grpc.newClientStreamWithParams$2
+        - google.golang.org/grpc.csAttempt.newStream
+        - google.golang.org/grpc/internal/transport.http2Client.NewStream
+      hops: 6
+      path_sha: 7676d4bb38fc16ca
+      status: unreviewed
   - advisory:
       - GHSA-hxr6-2p24-hf98
       - GO-2024-3342
@@ -4998,3 +5589,11 @@ rows:
     source: govulncheck v1.9.0
     engine_expected:
       verdict: reachable_candidate
+    path_review:
+      path:
+        - github.com/traefik/traefik/v3/pkg/version.init
+        - github.com/google/go-github/v28/github.init
+        - golang.org/x/crypto/openpgp.init
+      hops: 3
+      path_sha: c7e2e9c0d54736e7
+      status: unreviewed

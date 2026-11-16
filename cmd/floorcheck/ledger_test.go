@@ -36,7 +36,7 @@ func ledgerRow(advisory, pkg, truth, verdict, reason, gap string) string {
 }
 
 func TestParseLedger(t *testing.T) {
-	good := ledgerRow("CVE-1, GHSA-1", "m@v1", "reachable", "reachable_candidate", "", "")
+	good := ledgerRow("CVE-1, GHSA-1", "m@v1", "reachable", "reachable_candidate", "", "") + reviewYAML(StatusUnreviewed, "")
 	for _, tc := range []struct {
 		name, rows, want string // want is a substring of the error; empty means valid
 	}{

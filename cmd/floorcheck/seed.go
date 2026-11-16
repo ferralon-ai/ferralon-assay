@@ -266,7 +266,15 @@ func seedLedger(hdr LedgerHeader, rep report.Report, ev Evidence, prior *Ledger)
 	l := Ledger{Schema: LedgerSchema, Header: hdr}
 	for _, er := range engineRows(rep.Advisories) {
 		row := LedgerRow{Advisory: er.Advisory, Package: er.Package, Target: hdr.Target, EngineExpected: er.Engine}
+		if row.reachableRow() {
+			row.PathReview = newPathReview(er.Path)
+		}
 		if o, ok := old[row.Key()]; ok {
+			// A review stays only while the path it read is the path the engine shows; a new path starts
+			// unreviewed and loses any featured flag.
+			if o.PathReview != nil && row.PathReview != nil && o.PathReview.PathSHA == row.PathReview.PathSHA {
+				row.PathReview, row.Featured = o.PathReview, o.Featured
+			}
 			row.Truth, row.Basis, row.Source, row.Gap = o.Truth, o.Basis, o.Source, o.Gap
 			if !disagrees(row.Truth, row.EngineExpected) {
 				row.Gap = ""
@@ -344,6 +352,7 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 	reportPath := fs.String("report", "", "report.json of the pinned scan (required)")
 	vulnPath := fs.String("govulncheck", "", "raw `govulncheck -mode source -format json ./...` output; omit it to reuse the committed evidence")
 	command := fs.String("command", "govulncheck -mode source -format json ./...", "the comparator command line, recorded in the evidence")
+	pathsOnly := fs.Bool("paths-only", false, "keep every row of the ledger as it is and only add the path_review of its reachable rows from the report; implies -update")
 	update := fs.Bool("update", false, "keep the truth of rows already in the ledger; follow the report for engine_expected")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -416,16 +425,26 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 			Evidence: "evidence/" + *name + ".govulncheck.json"},
 	}
 	var prior *Ledger
+	if *pathsOnly {
+		*update = true
+	}
 	if *update {
-		p, err := loadLedger(ledgerPath(*targetsPath, *name))
+		p, err := loadLedgerFor(ledgerPath(*targetsPath, *name), false)
 		if err != nil {
 			return fail(err)
 		}
 		prior = &p
 		hdr.Comparator = p.Header.Comparator // the truth column was derived from that run
 	}
+	hdr.MainModule = mainModuleOf(rep)
 	l := seedLedger(hdr, rep, ev, prior)
-	if err := l.validate(); err != nil {
+	if *pathsOnly {
+		var err error
+		if l, err = withPaths(*prior, l); err != nil {
+			return fail(err)
+		}
+	}
+	if err := l.validate(true); err != nil {
 		return fail(err)
 	}
 	if err := writeLedger(ledgerPath(*targetsPath, *name), l); err != nil {
@@ -433,4 +452,38 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "floorcheck seed: %s: %d rows\n", *name, len(l.Rows))
 	return 0
+}
+
+// mainModuleOf is the scanned repository's Go module path, read from the call paths of the report.
+func mainModuleOf(rep report.Report) string {
+	for _, f := range rep.Advisories {
+		if _, mod := callPath(f); mod != "" {
+			return mod
+		}
+	}
+	return ""
+}
+
+// withPaths is the prior ledger with the path_review of each reachable row taken from seeded, which was
+// built from a report: nothing else about a row changes. A reachable row the report does not show as
+// reachable has no path to record, so the report is not the scan the ledger was built from.
+func withPaths(prior, seeded Ledger) (Ledger, error) {
+	byKey := map[string]LedgerRow{}
+	for _, r := range seeded.Rows {
+		byKey[r.Key()] = r
+	}
+	out := prior
+	out.Header.MainModule = seeded.Header.MainModule
+	out.Rows = slices.Clone(prior.Rows)
+	for i, r := range out.Rows {
+		if !r.reachableRow() {
+			continue
+		}
+		if s, ok := byKey[r.Key()]; !ok || s.PathReview == nil {
+			return Ledger{}, fmt.Errorf("row %s is reachable in the ledger, but the report has no path for it", r.Key())
+		} else if r.PathReview == nil || r.PathReview.PathSHA != s.PathReview.PathSHA {
+			out.Rows[i].PathReview, out.Rows[i].Featured = s.PathReview, false
+		}
+	}
+	return out, nil
 }

@@ -552,6 +552,46 @@ type EvidenceSummary struct {
 	GuardSufficiency []GuardSufficiencyNote `json:"guard_sufficiency,omitempty"`
 }
 
+// ScopeKind names what a ScopedVerdict is scoped to.
+type ScopeKind string
+
+// ScopeBinaries scopes a verdict to the shipped programs of the scanned module.
+const ScopeBinaries ScopeKind = "binaries"
+
+// Scope says which part of what was scanned a ScopedVerdict holds for.
+type Scope struct {
+	Kind ScopeKind `json:"kind"`
+	// Targets are the binaries, as main-package directories relative to the module root ("." for a
+	// main package at the root), sorted. The verdict holds for every one of them.
+	Targets []string `json:"targets"`
+	// Module is the scanned module's path, which the targets are relative to.
+	Module string `json:"module,omitempty"`
+}
+
+// ScopedVerdict is a verdict that holds for the Scope only. The finding's own verdict is the
+// library view, and says nothing about the scope narrowing it.
+type ScopedVerdict struct {
+	// Verdict is not_exploitable: the only verdict a scope narrows.
+	Verdict Verdict `json:"verdict"`
+	Scope   Scope   `json:"scope"`
+	// Evidence is the grounds, the same fields as a not_exploitable row's.
+	Evidence EvidenceSummary `json:"evidence"`
+}
+
+// Statement is the scoped verdict in one plain sentence for the surfaces a person reads.
+func (v ScopedVerdict) Statement() string {
+	names := make([]string, len(v.Scope.Targets))
+	for i, t := range v.Scope.Targets {
+		names[i] = "`" + t + "`"
+	}
+	noun := "binary"
+	if len(names) > 1 {
+		noun = "binaries"
+	}
+	return "Not reachable from the shipped " + noun + " " + strings.Join(names, ", ") +
+		"; still possible when this module is imported as a library."
+}
+
 // Priority is the EPSS/KEV prioritization context attached to a finding from the signals file the
 // run was given (package intel). It is exploitation-LIKELIHOOD context from public feeds — NEVER an
 // exploitability verdict for this codebase (inv. 5). EPSS is FIRST.org's probability the CVE is
@@ -716,6 +756,13 @@ type AdvisoryFinding struct {
 	// and each also reaches the scan's Partiality as a note. Unlike Evidence.Assumptions, which are
 	// the caller's declarations, these are the analysis's, and they qualify every verdict.
 	Annotations []plugin.Annotation `json:"annotations,omitempty"`
+	// ScopedVerdicts are verdicts that hold for part of what was scanned, beside this row's own, which
+	// never changes. A Go repo that ships programs can have a library view that cannot rule an
+	// advisory out (Verdict is undetermined or reachable_candidate) while its shipped binaries'
+	// own entry points do; the row then carries a not_exploitable scoped to those binaries. Only a
+	// reachable_candidate or an undetermined row carries one: a row that is already not_exploitable
+	// or disqualified holds for every caller.
+	ScopedVerdicts []ScopedVerdict `json:"scoped_verdicts,omitempty"`
 	// Priority is the EPSS/KEV prioritization context for this advisory, from the signals
 	// file the run was given, each value carrying its own stamp (see Priority). Nil when
 	// the run had no signals or the file had no stamped value for the advisory's id or
@@ -1327,6 +1374,9 @@ func (r Report) Validate() error {
 			return fmt.Errorf("report: advisory %q carries symbol confidence %q but verdict is %q (a derivation-confidence signal qualifies only a reachable_candidate, never an admission or refutation)",
 				f.Advisory.ID, f.Evidence.SymbolConfidence, f.Verdict)
 		}
+		if err := f.validateScoped(); err != nil {
+			return err
+		}
 		// A declaration only ever lets a refutation stand, so only a not_exploitable rests on one.
 		if len(f.Evidence.Assumptions) > 0 && f.Verdict != VerdictNotExploitable {
 			return fmt.Errorf("report: advisory %q carries assumptions but verdict is %q (an assumption qualifies only a not_exploitable)",
@@ -1391,6 +1441,30 @@ func (r Report) Validate() error {
 			if _, ok := present[rel.Child]; !ok {
 				return fmt.Errorf("report: SBOM relationship child %q references no package in the SBOM (dangling edge)", rel.Child)
 			}
+		}
+	}
+	return nil
+}
+
+// validateScoped checks f's scoped verdicts: they qualify only a reachable_candidate or an
+// undetermined row, and each is a not_exploitable resting on reachability for a named scope.
+func (f AdvisoryFinding) validateScoped() error {
+	if len(f.ScopedVerdicts) == 0 {
+		return nil
+	}
+	if f.Verdict != VerdictReachableCandidate && f.Verdict != VerdictUndetermined {
+		return fmt.Errorf("report: advisory %q carries scoped verdicts but verdict is %q (a scope narrows only a reachable_candidate or an undetermined row)",
+			f.Advisory.ID, f.Verdict)
+	}
+	for _, v := range f.ScopedVerdicts {
+		switch {
+		case v.Verdict != VerdictNotExploitable:
+			return fmt.Errorf("report: advisory %q carries a scoped verdict %q (a scope narrows only to not_exploitable)", f.Advisory.ID, v.Verdict)
+		case v.Scope.Kind != ScopeBinaries || len(v.Scope.Targets) == 0:
+			return fmt.Errorf("report: advisory %q carries a scoped verdict with scope kind %q and %d targets (it must name its binaries)",
+				f.Advisory.ID, v.Scope.Kind, len(v.Scope.Targets))
+		case v.Evidence.Basis != verdict.BasisSymbolUnreachable:
+			return fmt.Errorf("report: advisory %q carries a scoped verdict with basis %q (a program view rests on reachability)", f.Advisory.ID, v.Evidence.Basis)
 		}
 	}
 	return nil

@@ -710,6 +710,25 @@ type ReachabilityResult struct {
 	// LibraryEntrypoints is the entry-point set the lane resolved from
 	// ReachabilityRequest.LibraryEntrypoints, when it resolved one.
 	LibraryEntrypoints *ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
+	// ProgramView is a refutation the lane's program view holds when the library view holds none:
+	// the build's shipped programs, started from their own main and init alone, cannot reach the
+	// advisory's vulnerable code, though the module used as a library may. The lane never sets it
+	// beside a library-view Refutation, and it never replaces or weakens that view.
+	ProgramView *ProgramView `json:"program_view,omitempty"`
+}
+
+// ProgramView is the program view's ruling on one advisory: its refutation, and the shipped binaries
+// it speaks for. It grounds a not_exploitable scoped to those binaries, never to the module.
+type ProgramView struct {
+	// Module is the scanned module's path, the module the binaries are built from.
+	Module string `json:"module"`
+	// Binaries are the main packages the view started from, as directories relative to the module
+	// root ("." for a main package at the root), sorted. Together they are the scope: the refutation
+	// holds for every one of them.
+	Binaries []string `json:"binaries"`
+	// Refutation is the view's refutation. Its Package is the module the advisory was matched to,
+	// as for the library view's, and it carries no assumptions: the scope is the whole of its claim.
+	Refutation Refutation `json:"refutation"`
 }
 
 // Refutation grounds a not_exploitable verdict without a searched sink. Package is a PURL (version

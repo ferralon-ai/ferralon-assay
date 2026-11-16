@@ -205,6 +205,7 @@ const reportHTMLSource = `<!DOCTYPE html>
           <span class="badge {{.Severity}}">{{.Label}}</span> <span class="mono">({{.Verdict}})</span>
           {{- if .Detail}}<div class="detail">{{.Detail}}</div>{{end}}
           {{- range .Assumptions}}<div class="detail">Holds only under the stated assumption: {{.}}</div>{{end}}
+          {{- range .Scoped}}<div class="detail">{{.}}</div>{{end}}
           {{- range .Annotations}}<div class="detail">This analysis assumes: {{.}}</div>{{end}}
           {{- if .UndeterminedReason}}<div class="limit-code mono">{{.Cause}}: {{.UndeterminedReason}}</div>{{end}}
           {{- if .NextAction}}<div class="detail">Next: {{.NextAction}}</div>{{end}}

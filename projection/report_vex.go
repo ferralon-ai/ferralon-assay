@@ -90,6 +90,9 @@ func ProjectReportVEX(r report.Report) (*VEXDocument, error) {
 		}
 		stmt.StatusNotes = annotationsStatement(f.Annotations)
 		stmts = append(stmts, stmt)
+		for _, sv := range f.ScopedVerdicts {
+			stmts = append(stmts, scopedVEXStatement(r, f, sv))
+		}
 	}
 
 	doc := &VEXDocument{
@@ -101,6 +104,52 @@ func ProjectReportVEX(r report.Report) (*VEXDocument, error) {
 		Statements: stmts,
 	}
 	return doc, nil
+}
+
+// scopedVEXStatement is the statement for a verdict scoped to shipped binaries. Its product is the
+// binary, not the module: one product per binary, each carrying the vulnerable dependency as its
+// subcomponent, so a consumer matching on the binary it ships finds not_affected for it, while the
+// finding's own statement keeps the library view's status for the dependency. The scoped
+// statement follows the finding's own, in the order the finding lists them.
+func scopedVEXStatement(r report.Report, f report.AdvisoryFinding, sv report.ScopedVerdict) VEXStatement {
+	dep := VEXSubcomponent{ID: reportProductID(f.Package, r.Subject)}
+	products := make([]VEXProduct, len(sv.Scope.Targets))
+	for i, t := range sv.Scope.Targets {
+		products[i] = VEXProduct{ID: binaryProductID(sv.Scope.Module, t, r.Subject), Subcomponents: []VEXSubcomponent{dep}}
+	}
+	impact := sv.Statement()
+	if a := assumptionsStatement(sv.Evidence.Assumptions); a != "" {
+		impact += " " + a
+	}
+	stmt := VEXStatement{
+		Vulnerability:   VEXVulnerability{ID: f.Advisory.ID, Aliases: f.Advisory.Aliases},
+		Products:        products,
+		Status:          VEXStatusNotAffected,
+		Justification:   notAffectedJustification(sv.Evidence.Basis),
+		ImpactStatement: impact,
+	}
+	stmt.StatusNotes = annotationsStatement(f.Annotations)
+	return stmt
+}
+
+// binaryProductID is the OpenVEX product identifier of a shipped binary: the purl of the module it is
+// built from, at the scanned commit when the report has one, with the main package's directory as the
+// purl subpath ("pkg:golang/github.com/traefik/traefik/v3@<commit>#cmd/traefik"). The subpath is what
+// a purl provides for a part of a package, and names the binary by where it is built, the one name a
+// Go build gives it. A main package at the module root has no subpath: the purl is the module's own.
+// A scope that records no module falls back to the scanned repository's coordinates.
+func binaryProductID(module, target string, subj report.Subject) string {
+	if module == "" {
+		return reportProductID(nil, subj) + "#" + target
+	}
+	id := "pkg:golang/" + module
+	if subj.ResolvedCommit != "" {
+		id += "@" + subj.ResolvedCommit
+	}
+	if target != "." {
+		id += "#" + target
+	}
+	return id
 }
 
 // MarshalReportVEX projects and JSON-encodes (indented) in one call.

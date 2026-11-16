@@ -89,6 +89,32 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	return "", report.ReasonVulnerableSymbolUnresolved, "", nil, false
 }
 
+// scopedVerdicts is the not_exploitable the lane's program view grounds for the admitted package, scoped
+// to the build's shipped binaries, or none. It speaks beside a row whose own verdict is the library view
+// and never replaces it; the caller offers it only on a reachable_candidate or a refutation_withheld
+// row. It takes the same positive grounds as arm B of notExploitableGrounds: the admitted package's
+// version resolved, the advisory names no other package, and the refutation is of the admitted package.
+func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) []report.ScopedVerdict {
+	reach, _ := reachabilityResult(store, assessmentID)
+	view := reach.ProgramView
+	if view == nil || len(view.Binaries) == 0 || view.Refutation.Package == "" || view.Refutation.Basis != plugin.RefutationAnalyzerSymbolNotReached {
+		return nil
+	}
+	admitted, label, ok := admittedPackage(store, assessmentID, pkg)
+	if !ok || namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted, mods) ||
+		!inAdmitted(view.Refutation.Package, admitted, pkg != nil && pkg.Root) {
+		return nil
+	}
+	return []report.ScopedVerdict{{
+		Verdict: report.VerdictNotExploitable,
+		Scope:   report.Scope{Kind: report.ScopeBinaries, Targets: slices.Clone(view.Binaries), Module: view.Module},
+		Evidence: report.EvidenceSummary{
+			Basis:  verdict.BasisSymbolUnreachable,
+			Detail: fmt.Sprintf("%s: %s (%s)", label, view.Refutation.Detail, view.Refutation.Basis),
+		},
+	}}
+}
+
 // vettedSymbols reports whether the advisory's symbol set is complete enough for an absence of the
 // listed symbols to ground not_exploitable: no path reaching them (arm A), or no module declaring
 // them (outsideBuildGrounds). An osv-declared or curated set is; so is an untagged set a house

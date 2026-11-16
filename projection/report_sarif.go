@@ -76,6 +76,11 @@ func ProjectReportSARIF(r report.Report) (*SARIFLog, error) {
 		if len(f.Annotations) > 0 {
 			props["annotations"] = f.Annotations
 		}
+		if len(f.ScopedVerdicts) > 0 {
+			// The result's own verdict, level and kind stay the library view's; the scope rides
+			// beside them in the properties, where a consumer that reads it finds the binaries named.
+			props["scoped_verdicts"] = f.ScopedVerdicts
+		}
 		if f.Package != nil {
 			props["package"] = f.Package.Ecosystem + ":" + f.Package.Label()
 		}
@@ -121,7 +126,7 @@ func ProjectReportSARIF(r report.Report) (*SARIFLog, error) {
 			RuleID:     f.Advisory.ID,
 			Level:      level,
 			Kind:       kind,
-			Message:    SARIFMessage{Text: strings.TrimSpace(reportSARIFMessage(f) + " " + annotationsStatement(f.Annotations))},
+			Message:    SARIFMessage{Text: strings.TrimSpace(reportSARIFMessage(f) + " " + scopedStatements(f.ScopedVerdicts) + " " + annotationsStatement(f.Annotations))},
 			Locations:  reportSARIFLocations(f),
 			Rank:       rank,
 			Properties: &SARIFProperties{Scanner: props},
@@ -484,4 +489,13 @@ func reportSARIFMessage(f report.AdvisoryFinding) string {
 	default:
 		return f.Advisory.ID
 	}
+}
+
+// scopedStatements renders a finding's scoped verdicts as plain sentences, empty when it has none.
+func scopedStatements(scoped []report.ScopedVerdict) string {
+	out := make([]string, len(scoped))
+	for i, v := range scoped {
+		out[i] = v.Statement()
+	}
+	return strings.Join(out, " ")
 }

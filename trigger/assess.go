@@ -247,6 +247,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			},
 		}
 	}
+	if f.Verdict == report.VerdictReachableCandidate || f.UndeterminedReason == report.ReasonRefutationWithheld {
+		f.ScopedVerdicts = scopedVerdicts(store, assessmentID, pkg, mods)
+	}
 	// No Priority here: EPSS/KEV context is attached by the report Builder (rankWith), after every
 	// verdict is final, so nothing on this path can read it (inv. 5).
 	f.Annotations = annotations(store, assessmentID)

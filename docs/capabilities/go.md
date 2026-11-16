@@ -203,6 +203,8 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Effect.** The refutation is withheld with `library_escape`, and the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that stands only because of what you declared carries that declaration on the report as an assumption.
 
+**Scoped answer.** When the build ships programs, the lane also runs a program view, and a row held here can carry a `not_exploitable` scoped to those binaries: see [Binary-scoped verdicts](../binary-scoped-verdicts.md).
+
 ### GO-NO-SYMBOLS
 
 **Trigger.** An advisory with no symbol coordinates.

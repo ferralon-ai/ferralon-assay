@@ -225,7 +225,8 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 
 // resultFromGraph is reconciledResult over the reconcile graph g.
 func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
-	res := withholdForPartialRun(evidenceResult(scanned.findings, g.CallGraph, env), scanned)
+	evidence := withholdForPartialRun(evidenceResult(scanned.findings, g.CallGraph, env), scanned)
+	res := evidence
 	if res.Refutation != nil {
 		loaded, err := load()
 		if err != nil {
@@ -242,7 +243,9 @@ func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 	}
 	// Every result passes here: the call graph this lane searches omits reflection's calls, so no
 	// refutation and no Searched sink stands that those calls may contradict.
-	return withholdForReflectReach(res, scanned, g.ReflectReach), nil
+	res = withholdForReflectReach(res, scanned, g.ReflectReach)
+	res.ProgramView = programView(ctx, res, evidence, scanned, g, buildDir, env, load)
+	return res, nil
 }
 
 // withholdForReflectReach drops a refutation, and every Searched sink, that a call reflection makes
@@ -1372,6 +1375,8 @@ type vulnScan struct {
 	wholeModule map[string]bool
 	// partial is the partial run the stream came from, or nil for a run over the whole build.
 	partial *partialRun
+	// vulnID is the advisory id the scan was read for, or "" when a caller built the scan by hand.
+	vulnID string
 }
 
 // vulnerableSymbols returns module's vulnerable packages (vulnerablePackages), each with the symbols
@@ -1451,7 +1456,7 @@ func parseFindings(out []byte, vulnID string) (vulnScan, error) {
 			all = append(all, *msg.Finding)
 		}
 	}
-	scanned := vulnScan{imports: map[string][]string{}, symbols: map[string][]string{}, wholeModule: map[string]bool{}}
+	scanned := vulnScan{imports: map[string][]string{}, symbols: map[string][]string{}, wholeModule: map[string]bool{}, vulnID: vulnID}
 	everySymbol := map[string]bool{}
 	for _, f := range all {
 		if vulnID == "" || ids[f.OSV] {

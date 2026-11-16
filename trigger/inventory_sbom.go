@@ -231,6 +231,7 @@ func restsOnInventory(f report.AdvisoryFinding) bool {
 		return false
 	}
 	return f.Evidence.Basis == verdict.BasisVersionNotAffected ||
+		f.Evidence.Basis == verdict.BasisNoManifestEntry ||
 		f.Evidence.Detail == disqualDetail(pipeline.ReasonNoManifestEntry)
 }
 

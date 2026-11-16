@@ -1,0 +1,11 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/ikus060/rdiffweb
+commit: 6e9ee210548f6d3210704cac302cfc7cdb239765
+lang: python
+build:
+  python: "3.12"
+intel:
+  policy: full
+  corpus:  { path: intel/corpus-92d72057330c/full.jsonl.gz, sha256: "2233ff305c007bbfdd0e88d8e121f26a7699927ce277d87092ed08caab987af0" }
+  signals: { path: intel/corpus-92d72057330c/signals.json.gz, sha256: "b4e66501164dd319bb051b814212e0eedba8bb740477c47389f0a59998f97fc3" }
+  provenance: corpus-92d72057330c

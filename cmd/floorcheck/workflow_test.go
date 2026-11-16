@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -12,14 +11,15 @@ import (
 
 // workflow is the part of .github/workflows/floor.yml the floor run's contract rests on.
 type workflow struct {
-	// On is kept by trigger name: a bare `workflow_dispatch:` decodes to a null node.
 	On   map[string]yaml.Node `yaml:"on"`
 	Jobs map[string]struct {
 		If             string `yaml:"if"`
+		Needs          any    `yaml:"needs"`
 		TimeoutMinutes int    `yaml:"timeout-minutes"`
 		Strategy       struct {
-			FailFast *bool  `yaml:"fail-fast"`
-			Matrix   string `yaml:"matrix"`
+			FailFast    *bool  `yaml:"fail-fast"`
+			MaxParallel int    `yaml:"max-parallel"`
+			Matrix      string `yaml:"matrix"`
 		} `yaml:"strategy"`
 		Steps []struct {
 			Uses string            `yaml:"uses"`
@@ -31,54 +31,49 @@ type workflow struct {
 	} `yaml:"jobs"`
 }
 
-func loadWorkflow(t *testing.T) workflow {
+func readWorkflow(t *testing.T) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "floor.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return data
+}
+
+// TestFloorWorkflow pins what the floor run promises: it runs only by hand, over a fixture selector;
+// every selected fixture's pins are verified before any scan; the fixtures fan out in one bounded
+// matrix that never stops on a sibling's failure; observations are uploaded whatever happened; and
+// the run reads no secrets and reports nowhere but the run itself.
+func TestFloorWorkflow(t *testing.T) {
+	data := readWorkflow(t)
 	var w workflow
 	if err := yaml.Unmarshal(data, &w); err != nil {
 		t.Fatal(err)
 	}
-	return w
-}
 
-// TestFloorWorkflow pins what the floor run promises: a nightly schedule off the hour and a manual
-// trigger, a matrix over floor/targets.json with every job bounded at 30 minutes, the summary
-// uploaded as an artifact, a Slack alert only on failure and only with its webhook set, and a
-// missing demo token that ends the run with a notice instead of a failure.
-func TestFloorWorkflow(t *testing.T) {
-	w := loadWorkflow(t)
-
-	var schedule []struct {
-		Cron string `yaml:"cron"`
+	if len(w.On) != 1 {
+		t.Errorf("triggers = %d, want only workflow_dispatch", len(w.On))
 	}
-	node := w.On["schedule"]
-	if err := node.Decode(&schedule); err != nil || len(schedule) != 1 {
-		t.Fatalf("want one schedule, got %d (%v)", len(schedule), err)
+	var dispatch struct {
+		Inputs map[string]struct {
+			Default string `yaml:"default"`
+		} `yaml:"inputs"`
 	}
-	fields := strings.Fields(schedule[0].Cron)
-	if len(fields) != 5 || strings.ContainsAny(fields[1], ",-/*") || fields[2] != "*" || fields[3] != "*" || fields[4] != "*" {
-		t.Errorf("cron %q is not once a day", schedule[0].Cron)
+	node, ok := w.On["workflow_dispatch"]
+	if !ok {
+		t.Fatal("no workflow_dispatch trigger")
 	}
-	if m, err := strconv.Atoi(fields[0]); err != nil || m == 0 {
-		t.Errorf("cron %q does not run at an off-hour minute", schedule[0].Cron)
+	if err := node.Decode(&dispatch); err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := w.On["workflow_dispatch"]; !ok {
-		t.Error("no workflow_dispatch trigger")
-	}
-	if len(w.On) != 2 {
-		t.Errorf("triggers = %d, want only schedule and workflow_dispatch", len(w.On))
+	if in, ok := dispatch.Inputs["fixtures"]; !ok || in.Default != "" {
+		t.Errorf("want a fixtures selector input that defaults to every fixture, got %+v (present %v)", in, ok)
 	}
 
-	for name, j := range w.Jobs {
-		if j.TimeoutMinutes <= 0 || j.TimeoutMinutes > 30 {
-			t.Errorf("job %s: timeout-minutes %d, want 1..30", name, j.TimeoutMinutes)
-		}
+	if strings.Contains(string(data), "secrets.") {
+		t.Error("the floor run reads a secret; it scans public repositories with pinned, committed intel")
 	}
 
-	// steps returns the job's steps' run scripts, uses and ifs joined, for substring checks.
 	steps := func(job string) string {
 		j, ok := w.Jobs[job]
 		if !ok {
@@ -97,47 +92,41 @@ func TestFloorWorkflow(t *testing.T) {
 		return b.String()
 	}
 	for _, tc := range []struct{ job, want string }{
-		{"secrets", "FLOOR_DEMO_TOKEN: ${{ secrets.FLOOR_DEMO_TOKEN }}"},
-		{"secrets", "::notice title=Floor run skipped::Secret FLOOR_DEMO_TOKEN is not set"},
-		{"build", `floorcheck" matrix -targets floor/targets.json`},
-		{"build", "actions/upload-artifact@v4"},
-		{"scan", "token: ${{ startsWith(matrix.repo, 'ferralon-demo/') && secrets.FLOOR_DEMO_TOKEN || github.token }}"},
-		{"build", "for policy in $POLICIES; do"},
-		{"build", `DEST="$fetched"`},
-		{"build", `mv "$fetched/$policy.jsonl.gz" "$fetched/signals.json.gz" "$dest/"`},
-		{"build", "POLICIES: ${{ steps.targets.outputs.policies }}"},
-		{"scan", "POLICY: ${{ matrix.policy }}"},
-		{"scan", "bash assay/floor/scan.sh"},
-		{"check", `floorcheck" check -targets floor/targets.json`},
-		{"check", "GITHUB_STEP_SUMMARY"},
-		{"check", "actions/upload-artifact@v4\n${{ !cancelled() }}"},
-		{"check", "path: floor-summary"},
-		{"alert", "FLOOR_SLACK_WEBHOOK: ${{ secrets.FLOOR_SLACK_WEBHOOK }}"},
+		{"plan", "SELECTED: ${{ inputs.fixtures }}"},
+		{"plan", `"$fc" validate --fixtures-root floor/fixtures "${names[@]}"`},
+		{"plan", `"$fc" list --fixtures-root floor/fixtures`},
+		{"plan", "actions/upload-artifact@v4"},
+		{"fixture", `"$bin/floorcheck" run "$FIXTURE"`},
+		{"fixture", "FIXTURE: ${{ matrix.name }}"},
+		{"fixture", "go-version: ${{ matrix.go }}"},
+		{"fixture", "java-version: ${{ matrix.jdk }}"},
+		{"fixture", "node-version: ${{ matrix.node }}"},
+		{"fixture", "python-version: ${{ matrix.python }}"},
+		{"fixture", "actions/upload-artifact@v4\nalways()"},
+		{"summary", "pattern: floor-obs-*"},
+		{"summary", "GITHUB_STEP_SUMMARY"},
 	} {
 		if !strings.Contains(steps(tc.job), tc.want) {
 			t.Errorf("job %s lacks %q", tc.job, tc.want)
 		}
 	}
 
-	scan := w.Jobs["scan"]
-	if scan.Strategy.Matrix != "${{ fromJSON(needs.build.outputs.matrix) }}" {
-		t.Errorf("scan matrix = %q, want the build job's matrix from floor/targets.json", scan.Strategy.Matrix)
+	fx := w.Jobs["fixture"]
+	if fx.Strategy.Matrix != "${{ fromJSON(needs.plan.outputs.matrix) }}" {
+		t.Errorf("fixture matrix = %q, want the plan job's matrix", fx.Strategy.Matrix)
 	}
-	if scan.Strategy.FailFast == nil || *scan.Strategy.FailFast {
-		t.Error("scan matrix must set fail-fast: false, so one repo's failure does not stop the others")
+	if fx.Strategy.FailFast == nil || *fx.Strategy.FailFast {
+		t.Error("the fixture matrix must set fail-fast: false, so one fixture's failure does not stop the others")
 	}
-
-	// Gates: the scanning jobs run only with the demo token; the alert only with the webhook, and
-	// only when something failed.
-	for _, tc := range []struct{ job, want string }{
-		{"build", "needs.secrets.outputs.demo-token == 'true'"},
-		{"alert", "needs.secrets.outputs.demo-token == 'true'"},
-		{"alert", "needs.secrets.outputs.slack == 'true'"},
-		{"alert", "needs.check.result == 'failure'"},
-		{"alert", "needs.scan.result == 'failure'"},
-	} {
-		if !strings.Contains(w.Jobs[tc.job].If, tc.want) {
-			t.Errorf("job %s if %q lacks %q", tc.job, w.Jobs[tc.job].If, tc.want)
+	if fx.Strategy.MaxParallel <= 0 || fx.Strategy.MaxParallel > 40 {
+		t.Errorf("max-parallel %d, want 1..40", fx.Strategy.MaxParallel)
+	}
+	for name, j := range w.Jobs {
+		if j.TimeoutMinutes <= 0 {
+			t.Errorf("job %s has no timeout", name)
 		}
+	}
+	if !strings.Contains(w.Jobs["summary"].If, "!cancelled()") {
+		t.Errorf("summary if %q: want it to run after failed fixtures", w.Jobs["summary"].If)
 	}
 }

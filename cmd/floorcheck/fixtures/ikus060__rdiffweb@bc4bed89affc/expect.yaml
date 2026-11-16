@@ -1,3 +1,8 @@
 schema: ferralon.floor-expect.v1
 scan: complete
-findings: []
+findings:
+  - advisory: CVE-2022-4723
+    package: "-"
+    truth: reachable
+    floor: reachable_candidate
+    note: "Pre-fix commit of the pair; verdict right."

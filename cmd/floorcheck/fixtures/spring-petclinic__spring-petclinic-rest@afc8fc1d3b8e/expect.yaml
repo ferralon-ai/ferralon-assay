@@ -1,3 +1,18 @@
 schema: ferralon.floor-expect.v1
 scan: complete
-findings: []
+findings:
+  - advisory: CVE-2025-41249
+    package: "org.springframework:spring-core@7.0.9"
+    truth: not_affected
+    floor: disqualified
+    note: "Ruled out (version_not_in_affected_range)"
+  - advisory: CVE-2026-19032
+    package: "com.fasterxml.jackson.core:jackson-databind@2.21.5"
+    truth: reachable
+    floor: undetermined
+    note: "jackson-databind 2.21.5, in range."
+  - advisory: CVE-2026-22747
+    package: "org.springframework.security:spring-security-web@7.1.1"
+    truth: not_affected
+    floor: disqualified
+    note: "vulnerable range 7.0.0..7.0.5. Ruled out (version_not_in_affected_range)"

@@ -1,3 +1,8 @@
 schema: ferralon.floor-expect.v1
 scan: complete
-findings: []
+findings:
+  - advisory: CVE-2022-4723
+    package: "-"
+    truth: unreachable
+    floor: reachable_candidate
+    note: "False positive: reachable on its own fix commit."

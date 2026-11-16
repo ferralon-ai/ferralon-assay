@@ -1,3 +1,8 @@
 schema: ferralon.floor-expect.v1
 scan: complete
-findings: []
+findings:
+  - advisory: CVE-2026-118650
+    package: "github.com/labstack/echo/v4@v4.15.1"
+    truth: reachable
+    floor: undetermined
+    note: "core/http/app.go:431-434 (e.Static)"

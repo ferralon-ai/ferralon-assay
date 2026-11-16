@@ -1,0 +1,10 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/Project-MONAI/MONAI
+commit: b7d14c8965580be0f30a50ee9b69e35285a5f887
+lang: python
+build:
+  python: "3.12"
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "d3f6c7537fd8d1bc34728319ed2c9406dbdb1faa061c0a8beb1dd54730ac9e5d" }
+  provenance: corpus-92d72057330c

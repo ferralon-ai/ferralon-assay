@@ -1,0 +1,19 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 1,
+  "records": [
+    {
+      "identifier": "PYSEC-2016-15",
+      "path": "2016/04/PYSEC-2016-15.json",
+      "output_digest": "sha256:76fc5e3c46a9a68f6d6495bba91db5b3bd897e7e59ae162fe92668ce719a698d"
+    }
+  ],
+  "corpus_digest": "sha256:037d201b53e87833942d8c0709002f8198569165da0d35171cd24e23044641ba",
+  "provenance": {
+    "generator": "floor fixture extraction",
+    "policy_id": "floor-fixture",
+    "policy_query": "the records this fixture's adjudicated expectations name",
+    "source_corpus_digest": "sha256:2233ff305c007bbfdd0e88d8e121f26a7699927ce277d87092ed08caab987af0"
+  }
+}

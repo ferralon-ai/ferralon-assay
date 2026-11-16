@@ -1,0 +1,54 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 8,
+  "records": [
+    {
+      "identifier": "CVE-2025-15284",
+      "path": "2025/12/CVE-2025-15284.json",
+      "output_digest": "sha256:8a5e0e891491f7cd1a954c7586d776eacd9bd00c046854cac88c2064e49d8d56"
+    },
+    {
+      "identifier": "CVE-2026-113872",
+      "path": "2026/10/CVE-2026-113872.json",
+      "output_digest": "sha256:0de2ce13300e5080c8a9b64b2b4d0df8f8214efd0dc0adcf91e8a5f5ec081dec"
+    },
+    {
+      "identifier": "CVE-2026-2391",
+      "path": "2026/02/CVE-2026-2391.json",
+      "output_digest": "sha256:6f70be62f188feed6d19b605c9804cd311d3f560dea51d7fab49b5b5a1d9eb1d"
+    },
+    {
+      "identifier": "CVE-2026-5038",
+      "path": "2026/06/CVE-2026-5038.json",
+      "output_digest": "sha256:3f08dd55ff47fea437095e3ed36296bf0708b16e361b842a38f9af1cd58bbb6a"
+    },
+    {
+      "identifier": "CVE-2026-5079",
+      "path": "2026/06/CVE-2026-5079.json",
+      "output_digest": "sha256:94236982bedd8be6df542dac694b79426088e1d4110dab0c7d69d687c6fffd8c"
+    },
+    {
+      "identifier": "CVE-2026-77037",
+      "path": "2026/08/CVE-2026-77037.json",
+      "output_digest": "sha256:6da373ada1dfdcba5f07d268cc67248e0fedb31d1a8cd43d1ea47d4c2eb05de2"
+    },
+    {
+      "identifier": "CVE-2026-77078",
+      "path": "2026/08/CVE-2026-77078.json",
+      "output_digest": "sha256:9c1884a224206f9aa099e84da7860010660b2e23333bf7780e077ce18982931a"
+    },
+    {
+      "identifier": "CVE-2026-88932",
+      "path": "2026/09/CVE-2026-88932.json",
+      "output_digest": "sha256:3eef542d201af0ea8874d86519ecdae109ff367667389a68997d30ab270c2ae3"
+    }
+  ],
+  "corpus_digest": "sha256:bbea0254520b3ea2e27bc812112bebf1b478ef831074a48821712690109e87f6",
+  "provenance": {
+    "generator": "floor fixture extraction",
+    "policy_id": "floor-fixture",
+    "policy_query": "the records this fixture's adjudicated expectations name",
+    "source_corpus_digest": "sha256:2233ff305c007bbfdd0e88d8e121f26a7699927ce277d87092ed08caab987af0"
+  }
+}

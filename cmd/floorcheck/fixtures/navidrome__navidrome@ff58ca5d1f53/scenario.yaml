@@ -1,0 +1,13 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/navidrome/navidrome
+commit: ff58ca5d1f5392d3b694c756d9116bc0c07324ba
+lang: go
+build:
+  go: 1.27.0
+  goos: linux
+  goarch: amd64
+  cgo: false
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "c30a22dea7f2af67072c6b68a3be33aa6856935750f23d7d70132fcd146915ce" }
+  provenance: corpus-92d72057330c

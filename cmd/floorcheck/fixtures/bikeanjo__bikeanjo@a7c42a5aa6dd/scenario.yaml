@@ -1,0 +1,10 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/bikeanjo/bikeanjo
+commit: a7c42a5aa6dd684a41f362315eeb235005b83272
+lang: python
+build:
+  python: "3.12"
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "8aa63535fa679e570fbc70c3748bae02acf94811c8c09b3d4aab84b90bf7a39e" }
+  provenance: corpus-92d72057330c

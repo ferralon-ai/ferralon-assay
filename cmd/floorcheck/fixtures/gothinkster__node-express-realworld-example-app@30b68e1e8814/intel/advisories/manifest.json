@@ -1,0 +1,24 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 2,
+  "records": [
+    {
+      "identifier": "CVE-2025-15284",
+      "path": "2025/12/CVE-2025-15284.json",
+      "output_digest": "sha256:8a5e0e891491f7cd1a954c7586d776eacd9bd00c046854cac88c2064e49d8d56"
+    },
+    {
+      "identifier": "CVE-2026-2391",
+      "path": "2026/02/CVE-2026-2391.json",
+      "output_digest": "sha256:6f70be62f188feed6d19b605c9804cd311d3f560dea51d7fab49b5b5a1d9eb1d"
+    }
+  ],
+  "corpus_digest": "sha256:ee68ae9da021022ef1a7618a16a91a172e90ebac5801d20a44b943a8166ca9fe",
+  "provenance": {
+    "generator": "floor fixture extraction",
+    "policy_id": "floor-fixture",
+    "policy_query": "the records this fixture's adjudicated expectations name",
+    "source_corpus_digest": "sha256:2233ff305c007bbfdd0e88d8e121f26a7699927ce277d87092ed08caab987af0"
+  }
+}

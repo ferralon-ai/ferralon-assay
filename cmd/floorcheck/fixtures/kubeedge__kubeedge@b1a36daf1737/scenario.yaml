@@ -1,0 +1,13 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/kubeedge/kubeedge
+commit: b1a36daf173725f36c2d93faa47f24118d759c21
+lang: go
+build:
+  go: 1.25.14
+  goos: linux
+  goarch: amd64
+  cgo: false
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "5a3ba2c9d873639732a1be75a766284fec7d3a8ee63908dccbd1fbb023ea5e19" }
+  provenance: corpus-92d72057330c

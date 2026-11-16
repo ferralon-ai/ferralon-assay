@@ -13,6 +13,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
+	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
 // storedWithStalePriority is a stored Report whose rows carry Priority from some earlier run's
@@ -20,8 +21,10 @@ import (
 func storedWithStalePriority() *report.Report {
 	stale := &report.Priority{EPSSScore: 0.5, EPSSAsOf: "2026-07-29"}
 	r := report.NewBuilder(report.Subject{Repo: "github.com/example/widget", ResolvedCommit: "base"}).
-		AddFinding(report.AdvisoryFinding{Advisory: report.Advisory{ID: "CVE-2025-8110", Source: "osv"}, Verdict: report.VerdictDisqualified, Priority: stale}).
-		AddFinding(report.AdvisoryFinding{Advisory: report.Advisory{ID: "GO-2021-0113", Source: "osv", Aliases: []string{"CVE-2021-38561"}}, Verdict: report.VerdictDisqualified}).
+		AddFinding(report.AdvisoryFinding{Advisory: report.Advisory{ID: "CVE-2025-8110", Source: "osv"}, Verdict: report.VerdictDisqualified,
+			Evidence: report.EvidenceSummary{Basis: verdict.BasisVersionNotAffected}, Priority: stale}).
+		AddFinding(report.AdvisoryFinding{Advisory: report.Advisory{ID: "GO-2021-0113", Source: "osv", Aliases: []string{"CVE-2021-38561"}}, Verdict: report.VerdictDisqualified,
+			Evidence: report.EvidenceSummary{Basis: verdict.BasisVersionNotAffected}}).
 		Build()
 	return &r
 }

@@ -1,3 +1,13 @@
 schema: ferralon.floor-expect.v1
 scan: complete
-findings: []
+findings:
+  - advisory: CVE-2026-116591
+    package: "-"
+    truth: reachable
+    floor: undetermined
+    note: "Reachable through the zstd encoder, not the decoder candidates.md cited. Pin go.mod:30 v1.18.6"
+  - advisory: CVE-2026-63209
+    package: "-"
+    truth: unreachable
+    floor: undetermined
+    note: "No s2 import outside vendor/."

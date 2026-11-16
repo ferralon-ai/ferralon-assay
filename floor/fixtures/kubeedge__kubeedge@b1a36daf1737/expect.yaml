@@ -1,3 +1,13 @@
 schema: ferralon.floor-expect.v1
 scan: complete
-findings: []
+findings:
+  - advisory: CVE-2026-85731
+    package: "oras.land/oras-go/v2@v2.5.0"
+    truth: unreachable
+    floor: reachable_candidate
+    note: "its declared content/file symbols are never imported"
+  - advisory: GHSA-w67g-5rqw-f597
+    package: "github.com/gorilla/websocket@v1.5.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "Path edgestream.TLSClientConnect -> websocket.Dialer.Dial, symbol_confidence high. Pin go.mod:20 v1.5.0"

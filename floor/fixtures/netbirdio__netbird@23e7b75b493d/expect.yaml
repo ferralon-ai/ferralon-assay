@@ -1,3 +1,8 @@
 schema: ferralon.floor-expect.v1
 scan: complete
-findings: []
+findings:
+  - advisory: CVE-2026-119299
+    package: "-"
+    truth: unreachable
+    floor: undetermined
+    note: "the only import is in a test file"

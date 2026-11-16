@@ -1,3 +1,8 @@
 schema: ferralon.floor-expect.v1
 scan: complete
-findings: []
+findings:
+  - advisory: CVE-2026-54462
+    package: "knative.dev/pkg@v0.0.0-20260120122510-4a022ed9999a"
+    truth: unreachable
+    floor: undetermined
+    note: "knative.dev/pkg/webhook is never imported"

@@ -1,3 +1,8 @@
 schema: ferralon.floor-expect.v1
 scan: complete
-findings: []
+findings:
+  - advisory: CVE-2026-55229
+    package: "-"
+    truth: unreachable
+    floor: undetermined
+    note: "Fix commit; no answer."

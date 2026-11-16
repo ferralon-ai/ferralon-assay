@@ -25,6 +25,13 @@
 //
 //	floorcheck paths -targets floor/targets.json [-target gitea]
 //
+// `packet` writes a review and reproduction packet for a reachable row (or every featured row): the
+// ledger row, the call path with a source link per hop, the analysis inputs, Assay's raw finding and
+// govulncheck's entry, and the commands that reproduce the row from a clean machine.
+//
+//	floorcheck packet -target gitea -row <key|advisory> | -featured [-report report.json] \
+//	                  [-source CHECKOUT] [-modcache DIR] [-goroot DIR] [-out DIR] [-verify-links]
+//
 // Exit status: 0 when every repository passed, 1 when any failed, 2 on a usage or input error.
 // docs/floor.md describes the run.
 package main
@@ -55,8 +62,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runSeed(args[1:], stdout, stderr)
 	case "paths":
 		return runPaths(args[1:], stdout, stderr)
+	case "packet":
+		return runPacket(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "floorcheck: unknown command %q (want matrix, check, seed or paths)\n", args[0])
+		fmt.Fprintf(stderr, "floorcheck: unknown command %q (want matrix, check, seed, paths or packet)\n", args[0])
 		return 2
 	}
 }

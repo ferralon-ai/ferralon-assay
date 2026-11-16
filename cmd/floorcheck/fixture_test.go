@@ -71,8 +71,17 @@ func (f testFloor) fixture(t *testing.T, name, scenario, expect string) string {
 // advisoryManifest is a directory corpus's manifest.json with one record; digest overrides the
 // record's pinned digest when not empty.
 func advisoryManifest(digest string) string {
+	return advisoryManifestFor(advisoryRecord, digest)
+}
+
+// advisoryRecord is a record the scanner reads: a recognized schema, the identifier it is filed
+// under, and an affected package.
+const advisoryRecord = `{"schema_version":"ferralon.normalized_advisory.v3","vuln_id":"GO-1","module":"golang.org/x/text"}`
+
+// advisoryManifestFor is advisoryManifest for a record body other than advisoryRecord.
+func advisoryManifestFor(record, digest string) string {
 	if digest == "" {
-		digest = "sha256:" + sha(`{"id":"GO-1"}`)
+		digest = "sha256:" + sha(record)
 	}
 	return `{"schema_version":"v2","record_count":1,
 "records":[{"identifier":"GO-1","path":"GO-1.json","output_digest":"` + digest + `"}]}`
@@ -81,8 +90,27 @@ func advisoryManifest(digest string) string {
 // advisoryDir writes a scanner-readable directory corpus inside a fixture.
 func advisoryDir(t *testing.T, dir, digest string) {
 	t.Helper()
-	write(t, dir, "intel/advisories/GO-1.json", `{"id":"GO-1"}`)
+	advisoryDirFor(t, dir, advisoryRecord)
 	write(t, dir, "intel/advisories/manifest.json", advisoryManifest(digest))
+}
+
+// advisoryDirFor writes a directory corpus holding record as GO-1, pinned by its own digest.
+func advisoryDirFor(t *testing.T, dir, record string) {
+	t.Helper()
+	write(t, dir, "intel/advisories/GO-1.json", record)
+	write(t, dir, "intel/advisories/manifest.json", advisoryManifestFor(record, ""))
+}
+
+// foreignRecord is filed as GO-1 but declares another id, which the scanner refuses; packagelessRecord
+// is readable but names no affected package.
+const (
+	foreignRecord     = `{"schema_version":"ferralon.normalized_advisory.v3","vuln_id":"GO-2","module":"golang.org/x/text"}`
+	packagelessRecord = `{"schema_version":"ferralon.normalized_advisory.v3","vuln_id":"GO-1"}`
+)
+
+// pinManifest is the intel block pinning localManifest with the given body.
+func pinManifest(manifest string) string {
+	return "  advisories:\n    path: " + localManifest + "\n    sha256: " + sha(manifest) + "\n"
 }
 
 // advisoriesIntel is the intel block pinning a manifest at path whose body is advisoryManifest(digest).
@@ -174,6 +202,10 @@ func TestLoadFixtureRejects(t *testing.T) {
 			setup: func(t *testing.T, _ testFloor, dir string) { advisoryDir(t, dir, "") }, kind: KindIntelUnverified, msg: "manifest.json"},
 		{name: "advisory record digest mismatch", scenario: scenarioYAML(advisoriesIntel(localManifest, "sha256:"+sha("nope"))),
 			setup: func(t *testing.T, _ testFloor, dir string) { advisoryDir(t, dir, "sha256:"+sha("nope")) }, kind: KindIntelUnverified, msg: "manifest pins"},
+		{name: "advisory record the scanner does not read", scenario: scenarioYAML(pinManifest(advisoryManifestFor(foreignRecord, ""))),
+			setup: func(t *testing.T, _ testFloor, dir string) { advisoryDirFor(t, dir, foreignRecord) }, kind: KindIntelUnverified, msg: "does not read this record"},
+		{name: "advisory record naming no package", scenario: scenarioYAML(pinManifest(advisoryManifestFor(packagelessRecord, ""))),
+			setup: func(t *testing.T, _ testFloor, dir string) { advisoryDirFor(t, dir, packagelessRecord) }, kind: KindIntelUnverified, msg: "names no affected package"},
 		{name: "unpinned signals.json beside the advisories", scenario: scenarioYAML(advisoriesIntel(localManifest, "")),
 			setup: func(t *testing.T, _ testFloor, dir string) {
 				advisoryDir(t, dir, "")

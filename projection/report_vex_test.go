@@ -2,6 +2,8 @@ package projection_test
 
 import (
 	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/projection"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
 func TestReportVEX_StatementPerFinding(t *testing.T) {
@@ -151,5 +154,74 @@ func TestMarshalReportVEX_RoundTrips(t *testing.T) {
 	}
 	if len(doc.Statements) != 3 {
 		t.Fatalf("round-trip statements: got %d, want 3", len(doc.Statements))
+	}
+}
+
+// TestReportVEX_ScopedVerdictProducts: a scoped verdict's statement names one product per binary, the
+// module's purl at the scanned commit with the binary's directory as a percent-encoded `binary`
+// qualifier, a main at the module root included, and says "binaries" for more than one. A scope with
+// no module has no product to name and is refused.
+func TestReportVEX_ScopedVerdictProducts(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		module  string
+		commit  string
+		targets []string
+		want    []string // product ids; nil = refused
+		impact  string
+	}{
+		{"one binary under cmd", "example.com/m", "abc123", []string{"cmd/tool"},
+			[]string{"pkg:golang/example.com/m@abc123?binary=cmd%2Ftool"}, "the shipped binary `cmd/tool`;"},
+		{"a main at the module root", "example.com/m", "abc123", []string{"."},
+			[]string{"pkg:golang/example.com/m@abc123?binary=."}, "the shipped binary `.`;"},
+		{"several binaries", "example.com/m", "abc123", []string{"cmd/a", "cmd/b"},
+			[]string{"pkg:golang/example.com/m@abc123?binary=cmd%2Fa", "pkg:golang/example.com/m@abc123?binary=cmd%2Fb"}, "the shipped binaries `cmd/a`, `cmd/b`;"},
+		{"no scanned commit", "example.com/m", "", []string{"cmd/tool"},
+			[]string{"pkg:golang/example.com/m?binary=cmd%2Ftool"}, "`cmd/tool`"},
+		{"a directory a qualifier may not hold bare", "example.com/m", "abc123", []string{"cmd/a&b c=d+e"},
+			[]string{"pkg:golang/example.com/m@abc123?binary=cmd%2Fa%26b%20c%3Dd%2Be"}, "`cmd/a&b c=d+e`"},
+		{"no module", "", "abc123", []string{"cmd/tool"}, nil, ""},
+	} {
+		r := report.Report{
+			SchemaVersion: report.SchemaVersion,
+			Subject:       report.Subject{Repo: "example.com/m", ResolvedCommit: tc.commit},
+			Advisories: []report.AdvisoryFinding{{
+				Advisory: report.Advisory{ID: "GO-1"},
+				Package:  &report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.1.0", PURL: "pkg:golang/golang.org/x/net@v0.1.0"},
+				Verdict:  report.VerdictUndetermined,
+				ScopedVerdicts: []report.ScopedVerdict{{
+					Verdict:  report.VerdictNotExploitable,
+					Scope:    report.Scope{Kind: report.ScopeBinaries, Targets: tc.targets, Module: tc.module},
+					Evidence: report.EvidenceSummary{Basis: verdict.BasisSymbolUnreachable, Detail: "started from the mains only"},
+				}},
+			}},
+		}
+		doc, err := projection.ProjectReportVEX(r)
+		if tc.want == nil {
+			if err == nil {
+				t.Errorf("%s: projected %+v, want refused", tc.name, doc)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: ProjectReportVEX: %v", tc.name, err)
+		}
+		if len(doc.Statements) != 2 {
+			t.Fatalf("%s: %d statements, want the finding's and the scoped one", tc.name, len(doc.Statements))
+		}
+		bin := doc.Statements[1]
+		var got []string
+		for _, p := range bin.Products {
+			got = append(got, p.ID)
+			if len(p.Subcomponents) != 1 || p.Subcomponents[0].ID != "pkg:golang/golang.org/x/net@v0.1.0" {
+				t.Errorf("%s: product %s subcomponents = %+v, want the dependency", tc.name, p.ID, p.Subcomponents)
+			}
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: products = %q, want %q", tc.name, got, tc.want)
+		}
+		if bin.Status != projection.VEXStatusNotAffected || !strings.Contains(bin.ImpactStatement, tc.impact) {
+			t.Errorf("%s: statement = %s %q, want not_affected naming %q", tc.name, bin.Status, bin.ImpactStatement, tc.impact)
+		}
 	}
 }

@@ -12,11 +12,15 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// TestReconciledResult_WithholdsForUnsearchedMethods: an exported method govulncheck never searches (one
-// of a generic type, or one promoted from a type outside its entry points) withholds a refutation
-// when the package declaring it imports the refuted module, directly or through other packages, and
-// leaves it standing otherwise. The library packages are internal, so library_escape stays out of it.
-func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
+// TestWithholdRefutation_UnsearchedMethods: among the library view's withholds (withholdRefutation),
+// with the entry points resolved from no declaration as production resolves them, an exported method
+// govulncheck never searches (one of a generic type, or one promoted from a type outside its entry
+// points) on an exported package-level type of the entry package lib withholds a refutation as
+// unsearched_methods when the package declaring it imports the refuted module, directly or through
+// other packages. Any other method, or one in the main package, which is no entry point, declares no
+// unsearched_methods; lib may still withhold the refutation as library_escape, which is another
+// test's. The build leaves no file out, so excluded_files is never declared.
+func TestWithholdRefutation_UnsearchedMethods(t *testing.T) {
 	base := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
 		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
@@ -36,51 +40,51 @@ func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 		withheld bool
 	}{
 		{"an exported method of a library type, which govulncheck searches", map[string]string{
-			"internal/lib/lib.go": lib + "type S struct{}\n\nfunc (S) Dispatch() { vulnmod.Bad() }\n",
+			"lib/lib.go": lib + "type S struct{}\n\nfunc (S) Dispatch() { vulnmod.Bad() }\n",
 		}, moduleFinding, false},
 		{"an exported method of a generic library type", map[string]string{
-			"internal/lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { vulnmod.Bad() }\n",
+			"lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { vulnmod.Bad() }\n",
 		}, moduleFinding, true},
 		{"an exported pointer method of a generic library type", map[string]string{
-			"internal/lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (*Box[T]) Dispatch() { vulnmod.Bad() }\n",
+			"lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (*Box[T]) Dispatch() { vulnmod.Bad() }\n",
 		}, moduleFinding, true},
 		{"a generic library type whose package reaches the module through another package", map[string]string{
-			"internal/lib/lib.go":     "package lib\n\nimport \"example.com/m/internal/inner\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { inner.Run() }\n",
+			"lib/lib.go":              "package lib\n\nimport \"example.com/m/internal/inner\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { inner.Run() }\n",
 			"internal/inner/inner.go": "package inner\n\nimport \"example.com/vulnmod\"\n\nfunc Run() { vulnmod.Bad() }\n",
 		}, moduleFinding, true},
 		{"a generic library type whose package does not import the module", map[string]string{
-			"internal/lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() string { return strings.ToUpper(\"x\") }\n",
+			"lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() string { return strings.ToUpper(\"x\") }\n",
 		}, moduleFinding, false},
 		{"an unexported method of a generic library type", map[string]string{
-			"internal/lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (Box[T]) dispatch() { vulnmod.Bad() }\n\nfunc Run() { Box[int]{}.dispatch() }\n\nvar _ = vulnmod.Safe\n",
+			"lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (Box[T]) dispatch() { vulnmod.Bad() }\n\nfunc Run() { Box[int]{}.dispatch() }\n\nvar _ = vulnmod.Safe\n",
 		}, moduleFinding, false},
 		{"a generic type in the main package", map[string]string{
 			"main.go": "package main\n\nimport \"example.com/vulnmod\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { vulnmod.Bad() }\n\nfunc main() { vulnmod.Safe() }\n",
 		}, moduleFinding, false},
 		{"a method promoted from the module's type", map[string]string{
-			"internal/lib/lib.go": lib + "type S struct{ vulnmod.T }\n",
+			"lib/lib.go": lib + "type S struct{ vulnmod.T }\n",
 		}, moduleFinding, true},
 		{"a method promoted into a type declared in a library function", map[string]string{
-			"internal/lib/lib.go": lib + "func New() any {\n\ttype s struct{ vulnmod.T }\n\treturn s{}\n}\n",
+			"lib/lib.go": lib + "func New() any {\n\ttype s struct{ vulnmod.T }\n\treturn s{}\n}\n",
 		}, moduleFinding, false},
 		{"an alias to an instantiation of the module's generic type", map[string]string{
-			"internal/lib/lib.go": lib + "type A = vulnmod.G[int]\n",
+			"lib/lib.go": lib + "type A = vulnmod.G[int]\n",
 		}, moduleFinding, true},
 		{"a generic alias to the module's generic type", map[string]string{
-			"go.mod":              "module example.com/m\n\ngo 1.24\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
-			"internal/lib/lib.go": lib + "type A[X any] = vulnmod.G[X]\n",
+			"go.mod":     "module example.com/m\n\ngo 1.24\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+			"lib/lib.go": lib + "type A[X any] = vulnmod.G[X]\n",
 		}, moduleFinding, true},
 		{"an alias to a struct embedding the module's type", map[string]string{
-			"internal/lib/lib.go": lib + "type A = struct{ vulnmod.T }\n",
+			"lib/lib.go": lib + "type A = struct{ vulnmod.T }\n",
 		}, moduleFinding, true},
 		{"an alias to a type from a package that does not import the module", map[string]string{
-			"internal/lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype A = strings.Builder\n",
+			"lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype A = strings.Builder\n",
 		}, moduleFinding, false},
 		{"standard-library refutation, a generic type's package imports the vulnerable package", map[string]string{
-			"internal/lib/lib.go": "package lib\n\nimport \"encoding/xml\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Decode() *xml.Decoder { return xml.NewDecoder(nil) }\n",
+			"lib/lib.go": "package lib\n\nimport \"encoding/xml\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Decode() *xml.Decoder { return xml.NewDecoder(nil) }\n",
 		}, stdlibFinding, true},
 		{"standard-library refutation, a generic type's package imports another standard package", map[string]string{
-			"internal/lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() string { return strings.ToUpper(\"x\") }\n",
+			"lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() string { return strings.ToUpper(\"x\") }\n",
 		}, stdlibFinding, false},
 	}
 	for _, tc := range cases {
@@ -94,15 +98,18 @@ func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 			if tc.scanned.imports != nil {
 				module = "pkg:golang/stdlib"
 			}
-			res := withholdForUnsearchedMethods(plugin.ReachabilityResult{
+			res := withholdRefutation(context.Background(), plugin.ReachabilityResult{
 				Partiality: plugin.Complete(),
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: module},
-			}, tc.scanned, load.Packages, entrypoints{pkgs: load.Packages})
-			if withheld := res.Refutation == nil; withheld != tc.withheld {
-				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
-			}
+			}, tc.scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"), resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir))
 			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonUnsearchedMethods); declared != tc.withheld {
 				t.Errorf("unsearched_methods declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
+			}
+			if tc.withheld && res.Refutation != nil {
+				t.Errorf("refutation stands beside unsearched_methods: %+v", res.Refutation)
+			}
+			if declaresExcluded(res.Partiality.Reasons) {
+				t.Errorf("excluded_files declared with nothing left out (partiality %+v)", res.Partiality)
 			}
 		})
 	}
@@ -207,10 +214,14 @@ func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, plugin.LibraryEntrypoints{})
-			if err != nil {
-				t.Fatal(err)
+			module := "pkg:golang/example.com/vulnmod"
+			if tc.scanned.imports != nil {
+				module = "pkg:golang/stdlib"
 			}
+			res := withholdRefutation(context.Background(), plugin.ReachabilityResult{
+				Partiality: plugin.Complete(),
+				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: module},
+			}, tc.scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"), resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}

@@ -34,7 +34,10 @@ The program view rules an advisory out only when:
   finds no call to its vulnerable functions;
 - the load is complete and its cgo state is known;
 - no file the build left out (another platform, a build tag) may call into the module
-  (`excluded_files`), and no call reflection makes may reach it (`reflection:call`).
+  (`excluded_files`), and no call reflection makes may reach it (`reflection:call`);
+- the run declares no limit that says a step did not run: no run-wide reason other than `reflection`
+  and `dynamic_dispatch`, which are limits of the method, and no scoped limit that is unbounded or can
+  reach the module.
 
 It leaves out the two checks that ask who imports the build: `library_escape` and `unsearched_methods`.
 A step that cannot be completed leaves the view empty. It never concludes from what it did not run.
@@ -69,11 +72,14 @@ view's. Counts of verdicts count the row once.
   every caller). `Report.Validate` rejects it elsewhere.
 - `verdict` is always `not_exploitable`. `scope.kind` is `binaries`; `scope.targets` are the main
   packages' directories relative to the module root, sorted (`.` for a main at the root);
-  `scope.module` is the scanned module's path.
+  `scope.module` is the scanned module's path, and `Report.Validate` rejects a scope without it.
 - `evidence` has the same fields as any `not_exploitable`. Its basis is `vulnerable_symbol_unreachable`.
   It carries no `assumptions`: the scope is the whole of its claim.
 - The grounds are those of any refutation: the admitted package's version resolved, the advisory names
-  no other package, and the refutation is of the admitted package.
+  no other package, and the refutation is of the admitted package. The row also passes the gate every
+  `not_exploitable` passes: no toolchain axis left undetermined and no did-not-run limit counting for
+  the package, other than the library-entry withholds the program view answers. A `reachable_candidate`
+  row is held to it too, though its own verdict never reaches that gate.
 
 ## Wording
 
@@ -91,7 +97,8 @@ The finding keeps its own statement, for the module's package, with the library 
 each scoped verdict, a second statement follows it:
 
 - `products`: one per binary, `@id` the **binary**: `pkg:golang/<module>@<scanned commit>?binary=<target>`,
-  for example `pkg:golang/github.com/traefik/traefik/v3@020ab5f3…?binary=cmd/traefik`. The vulnerable
+  the target percent-encoded as a purl qualifier value is, for example
+  `pkg:golang/github.com/traefik/traefik/v3@020ab5f3…?binary=cmd%2Ftraefik`. The vulnerable
   dependency's purl is the product's `subcomponents[].@id`.
 - `status`: `not_affected`, `justification`: `vulnerable_code_not_in_execute_path`, and an
   `impact_statement` with the sentence above.

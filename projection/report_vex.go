@@ -42,6 +42,7 @@ package projection
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
@@ -91,6 +92,9 @@ func ProjectReportVEX(r report.Report) (*VEXDocument, error) {
 		stmt.StatusNotes = annotationsStatement(f.Annotations)
 		stmts = append(stmts, stmt)
 		for _, sv := range f.ScopedVerdicts {
+			if sv.Scope.Module == "" {
+				return nil, fmt.Errorf("projection/report_vex: advisory %q carries a scoped verdict that names no module, so no product can name its binaries", f.Advisory.ID)
+			}
 			stmts = append(stmts, scopedVEXStatement(r, f, sv))
 		}
 	}
@@ -115,7 +119,7 @@ func scopedVEXStatement(r report.Report, f report.AdvisoryFinding, sv report.Sco
 	dep := VEXSubcomponent{ID: reportProductID(f.Package, r.Subject)}
 	products := make([]VEXProduct, len(sv.Scope.Targets))
 	for i, t := range sv.Scope.Targets {
-		products[i] = VEXProduct{ID: binaryProductID(sv.Scope.Module, t, r.Subject), Subcomponents: []VEXSubcomponent{dep}}
+		products[i] = VEXProduct{ID: binaryProductID(sv.Scope.Module, t, r.Subject.ResolvedCommit), Subcomponents: []VEXSubcomponent{dep}}
 	}
 	impact := sv.Statement()
 	if a := assumptionsStatement(sv.Evidence.Assumptions); a != "" {
@@ -134,19 +138,19 @@ func scopedVEXStatement(r report.Report, f report.AdvisoryFinding, sv report.Sco
 
 // binaryProductID is the OpenVEX product identifier of a shipped binary: the purl of the module it is
 // built from, at the scanned commit when the report has one, with a `binary` qualifier naming the main
-// package's directory ("pkg:golang/github.com/traefik/traefik/v3@<commit>?binary=cmd/traefik"). The
-// qualifier is on every binary, a main at the module root included ("?binary=."), so no binary's
-// identifier is ever the module's own purl, which names the library view. A scope that records no
-// module falls back to the scanned repository's coordinates.
-func binaryProductID(module, target string, subj report.Subject) string {
-	if module == "" {
-		return reportProductID(nil, subj) + "?binary=" + target
-	}
+// package's directory, percent-encoded as a purl qualifier value is
+// ("pkg:golang/github.com/traefik/traefik/v3@<commit>?binary=cmd%2Ftraefik"). The qualifier is on
+// every binary, a main at the module root included ("?binary=."), so no binary's identifier is ever
+// the module's own purl, which names the library view. A scope always names its module
+// (report.Scope.Module); ProjectReportVEX refuses one that does not.
+func binaryProductID(module, target, commit string) string {
 	id := "pkg:golang/" + module
-	if subj.ResolvedCommit != "" {
-		id += "@" + subj.ResolvedCommit
+	if commit != "" {
+		id += "@" + commit
 	}
-	return id + "?binary=" + target
+	// QueryEscape encodes every character a qualifier value may not hold bare, '/' and '&' among
+	// them, but writes a space as '+', which a purl spells %20.
+	return id + "?binary=" + strings.ReplaceAll(url.QueryEscape(target), "+", "%20")
 }
 
 // MarshalReportVEX projects and JSON-encodes (indented) in one call.

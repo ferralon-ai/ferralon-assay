@@ -81,6 +81,8 @@ A Go dependency advisory gets per-advisory govulncheck evidence. `reachable_cand
 | Go stdlib / toolchain advisories | Partial | [GO-TOOLCHAIN-NOT-SCANNED](#go-toolchain-not-scanned), [GO-TOOLCHAIN-PRE121](#go-toolchain-pre121) |
 | Run-wide did-not-run gate on `not_exploitable` | Partial | [GO-CGO](#go-cgo), [GO-PLUGIN-LOAD](#go-plugin-load) |
 
+`unsearched_methods` counts only the exported methods govulncheck never searches (a generic type's, or one promoted from a type outside the search) on an exported package-level type in a library entry point, the packages [GO-LIBRARY-ESCAPE](#go-library-escape) names, and only when the package declaring the method reaches one of the refuted module's vulnerable packages. A method of an unexported type, a type declared inside a function, or a package outside the entry points (a `main` package, `internal/` or `cmd/` under `auto`) no longer withholds the refutation.
+
 ## 6. Framework & dynamic-dispatch modeling
 
 Ingress discovery recognises net/http handlers and route registrars, the macaron, go-chi, gin and echo/v4 routers, and SSH server handlers. Reachability does not depend on ingress for dependency advisories (govulncheck supplies the entry roots), so ingress only decides whether a first-party path is rooted at a network surface. Taint is tracked at variable level over SSA, with an explicit sanitizer allow-list.

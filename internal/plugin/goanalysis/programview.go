@@ -46,10 +46,10 @@ func shippedMains(pkgs []*packages.Package) []*packages.Package {
 // The view is a refutation only when govulncheck, run over the shipped mains alone, finds the module
 // and no call to its vulnerable functions, and every check that does not depend on who imports the
 // build still passes: the load is complete and its cgo state known, no file the build left out may
-// call into the module, and no call reflection makes may reach it. The library-entry checks
-// (withholdForLibraryEscape, withholdForUnsearchedMethods) are what the view leaves out, and the
-// scope it reports says so. Any step that cannot be completed leaves the view empty: it never
-// concludes from what it did not run.
+// call into the module, no call reflection makes may reach it, and the run declares no limit that says
+// a step did not run (programRunPartial). The library-entry checks (withholdForLibraryEscape,
+// withholdForUnsearchedMethods) are what the view leaves out, and the scope it reports says so. Any
+// step that cannot be completed leaves the view empty: it never concludes from what it did not run.
 func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error)) *plugin.ProgramView {
 	if res.Refutation != nil || scanned.partial != nil || scanned.vulnID == "" || len(scanned.findings) == 0 ||
 		evidence.Refutation == nil && len(evidence.Paths) == 0 {
@@ -85,7 +85,8 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 		return nil
 	}
 	ruled := evidenceResult(prog.findings, g.CallGraph, env)
-	if ruled.Refutation == nil || len(ruled.Paths) > 0 || ruled.Refutation.Package != library.Package {
+	if ruled.Refutation == nil || len(ruled.Paths) > 0 || ruled.Refutation.Package != library.Package ||
+		programRunPartial(ruled.Partiality, ruled.Refutation.Package) {
 		return nil
 	}
 	ruled = withholdForLeftOutFiles(ctx, ruled, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env)
@@ -105,6 +106,32 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 	refutation.Detail = "started from the main and init of " + strings.Join(binaries, ", ") + " only: " + refutation.Detail
 	refutation.Assumptions = nil
 	return &plugin.ProgramView{Module: module, Binaries: binaries, Refutation: refutation}
+}
+
+// inherentReasons are the run-wide limits the program run may declare and still answer: the call
+// graph's reflection and interface dispatch, limits of the method on every scan
+// (report.ClassifyPartialityReason). What reflection's calls reach is ruled on by
+// withholdForReflectReach.
+var inherentReasons = []string{plugin.PartialReasonReflection, plugin.PartialReasonDynamicDispatch}
+
+// programRunPartial reports whether the program run's partiality says a step it rests on did not run
+// for the refuted module (a PURL): a run-wide reason other than inherentReasons, or a scoped limit that
+// is unbounded, or whose package or targets name the module, one it lies under, or one under it. The
+// standard library is matched by no module path, so for it every scoped limit counts.
+func programRunPartial(p plugin.Partiality, refuted string) bool {
+	if slices.ContainsFunc(p.Reasons, func(r string) bool { return !slices.Contains(inherentReasons, r) }) {
+		return true
+	}
+	module := strings.ToLower(packageFromPURL(refuted))
+	return slices.ContainsFunc(p.Scoped, func(s plugin.ScopedReason) bool {
+		if len(s.Targets) == 0 || module == "" || module == "stdlib" {
+			return true
+		}
+		return slices.ContainsFunc(append([]string{s.Package}, s.Targets...), func(t string) bool {
+			path := strings.ToLower(packageFromPURL(t))
+			return path != "" && (underModule(path, module) || underModule(module, path))
+		})
+	})
 }
 
 // singleModule reports whether every package is in one module, so the binaries have one module to

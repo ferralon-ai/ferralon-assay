@@ -10,18 +10,13 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
-// TestFinding_ScopedVerdict: when the library view's refutation is withheld (library_escape) and the
-// lane's program view rules the advisory out, the row keeps the library view's verdict and carries a
-// not_exploitable scoped to the shipped binaries; the OpenVEX statement for it names the binary as
-// its product, and SARIF carries the scope. A program view of another package, or none, adds nothing.
+// TestFinding_ScopedVerdict: when the library view's refutation is withheld (library_escape), or the
+// library view holds a path, and the lane's program view rules the advisory out, the row keeps the
+// library view's verdict and carries a not_exploitable scoped to the shipped binaries; the OpenVEX
+// statement for it names the binary as its product, and SARIF carries the scope. A program view of
+// another package, or none, adds nothing, and neither row kind carries one past a did-not-run limit,
+// which holds a library not_exploitable back too.
 func TestFinding_ScopedVerdict(t *testing.T) {
-	withheld := func(view *plugin.ProgramView) groundsFixture {
-		fx := netNotReached()
-		fx.reach.Refutation = nil
-		fx.reach.ProgramView = view
-		fx.footprint = []string{plugin.PartialReasonLibraryEscape}
-		return fx
-	}
 	view := func(pkg string) *plugin.ProgramView {
 		return &plugin.ProgramView{
 			Module:   "example.com/m",
@@ -33,18 +28,39 @@ func TestFinding_ScopedVerdict(t *testing.T) {
 			},
 		}
 	}
+	net := view("pkg:golang/golang.org/x/net")
+	withheld := func(view *plugin.ProgramView, footprint ...string) groundsFixture {
+		fx := netNotReached()
+		fx.reach.Refutation = nil
+		fx.reach.ProgramView = view
+		fx.footprint = append([]string{plugin.PartialReasonLibraryEscape}, footprint...)
+		return fx
+	}
+	candidate := func(view *plugin.ProgramView, footprint ...string) groundsFixture {
+		fx := netNotReached()
+		fx.reach.Refutation = nil
+		fx.reach.ProgramView = view
+		fx.candidate = true
+		fx.footprint = footprint
+		return fx
+	}
 	for _, tc := range []struct {
-		name string
-		fx   groundsFixture
-		want bool
+		name   string
+		fx     groundsFixture
+		row    report.Verdict
+		reason string
+		want   bool
 	}{
-		{"the program view rules it out", withheld(view("pkg:golang/golang.org/x/net")), true},
-		{"no program view", withheld(nil), false},
-		{"a program view of another package", withheld(view("pkg:golang/golang.org/x/text")), false},
+		{"the program view rules it out", withheld(net), report.VerdictUndetermined, report.ReasonRefutationWithheld, true},
+		{"no program view", withheld(nil), report.VerdictUndetermined, report.ReasonRefutationWithheld, false},
+		{"a program view of another package", withheld(view("pkg:golang/golang.org/x/text")), report.VerdictUndetermined, report.ReasonRefutationWithheld, false},
+		{"a withheld refutation beside a step that did not run", withheld(net, plugin.PartialReasonToolFailure), report.VerdictUndetermined, report.ReasonAnalysisDidNotRun, false},
+		{"a reachable candidate the program view rules out", candidate(net), report.VerdictReachableCandidate, "", true},
+		{"a reachable candidate beside a step that did not run", candidate(net, plugin.PartialReasonToolFailure), report.VerdictReachableCandidate, "", false},
 	} {
 		f := tc.fx.finding(t)
-		if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonRefutationWithheld {
-			t.Fatalf("%s: library view = %s/%q, want undetermined/refutation_withheld, unchanged", tc.name, f.Verdict, f.UndeterminedReason)
+		if f.Verdict != tc.row || f.UndeterminedReason != tc.reason {
+			t.Fatalf("%s: library view = %s/%q, want %s/%q, unchanged", tc.name, f.Verdict, f.UndeterminedReason, tc.row, tc.reason)
 		}
 		if (len(f.ScopedVerdicts) > 0) != tc.want {
 			t.Fatalf("%s: scoped verdicts = %+v, want present %v", tc.name, f.ScopedVerdicts, tc.want)
@@ -68,11 +84,11 @@ func TestFinding_ScopedVerdict(t *testing.T) {
 			t.Fatalf("%s: %d statements, want the library view's and the binary's", tc.name, len(doc.Statements))
 		}
 		lib, bin := doc.Statements[0], doc.Statements[1]
-		if lib.Status != projection.VEXStatusUnderInvestigation || lib.Products[0].ID != "pkg:golang/golang.org/x/net@v0.1.0" {
-			t.Errorf("%s: library statement = %+v, want the module's under_investigation", tc.name, lib)
+		if lib.Status == projection.VEXStatusNotAffected || lib.Products[0].ID != "pkg:golang/golang.org/x/net@v0.1.0" {
+			t.Errorf("%s: library statement = %+v, want the module's own, not not_affected", tc.name, lib)
 		}
 		if bin.Status != projection.VEXStatusNotAffected || bin.Justification != projection.VEXJustNotInExecutePath ||
-			bin.Products[0].ID != "pkg:golang/example.com/m@abc123?binary=cmd/tool" ||
+			bin.Products[0].ID != "pkg:golang/example.com/m@abc123?binary=cmd%2Ftool" ||
 			bin.Products[0].Subcomponents[0].ID != "pkg:golang/golang.org/x/net@v0.1.0" ||
 			!strings.Contains(bin.ImpactStatement, "Not reachable from the shipped binary `cmd/tool`; still possible when this module is imported as a library.") {
 			t.Errorf("%s: binary statement = %+v", tc.name, bin)

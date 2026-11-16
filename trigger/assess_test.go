@@ -37,6 +37,7 @@ type groundsFixture struct {
 	provenance      string // symbol_provenance; "" = osv-declared
 	untagged        bool   // the record carries no symbol_provenance
 	builtIn         bool   // the house-canary source's origin marker
+	candidate       bool   // a candidate pair and a bounded affected range are recorded: the row is a reachable_candidate
 }
 
 func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
@@ -60,6 +61,9 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 	if fx.builtIn {
 		adv["built_in"] = true
 	}
+	if fx.candidate {
+		adv["affected_ranges"] = []map[string]string{{"type": "SEMVER", "upper_exclusive": "v0.2.0"}}
+	}
 	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, adv)
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, fx.resolution)
 	cg := plugin.CallGraphResult{Partiality: plugin.Complete(), Edges: []plugin.CallEdge{depEdge("main", "lib")}}
@@ -74,6 +78,9 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 	}
 	if fx.inventory != nil {
 		putJSON(t, store, aid, artifact.TypeInventory, inventoryFacts{PartialityFlags: fx.inventory})
+	}
+	if fx.candidate {
+		putJSON(t, store, aid, artifact.TypeCandidatePair, artifact.CandidatePair{SchemaVersion: artifact.CandidatePairSchemaVersion})
 	}
 	return findingInBuild(store, aid, report.Advisory{ID: "GHSA-test", Source: "corpus"}, fx.pkg, fx.mods)
 }

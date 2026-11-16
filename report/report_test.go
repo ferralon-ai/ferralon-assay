@@ -157,6 +157,43 @@ func TestReportValidate(t *testing.T) {
 	})
 }
 
+// TestReportValidate_ScopedVerdicts: a scoped verdict narrows only a reachable_candidate or an
+// undetermined row, never one that already has a verdict of its own, and is a not_exploitable resting
+// on reachability that names its binaries and their module.
+func TestReportValidate_ScopedVerdicts(t *testing.T) {
+	scoped := func() ScopedVerdict {
+		return ScopedVerdict{
+			Verdict:  VerdictNotExploitable,
+			Scope:    Scope{Kind: ScopeBinaries, Targets: []string{"cmd/tool"}, Module: "example.com/m"},
+			Evidence: EvidenceSummary{Basis: verdict.BasisSymbolUnreachable, Detail: "started from the mains only"},
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		row   func() Report // the report whose first advisory carries the scoped verdict
+		edit  func(*ScopedVerdict)
+		valid bool
+	}{
+		{"on an undetermined row", undeterminedReport, func(*ScopedVerdict) {}, true},
+		{"on a reachable candidate", func() Report { r := fullReport(); r.Advisories = r.Advisories[2:]; return r }, func(*ScopedVerdict) {}, true},
+		{"on a not_exploitable row", func() Report { r := fullReport(); r.Advisories = r.Advisories[1:2]; return r }, func(*ScopedVerdict) {}, false},
+		{"on a disqualified row", func() Report { r := fullReport(); r.Advisories = r.Advisories[:1]; return r }, func(*ScopedVerdict) {}, false},
+		{"a scoped reachable_candidate", undeterminedReport, func(v *ScopedVerdict) { v.Verdict = VerdictReachableCandidate }, false},
+		{"a scope of no kind", undeterminedReport, func(v *ScopedVerdict) { v.Scope.Kind = "" }, false},
+		{"a scope with no binaries", undeterminedReport, func(v *ScopedVerdict) { v.Scope.Targets = nil }, false},
+		{"a scope with no module", undeterminedReport, func(v *ScopedVerdict) { v.Scope.Module = "" }, false},
+		{"a basis other than reachability", undeterminedReport, func(v *ScopedVerdict) { v.Evidence.Basis = verdict.BasisSymbolAbsent }, false},
+	} {
+		r := tc.row()
+		v := scoped()
+		tc.edit(&v)
+		r.Advisories[0].ScopedVerdicts = []ScopedVerdict{v}
+		if err := r.Validate(); (err == nil) != tc.valid {
+			t.Errorf("%s: Validate = %v, want valid %v", tc.name, err, tc.valid)
+		}
+	}
+}
+
 // undeterminedReport is the minimal legal undetermined finding: a verdict, a reason, and nothing
 // that would make it an assertion.
 func undeterminedReport() Report {

@@ -92,9 +92,16 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 // scopedVerdicts is the not_exploitable the lane's program view grounds for the admitted package, scoped
 // to the build's shipped binaries, or none. It speaks beside a row whose own verdict is the library view
 // and never replaces it; the caller offers it only on a reachable_candidate or a refutation_withheld
-// row. It takes the same positive grounds as arm B of notExploitableGrounds: the admitted package's
-// version resolved, the advisory names no other package, and the refutation is of the admitted package.
+// row. It passes the gate every not_exploitable passes (undeterminedReason): with no reason, or only
+// refutation_withheld, whose limits are the library-entry withholds the view answers. A reachable
+// candidate never reached that gate, so a toolchain axis left undetermined or a did-not-run limit in
+// the footprint holds its scoped verdict back as it would hold a library one. It then takes the same
+// positive grounds as arm B of notExploitableGrounds: the admitted package's version resolved, the
+// advisory names no other package, and the refutation is of the admitted package.
 func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) []report.ScopedVerdict {
+	if reason, undetermined := undeterminedReason(store, assessmentID, pkg); undetermined && reason != report.ReasonRefutationWithheld {
+		return nil
+	}
 	reach, _ := reachabilityResult(store, assessmentID)
 	view := reach.ProgramView
 	if view == nil || len(view.Binaries) == 0 || view.Refutation.Package == "" || view.Refutation.Basis != plugin.RefutationAnalyzerSymbolNotReached {

@@ -1479,7 +1479,8 @@ func (r Report) Validate() error {
 }
 
 // validateScoped checks f's scoped verdicts: they qualify only a reachable_candidate or an
-// undetermined row, and each is a not_exploitable resting on reachability for a named scope.
+// undetermined row, and each is a not_exploitable resting on reachability for a named scope: its
+// binaries and the module they are built from.
 func (f AdvisoryFinding) validateScoped() error {
 	if len(f.ScopedVerdicts) == 0 {
 		return nil
@@ -1492,9 +1493,9 @@ func (f AdvisoryFinding) validateScoped() error {
 		switch {
 		case v.Verdict != VerdictNotExploitable:
 			return fmt.Errorf("report: advisory %q carries a scoped verdict %q (a scope narrows only to not_exploitable)", f.Advisory.ID, v.Verdict)
-		case v.Scope.Kind != ScopeBinaries || len(v.Scope.Targets) == 0:
-			return fmt.Errorf("report: advisory %q carries a scoped verdict with scope kind %q and %d targets (it must name its binaries)",
-				f.Advisory.ID, v.Scope.Kind, len(v.Scope.Targets))
+		case v.Scope.Kind != ScopeBinaries || len(v.Scope.Targets) == 0 || v.Scope.Module == "":
+			return fmt.Errorf("report: advisory %q carries a scoped verdict with scope kind %q, %d targets and module %q (it must name its binaries and their module)",
+				f.Advisory.ID, v.Scope.Kind, len(v.Scope.Targets), v.Scope.Module)
 		case v.Evidence.Basis != verdict.BasisSymbolUnreachable:
 			return fmt.Errorf("report: advisory %q carries a scoped verdict with basis %q (a program view rests on reachability)", f.Advisory.ID, v.Evidence.Basis)
 		}

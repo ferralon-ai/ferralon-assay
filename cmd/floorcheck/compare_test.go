@@ -261,6 +261,9 @@ func TestCompareFixture(t *testing.T) {
 		{name: "regression outranks a missing finding read as incomplete", fx: testFixture(ScanComplete, nil, expect(TruthUnreachable, ne),
 			Expectation{Advisory: "GO-404", Package: "m@v1", Truth: TruthReachable, Floor: rc}),
 			obs: observation{report: floorReport(t, good), hasReport: true}, outcome: OutcomeRegressed, incomplete: []string{KindMissingFinding}, exit: 1},
+		{name: "regression after a missing finding read as incomplete", fx: testFixture(ScanComplete, nil,
+			Expectation{Advisory: "GO-404", Package: "m@v1", Truth: TruthReachable, Floor: rc}, expect(TruthUnreachable, ne)),
+			obs: observation{report: floorReport(t, good), hasReport: true}, outcome: OutcomeRegressed, incomplete: []string{KindMissingFinding}, exit: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rules := defaultRules

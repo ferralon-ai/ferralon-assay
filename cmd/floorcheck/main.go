@@ -50,7 +50,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: floorcheck matrix|check|seed|paths|packet|run|list|diff [flags]")
+		fmt.Fprintln(stderr, "usage: floorcheck matrix|check|seed|paths|packet|run|list|validate|diff [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -71,10 +71,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRun(args[1:], stdout, stderr)
 	case "list":
 		return runList(args[1:], stdout, stderr)
+	case "validate":
+		return runValidate(args[1:], stdout, stderr)
 	case "diff":
 		return runDiff(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "floorcheck: unknown command %q (want matrix, check, seed, paths, packet, run, list or diff)\n", args[0])
+		fmt.Fprintf(stderr, "floorcheck: unknown command %q (want matrix, check, seed, paths, packet, run, list, validate or diff)\n", args[0])
 		return 2
 	}
 }

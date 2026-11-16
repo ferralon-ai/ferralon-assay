@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -44,23 +45,28 @@ type Scenario struct {
 	Scan   ScenarioScan  `yaml:"scan"`
 }
 
-// ScenarioBuild pins the subject's build. Go is the toolchain version without its "go" prefix.
+// ScenarioBuild pins the subject's build. Go is the exact toolchain version without its "go" prefix;
+// the go fields belong to the go lane only. JDK, Node and Python are the runtime majors (Python
+// major.minor) the CI matrix installs, each for its own lane only.
 type ScenarioBuild struct {
 	Go     string `yaml:"go,omitempty"`
 	GOOS   string `yaml:"goos,omitempty"`
 	GOARCH string `yaml:"goarch,omitempty"`
 	CGO    *bool  `yaml:"cgo,omitempty"`
+	JDK    string `yaml:"jdk,omitempty"`
+	Node   string `yaml:"node,omitempty"`
+	Python string `yaml:"python,omitempty"`
 }
 
 // ScenarioIntel names the intelligence the scan reads. Corpus and Signals are relative to the floor
-// root and must resolve under its intel/ directory; Advisories is relative to the fixture and stays
-// inside it. Exactly one of Corpus and Advisories is the scan's -advisory-corpus: the scanner reads one
-// source and layers none.
+// root and must resolve under its intel/ directory. Advisories pins a directory corpus's manifest.json,
+// relative to the fixture and inside it; the directory holding it is the corpus. Exactly one of Corpus
+// and Advisories is the scan's -advisory-corpus: the scanner reads one source and layers none.
 type ScenarioIntel struct {
 	Policy     string      `yaml:"policy"`
 	Corpus     *PinnedFile `yaml:"corpus,omitempty"`
 	Signals    *PinnedFile `yaml:"signals,omitempty"`
-	Advisories string      `yaml:"advisories,omitempty"`
+	Advisories *PinnedFile `yaml:"advisories,omitempty"`
 	Provenance string      `yaml:"provenance,omitempty"`
 }
 
@@ -122,8 +128,18 @@ const (
 var (
 	fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	sha256Hex  = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	goVersion  = regexp.MustCompile(`^1\.[0-9]+(\.[0-9]+|rc[0-9]+)?$`)
+	goVersion  = regexp.MustCompile(`^1\.[0-9]+\.[0-9]+$`)
+	majorOnly  = regexp.MustCompile(`^[1-9][0-9]*$`)
+	pyVersion  = regexp.MustCompile(`^3\.[0-9]+$`)
+	ghName     = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_.-]*$`)
 )
+
+// runtimeLane is the lang each non-go build field belongs to.
+var runtimeLane = map[string][]string{
+	"jdk":    {"java", "kotlin"},
+	"node":   {"js"},
+	"python": {"python"},
+}
 
 // harnessFlags are the scanner flags the harness sets itself; scan.flags may not restate them.
 var harnessFlags = []string{
@@ -159,6 +175,8 @@ const (
 	KindCheckoutFailed  = "checkout_failed"
 	KindSubjectMismatch = "subject_mismatch"
 	KindMissingFinding  = "missing_finding"
+	// KindObservationFailed is a fixture whose result.json could not be written.
+	KindObservationFailed = "observation_failed"
 )
 
 func invalid(format string, a ...any) error {
@@ -235,14 +253,10 @@ func (s Scenario) validate() error {
 	if _, err := subjectRepo(s.Repo); err != nil {
 		return err
 	}
-	b := s.Build
-	if s.Lang == "go" && (b.Go == "" || b.GOOS == "" || b.GOARCH == "" || b.CGO == nil) {
-		return errors.New("a go scenario pins build.go, build.goos, build.goarch and build.cgo")
+	if err := s.Build.validate(s.Lang); err != nil {
+		return err
 	}
-	if b.Go != "" && !goVersion.MatchString(b.Go) {
-		return fmt.Errorf("build.go %q is not a Go version such as 1.23.12", b.Go)
-	}
-	for _, p := range []*PinnedFile{s.Intel.Corpus, s.Intel.Signals} {
+	for _, p := range []*PinnedFile{s.Intel.Corpus, s.Intel.Signals, s.Intel.Advisories} {
 		if p != nil && !sha256Hex.MatchString(p.SHA256) {
 			return fmt.Errorf("intel file %s: sha256 %q is not 64 lowercase hex", p.Path, p.SHA256)
 		}
@@ -257,16 +271,45 @@ func (s Scenario) validate() error {
 	return nil
 }
 
-// subjectRepo is owner/name from a repository URL.
-func subjectRepo(repo string) (string, error) {
-	s := strings.TrimSuffix(strings.TrimSuffix(repo, "/"), ".git")
-	i := strings.Index(s, "://")
-	if i < 0 {
-		return "", fmt.Errorf("repo %q is not a URL", repo)
+func (b ScenarioBuild) validate(lang string) error {
+	goSet := b.Go != "" || b.GOOS != "" || b.GOARCH != "" || b.CGO != nil
+	switch {
+	case lang == "go" && (b.Go == "" || b.GOOS == "" || b.GOARCH == "" || b.CGO == nil):
+		return errors.New("a go scenario pins build.go, build.goos, build.goarch and build.cgo")
+	case lang != "go" && goSet:
+		return fmt.Errorf("build.go, goos, goarch and cgo belong to the go lane, not %s", lang)
+	case b.Go != "" && !goVersion.MatchString(b.Go):
+		return fmt.Errorf("build.go %q is not an exact Go version such as 1.23.12", b.Go)
+	case b.JDK != "" && !majorOnly.MatchString(b.JDK):
+		return fmt.Errorf("build.jdk %q is not a JDK major such as 17", b.JDK)
+	case b.Node != "" && !majorOnly.MatchString(b.Node):
+		return fmt.Errorf("build.node %q is not a Node major such as 20", b.Node)
+	case b.Python != "" && !pyVersion.MatchString(b.Python):
+		return fmt.Errorf("build.python %q is not a Python version such as 3.12", b.Python)
 	}
-	parts := strings.Split(s[i+3:], "/")
-	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
-		return "", fmt.Errorf("repo %q is not https://<host>/<owner>/<name>", repo)
+	for field, v := range map[string]string{"jdk": b.JDK, "node": b.Node, "python": b.Python} {
+		if v != "" && !slices.Contains(runtimeLane[field], lang) {
+			return fmt.Errorf("build.%s belongs to the %s lane, not %s", field, strings.Join(runtimeLane[field], "/"), lang)
+		}
+	}
+	return nil
+}
+
+// subjectRepo is owner/name from a repository URL, which must be https://<host>/<owner>/<name>
+// (an optional .git suffix) with nothing git could read as an option or a transport.
+func subjectRepo(repo string) (string, error) {
+	bad := fmt.Errorf("repo %q is not https://<host>/<owner>/<name>", repo)
+	if strings.HasPrefix(repo, "-") || strings.ContainsFunc(repo, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return "", bad
+	}
+	u, err := url.Parse(repo)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" ||
+		u.Fragment != "" || u.Opaque != "" || strings.ContainsAny(u.Host, "@") {
+		return "", bad
+	}
+	parts := strings.Split(strings.TrimSuffix(strings.TrimSuffix(u.Path, "/"), ".git"), "/")
+	if len(parts) != 3 || parts[0] != "" || !ghName.MatchString(parts[1]) || !ghName.MatchString(parts[2]) {
+		return "", bad
 	}
 	return parts[1] + "/" + parts[2], nil
 }
@@ -372,9 +415,9 @@ func containedPath(base, rel string) (string, error) {
 func (fx *Fixture) verifyIntel(floorRoot string) error {
 	in := fx.Scenario.Intel
 	switch {
-	case in.Corpus != nil && in.Advisories != "":
+	case in.Corpus != nil && in.Advisories != nil:
 		return unverified("intel names both a corpus bundle and an advisories directory; the scanner reads one")
-	case in.Corpus == nil && in.Advisories == "":
+	case in.Corpus == nil && in.Advisories == nil:
 		return unverified("intel names no corpus: a fixture without one is incomplete")
 	}
 	if in.Corpus != nil {
@@ -384,14 +427,11 @@ func (fx *Fixture) verifyIntel(floorRoot string) error {
 		}
 		fx.CorpusPath = p
 	} else {
-		p, err := containedPath(fx.Dir, in.Advisories)
+		dir, err := verifyAdvisories(fx.Dir, *in.Advisories, in.Signals != nil)
 		if err != nil {
 			return unverified("intel.advisories: %w", err)
 		}
-		if err := verifyAdvisoryDir(p); err != nil {
-			return unverified("intel.advisories: %w", err)
-		}
-		fx.CorpusPath = p
+		fx.CorpusPath = dir
 	}
 	if in.Signals != nil {
 		p, err := verifyPinned(floorRoot, *in.Signals)
@@ -401,6 +441,34 @@ func (fx *Fixture) verifyIntel(floorRoot string) error {
 		fx.SignalsPath = p
 	}
 	return nil
+}
+
+// verifyAdvisories verifies a fixture-local directory corpus: its manifest.json against the pin, then
+// every record against the manifest. The scanner reads <dir>/signals.json when no signals are passed,
+// so one there is refused unless intel.signals pins the signals the scan uses instead.
+func verifyAdvisories(fixtureDir string, pf PinnedFile, signalsPinned bool) (string, error) {
+	if filepath.Base(filepath.FromSlash(pf.Path)) != "manifest.json" {
+		return "", fmt.Errorf("%q: pin the corpus directory's manifest.json", pf.Path)
+	}
+	manifest, err := containedPath(fixtureDir, pf.Path)
+	if err != nil {
+		return "", err
+	}
+	got, err := fileSHA256(manifest)
+	if err != nil {
+		return "", err
+	}
+	if got != pf.SHA256 {
+		return "", fmt.Errorf("%s: sha256 %s, scenario pins %s", pf.Path, got, pf.SHA256)
+	}
+	dir := filepath.Dir(manifest)
+	if _, err := os.Lstat(filepath.Join(dir, "signals.json")); err == nil && !signalsPinned {
+		return "", errors.New("the directory holds a signals.json the scanner would read unpinned; pin it as intel.signals")
+	}
+	if err := verifyAdvisoryDir(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 // verifyPinned resolves a shared intel file relative to the floor root, refuses it unless it lands under

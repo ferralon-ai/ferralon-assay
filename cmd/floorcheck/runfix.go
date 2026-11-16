@@ -185,7 +185,19 @@ func fixtureNames(root string) ([]string, error) {
 	return out, nil
 }
 
-// runList implements `floorcheck list`: the fixture names as a JSON array, for the CI matrix.
+// ListEntry is one fixture in `floorcheck list`: what the CI matrix needs to set the job up. Every
+// key is always present; a toolchain the fixture's lane does not use is "".
+type ListEntry struct {
+	Name   string `json:"name"`
+	Lang   string `json:"lang"`
+	Go     string `json:"go"`
+	JDK    string `json:"jdk"`
+	Node   string `json:"node"`
+	Python string `json:"python"`
+}
+
+// runList implements `floorcheck list`: every fixture's name, lang and toolchain pins as a JSON array,
+// for the CI matrix. It reads and validates each scenario.yaml, and fails on any it cannot.
 func runList(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -198,12 +210,73 @@ func runList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "floorcheck:", err)
 		return 2
 	}
-	if names == nil {
-		names = []string{}
+	entries := []ListEntry{}
+	for _, n := range names {
+		var sc Scenario
+		if err := decodeStrict(filepath.Join(*root, n, fileScenario), &sc); err != nil {
+			fmt.Fprintf(stderr, "floorcheck: %s: %v\n", n, err)
+			return 2
+		}
+		if err := sc.validate(); err != nil {
+			fmt.Fprintf(stderr, "floorcheck: %s: %s: %v\n", n, fileScenario, err)
+			return 2
+		}
+		b := sc.Build
+		entries = append(entries, ListEntry{Name: n, Lang: sc.Lang, Go: b.Go, JDK: b.JDK, Node: b.Node, Python: b.Python})
 	}
-	js, _ := json.Marshal(names)
+	js, _ := json.Marshal(entries)
 	fmt.Fprintln(stdout, string(js))
 	return 0
+}
+
+// runValidate implements `floorcheck validate [fixture…]`: load every fixture and verify every intel
+// digest, without checking out or scanning anything. It exits 2 if any fixture fails to load.
+func runValidate(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("validate", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	root := flags.String("fixtures-root", "floor/fixtures", "the fixtures directory")
+	floorRoot := flags.String("floor-root", "", "the floor directory shared intel resolves under (default: the parent of -fixtures-root)")
+	names, err := parseInterspersed(flags, args)
+	if err != nil {
+		return 2
+	}
+	if *floorRoot == "" {
+		*floorRoot = filepath.Dir(filepath.Clean(*root))
+	}
+	if len(names) == 0 {
+		if names, err = fixtureNames(*root); err != nil {
+			fmt.Fprintln(stderr, "floorcheck:", err)
+			return 2
+		}
+	}
+	if err := checkFixtureNames(names, *root); err != nil {
+		fmt.Fprintln(stderr, "floorcheck:", err)
+		return 2
+	}
+	failed := 0
+	for _, n := range names {
+		if _, err := loadFixture(filepath.Join(*root, n), *floorRoot, defaultRules); err != nil {
+			failed++
+			fmt.Fprintf(stdout, "%s: %s: %v\n", n, loadKind(err), err)
+			continue
+		}
+		fmt.Fprintf(stdout, "%s: ok\n", n)
+	}
+	fmt.Fprintf(stdout, "validate: %d of %d fixtures load\n", len(names)-failed, len(names))
+	if failed > 0 {
+		return 2
+	}
+	return 0
+}
+
+// checkFixtureNames refuses a fixture argument that is not a single directory name.
+func checkFixtureNames(names []string, root string) error {
+	for _, n := range names {
+		if !filepath.IsLocal(n) || strings.ContainsAny(n, `/\`) {
+			return fmt.Errorf("fixture %q is not a name under %s", n, root)
+		}
+	}
+	return nil
 }
 
 // runDiff implements `floorcheck diff OLD NEW`: every verdict, basis or path change between two
@@ -299,11 +372,13 @@ func runFixtures(ctx context.Context, args []string, sr scanRunner, stdout, stde
 			return 2
 		}
 	}
-	for _, n := range o.fixtures {
-		if !filepath.IsLocal(n) || strings.ContainsAny(n, `/\`) {
-			fmt.Fprintf(stderr, "floorcheck: fixture %q is not a name under %s\n", n, o.fixtureRoot)
-			return 2
-		}
+	if err := checkFixtureNames(o.fixtures, o.fixtureRoot); err != nil {
+		fmt.Fprintln(stderr, "floorcheck:", err)
+		return 2
+	}
+	if err := prepareOut(o); err != nil {
+		fmt.Fprintln(stderr, "floorcheck:", err)
+		return 2
 	}
 	if o.scanner, err = resolveScanner(o.scanner); err != nil {
 		fmt.Fprintln(stderr, "floorcheck:", err)
@@ -318,25 +393,30 @@ func runFixtures(ctx context.Context, args []string, sr scanRunner, stdout, stde
 		defer os.RemoveAll(tmp)
 		o.work = tmp
 	}
-	if err := os.MkdirAll(o.out, 0o755); err != nil {
-		fmt.Fprintln(stderr, "floorcheck:", err)
-		return 2
-	}
 	var results []FixtureResult
 	for _, name := range o.fixtures {
 		res, err := runOne(ctx, o, name, sr)
 		if err != nil {
+			// The observation is lost, not the outcome: a regression already judged still fails the run.
 			fmt.Fprintln(stderr, "floorcheck:", err)
-			return 2
+			if res.Fixture == "" {
+				res = incompleteResult(name, nil, nil)
+			}
+			res.Incomplete = append(res.Incomplete, Failure{Kind: KindObservationFailed, Detail: err.Error()})
+			if res.Outcome != OutcomeRegressed {
+				res.Outcome = OutcomeIncomplete
+			}
 		}
 		writeResultText(stderr, res)
 		results = append(results, res)
 	}
+	code := aggregateExit(results)
 	if err := writeSummary(o.out, results); err != nil {
 		fmt.Fprintln(stderr, "floorcheck:", err)
-		return 2
+		if code == 0 {
+			code = 2
+		}
 	}
-	code := aggregateExit(results)
 	fmt.Fprintf(stdout, "floor: %s — %d fixtures\n", map[int]string{0: "PASS", 1: "REGRESSED", 2: "INCOMPLETE"}[code], len(results))
 	return code
 }
@@ -349,8 +429,46 @@ func resolveScanner(s string) (string, error) {
 	return filepath.Abs(p)
 }
 
+// prepareOut makes the observation directory ready for this run without mixing in an earlier one: it
+// refuses --prior as --out, removes the run's own summary files, and refuses any selected fixture's
+// directory that already holds files, since the scanner writes more there than the harness can name.
+func prepareOut(o runOptions) error {
+	out, err := filepath.Abs(o.out)
+	if err != nil {
+		return err
+	}
+	if o.prior != "" {
+		prior, err := filepath.Abs(o.prior)
+		if err != nil {
+			return err
+		}
+		if prior == out {
+			return errors.New("--prior and --out are the same directory; the run would overwrite what it diffs against")
+		}
+	}
+	for _, n := range o.fixtures {
+		ents, err := os.ReadDir(filepath.Join(out, n))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if len(ents) > 0 {
+			return fmt.Errorf("%s already holds an observation; give --out a fresh directory", filepath.Join(out, n))
+		}
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		return err
+	}
+	for _, f := range []string{fileSummaryJSON, fileSummaryMD} {
+		if err := os.Remove(filepath.Join(out, f)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 // runOne loads, checks out, scans and compares one fixture, writing its report.json and result.json.
-// The returned error is a failure to write the observation, not a fixture outcome.
+// The returned error is a failure to write the observation, not a fixture outcome; the result
+// returned with it is the comparison, when one was made.
 func runOne(ctx context.Context, o runOptions, name string, sr scanRunner) (FixtureResult, error) {
 	outDir, err := filepath.Abs(filepath.Join(o.out, name))
 	if err != nil {
@@ -396,7 +514,7 @@ func runOne(ctx context.Context, o runOptions, name string, sr scanRunner) (Fixt
 	}()
 	js, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
-		return FixtureResult{}, err
+		return res, err
 	}
 	return res, os.WriteFile(filepath.Join(outDir, fileResult), append(js, '\n'), 0o644)
 }
@@ -422,23 +540,33 @@ func scanArgs(fx Fixture, target, outDir, timeout string) []string {
 	return append(args, fx.Scenario.Scan.Flags...)
 }
 
-// scanEnv is the scanner's environment: the caller's, without credentials or a toolchain pin of its
-// own, with the scanner's GitHub surfaces off and the scenario's build pinned.
+// scanEnvAllowed is the caller's environment a scan inherits: where things live (home, temp, caches,
+// toolchains) and how to reach module and package proxies. Nothing that steers a verdict passes (no
+// ASSAY_*, FERRALON_*, GOFLAGS, GOWORK, GOEXPERIMENT, GODEBUG or toolchain pin), and no credential.
+var scanEnvAllowed = []string{
+	"PATH", "HOME", "TMPDIR", "USER", "LOGNAME", "SHELL", "TZ", "LANG",
+	"GOPATH", "GOMODCACHE", "GOCACHE", "GOPROXY", "GONOSUMDB", "GOPRIVATE", "GONOPROXY", "GOSUMDB",
+	"JAVA_HOME", "MAVEN_HOME", "M2_HOME", "MAVEN_OPTS", "GRADLE_HOME", "GRADLE_USER_HOME", "GRADLE_OPTS",
+	"NVM_DIR", "PYENV_ROOT",
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+	"SSL_CERT_FILE", "SSL_CERT_DIR",
+}
+
+// scanEnv is the scanner's environment: an allow-listed slice of the caller's, the scanner's GitHub
+// surfaces off, Go's own overrides cleared, and the scenario's build pinned.
 func scanEnv(base []string, b ScenarioBuild, scannerDir string) []string {
-	drop := []string{"GITHUB_TOKEN", "GH_TOKEN", "FERRALON_LINK_TO_CONSOLE", "GOTOOLCHAIN", "GOOS", "GOARCH",
-		"CGO_ENABLED", "ASSAY_ISSUE", "ASSAY_PR_COMMENT", "ASSAY_CODE_SCANNING", "PATH"}
 	var env []string
 	path := ""
 	for _, kv := range base {
 		k, v, _ := strings.Cut(kv, "=")
-		if k == "PATH" {
+		switch {
+		case k == "PATH":
 			path = v
-		}
-		if !slices.Contains(drop, k) {
+		case slices.Contains(scanEnvAllowed, k), strings.HasPrefix(k, "LC_"):
 			env = append(env, kv)
 		}
 	}
-	env = append(env, "PATH="+scannerDir+string(os.PathListSeparator)+path,
+	env = append(env, "PATH="+scannerDir+string(os.PathListSeparator)+path, "GOFLAGS=", "GOWORK=off",
 		"ASSAY_ISSUE=0", "ASSAY_PR_COMMENT=0", "ASSAY_CODE_SCANNING=0")
 	if b.Go != "" {
 		env = append(env, "GOTOOLCHAIN=go"+b.Go)
@@ -461,6 +589,9 @@ type execRunner struct{}
 // checkout leaves dir at commit, detached: it fetches only that commit, and reuses a clean checkout
 // already there. A checkout with local changes is refused rather than overwritten.
 func (execRunner) checkout(ctx context.Context, repo, commit, dir string) error {
+	if !fullCommit.MatchString(commit) {
+		return fmt.Errorf("commit %q is not a full 40-hex commit", commit)
+	}
 	git := func(args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 		var out bytes.Buffer
@@ -488,10 +619,10 @@ func (execRunner) checkout(ctx context.Context, repo, commit, dir string) error 
 			return err
 		}
 	}
-	if _, err := git("fetch", "-q", "--depth", "1", repo, commit); err != nil {
+	if _, err := git("fetch", "-q", "--depth", "1", "--", repo, commit); err != nil {
 		return err
 	}
-	if _, err := git("checkout", "-q", "--detach", commit); err != nil {
+	if _, err := git("checkout", "-q", "--detach", commit, "--"); err != nil {
 		return err
 	}
 	head, err := git("rev-parse", "HEAD")

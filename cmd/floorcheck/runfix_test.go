@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,8 +21,10 @@ type fakeRunner struct {
 	reports     map[string][]byte
 	codes       map[string]int
 	checkoutErr map[string]error
-	requests    []scanRequest
-	checkouts   []string
+	// afterScan runs in a fixture's output directory once its scan is done.
+	afterScan map[string]func(outDir string)
+	requests  []scanRequest
+	checkouts []string
 }
 
 func (r *fakeRunner) checkout(_ context.Context, repo, commit, dir string) error {
@@ -36,6 +39,9 @@ func (r *fakeRunner) scan(_ context.Context, req scanRequest) (int, error) {
 		if err := os.WriteFile(filepath.Join(req.OutDir, fileReport), data, 0o644); err != nil {
 			return 0, err
 		}
+	}
+	if f := r.afterScan[name]; f != nil {
+		f(req.OutDir)
 	}
 	return r.codes[name], nil
 }
@@ -66,8 +72,14 @@ func envValue(env []string, key string) (string, bool) {
 }
 
 func TestRunFixtures(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "secret")
-	t.Setenv("GOTOOLCHAIN", "local")
+	leaked := map[string]string{"GITHUB_TOKEN": "secret", "GH_TOKEN": "secret", "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "secret",
+		"ASSAY_OSV_WORK_SET": "1", "ASSAY_ADVISORY_SIGNALS": "/x", "FERRALON_LINK_TO_CONSOLE": "1", "GOEXPERIMENT": "x", "GOTOOLCHAIN": "local"}
+	for k, v := range leaked {
+		t.Setenv(k, v)
+	}
+	t.Setenv("GOFLAGS", "-mod=mod")
+	t.Setenv("GOWORK", "/elsewhere/go.work")
+	t.Setenv("GOMODCACHE", "/cache/mod")
 	f := newTestFloor(t)
 	f.fixture(t, "met", scenarioYAML(sharedIntel())+"scan:\n  flags: [\"-language\", \"go\"]\n", expectYAML)
 	f.fixture(t, "regressed", scenarioYAML(sharedIntel()), strings.Replace(strings.Replace(expectYAML,
@@ -101,7 +113,7 @@ func TestRunFixtures(t *testing.T) {
 		"-scan-timeout":           "22m",
 		"-out":                    filepath.Join(out, "met"),
 	} {
-		if got := argValue(req.Args, flag); got != want && !(flag == "-out" && strings.HasSuffix(got, "/met")) {
+		if got := argValue(req.Args, flag); got != want {
 			t.Errorf("%s %q, want %q", flag, got, want)
 		}
 	}
@@ -110,13 +122,20 @@ func TestRunFixtures(t *testing.T) {
 		t.Errorf("args %q: want baseline, -require-advisory-corpus, and scan.flags last", req.Args)
 	}
 	for key, want := range map[string]string{"GOTOOLCHAIN": "go1.23.12", "GOOS": "linux", "GOARCH": "amd64", "CGO_ENABLED": "0",
-		"ASSAY_ISSUE": "0", "ASSAY_PR_COMMENT": "0", "ASSAY_CODE_SCANNING": "0"} {
-		if got, _ := envValue(req.Env, key); got != want {
-			t.Errorf("env %s=%q, want %q", key, got, want)
+		"ASSAY_ISSUE": "0", "ASSAY_PR_COMMENT": "0", "ASSAY_CODE_SCANNING": "0", "GOFLAGS": "", "GOWORK": "off", "GOMODCACHE": "/cache/mod"} {
+		if got, ok := envValue(req.Env, key); !ok || got != want {
+			t.Errorf("env %s=%q (set %v), want %q", key, got, ok, want)
 		}
 	}
-	if _, ok := envValue(req.Env, "GITHUB_TOKEN"); ok {
-		t.Error("the scanner inherits GITHUB_TOKEN")
+	for k := range leaked {
+		if v, ok := envValue(req.Env, k); ok && !(k == "GOTOOLCHAIN" && v == "go1.23.12") {
+			t.Errorf("the scanner inherits %s=%s", k, v)
+		}
+	}
+	for _, kv := range req.Env {
+		if k, _, _ := strings.Cut(kv, "="); slices.Contains([]string{"GOFLAGS", "GOWORK"}, k) && kv != "GOFLAGS=" && kv != "GOWORK=off" {
+			t.Errorf("the scanner inherits %s", kv)
+		}
 	}
 	if p, _ := envValue(req.Env, "PATH"); !strings.HasPrefix(p, filepath.Dir(scanner)+string(os.PathListSeparator)) {
 		t.Errorf("PATH %q does not lead with the scanner's directory", p)
@@ -162,6 +181,76 @@ func TestRunFixtures(t *testing.T) {
 		if !strings.Contains(string(md), s) {
 			t.Errorf("summary.md lacks %q:\n%s", s, md)
 		}
+	}
+}
+
+// TestRunOutDirectory: a run never mixes into an earlier observation, and never overwrites the one it
+// diffs against.
+func TestRunOutDirectory(t *testing.T) {
+	f := newTestFloor(t)
+	f.fixture(t, "a", scenarioYAML(sharedIntel()), expectYAML)
+	out := t.TempDir()
+	write(t, out, fileSummaryMD, "stale")
+	args := []string{"--out", out, "--fixtures-root", f.fixtures, "--scanner", fakeScanner(t)}
+	var stdout, stderr bytes.Buffer
+	if code := runFixtures(context.Background(), args, &fakeRunner{}, &stdout, &stderr); code != 2 {
+		t.Fatalf("exit %d, want 2 (no report)\n%s", code, stderr.String())
+	}
+	if md, _ := os.ReadFile(filepath.Join(out, fileSummaryMD)); strings.Contains(string(md), "stale") {
+		t.Error("summary.md from an earlier run survived")
+	}
+	fr := &fakeRunner{}
+	if code := runFixtures(context.Background(), args, fr, &stdout, &stderr); code != 2 || len(fr.requests) != 0 ||
+		!strings.Contains(stderr.String(), "already holds an observation") {
+		t.Errorf("reused --out: exit %d, %d scans, want 2 and none\n%s", code, len(fr.requests), stderr.String())
+	}
+	stderr.Reset()
+	same := filepath.Join(t.TempDir(), "obs")
+	if code := runFixtures(context.Background(), []string{"--out", same, "--prior", same + "/", "--fixtures-root", f.fixtures,
+		"--scanner", fakeScanner(t)}, &fakeRunner{}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "same directory") {
+		t.Errorf("--prior == --out: exit %d\n%s", code, stderr.String())
+	}
+}
+
+// TestRunKeepsOutcomeOnWriteFailure: losing a fixture's result.json is incomplete, never a pass, and
+// never hides a regression already judged.
+func TestRunKeepsOutcomeOnWriteFailure(t *testing.T) {
+	f := newTestFloor(t)
+	f.fixture(t, "a", scenarioYAML(sharedIntel()), expectYAML)
+	f.fixture(t, "b", scenarioYAML(sharedIntel()), strings.Replace(strings.Replace(expectYAML,
+		"truth: reachable", "truth: unreachable", 1), "floor: reachable_candidate", "floor: not_exploitable", 1))
+	rep := floorReport(t, []report.AdvisoryFinding{fv("GO-1", rc)})
+	blockResult := func(outDir string) {
+		if err := os.Mkdir(filepath.Join(outDir, fileResult), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		fixtures []string
+		blocked  string
+		want     int
+	}{
+		{"a passing fixture's result is lost", []string{"a"}, "a", 2},
+		{"a regressed fixture's result is lost", []string{"b", "a"}, "b", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeRunner{reports: map[string][]byte{"a": rep, "b": rep}, afterScan: map[string]func(string){tc.blocked: blockResult}}
+			out := t.TempDir()
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"--out", out, "--fixtures-root", f.fixtures, "--scanner", fakeScanner(t)}, tc.fixtures...)
+			code := runFixtures(context.Background(), args, fr, &stdout, &stderr)
+			if code != tc.want || len(fr.requests) != len(tc.fixtures) {
+				t.Fatalf("exit %d after %d scans, want %d after %d\n%s", code, len(fr.requests), tc.want, len(tc.fixtures), stderr.String())
+			}
+			data, err := os.ReadFile(filepath.Join(out, fileSummaryJSON))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), KindObservationFailed) {
+				t.Errorf("summary does not name the lost observation:\n%s", data)
+			}
+		})
 	}
 }
 
@@ -218,6 +307,53 @@ func TestCheckVerbDispatch(t *testing.T) {
 			t.Errorf("hasReportFlag(%q) = %v, want %v", tc.args, got, tc.want)
 		}
 	}
+	// The targets contract is still what `check` without --report runs.
+	absent := filepath.Join(t.TempDir(), "absent-targets.json")
+	for _, args := range [][]string{{"check"}, {"check", "-targets", absent, "-results", t.TempDir()}} {
+		var stdout, stderr bytes.Buffer
+		code := run(args, &stdout, &stderr)
+		if code != 2 || strings.Contains(stderr.String(), "--report") ||
+			!(strings.Contains(stderr.String(), "-results is required") || strings.Contains(stderr.String(), "absent-targets.json")) {
+			t.Errorf("%q: exit %d, stderr %q: want the targets contract's error", args, code, stderr.String())
+		}
+	}
+}
+
+// TestCheckoutRefusesOptionRepo: a repo argument that reads as a git option is a repository name to
+// git, never an option, so the R1 reproducer runs nothing; a plain repository still checks out.
+func TestCheckoutRefusesOptionRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	src := t.TempDir()
+	gitRun := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.email=f@x", "-c", "user.name=f", "-c", "commit.gpgsign=false"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %q: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	gitRun(src, "init", "-q")
+	gitRun(src, "commit", "-q", "--allow-empty", "-m", "x")
+	commit := gitRun(src, "rev-parse", "HEAD")
+
+	marker := filepath.Join(t.TempDir(), "MARKER")
+	err := execRunner{}.checkout(context.Background(), "--upload-pack=touch "+marker+"; echo #://h/o/r", commit, filepath.Join(t.TempDir(), "w"))
+	if err == nil {
+		t.Error("checked out from an option")
+	}
+	if _, serr := os.Stat(marker); serr == nil {
+		t.Fatal("git ran the repo argument as --upload-pack")
+	}
+	dst := filepath.Join(t.TempDir(), "w")
+	if err := (execRunner{}).checkout(context.Background(), src, commit, dst); err != nil {
+		t.Fatalf("plain checkout: %v", err)
+	}
+	if err := (execRunner{}).checkout(context.Background(), src, "-q", dst); err == nil {
+		t.Error("checked out a commit that is not 40-hex")
+	}
 }
 
 func TestCheckFixtureVerb(t *testing.T) {
@@ -265,15 +401,24 @@ func TestCheckFixtureVerb(t *testing.T) {
 
 func TestListVerb(t *testing.T) {
 	f := newTestFloor(t)
-	f.fixture(t, "b", "x", "x")
-	f.fixture(t, "a", "x", "x")
-	write(t, f.fixtures, "c/notes.txt", "x")
+	f.fixture(t, "b", laneScenario("java", `  jdk: "17"`), "x")
+	f.fixture(t, "a", scenarioYAML(sharedIntel()), "x")
+	f.fixture(t, "c", laneScenario("python", `  python: "3.12"`), "x")
+	write(t, f.fixtures, "d/notes.txt", "x")
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"list", "--fixtures-root", f.fixtures}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	if got := strings.TrimSpace(stdout.String()); got != `["a","b"]` {
-		t.Errorf("list = %s", got)
+	want := `[{"name":"a","lang":"go","go":"1.23.12","jdk":"","node":"","python":""},` +
+		`{"name":"b","lang":"java","go":"","jdk":"17","node":"","python":""},` +
+		`{"name":"c","lang":"python","go":"","jdk":"","node":"","python":"3.12"}]`
+	if got := strings.TrimSpace(stdout.String()); got != want {
+		t.Errorf("list =\n%s\nwant\n%s", got, want)
+	}
+	f.fixture(t, "e", strings.Replace(scenarioYAML(sharedIntel()), "1.23.12", "1.23", 1), "x")
+	stdout.Reset()
+	if code := run([]string{"list", "--fixtures-root", f.fixtures}, &stdout, &stderr); code != 2 || stdout.Len() != 0 {
+		t.Errorf("invalid scenario: exit %d, stdout %q; want 2 and no matrix", code, stdout.String())
 	}
 	stdout.Reset()
 	if code := run([]string{"list", "--fixtures-root", t.TempDir()}, &stdout, &stderr); code != 0 || strings.TrimSpace(stdout.String()) != "[]" {
@@ -281,6 +426,27 @@ func TestListVerb(t *testing.T) {
 	}
 	if code := run([]string{"list", "--fixtures-root", filepath.Join(f.root, "absent")}, &stdout, &stderr); code != 2 {
 		t.Errorf("missing root: exit %d, want 2", code)
+	}
+}
+
+func TestValidateVerb(t *testing.T) {
+	f := newTestFloor(t)
+	f.fixture(t, "good", scenarioYAML(sharedIntel()), expectYAML)
+	f.fixture(t, "tampered", scenarioYAML(strings.Replace(sharedIntel(), sha("corpus"), sha("tampered"), 1)), expectYAML)
+	for _, tc := range []struct {
+		args []string
+		exit int
+		want string
+	}{
+		{[]string{"validate", "--fixtures-root", f.fixtures}, 2, "good: ok\ntampered: intel_unverified: intel.corpus: "},
+		{[]string{"validate", "good", "--fixtures-root", f.fixtures}, 0, "good: ok\nvalidate: 1 of 1 fixtures load\n"},
+		{[]string{"validate", "--fixtures-root", f.fixtures, "--floor-root", t.TempDir(), "good"}, 2, "good: intel_unverified"},
+		{[]string{"validate", "--fixtures-root", f.fixtures, "../good"}, 2, ""},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(tc.args, &stdout, &stderr); code != tc.exit || !strings.HasPrefix(stdout.String(), tc.want) {
+			t.Errorf("%q: exit %d, stdout %q; want %d, %q", tc.args, code, stdout.String(), tc.exit, tc.want)
+		}
 	}
 }
 

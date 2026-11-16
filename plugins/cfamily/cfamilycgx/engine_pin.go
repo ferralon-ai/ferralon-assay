@@ -13,6 +13,8 @@ import (
 // plugins/cfamily/go.mod (a test checks it), and PinnedWasmSHA256 is the SHA-256 of the module
 // built from that same commit. A module, or an SDK in the build, that does not match is refused
 // as tool_failure:cgx_engine_mismatch before anything runs.
+// Tracker #792: the commit pinned below was orphaned by a cgx force-push, so the CI job
+// "cfamily (cgx pin, tracker #792)" is expected to be red until the pin is repinned.
 const (
 	// SDKModule is the cgx Go SDK's module path.
 	SDKModule = "github.com/ferralon-ai/cgx/sdk/go"

@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -517,8 +518,14 @@ func goflagsTags(env []string) []string {
 // may also reach one of the advisory's vulnerable symbols (symbols, by vulnerable package; none
 // listed stands for every function in it), against the scan's left-out engine (lofRow.counts),
 // which counts every file when it cannot be built. reasons holds the excluded_files localisations
-// lofRow.counts gives the first file found to count.
-func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, symbols map[string][]string, release *releaseBound, buildDir string, env []string) (found bool, reasons []string, failed bool) {
+// lofRow.counts gives the first file found to count other than a constrained one.
+//
+// A file that counts only because its build constraints leave it out of the scan's build
+// configuration (constrainedOut) and whose count rests on the engine's own finding, with no
+// fail-closed item, is tallied in constrained and does not stop the walk: found reports the first
+// file that counts for any other cause, so constrained is a limit on its own only when found is
+// false.
+func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, symbols map[string][]string, release *releaseBound, buildDir string, env []string) (found bool, reasons []string, failed bool, constrained int) {
 	reach := newModuleReach(pkgs, module, vulnerable)
 	stdlib := module == "stdlib"
 	var graph modGraph
@@ -669,12 +676,17 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 			return false
 		}
 		r := row()
-		c, why, engineFailed := r.counts(path)
-		if c {
-			reasons = why
-			failed = failed || engineFailed
+		c, why, engineFailed, analyzed := r.countsWhy(path)
+		if !c {
+			return false
 		}
-		return c
+		if analyzed && !engineFailed && len(why) == 0 && constrainedOut(path, env) {
+			constrained++
+			return false
+		}
+		reasons = why
+		failed = failed || engineFailed
+		return true
 	}
 
 	loadedDirs := map[string]bool{}
@@ -702,13 +714,37 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		return !found
 	}, nil)
 	if found {
-		return true, reasons, failed
+		return true, reasons, failed, constrained
 	}
 	if mainDir == "" {
 		mainDir = buildDir
 	}
 	found, unreadable := firstPartyLeftOut(mainDir, loadedDirs, func(path string) bool { return counts(path, "", false) })
-	return found, reasons, failed || unreadable
+	return found, reasons, failed || unreadable, constrained
+}
+
+// constrainedOut reports whether the Go file at path is left out of the scan's build configuration by
+// its build constraints alone: its GOOS or GOARCH file-name suffix or its //go:build lines exclude it
+// under the GOOS, GOARCH and tags env names, with cgo both enabled and disabled, so neither the cgo
+// setting nor an unreadable or unparseable file is the cause. A name go/build skips (a leading "_"
+// or ".") is not a constraint, and a file go/build matches is built.
+func constrainedOut(path string, env []string) bool {
+	name := filepath.Base(path)
+	if strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
+		return false
+	}
+	ctxt := build.Default
+	ctxt.GOOS = envOr(env, "GOOS", runtime.GOOS)
+	ctxt.GOARCH = envOr(env, "GOARCH", runtime.GOARCH)
+	ctxt.BuildTags = goflagsTags(env)
+	ctxt.UseAllFiles = false
+	for _, cgo := range []bool{true, false} {
+		ctxt.CgoEnabled = cgo
+		if match, err := ctxt.MatchFile(filepath.Dir(path), name); err != nil || match {
+			return false
+		}
+	}
+	return true
 }
 
 // moduleReach answers, over the load's own import graph, whether a package is or imports one of a

@@ -61,7 +61,8 @@ partiality notes. *Source:* `docs/operator-guide.md:56`, `report/report.go:960`.
 
 <a id="scheme-basis"></a>**Basis values** — The grounds a `not_exploitable` or `disqualified` row
 records in `evidence.basis`: `version_not_in_affected_range`, `vulnerable_symbol_absent`,
-`vulnerable_symbol_unreachable`, `static_refutation`. *Source:* `docs/floor.md:26`,
+`vulnerable_symbol_unreachable`, `static_refutation`; a `disqualified` row from intake carries
+`advisory_ecosystem_mismatch` or `no_manifest_entry` (no comparison ran). *Source:* `docs/floor.md:26`,
 `verdict/verdict.go:86`. *See also:* [basis](#basis).
 
 <a id="scheme-floor-kinds"></a>**Floor failure kinds** — The reasons `floorcheck` fails a repository

@@ -191,6 +191,10 @@ func notAffectedJustification(basis verdict.NonExploitableBasis) string {
 		return VEXJustNotPresent
 	case verdict.BasisSymbolUnreachable:
 		return VEXJustNotInExecutePath
+	case verdict.BasisAdvisoryEcosystemMismatch, verdict.BasisNoManifestEntry:
+		// Intake bases: nothing was adjudicated, so no justification is earned. Stated here so
+		// the next intake code is a decision, not a fallthrough.
+		return ""
 	default:
 		return ""
 	}
@@ -207,6 +211,10 @@ func basisGrounds(basis verdict.NonExploitableBasis) string {
 		return "the vulnerable code is absent from the build"
 	case verdict.BasisSymbolUnreachable:
 		return "the vulnerable code is in the build, and no path from an entry point reaches it"
+	case verdict.BasisAdvisoryEcosystemMismatch:
+		return "the advisory targets a different ecosystem than this codebase"
+	case verdict.BasisNoManifestEntry:
+		return "the advisory's package is not in the dependency manifest or build graph"
 	default:
 		return ""
 	}

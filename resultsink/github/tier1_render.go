@@ -25,6 +25,7 @@ func renderTier1Body(r report.Report) string {
 	var b strings.Builder
 
 	b.WriteString("## " + brand.Tier1SummaryHeading + "\n\n")
+	b.WriteString(coverageStatus(r, c))
 	if r.Subject.Repo != "" {
 		fmt.Fprintf(&b, "**Repository:** `%s`  \n", r.Subject.Repo)
 	}
@@ -53,14 +54,15 @@ func renderTier1Body(r report.Report) string {
 	b.WriteString(assumptionsCallout(r))
 
 	b.WriteString(countsTable(c))
+	b.WriteString(undeterminedCauseTable(c))
 
 	if c.candidate > 0 {
 		cands := candidates(r)
-		b.WriteString("### Reachable candidates\n\n")
-		b.WriteString("These advisories have a reachable code path. A candidate is **not** a proof of exploitability: proving it requires observing the path execute, which this scan does not do.\n\n")
+		b.WriteString("### Call path found\n\n")
+		b.WriteString("These advisories have a call path to the vulnerable code. A call path is **not** a proof of exploitability: proving it requires observing the path execute, which this scan does not do.\n\n")
 		b.WriteString("> [!NOTE]\n")
 		b.WriteString("> **Reachability grade** is evidence strength, not a verdict — `attacker_tainted` ranks above `control_flow_only`, but neither grade proves this code can be exploited. **EPSS/KEV** describe how often the CVE is exploited *in the wild* across all software, not whether this codebase calls the vulnerable path.\n\n")
-		b.WriteString("| Advisory | Package | Grade | Entry point | EPSS | KEV | Candidate path |\n|---|---|---|---|---|---|---|\n")
+		b.WriteString("| Advisory | Package | Grade | Entry point | EPSS | KEV | Call path |\n|---|---|---|---|---|---|---|\n")
 		for _, f := range cands {
 			pkg := "—"
 			if f.Package != nil {

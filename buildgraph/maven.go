@@ -379,7 +379,12 @@ var (
 	mavenJavaLine    = regexp.MustCompile(`(?m)^Java version: ([^,\s]+), vendor: ([^,]+),`)
 )
 
+// ansiEscape matches the CSI sequences (colour, bold, reset) that Maven's jansi layer wraps
+// around the banner when it believes the output is a terminal, as mvnw -v does.
+var ansiEscape = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
+
 func parseMavenVersion(out []byte) (string, JVM, error) {
+	out = ansiEscape.ReplaceAll(out, nil)
 	v := mavenVersionLine.FindSubmatch(out)
 	j := mavenJavaLine.FindSubmatch(out)
 	if v == nil || j == nil {

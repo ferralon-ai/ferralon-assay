@@ -28,7 +28,7 @@ const (
 )
 
 // Evidence is the committed normalized copy of one govulncheck run: enough to re-derive every
-// comparator-derived truth, and small enough to read in review.
+// comparator-derived observation, and small enough to read in review.
 type Evidence struct {
 	Schema      string           `json:"schema"`
 	Comparator  EvidenceConfig   `json:"comparator"`
@@ -189,7 +189,7 @@ func moduleOf(instance string) (module, version string) {
 	return module, version
 }
 
-// derive maps an engine row onto a truth, mechanically and by these rules, in order:
+// derive maps an engine row onto the comparator's observation, mechanically and by these rules, in order:
 //
 //   - stdlib and toolchain rows: unknown, "depends on toolchain";
 //   - govulncheck reached the advisory in this module at symbol level: reachable; at package level:
@@ -197,7 +197,7 @@ func moduleOf(instance string) (module, version string) {
 //     not_reachable, required but the vulnerable package is never imported;
 //   - Assay's own out-of-range verdict: out_of_range;
 //   - anything else: unknown, the comparator has no view.
-func derive(row engineRow, ev Evidence) (truth, basis, source string) {
+func derive(row engineRow, ev Evidence) (observed, basis, source string) {
 	module, version := moduleOf(row.Package)
 	comparator := ev.Comparator.Name + " " + ev.Comparator.Version
 	if slices.Contains(toolchainModules, module) {
@@ -241,9 +241,9 @@ func levelRank(l string) int {
 	return 0
 }
 
-// gapFor names the tracker issue behind a row where truth and the engine differ.
-func gapFor(truth string, e Engine) string {
-	if !disagrees(truth, e) {
+// gapFor names the tracker issue behind a row where the comparator's observation and the engine differ.
+func gapFor(observed string, e Engine) string {
+	if !disagrees(observed, e) {
 		return ""
 	}
 	if e.Reason == "refutation_withheld" {
@@ -253,10 +253,12 @@ func gapFor(truth string, e Engine) string {
 }
 
 // seedLedger builds a ledger from a report and the comparator's evidence. With prior, a row already in
-// the ledger keeps its truth, basis, source and gap (truth is never rewritten once recorded) and only
-// its engine_expected follows the report; a gap the engine closed is dropped, and one a changed
-// engine_expected opens is derived.
-func seedLedger(hdr LedgerHeader, rep report.Report, ev Evidence, prior *Ledger) Ledger {
+// the ledger keeps its comparator_observed, basis, source and gap (never rewritten once recorded) and
+// only its engine_expected follows the report; a gap the engine closed is dropped, and one a changed
+// engine_expected opens is derived. A review (path_review past unreviewed, or an adjudication) is kept
+// only while its path and every analysis input it is bound to are unchanged; otherwise the row is
+// seeded unreviewed and unknown again, and loses featured. in is the scan's analysis inputs.
+func seedLedger(hdr LedgerHeader, rep report.Report, ev Evidence, prior *Ledger, in scanInputs) Ledger {
 	old := map[string]LedgerRow{}
 	if prior != nil {
 		for _, r := range prior.Rows {
@@ -265,17 +267,26 @@ func seedLedger(hdr LedgerHeader, rep report.Report, ev Evidence, prior *Ledger)
 	}
 	l := Ledger{Schema: LedgerSchema, Header: hdr}
 	for _, er := range engineRows(rep.Advisories) {
-		row := LedgerRow{Advisory: er.Advisory, Package: er.Package, Target: hdr.Target, EngineExpected: er.Engine}
+		row := LedgerRow{Advisory: er.Advisory, Package: er.Package, Target: hdr.Target, EngineExpected: er.Engine,
+			Adjudicated: Adjudicated{Status: TruthUnknown}}
+		bound := boundFor(hdr.Target, er.Package, &er, in)
+		if row.reachableRow() {
+			row.PathReview = newPathReview(er.Path, bound)
+		}
 		if o, ok := old[row.Key()]; ok {
-			row.Truth, row.Basis, row.Source, row.Gap = o.Truth, o.Basis, o.Source, o.Gap
-			if !disagrees(row.Truth, row.EngineExpected) {
+			keep := keepReviews(&row, o, bound)
+			if keep && o.Featured {
+				row.Featured = true
+			}
+			row.ComparatorObserved, row.Basis, row.Source, row.Gap = o.ComparatorObserved, o.Basis, o.Source, o.Gap
+			if !disagrees(row.ComparatorObserved, row.EngineExpected) {
 				row.Gap = ""
 			} else if row.Gap == "" {
-				row.Gap = gapFor(row.Truth, row.EngineExpected)
+				row.Gap = gapFor(row.ComparatorObserved, row.EngineExpected)
 			}
 		} else {
-			row.Truth, row.Basis, row.Source = derive(er, ev)
-			row.Gap = gapFor(row.Truth, row.EngineExpected)
+			row.ComparatorObserved, row.Basis, row.Source = derive(er, ev)
+			row.Gap = gapFor(row.ComparatorObserved, row.EngineExpected)
 		}
 		l.Rows = append(l.Rows, row)
 	}
@@ -299,13 +310,17 @@ func seedLedger(hdr LedgerHeader, rep report.Report, ev Evidence, prior *Ledger)
 		}
 		slices.Sort(ids)
 		er := engineRow{Advisory: slices.Compact(ids), Package: pkg, Engine: Engine{Verdict: VerdictNotEmitted}}
-		row := LedgerRow{Advisory: er.Advisory, Package: pkg, Target: hdr.Target, EngineExpected: er.Engine}
+		row := LedgerRow{Advisory: er.Advisory, Package: pkg, Target: hdr.Target, EngineExpected: er.Engine,
+			Adjudicated: Adjudicated{Status: TruthUnknown}}
 		if o, ok := old[row.Key()]; ok {
-			row.Truth, row.Basis, row.Source = o.Truth, o.Basis, o.Source
+			row.ComparatorObserved, row.Basis, row.Source = o.ComparatorObserved, o.Basis, o.Source
+			if keepReviews(&row, o, boundFor(hdr.Target, pkg, nil, in)) && o.Featured {
+				row.Featured = true
+			}
 		} else {
-			row.Truth, row.Basis, row.Source = derive(er, ev)
+			row.ComparatorObserved, row.Basis, row.Source = derive(er, ev)
 		}
-		row.Gap = gapFor(row.Truth, row.EngineExpected)
+		row.Gap = gapFor(row.ComparatorObserved, row.EngineExpected)
 		if o, ok := old[row.Key()]; ok && o.Gap != "" {
 			row.Gap = o.Gap
 		}
@@ -314,6 +329,33 @@ func seedLedger(hdr LedgerHeader, rep report.Report, ev Evidence, prior *Ledger)
 	l.Rows = append(l.Rows, silent...)
 	slices.SortFunc(l.Rows, func(a, b LedgerRow) int { return strings.Compare(a.Key(), b.Key()) })
 	return l
+}
+
+// keepReviews carries the prior row o's reviews onto row, which was freshly seeded and is bound to
+// bound, and reports whether every review o held was kept (so its featured flag may stay). An
+// unreviewed path_review is replaced by the fresh one, which refreshes its recorded inputs. A reviewed
+// one stays only for the same path under the same inputs, and an adjudication only under the same
+// inputs; anything else is reset, and the row loses featured.
+func keepReviews(row *LedgerRow, o LedgerRow, bound BoundTo) bool {
+	keep := true
+	if row.PathReview != nil {
+		switch pr := o.PathReview; {
+		case pr == nil || pr.Status == StatusUnreviewed:
+			keep = keep && pr != nil && pr.PathSHA == row.PathReview.PathSHA
+		case pr.PathSHA == row.PathReview.PathSHA && pr.BoundTo != nil && len(pr.BoundTo.diff(bound)) == 0:
+			row.PathReview = pr
+		default:
+			keep = false
+		}
+	}
+	if o.Adjudicated.reviewed() {
+		if o.Adjudicated.BoundTo != nil && len(o.Adjudicated.BoundTo.diff(bound)) == 0 {
+			row.Adjudicated = o.Adjudicated
+		} else {
+			keep = false
+		}
+	}
+	return keep
 }
 
 // writeLedger renders a ledger as YAML with a header comment.
@@ -344,7 +386,8 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 	reportPath := fs.String("report", "", "report.json of the pinned scan (required)")
 	vulnPath := fs.String("govulncheck", "", "raw `govulncheck -mode source -format json ./...` output; omit it to reuse the committed evidence")
 	command := fs.String("command", "govulncheck -mode source -format json ./...", "the comparator command line, recorded in the evidence")
-	update := fs.Bool("update", false, "keep the truth of rows already in the ledger; follow the report for engine_expected")
+	pathsOnly := fs.Bool("paths-only", false, "keep every row of the ledger as it is and only add the path_review of its reachable rows from the report; implies -update")
+	update := fs.Bool("update", false, "keep the comparator_observed of rows already in the ledger; follow the report for engine_expected, and reset any review whose path or bound_to inputs changed")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -416,16 +459,34 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 			Evidence: "evidence/" + *name + ".govulncheck.json"},
 	}
 	var prior *Ledger
+	if *pathsOnly {
+		*update = true
+	}
 	if *update {
-		p, err := loadLedger(ledgerPath(*targetsPath, *name))
+		p, err := loadLedgerFor(ledgerPath(*targetsPath, *name), false)
 		if err != nil {
 			return fail(err)
 		}
 		prior = &p
-		hdr.Comparator = p.Header.Comparator // the truth column was derived from that run
+		hdr.Comparator = p.Header.Comparator // comparator_observed was derived from that run
 	}
-	l := seedLedger(hdr, rep, ev, prior)
-	if err := l.validate(); err != nil {
+	hdr.MainModule = mainModuleOf(rep)
+	// The scan's meta.json, beside its report.json, names the scanner commit, corpus release and Go
+	// version it ran under; without one the lane's pins stand for the last two.
+	var meta Meta
+	if raw, err := os.ReadFile(filepath.Join(filepath.Dir(*reportPath), fileMeta)); err == nil {
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			return fail(fmt.Errorf("%s: %w", filepath.Join(filepath.Dir(*reportPath), fileMeta), err))
+		}
+	}
+	l := seedLedger(hdr, rep, ev, prior, scanInputsOf(sc, rep, meta))
+	if *pathsOnly {
+		var err error
+		if l, err = withPaths(*prior, l); err != nil {
+			return fail(err)
+		}
+	}
+	if err := l.validate(true); err != nil {
 		return fail(err)
 	}
 	if err := writeLedger(ledgerPath(*targetsPath, *name), l); err != nil {
@@ -433,4 +494,39 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "floorcheck seed: %s: %d rows\n", *name, len(l.Rows))
 	return 0
+}
+
+// mainModuleOf is the scanned repository's Go module path, read from the call paths of the report.
+func mainModuleOf(rep report.Report) string {
+	for _, f := range rep.Advisories {
+		if _, mod := callPath(f); mod != "" {
+			return mod
+		}
+	}
+	return ""
+}
+
+// withPaths is the prior ledger with the path_review of each reachable row taken from seeded, which was
+// built from a report, where the row has none, its path moved, or nobody has reviewed it (which
+// refreshes its recorded inputs): nothing else about a row changes. A reachable row the report does not show as
+// reachable has no path to record, so the report is not the scan the ledger was built from.
+func withPaths(prior, seeded Ledger) (Ledger, error) {
+	byKey := map[string]LedgerRow{}
+	for _, r := range seeded.Rows {
+		byKey[r.Key()] = r
+	}
+	out := prior
+	out.Header.MainModule = seeded.Header.MainModule
+	out.Rows = slices.Clone(prior.Rows)
+	for i, r := range out.Rows {
+		if !r.reachableRow() {
+			continue
+		}
+		if s, ok := byKey[r.Key()]; !ok || s.PathReview == nil {
+			return Ledger{}, fmt.Errorf("row %s is reachable in the ledger, but the report has no path for it", r.Key())
+		} else if r.PathReview == nil || r.PathReview.PathSHA != s.PathReview.PathSHA || r.PathReview.Status == StatusUnreviewed {
+			out.Rows[i].PathReview, out.Rows[i].Featured = s.PathReview, false
+		}
+	}
+	return out, nil
 }

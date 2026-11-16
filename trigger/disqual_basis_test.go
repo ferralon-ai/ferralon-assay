@@ -21,6 +21,8 @@ func TestDisqualBasis_GroundedAxesStateTheirOwnGrounds(t *testing.T) {
 	}{
 		{pipeline.ReasonVersionNotInRange, verdict.BasisVersionNotAffected},
 		{pipeline.ReasonSymbolAbsent, verdict.BasisSymbolAbsent},
+		{pipeline.ReasonAdvisoryEcosystemMismatch, verdict.BasisAdvisoryEcosystemMismatch},
+		{pipeline.ReasonNoManifestEntry, verdict.BasisNoManifestEntry},
 	} {
 		f := disqualFinding(t, tc.reason)
 		if f.Evidence.Basis != tc.want {

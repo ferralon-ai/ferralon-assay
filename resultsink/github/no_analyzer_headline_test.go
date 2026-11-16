@@ -49,7 +49,7 @@ func TestBothSurfaces_NoAnalyzer_HeadlineSaysNotAnalyzed(t *testing.T) {
 		{
 			name:     "something assessed keeps partial coverage",
 			r:        goScanReport(report.PartialityNote{Reason: plugin.PartialReasonNoPlugin, Ecosystem: "Go", Detail: noAnalyzerDetail}),
-			want:     []string{"**Partial coverage — no reachable candidates in what was assessed.**", disclosureHeading, "(`" + noAnalyzerDetail + "`)"},
+			want:     []string{"**Partial coverage — no call path found in what was assessed.**", disclosureHeading, "(`" + noAnalyzerDetail + "`)"},
 			dontWant: []string{noAnalyzerHeadline, noAnalyzerLead},
 		},
 	}

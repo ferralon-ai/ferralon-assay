@@ -17,6 +17,21 @@
 // With a ledger for a showcase target, `check` also fails the pinned showcase scan on any ledger row
 // that is missing, extra or changed; the floating-corpus scan of the same target is report-only.
 //
+// `paths` is the review aid: it prints every reachable row of a showcase ledger with its call path, one
+// hop per line, each hop marked target, dependency or stdlib and the likely interface dispatches
+// flagged, so a reviewer can read the path before marking it real or artifact. `check` fails a
+// reachable row without a path_review block, a path that no longer hashes to its path_sha, and a
+// featured row whose path is not real.
+//
+//	floorcheck paths -targets floor/targets.json [-target gitea]
+//
+// `packet` writes a review and reproduction packet for a reachable row (or every featured row): the
+// ledger row, the call path with a source link per hop, the analysis inputs, Assay's raw finding and
+// govulncheck's entry, and the commands that reproduce the row from a clean machine.
+//
+//	floorcheck packet -target gitea -row <key|advisory> | -featured [-report report.json] \
+//	                  [-source CHECKOUT] [-modcache DIR] [-goroot DIR] [-out DIR] [-verify-links]
+//
 // Exit status: 0 when every repository passed, 1 when any failed, 2 on a usage or input error.
 // docs/floor.md describes the run.
 package main
@@ -35,7 +50,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: floorcheck matrix|check|seed [flags]")
+		fmt.Fprintln(stderr, "usage: floorcheck matrix|check|seed|paths [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -45,8 +60,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCheck(args[1:], stdout, stderr)
 	case "seed":
 		return runSeed(args[1:], stdout, stderr)
+	case "paths":
+		return runPaths(args[1:], stdout, stderr)
+	case "packet":
+		return runPacket(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "floorcheck: unknown command %q (want matrix, check or seed)\n", args[0])
+		fmt.Fprintf(stderr, "floorcheck: unknown command %q (want matrix, check, seed, paths or packet)\n", args[0])
 		return 2
 	}
 }
@@ -140,4 +159,47 @@ func writeFiles(files map[string][]byte) error {
 		}
 	}
 	return nil
+}
+
+// runPaths implements `floorcheck paths`: the review aid, over the committed ledgers.
+func runPaths(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("paths", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	targetsPath := fs.String("targets", "floor/targets.json", "the targets file")
+	name := fs.String("target", "", "one showcase target's name; default every showcase target")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	t, err := loadTargets(*targetsPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "floorcheck:", err)
+		return 2
+	}
+	ledgers, errs := loadLedgers(*targetsPath, t)
+	shown := 0
+	for _, tg := range showcaseTargets(t) {
+		if *name != "" && tg.Name() != *name {
+			continue
+		}
+		if err := errs[tg.Name()]; err != nil {
+			fmt.Fprintln(stderr, "floorcheck:", err)
+			return 2
+		}
+		fmt.Fprintf(stdout, "== %s\n", tg.Name())
+		reachable, dyn := writeReviewAid(stdout, ledgers[tg.Name()])
+		fmt.Fprintf(stdout, "== %s: %d reachable rows, %d with a likely interface dispatch\n", tg.Name(), reachable, dyn)
+		shown++
+	}
+	if shown == 0 {
+		fmt.Fprintln(stderr, "floorcheck paths: no showcase target matches")
+		return 2
+	}
+	return 0
+}
+
+func showcaseTargets(t Targets) []Target {
+	if t.Showcase == nil {
+		return nil
+	}
+	return t.Showcase.Targets
 }

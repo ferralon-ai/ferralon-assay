@@ -485,7 +485,8 @@ type EvidenceSummary struct {
 	// Basis is the structured grounds for a not_exploitable / disqualified verdict,
 	// reusing the OSS verdict grammar (verdict.NonExploitableBasis):
 	// "version_not_in_affected_range", "vulnerable_symbol_absent" or, for a not_exploitable
-	// resting on reachability, "vulnerable_symbol_unreachable". Empty for a
+	// resting on reachability, "vulnerable_symbol_unreachable". A disqualified finding from intake
+	// carries "advisory_ecosystem_mismatch" or "no_manifest_entry" (no comparison ran). Empty for a
 	// reachable_candidate (which has no refutation basis — its grounds are the path) and
 	// for an undetermined finding (which has no grounds at all).
 	Basis verdict.NonExploitableBasis `json:"basis,omitempty"`
@@ -1287,6 +1288,10 @@ func (r Report) Validate() error {
 		if f.Verdict == VerdictUndetermined && f.Evidence.Basis != verdict.BasisNone {
 			return fmt.Errorf("report: advisory %q is undetermined but carries a not-exploitability basis %q (an undetermined finding establishes nothing, so it has no grounds)",
 				f.Advisory.ID, f.Evidence.Basis)
+		}
+		if f.Evidence.Basis.IsIntake() && f.Verdict != VerdictDisqualified {
+			return fmt.Errorf("report: advisory %q carries intake basis %q but verdict is %q (an intake basis records only that nothing was adjudicated, so it belongs to a disqualified)",
+				f.Advisory.ID, f.Evidence.Basis, f.Verdict)
 		}
 		if f.Evidence.Basis == verdict.BasisSymbolUnreachable && f.Verdict != VerdictNotExploitable {
 			return fmt.Errorf("report: advisory %q carries basis %q but verdict is %q (a reachability refutation grounds only a not_exploitable)",

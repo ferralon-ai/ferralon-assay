@@ -128,6 +128,10 @@ const reportHTMLSource = `<!DOCTYPE html>
   </header>
   <p class="sub">Neutral, deterministic dependency advisory scan. Verdicts are reachability candidates and grounded refutations &mdash; never proofs of exploitability.</p>
 
+  {{- if .CoverageStatus}}
+  <section class="card limits"><p class="limits-lede"><strong>{{.CoverageStatus}}</strong></p></section>
+  {{- end}}
+
   <div class="grid">
     <section class="card">
       <h2>Verdict breakdown</h2>
@@ -135,10 +139,10 @@ const reportHTMLSource = `<!DOCTYPE html>
         <svg id="donut" width="132" height="132" viewBox="0 0 132 132" role="img" aria-label="Verdict breakdown chart"></svg>
         <ul class="legend">
           <li><span class="dot affected"></span> Malicious package present <span class="n" id="n-malicious">0</span></li>
-          <li><span class="dot ok"></span> Disqualified <span class="n" id="n-disqualified">0</span></li>
-          <li><span class="dot info"></span> Not exploitable <span class="n" id="n-notexploitable">0</span></li>
-          <li><span class="dot candidate"></span> Reachable candidate <span class="n" id="n-candidate">0</span></li>
-          <li><span class="dot notassessed"></span> Not assessed <span class="n" id="n-undetermined">0</span></li>
+          <li><span class="dot ok"></span> Outside the affected range <span class="n" id="n-disqualified">0</span></li>
+          <li><span class="dot info"></span> Exposure ruled out for this scan scope <span class="n" id="n-notexploitable">0</span></li>
+          <li><span class="dot candidate"></span> Call path found <span class="n" id="n-candidate">0</span></li>
+          <li><span class="dot notassessed"></span> Exposure assessment incomplete <span class="n" id="n-undetermined">0</span></li>
         </ul>
       </div>
     </section>
@@ -158,12 +162,12 @@ const reportHTMLSource = `<!DOCTYPE html>
 
   {{- if .Limits}}
   <section class="card limits">
-    <h2>Coverage limits{{if .NotAssessedCount}} &mdash; {{.NotAssessedCount}} advisor{{if eq .NotAssessedCount 1}}y{{else}}ies{{end}} not assessed{{end}}</h2>
-    <p class="limits-lede">These are the limits of what this scan established. An advisory these limits cover was evaluated and given <strong>no verdict</strong> &mdash; that is not a statement that this codebase is unaffected by it. Each such advisory appears in the table below marked <em>not assessed</em>.</p>
+    <h2>Coverage limits{{if .NotAssessedCount}} &mdash; {{.NotAssessedCount}} advisor{{if eq .NotAssessedCount 1}}y{{else}}ies{{end}} with exposure assessment incomplete{{end}}</h2>
+    <p class="limits-lede">These are the limits of what this scan established. An advisory these limits cover was evaluated and given <strong>no verdict</strong> &mdash; that is not a statement that this codebase is unaffected by it. Each such advisory appears in the table below marked <em>exposure assessment incomplete</em>.</p>
     <ul class="limit-list">
       {{- range .Limits}}
       <li>
-        <span class="badge {{if .Withheld}}notassessed{{else}}info{{end}}">{{if .Withheld}}not assessed{{else}}partial coverage{{end}}</span>
+        <span class="badge {{if .Withheld}}notassessed{{else}}info{{end}}">{{if .Withheld}}exposure assessment incomplete{{else}}partial coverage{{end}}</span>
         <span class="limit-why">{{.Label}}</span>
         {{- if .Ecosystem}}<span class="src">{{.Ecosystem}}</span>{{end}}
         <div class="limit-code mono">{{.Reason}}</div>
@@ -198,11 +202,12 @@ const reportHTMLSource = `<!DOCTYPE html>
         </td>
         <td class="mono">{{if .Package}}{{.Package}}{{else}}&mdash;{{end}}</td>
         <td>
-          <span class="badge {{.Severity}}">{{.Label}}</span>
+          <span class="badge {{.Severity}}">{{.Label}}</span> <span class="mono">({{.Verdict}})</span>
           {{- if .Detail}}<div class="detail">{{.Detail}}</div>{{end}}
           {{- range .Assumptions}}<div class="detail">Holds only under the stated assumption: {{.}}</div>{{end}}
           {{- range .Annotations}}<div class="detail">This analysis assumes: {{.}}</div>{{end}}
-          {{- if .UndeterminedReason}}<div class="limit-code mono">{{.UndeterminedReason}}</div>{{end}}
+          {{- if .UndeterminedReason}}<div class="limit-code mono">{{.Cause}}: {{.UndeterminedReason}}</div>{{end}}
+          {{- if .NextAction}}<div class="detail">Next: {{.NextAction}}</div>{{end}}
           {{- if .Path}}<div class="path"><span class="mono">{{.Path}}</span></div>{{end}}
           {{- if .HasGrade}}
             {{- if eq .Grade "attacker_tainted"}}
@@ -241,8 +246,8 @@ const reportHTMLSource = `<!DOCTYPE html>
   </section>
 
   <footer class="page">
-    <strong>How to read this:</strong> a <em>reachable candidate</em> means a code path to the advisory symbol was found &mdash; it is a candidate for exploitability, not a proof.
-    <em>Not exploitable</em> and <em>disqualified</em> are grounded deterministic refutations. {{.Brand}} never claims a finding is proven exploitable: proof requires observing the vulnerable path actually execute, which this scan does not do.
+    <strong>How to read this:</strong> <em>Call path found</em> (<span class="mono">reachable_candidate</span>) means a code path to the advisory symbol was found &mdash; it is a candidate for exploitability, not a proof.
+    <em>Exposure ruled out for this scan scope</em> (<span class="mono">not_exploitable</span>) and <em>outside the affected range</em> (<span class="mono">disqualified</span>) are grounded deterministic refutations; <em>exposure assessment incomplete</em> (<span class="mono">undetermined</span>) is neither. {{.Brand}} never claims a finding is proven exploitable: proof requires observing the vulnerable path actually execute, which this scan does not do.
     <br>This report is self-contained: the data above is rendered from the JSON embedded in this file.
     <br><strong>EPSS / CISA KEV:</strong> EPSS scores and KEV flags come from the signals file this scan was given, and each shows the date of its own data: an EPSS score its model date, a KEV flag the CISA catalog version it was read from. They are wild-exploitation likelihood signals from public feeds (FIRST.org EPSS, CISA KEV catalog) &mdash; not exploitability verdicts for this codebase.
   </footer>

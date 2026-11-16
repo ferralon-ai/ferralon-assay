@@ -27,7 +27,7 @@ const (
 	neUngrounded = `{"advisory":{"id":"GO-2","source":"osv"},"verdict":"not_exploitable","evidence":{"detail":"nothing found"}}`
 	neUnknown    = `{"advisory":{"id":"GO-3","source":"osv"},"verdict":"not_exploitable","evidence":{"basis":"looked_hard"}}`
 	disqVersion  = `{"advisory":{"id":"GO-4","source":"osv"},"verdict":"disqualified","evidence":{"basis":"version_not_in_affected_range"}}`
-	disqIntake   = `{"advisory":{"id":"GO-5","source":"osv"},"verdict":"disqualified","evidence":{"detail":"no version or symbol comparison was performed"}}`
+	disqIntake   = `{"advisory":{"id":"GO-5","source":"osv"},"verdict":"disqualified","evidence":{"basis":"no_manifest_entry","detail":"no version or symbol comparison was performed"}}`
 	disqStatic   = `{"advisory":{"id":"GO-6","source":"osv"},"verdict":"disqualified","evidence":{"basis":"static_refutation"}}`
 	undetA       = `{"advisory":{"id":"GO-7","source":"osv"},"verdict":"undetermined","undetermined_reason":"advisory_symbol_absent","evidence":{}}`
 	undetB       = `{"advisory":{"id":"GO-8","source":"osv"},"verdict":"undetermined","undetermined_reason":"advisory_symbol_absent","evidence":{}}`
@@ -95,15 +95,15 @@ func TestEvaluate(t *testing.T) {
 		truncated    bool
 	}{
 		{name: "grounded not_exploitable passes", sr: withReport(ok(), reportJSON(neGrounded, "")), pass: true},
-		{name: "ungrounded not_exploitable fails", sr: withReport(ok(), reportJSON(neGrounded+","+neUngrounded, "")),
-			kinds: []string{KindUngroundedNE}, findings: []string{"GO-2"}},
-		{name: "unknown basis is no grounds", sr: withReport(ok(), reportJSON(neUnknown, "")),
-			kinds: []string{KindUngroundedNE}, findings: []string{"GO-3"}},
+		{name: "ungrounded not_exploitable is a malformed report", sr: withReport(ok(), reportJSON(neGrounded+","+neUngrounded, "")),
+			kinds: []string{KindMalformed}},
+		{name: "unknown basis is a malformed report", sr: withReport(ok(), reportJSON(neUnknown, "")),
+			kinds: []string{KindMalformed}},
 		{name: "disqualified with a version basis passes", sr: withReport(ok(), reportJSON(disqVersion, "")), pass: true},
-		{name: "disqualified without a basis is unverifiable, not failed", sr: withReport(ok(), reportJSON(disqIntake, "")),
+		{name: "disqualified on an intake basis is unverifiable, not failed", sr: withReport(ok(), reportJSON(disqIntake, "")),
 			pass: true, unverifiable: []string{"GO-5"}},
-		{name: "disqualified on a refutation basis fails", sr: withReport(ok(), reportJSON(disqStatic, "")),
-			kinds: []string{KindUngroundedDisq}, findings: []string{"GO-6"}},
+		{name: "disqualified on a refutation basis is a malformed report", sr: withReport(ok(), reportJSON(disqStatic, "")),
+			kinds: []string{KindMalformed}},
 		{name: "undetermined is counted with its reason", sr: withReport(ok(), reportJSON(undetA+","+undetC+","+undetB, "")),
 			pass: true, reasons: []ReasonCount{{"advisory_symbol_absent", 2}, {"package_version_unresolved", 1}}},
 		{name: "a truncated scan fails", sr: withReport(ok(), reportJSON(neGrounded+","+cutShort, cutShortNote)),
@@ -339,9 +339,9 @@ func TestCheckSmoke(t *testing.T) {
 		t.Fatalf("exit %d, want 1; stdout %s stderr %s", code, stdout.String(), stderr.String())
 	}
 	for name, want := range map[string][]string{
-		"s.json": {`"schema": "ferralon.floor-summary.v1"`, `"pass": false`, `"ungrounded_not_exploitable"`, `"no_result"`, `"unverifiable"`},
+		"s.json": {`"schema": "ferralon.floor-summary.v1"`, `"pass": false`, `"malformed_report"`, `"no_result"`, `"unverifiable"`},
 		"s.md": {"FAIL — 2 of 3 repos failed", "| dotnet | **no target** |", "| good | go | `0123456789ab` | published-24h | not_exploitable 1 · disqualified 1 · undetermined 1 | 0 | `advisory_symbol_absent` 1 | no | 1m15s | pass |",
-			"**bad** — `ungrounded_not_exploitable`: 1 not_exploitable without grounds: GO-2", "o/skip: no build files"},
+			"**bad** — `malformed_report`", "o/skip: no build files"},
 		"a.txt": {"failed on 2 of 3 demo repos", "• Run: https://example.test/run/9"},
 	} {
 		data, err := os.ReadFile(out(name))

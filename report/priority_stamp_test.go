@@ -129,8 +129,8 @@ func storedPriorityReport(t *testing.T, version, oldPriority, newPriority string
 	stored := `{"schema_version": "` + version + `", "subject": {"repo": "r", "resolved_commit": "c"},
 	  "sbom": {"packages": []},
 	  "advisories": [
-	    {"advisory": {"id": "CVE-OLD", "source": "osv"}, "verdict": "not_exploitable", "priority": ` + oldPriority + `},
-	    {"advisory": {"id": "CVE-NEW", "source": "osv"}, "verdict": "not_exploitable", "priority": ` + newPriority + `}],
+	    {"advisory": {"id": "CVE-OLD", "source": "osv"}, "verdict": "not_exploitable", "evidence": {"basis": "vulnerable_symbol_unreachable"}, "priority": ` + oldPriority + `},
+	    {"advisory": {"id": "CVE-NEW", "source": "osv"}, "verdict": "not_exploitable", "evidence": {"basis": "vulnerable_symbol_unreachable"}, "priority": ` + newPriority + `}],
 	  "provenance": {"commit_sha": "c", "analyzer_version": "v", "advisory_cursor": "", "timestamp": "2026-10-20T00:00:00Z"}}`
 	var r Report
 	if err := json.Unmarshal([]byte(stored), &r); err != nil {

@@ -7,7 +7,7 @@ import (
 )
 
 // TestValidateSymbolUnreachableBasisOnlyOnNotExploitable: the reachability basis grounds a
-// not_exploitable and nothing else. Each rejected finding validates without the basis, so the
+// not_exploitable and nothing else. Each rejected finding validates with its own basis, so the
 // rejection is the basis rule's.
 func TestValidateSymbolUnreachableBasisOnlyOnNotExploitable(t *testing.T) {
 	cases := []struct {
@@ -16,7 +16,7 @@ func TestValidateSymbolUnreachableBasisOnlyOnNotExploitable(t *testing.T) {
 		wantOK bool
 	}{
 		{"not_exploitable", AdvisoryFinding{Verdict: VerdictNotExploitable, Evidence: EvidenceSummary{Detail: "no path"}}, true},
-		{"disqualified", AdvisoryFinding{Verdict: VerdictDisqualified, Evidence: EvidenceSummary{Detail: "d"}}, false},
+		{"disqualified", AdvisoryFinding{Verdict: VerdictDisqualified, Evidence: EvidenceSummary{Basis: verdict.BasisVersionNotAffected, Detail: "d"}}, false},
 		{"reachable_candidate", AdvisoryFinding{Verdict: VerdictReachableCandidate, Evidence: EvidenceSummary{ReachablePath: "a → b"}}, false},
 		{"undetermined", AdvisoryFinding{Verdict: VerdictUndetermined, UndeterminedReason: ReasonAnalysisDidNotRun,
 			Evidence: EvidenceSummary{Detail: UndeterminedDetail(ReasonAnalysisDidNotRun)}}, false},
@@ -27,7 +27,7 @@ func TestValidateSymbolUnreachableBasisOnlyOnNotExploitable(t *testing.T) {
 			f.Advisory = Advisory{ID: "X", Source: "osv"}
 			if !tc.wantOK {
 				if err := NewBuilder(Subject{ResolvedCommit: "c"}).AddFinding(f).Build().Validate(); err != nil {
-					t.Fatalf("fixture invalid without the basis: %v", err)
+					t.Fatalf("fixture invalid with its own basis: %v", err)
 				}
 			}
 			f.Evidence.Basis = verdict.BasisSymbolUnreachable

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -118,7 +119,9 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 		// Graph resolution failed (e.g. an unavailable transitive go.mod on a cold
 		// cache with the proxy off): surface it, do not fabricate an empty graph.
 		graphReasons = append(graphReasons, plugin.PartialReasonToolFailure)
-		return plugin.DependencyInventory{Partiality: withScoped(partiality(graphReasons), nested)}, nil
+		part := withScoped(partiality(graphReasons), nested)
+		part.Cause = err.Error()
+		return plugin.DependencyInventory{Partiality: part}, nil
 	}
 
 	// direct set: modfile require markers ARE the native Indirect oracle, offline.
@@ -333,10 +336,13 @@ func runModGraph(ctx context.Context, buildDir string) ([]graphEdge, error) {
 	if goWork(ctx) != "off" {
 		cmd.Env = append(cmd.Env, "GOPROXY=off", "GOFLAGS=-mod=readonly")
 	}
-	var out bytes.Buffer
+	var out, stderr bytes.Buffer
 	cmd.Stdout = &out
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, err
+		// A go that is missing, dangling or exits non-zero is named with its own words, so the
+		// Report says why the graph is absent.
+		return nil, fmt.Errorf("go mod graph: %w%s", err, stderrTail(&stderr))
 	}
 
 	var edges []graphEdge
@@ -357,6 +363,18 @@ func runModGraph(ctx context.Context, buildDir string) ([]graphEdge, error) {
 		return nil, err
 	}
 	return edges, nil
+}
+
+// stderrTail renders the first line of a failed command's stderr, bounded, as ": line"; "" when empty.
+func stderrTail(stderr *bytes.Buffer) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(stderr.String()), "\n")
+	if line = strings.TrimSpace(line); line == "" {
+		return ""
+	}
+	if len(line) > 200 {
+		line = line[:200] + "…"
+	}
+	return ": " + line
 }
 
 // goWorkspace is what a go.work makes of the graph `go mod graph` prints under it.

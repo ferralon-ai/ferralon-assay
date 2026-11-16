@@ -1,0 +1,10 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/bradtraversy/proshop_mern
+commit: 1d20b5b09e796e2f00779306c390360e9e573276
+lang: js
+build:
+  node: "20"
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "3fe28e5007b17af5e572e6d07f2cee0d665348c114f38ca45f841391e4ecf801" }
+  provenance: corpus-92d72057330c

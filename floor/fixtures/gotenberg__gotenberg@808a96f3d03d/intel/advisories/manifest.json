@@ -1,0 +1,19 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 1,
+  "records": [
+    {
+      "identifier": "CVE-2026-55229",
+      "path": "2026/07/CVE-2026-55229.json",
+      "output_digest": "sha256:94eb50e107c41013e15bed1c4698e81b37a0f808c195706c1ecc707d7d922170"
+    }
+  ],
+  "corpus_digest": "sha256:98a5a875cb9589bed875d0d725cbe989f08b59270d16f570edaa049dcb89cdf3",
+  "provenance": {
+    "generator": "floor fixture extraction",
+    "policy_id": "floor-fixture",
+    "policy_query": "the records this fixture's adjudicated expectations name",
+    "source_corpus_digest": "sha256:2233ff305c007bbfdd0e88d8e121f26a7699927ce277d87092ed08caab987af0"
+  }
+}

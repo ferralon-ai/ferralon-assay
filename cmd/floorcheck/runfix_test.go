@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +26,19 @@ type fakeRunner struct {
 	afterScan map[string]func(outDir string)
 	requests  []scanRequest
 	checkouts []string
+	warms     []warmCall
+}
+
+type warmCall struct {
+	dir     string
+	env     []string
+	bounded bool
+}
+
+func (r *fakeRunner) warmGoModules(ctx context.Context, dir string, env []string, _ io.Writer) error {
+	_, bounded := ctx.Deadline()
+	r.warms = append(r.warms, warmCall{dir, env, bounded})
+	return nil
 }
 
 func (r *fakeRunner) checkout(_ context.Context, repo, commit, dir string) error {
@@ -92,10 +106,27 @@ func TestRunFixtures(t *testing.T) {
 	out := t.TempDir()
 	scanner := fakeScanner(t)
 	var stdout, stderr bytes.Buffer
+	work := t.TempDir()
 	code := runFixtures(context.Background(), []string{"--out", out, "--fixtures-root", f.fixtures, "--scanner", scanner,
-		"--work", t.TempDir()}, fr, &stdout, &stderr)
+		"--work", work}, fr, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit %d, want 1 (a regression, beside incomplete fixtures)\n%s", code, stderr.String())
+	}
+	if len(fr.warms) != 3 {
+		t.Fatalf("%d module warm-ups, want one per checked-out go fixture", len(fr.warms))
+	}
+	warm := fr.warms[slices.IndexFunc(fr.warms, func(w warmCall) bool { return filepath.Base(w.dir) == "met" })]
+	if warm.dir != filepath.Join(work, "met") {
+		t.Errorf("warmed %s, want the checkout", warm.dir)
+	}
+	if !warm.bounded {
+		t.Error("the warm-up has no deadline of its own")
+	}
+	if v, ok := envValue(warm.env, "GOWORK"); ok {
+		t.Errorf("warm-up GOWORK=%s, want it unset so the subject's go.work picks the build list", v)
+	}
+	if v, _ := envValue(warm.env, "GOTOOLCHAIN"); v != "go1.23.12" {
+		t.Errorf("warm-up GOTOOLCHAIN=%q, want the scan's pin", v)
 	}
 	if len(fr.requests) != 3 {
 		t.Fatalf("%d scans, want 3: an unverified fixture is never scanned", len(fr.requests))
@@ -181,6 +212,19 @@ func TestRunFixtures(t *testing.T) {
 		if !strings.Contains(string(md), s) {
 			t.Errorf("summary.md lacks %q:\n%s", s, md)
 		}
+	}
+}
+
+// TestRunWarmsOnlyGo: only a go fixture's module cache is warmed before its scan.
+func TestRunWarmsOnlyGo(t *testing.T) {
+	f := newTestFloor(t)
+	f.fixture(t, "py", laneScenario("python", `  python: "3.12"`), expectYAML)
+	fr := &fakeRunner{}
+	var stdout, stderr bytes.Buffer
+	runFixtures(context.Background(), []string{"--out", t.TempDir(), "--fixtures-root", f.fixtures, "--scanner", fakeScanner(t),
+		"--work", t.TempDir()}, fr, &stdout, &stderr)
+	if len(fr.requests) != 1 || len(fr.warms) != 0 {
+		t.Errorf("%d scans, %d warm-ups: want the python fixture scanned and not warmed\n%s", len(fr.requests), len(fr.warms), stderr.String())
 	}
 }
 

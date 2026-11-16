@@ -1,0 +1,13 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/gotenberg/gotenberg
+commit: 808a96f3d03d5281a4ea5c1876354513467cc3c5
+lang: go
+build:
+  go: 1.26.2
+  goos: linux
+  goarch: amd64
+  cgo: false
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "4e7ad11693530e55bb8313c2b1b6a0f9a33540f1f01a2e010e64b83ae46a2732" }
+  provenance: corpus-92d72057330c

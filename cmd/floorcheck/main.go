@@ -15,6 +15,11 @@
 // capability-matrix caveats each report fired, through floor/caveats.json; the tally never fails
 // a repository, and a mapping it cannot read leaves every reason unmapped instead of failing.
 //
+// `seed` builds or updates a showcase target's expected-verdict ledger (floor/expect/<name>.yaml) from
+// a scan's report.json and a govulncheck run, and commits the comparator's normalized output beside it.
+// With a ledger for a showcase target, `check` also fails the pinned showcase scan on any ledger row
+// that is missing, extra or changed; the floating-corpus scan of the same target is report-only.
+//
 // Exit status: 0 when every repository passed, 1 when any failed, 2 on a usage or input error.
 // docs/floor.md describes the run.
 package main
@@ -33,7 +38,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: floorcheck matrix|check [flags]")
+		fmt.Fprintln(stderr, "usage: floorcheck matrix|check|seed [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -41,8 +46,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runMatrix(args[1:], stdout, stderr)
 	case "check":
 		return runCheck(args[1:], stdout, stderr)
+	case "seed":
+		return runSeed(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "floorcheck: unknown command %q (want matrix or check)\n", args[0])
+		fmt.Fprintf(stderr, "floorcheck: unknown command %q (want matrix, check or seed)\n", args[0])
 		return 2
 	}
 }
@@ -96,7 +103,8 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "floorcheck:", err)
 		return 2
 	}
-	s := summarize(t, found, *assayCommit, *runURL)
+	ledgers, ledgerErrs := loadLedgers(*targetsPath, t)
+	s := summarizeWith(t, found, ledgers, ledgerErrs, *assayCommit, *runURL)
 	cv, cerr := loadCaveats(*caveatsPath)
 	if cerr != nil {
 		fmt.Fprintln(stderr, "floorcheck: caveat tally without a mapping:", cerr)
@@ -124,6 +132,11 @@ func runCheck(args []string, stdout, stderr io.Writer) int {
 	for _, r := range s.failedRepos() {
 		for _, f := range r.Failures {
 			fmt.Fprintf(stdout, "  %s: %s: %s\n", r.Repo, f.Kind, f.Detail)
+			if f.Kind == KindLedger {
+				for _, line := range f.Findings {
+					fmt.Fprintf(stdout, "    %s\n", line)
+				}
+			}
 		}
 	}
 	return 1

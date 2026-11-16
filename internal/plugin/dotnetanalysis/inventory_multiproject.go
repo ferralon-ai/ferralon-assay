@@ -172,8 +172,13 @@ func resolveOneProject(buildDir, projPath, projRel string) plugin.DependencyInve
 	}
 	projDir := filepath.Dir(projPath)
 
-	// Tier 1: project.assets.json under this project's own tree (obj/ included).
-	if assetsPath, ok := findFile(projDir, "project.assets.json", true); ok {
+	// Tier 1: the project's own obj/project.assets.json, else one under its tree (obj/ included)
+	// outside any nested project's directory, whose restore output is that project's.
+	assetsPath, ok := filepath.Join(projDir, "obj", "project.assets.json"), true
+	if _, err := os.Stat(assetsPath); err != nil {
+		assetsPath, ok = findOwnFile(projDir, projDir, "project.assets.json", true)
+	}
+	if ok {
 		if data, err := os.ReadFile(assetsPath); err == nil {
 			if nodes, edges, pok := parseAssets(data, projRel); pok {
 				return assemble(nodes, edges, plugin.Complete())
@@ -225,4 +230,61 @@ func projectReferences(projPath string) []string {
 // unambiguously an edge between projects and never mistaken for a package node.
 func projectMarker(projRel string) string {
 	return "project::" + projRel
+}
+
+// findOwnFile is findFile under root on behalf of the project in projDir, skipping every
+// subdirectory that holds another project file: the files there belong to that project. projDir
+// itself and the directories leading to it are never skipped.
+func findOwnFile(root, projDir, name string, includeObj bool) (string, bool) {
+	var found []string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // an unreadable subtree yields no match; keep walking.
+		}
+		if d.IsDir() {
+			if path == root {
+				return nil
+			}
+			if !(includeObj && d.Name() == "obj") && skipDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			if !leadsTo(path, projDir) && holdsProjectFile(path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == name {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if len(found) == 0 {
+		return "", false
+	}
+	sort.Strings(found)
+	return found[0], true
+}
+
+// leadsTo reports whether dir is target or one of its ancestors.
+func leadsTo(dir, target string) bool {
+	rel, err := filepath.Rel(dir, target)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// holdsProjectFile reports whether dir directly contains a .csproj, .fsproj or .vbproj. An
+// unreadable dir counts as holding one.
+func holdsProjectFile(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return true
+	}
+	for _, e := range entries {
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".csproj", ".fsproj", ".vbproj":
+			if !e.IsDir() {
+				return true
+			}
+		}
+	}
+	return false
 }

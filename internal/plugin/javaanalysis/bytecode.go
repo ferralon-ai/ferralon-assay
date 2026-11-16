@@ -37,6 +37,9 @@ type firstPartyBytecode struct {
 	// source type with no class file, a class file older than its source, or an unreadable
 	// class file. Empty when the output covers every main source.
 	gaps []string
+	// unit is the unit module's own output when this is one reactor unit's view, else nil: the
+	// launch entry is read from it alone.
+	unit *unitOutput
 }
 
 // complete reports whether the class output was found and covers every main source.
@@ -57,14 +60,15 @@ func (b *firstPartyBytecode) scoped() []plugin.ScopedReason {
 // directory holding target/classes (Maven) or build/classes/<lang>/main (Gradle). Java and
 // Kotlin output of one Gradle project count once.
 func (b *firstPartyBytecode) projectDirs() []string {
+	return classOutputProjects(b.roots)
+}
+
+// classOutputProjects returns the distinct project directories of class output roots, sorted.
+func classOutputProjects(roots []string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, r := range b.roots {
-		d := filepath.Dir(r) // .../target or .../build/classes/<lang>
-		if filepath.Base(d) != "target" {
-			d = filepath.Dir(filepath.Dir(d)) // .../build
-		}
-		d = filepath.Dir(d)
+	for _, r := range roots {
+		d := classOutputProject(r)
 		if !seen[d] {
 			seen[d] = true
 			out = append(out, d)
@@ -72,6 +76,15 @@ func (b *firstPartyBytecode) projectDirs() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// classOutputProject is the project directory of one class output root.
+func classOutputProject(root string) string {
+	d := filepath.Dir(root) // .../target or .../build/classes/<lang>
+	if filepath.Base(d) != "target" {
+		d = filepath.Dir(filepath.Dir(d)) // .../build
+	}
+	return filepath.Dir(d)
 }
 
 // isClassOutputDir reports whether rel (slash-separated, relative to the build dir) is a
@@ -85,11 +98,9 @@ func isClassOutputDir(rel string) bool {
 	return n >= 4 && segs[n-4] == "build" && segs[n-3] == "classes" && segs[n-1] == "main"
 }
 
-// loadFirstPartyBytecode reads every main class output directory under buildDir and checks
-// it against the main sources prog parsed.
-func loadFirstPartyBytecode(buildDir string, prog *program) *firstPartyBytecode {
-	out := &firstPartyBytecode{}
-	classTime := map[string]time.Time{} // binary name -> class file modification time
+// classOutputRoots returns every main class output directory under buildDir, in walk order.
+func classOutputRoots(buildDir string) []string {
+	var roots []string
 	_ = filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			if path == buildDir {
@@ -108,22 +119,59 @@ func loadFirstPartyBytecode(buildDir string, prog *program) *firstPartyBytecode 
 		if err != nil || !isClassOutputDir(filepath.ToSlash(rel)) {
 			return nil
 		}
-		out.roots = append(out.roots, path)
-		pkgs, listed, closed := classfile.ClasspathPackages(path, buildDir)
-		out.cp.Add(pkgs, listed && closed)
-		classes, times, failed := loadClassTree(path)
-		out.classes = append(out.classes, classes...)
-		for k, v := range times {
-			classTime[k] = v
-		}
-		out.gaps = append(out.gaps, failed...)
+		roots = append(roots, path)
 		return filepath.SkipDir
 	})
+	return roots
+}
+
+// classOutput is one class output directory as read.
+type classOutput struct {
+	root    string
+	pkgs    map[string]bool
+	listed  bool // every package listed and the directory closed
+	classes []classfile.Class
+	times   map[string]time.Time // binary name -> class file modification time
+	failed  []string
+}
+
+// readClassOutputs reads every main class output directory under buildDir.
+func readClassOutputs(buildDir string) []classOutput {
+	roots := classOutputRoots(buildDir)
+	out := make([]classOutput, 0, len(roots))
+	for _, root := range roots {
+		pkgs, listed, closed := classfile.ClasspathPackages(root, buildDir)
+		classes, times, failed := loadClassTree(root)
+		out = append(out, classOutput{root: root, pkgs: pkgs, listed: listed && closed, classes: classes, times: times, failed: failed})
+	}
+	return out
+}
+
+// loadFirstPartyBytecode reads every main class output directory under buildDir and checks
+// it against the main sources prog parsed.
+func loadFirstPartyBytecode(buildDir string, prog *program) *firstPartyBytecode {
+	return assembleFirstParty(buildDir, readClassOutputs(buildDir), prog.files)
+}
+
+// assembleFirstParty builds the first-party view over outputs, checked against the main sources
+// in files.
+func assembleFirstParty(buildDir string, outputs []classOutput, files []fileParse) *firstPartyBytecode {
+	out := &firstPartyBytecode{}
+	classTime := map[string]time.Time{}
+	for _, o := range outputs {
+		out.roots = append(out.roots, o.root)
+		out.cp.Add(o.pkgs, o.listed)
+		out.classes = append(out.classes, o.classes...)
+		for k, v := range o.times {
+			classTime[k] = v
+		}
+		out.gaps = append(out.gaps, o.failed...)
+	}
 	if len(out.roots) == 0 {
 		return out
 	}
 
-	for _, f := range prog.files {
+	for _, f := range files {
 		if !isMainSource(buildDir, f.path) {
 			continue
 		}

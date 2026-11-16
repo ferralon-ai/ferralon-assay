@@ -23,7 +23,6 @@ func TestDisqualify_VersionProvablyOutsideRange(t *testing.T) {
 		mkRange("v0.3.7"), true,
 		"v0.3.7", true,
 		"", false,
-		TrustFirstParty,
 	)
 	if !got {
 		t.Fatalf("disqualify = false, want true (version outside affected range)")
@@ -39,7 +38,6 @@ func TestDisqualify_VersionInsideRange_Proceeds(t *testing.T) {
 		mkRange("v0.3.7"), true,
 		"v0.3.6", true,
 		"", false,
-		TrustFirstParty,
 	)
 	if got {
 		t.Fatalf("disqualify = true, want false (version inside affected range)")
@@ -55,7 +53,6 @@ func TestDisqualify_CVE202445337_VulnerableVersion_Proceeds(t *testing.T) {
 		mkRange("v0.31.0"), true,
 		"v0.30.0", true,
 		"", false,
-		TrustFirstParty,
 	)
 	if got {
 		t.Fatalf("disqualify = true, want false (v0.30.0 inside affects<v0.31.0)")
@@ -71,7 +68,6 @@ func TestDisqualify_CVE202445337_PatchedVersion_Disqualifies(t *testing.T) {
 		mkRange("v0.31.0"), true,
 		"v0.31.0", true,
 		"", false,
-		TrustFirstParty,
 	)
 	if !got {
 		t.Fatalf("disqualify = false, want true (v0.31.0 outside affects<v0.31.0)")
@@ -82,7 +78,7 @@ func TestDisqualify_CVE202445337_PatchedVersion_Disqualifies(t *testing.T) {
 }
 
 func TestDisqualify_RangeUnknown_FailsOpen(t *testing.T) {
-	got, reason := disqualify(nil, false, "v0.3.7", true, "", false, TrustFirstParty)
+	got, reason := disqualify(nil, false, "v0.3.7", true, "", false)
 	if got {
 		t.Fatalf("disqualify = true, want false (range unknown must fail open)")
 	}
@@ -92,7 +88,7 @@ func TestDisqualify_RangeUnknown_FailsOpen(t *testing.T) {
 }
 
 func TestDisqualify_VersionUnknown_FailsOpen(t *testing.T) {
-	got, reason := disqualify(mkRange("v0.3.7"), true, "", false, "", false, TrustFirstParty)
+	got, reason := disqualify(mkRange("v0.3.7"), true, "", false, "", false)
 	if got {
 		t.Fatalf("disqualify = true, want false (version unknown must fail open)")
 	}
@@ -114,7 +110,7 @@ func TestDisqualify_AmbiguousSemver_FailsOpen(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason := disqualify(mkRange(tc.upper), true, tc.ver, true, "", false, TrustFirstParty)
+			got, reason := disqualify(mkRange(tc.upper), true, tc.ver, true, "", false)
 			if got {
 				t.Fatalf("disqualify = true, want false (ambiguity must fail open): %q vs %q", tc.upper, tc.ver)
 			}
@@ -127,7 +123,7 @@ func TestDisqualify_AmbiguousSemver_FailsOpen(t *testing.T) {
 
 func TestDisqualify_SymbolProvablyAbsent(t *testing.T) {
 	// No version data, but a structured "vulnerable symbol absent" signal is present.
-	got, reason := disqualify(nil, false, "", false, "absent", true, TrustFirstParty)
+	got, reason := disqualify(nil, false, "", false, "absent", true)
 	if !got {
 		t.Fatalf("disqualify = false, want true (vulnerable symbol provably absent)")
 	}
@@ -137,7 +133,7 @@ func TestDisqualify_SymbolProvablyAbsent(t *testing.T) {
 }
 
 func TestDisqualify_SymbolPresent_Proceeds(t *testing.T) {
-	got, reason := disqualify(nil, false, "", false, "present", true, TrustFirstParty)
+	got, reason := disqualify(nil, false, "", false, "present", true)
 	if got {
 		t.Fatalf("disqualify = true, want false (symbol present is not a disqualifier)")
 	}
@@ -147,7 +143,7 @@ func TestDisqualify_SymbolPresent_Proceeds(t *testing.T) {
 }
 
 func TestDisqualify_NoSignals_FailsOpen(t *testing.T) {
-	got, reason := disqualify(nil, false, "", false, "", false, TrustFirstParty)
+	got, reason := disqualify(nil, false, "", false, "", false)
 	if got {
 		t.Fatalf("disqualify = true, want false (no signals must fail open)")
 	}

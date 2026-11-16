@@ -204,16 +204,23 @@ func checkInputs(g *Graph, dir string) error {
 // says nothing about that one, which can resolve other versions; a repository shipping both
 // (spring-petclinic does) is common and is not a reason to refuse the graph. The walk is the tree
 // checks' own, skipping only the outputs g records, so a POM under a directory merely named target
-// or build is found.
+// or build is found. A Union of both tools' graphs covers both builds and has none.
 func OtherToolBuildFiles(dir string, g *Graph) ([]string, error) {
+	covered := map[string]bool{}
+	for _, t := range g.Tools() {
+		if t != ToolMaven && t != ToolGradle {
+			return nil, fmt.Errorf("unknown tool %q", t)
+		}
+		covered[t] = true
+	}
 	var match func(rel, name string) bool
-	switch g.Tool.Name {
-	case "maven":
+	switch {
+	case covered[ToolMaven] && covered[ToolGradle]:
+		return nil, nil
+	case covered[ToolMaven]:
 		match = gradleInput
-	case "gradle":
-		match = mavenInput(nil)
 	default:
-		return nil, fmt.Errorf("unknown tool %q", g.Tool.Name)
+		match = mavenInput(nil)
 	}
 	entries, err := treeFiles(dir, g.Subject.Outputs, match)
 	if err != nil {

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -52,8 +53,9 @@ const (
 
 // BuildManifest derives the flat build manifest for one JVM BuildDir from its build graph. lang
 // selects the runtime Name ("java" | "kotlin"). The runtime is the JDK the build tool ran on,
-// which is the job's own (ambient), exact. A missing or unreadable build dir is a hard error
-// (inv.4); without a graph the result names build_graph_absent and nothing else is known.
+// exact: the job's own, or the provided JDK the graph names in jvm.provided. A missing or
+// unreadable build dir is a hard error (inv.4); without a graph the result names
+// build_graph_absent and nothing else is known.
 func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang string, opts ...Option) (plugin.BuildManifestResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
@@ -77,21 +79,30 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 		return res, nil
 	}
 
-	switch g.Tool.Name {
-	case "maven":
-		res.Resolvers = []plugin.ResolverSpec{{Name: "maven", Command: "mvn -o -DskipTests package", Source: plugin.RuntimeSourceAmbient}}
-	case "gradle":
-		res.Resolvers = []plugin.ResolverSpec{{Name: "gradle", Command: "gradle --offline assemble", Source: plugin.RuntimeSourceAmbient}}
+	// With both builds at the root, Maven's is listed first and names the project, as a scan of
+	// the POM alone would.
+	tools := g.Tools()
+	if slices.Contains(tools, "maven") {
+		res.Resolvers = append(res.Resolvers, plugin.ResolverSpec{Name: "maven", Command: "mvn -o -DskipTests package", Source: plugin.RuntimeSourceAmbient})
+	}
+	if slices.Contains(tools, "gradle") {
+		res.Resolvers = append(res.Resolvers, plugin.ResolverSpec{Name: "gradle", Command: "gradle --offline assemble", Source: plugin.RuntimeSourceAmbient})
 	}
 	var members []string
+	seen := map[string]bool{}
 	for _, m := range g.Modules {
 		if _, isCopy := m.Project(); isCopy {
 			continue
 		}
-		members = append(members, m.Path)
-		if m.Path == "." {
-			res.ProjectRoot = m.ID
+		if m.Path == "." && (res.ProjectRoot == "." || m.Tool == "maven") {
+			// A Union prefixes the module ID with its tool; the root is named as its build names it.
+			res.ProjectRoot = strings.TrimPrefix(m.ID, m.Tool+"/")
 		}
+		if seen[m.Path] {
+			continue
+		}
+		seen[m.Path] = true
+		members = append(members, m.Path)
 	}
 	sort.Strings(members)
 

@@ -28,9 +28,10 @@ func writeTree(t *testing.T, files ...string) string {
 
 func TestDetectLanguageDominance(t *testing.T) {
 	cases := []struct {
-		name  string
-		files []string
-		want  string
+		name     string
+		files    []string
+		contents map[string]string // overrides the fixture body of the named files
+		want     string
 	}{
 		{
 			// The airflow regression: thousands of .py plus a few frontend .js must detect
@@ -191,12 +192,161 @@ func TestDetectLanguageDominance(t *testing.T) {
 			},
 			want: LangCFamily,
 		},
+		{
+			// The GoNorth shape: a root .csproj decides the lane over a larger first-party JS count.
+			name: "root csproj with js-dominant counts -> dotnet",
+			files: []string{
+				"App.csproj", "Program.cs", "Startup.cs",
+				"Scripts/a.js", "Scripts/b.js", "Scripts/c.js", "Scripts/d.js",
+			},
+			want: LangDotNet,
+		},
+		{
+			name: "root sln naming a csproj with js-dominant counts -> dotnet",
+			files: []string{
+				"App.sln", "src/App/Program.cs",
+				"web/a.ts", "web/b.ts", "web/c.ts",
+			},
+			contents: map[string]string{"App.sln": `Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "src\\App\\App.csproj", "{1}"` + "\nEndProject\n"},
+			want:     LangDotNet,
+		},
+		{
+			name: "root slnx naming a csproj -> dotnet",
+			files: []string{
+				"App.slnx", "src/App/Program.cs",
+				"web/a.ts", "web/b.ts", "web/c.ts",
+			},
+			contents: map[string]string{"App.slnx": `<Solution><Project Path="src/App/App.csproj" /></Solution>`},
+			want:     LangDotNet,
+		},
+		{
+			name:     "root slnx naming a single-quoted csproj -> dotnet",
+			files:    []string{"App.slnx", "web/a.js", "web/b.js"},
+			contents: map[string]string{"App.slnx": `<Solution><Project Path='src/App/App.csproj' /></Solution>`},
+			want:     LangDotNet,
+		},
+		{
+			name:     "root slnx naming only a vcxproj -> cfamily",
+			files:    []string{"Engine.slnx", "main.cpp", "render.cpp"},
+			contents: map[string]string{"Engine.slnx": `<Solution><Project Path="Engine.vcxproj" /></Solution>`},
+			want:     LangCFamily,
+		},
+		{
+			name:     "upper-case sln naming an upper-case csproj -> dotnet",
+			files:    []string{"APP.SLN", "web/a.js", "web/b.js"},
+			contents: map[string]string{"APP.SLN": `Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "APP.CSPROJ", "{1}"` + "\nEndProject\n"},
+			want:     LangDotNet,
+		},
+		{
+			// Visual Studio C++, Python and Node projects carry a root .sln too.
+			name:     "root sln naming only a vcxproj -> cfamily",
+			files:    []string{"Engine.sln", "Engine.vcxproj", "main.cpp", "render.cpp", "render.h"},
+			contents: map[string]string{"Engine.sln": `Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Engine", "Engine.vcxproj", "{1}"` + "\nEndProject\n"},
+			want:     LangCFamily,
+		},
+		{
+			name:     "root sln naming only a pyproj -> python",
+			files:    []string{"App.sln", "App.pyproj", "app.py", "worker.py"},
+			contents: map[string]string{"App.sln": `Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "App", "App.pyproj", "{1}"` + "\nEndProject\n"},
+			want:     LangPython,
+		},
+		{
+			name:  "root vbproj -> dotnet",
+			files: []string{"App.vbproj", "web/a.js", "web/b.js"},
+			want:  LangDotNet,
+		},
+		{
+			name:  "root manifest extension matched case-insensitively -> dotnet",
+			files: []string{"App.CSPROJ", "web/a.js", "web/b.js"},
+			want:  LangDotNet,
+		},
+		{
+			name: "root fsproj -> dotnet",
+			files: []string{
+				"App.fsproj", "web/a.js", "web/b.js",
+			},
+			want: LangDotNet,
+		},
+		{
+			// Only a ROOT manifest decides; a nested one is one more .NET count.
+			name: "nested csproj under a js-dominant root -> js",
+			files: []string{
+				"package.json", "src/a.js", "src/b.js", "src/c.js",
+				"tools/Gen/Gen.csproj", "tools/Gen/Gen.cs",
+			},
+			want: LangJS,
+		},
+		{
+			name:  "go.mod root with a root sln -> go",
+			files: []string{"go.mod", "main.go", "App.sln"},
+			want:  LangGo,
+		},
+		{
+			name: "wwwroot/lib client libraries pruned from counts",
+			files: []string{
+				"src/App/App.cs", "src/App/Model.cs",
+				"src/App/wwwroot/lib/jquery/jquery.js", "src/App/wwwroot/lib/bootstrap/bootstrap.js",
+				"src/App/wwwroot/lib/knockout/knockout.js",
+			},
+			want: LangDotNet,
+		},
+		{
+			// lib outside wwwroot is first-party code.
+			name: "lib outside wwwroot counted",
+			files: []string{
+				"src/App/App.cs", "src/App/Model.cs",
+				"lib/a.js", "lib/b.js", "lib/c.js",
+			},
+			want: LangJS,
+		},
+		{
+			name:  "bower_components pruned from counts",
+			files: []string{"app.py", "bower_components/jquery/jquery.js", "bower_components/d3/d3.js"},
+			want:  LangPython,
+		},
+		{
+			name:  "vendor pruned from counts",
+			files: []string{"app.py", "vendor/chart/chart.js", "vendor/vue/vue.js"},
+			want:  LangPython,
+		},
+		{
+			name:  "minified bundles pruned from counts",
+			files: []string{"app.py", "static/app.min.js", "static/vue.min.js"},
+			want:  LangPython,
+		},
+		{
+			// Nothing first-party to analyse: checkout reports an unrecognized tree.
+			name:  "only vendored sources -> unknown",
+			files: []string{"static/app.min.js", "vendor/lib/a.c"},
+			want:  LangUnknown,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeTree(t, tc.files...)
+			for rel, body := range tc.contents {
+				if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if got := DetectLanguage(dir); got != tc.want {
 				t.Fatalf("DetectLanguage = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRootDotNetManifestSymlink: only a regular file decides the lane, so a symlink named like a
+// project file (dangling, or pointing at a directory) falls through to file counts.
+func TestRootDotNetManifestSymlink(t *testing.T) {
+	for _, target := range []string{"missing.csproj", "web"} {
+		t.Run(target, func(t *testing.T) {
+			dir := writeTree(t, "web/a.js", "web/b.js")
+			if err := os.Symlink(target, filepath.Join(dir, "Link.csproj")); err != nil {
+				t.Fatal(err)
+			}
+			if got := DetectLanguage(dir); got != LangJS {
+				t.Fatalf("DetectLanguage = %q, want %q", got, LangJS)
 			}
 		})
 	}

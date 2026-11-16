@@ -22,6 +22,7 @@ type Summary struct {
 	Languages    []LanguageResult `json:"languages"`
 	Repos        []RepoResult     `json:"repos"`
 	Excluded     []Excluded       `json:"excluded,omitempty"`
+	Showcase     *ShowcaseSummary `json:"showcase,omitempty"`
 	// Caveats is the per-language caveat roll-up (caveats.go), one entry per language with a target.
 	Caveats []LanguageCaveats `json:"caveats"`
 	// CaveatMappingError is why floor/caveats.json could not be read, when it could not.
@@ -43,6 +44,12 @@ type LanguageResult struct {
 
 // summarize evaluates every target against the scan results and builds the run's summary.
 func summarize(t Targets, results map[string]*scanResult, assayCommit, runURL string) Summary {
+	return summarizeWith(t, results, nil, nil, assayCommit, runURL)
+}
+
+// summarizeWith is summarize with the showcase targets' ledgers (by target name) and the errors of
+// those that could not be loaded.
+func summarizeWith(t Targets, results map[string]*scanResult, ledgers map[string]Ledger, ledgerErrs map[string]error, assayCommit, runURL string) Summary {
 	s := Summary{Schema: SummarySchema, Pass: true, AssayCommit: assayCommit, Policy: t.Policy,
 		RunURL: runURL, Excluded: t.Excluded}
 	byLang := map[string]*LanguageResult{}
@@ -52,11 +59,26 @@ func summarize(t Targets, results map[string]*scanResult, assayCommit, runURL st
 	if t.Pinned != nil {
 		s.PinnedPolicy = t.Pinned.Policy
 	}
-	for i, l := range t.lanes() {
-		pinned := i > 0
+	if t.Showcase != nil {
+		s.Showcase = showcaseSummary(t.Showcase, ledgers)
+	}
+	for _, l := range t.lanes() {
+		pinned := l.kind != laneDemo
 		for _, tg := range l.targets {
-			res := evaluate(tg, l.policy, results[tg.Repo])
+			var res RepoResult
+			if l.kind == laneShowcase || l.kind == laneShowcaseFloating {
+				var lg *Ledger
+				if g, ok := ledgers[tg.Name()]; ok {
+					lg = &g
+				}
+				res = evaluateShowcase(tg, t.Showcase, l.kind, lg, ledgerErrs[tg.Name()], results[resultKey(tg.Repo, l.kind)])
+			} else {
+				res = evaluate(tg, l.policy, results[tg.Repo])
+			}
 			s.Repos = append(s.Repos, res)
+			if l.kind == laneShowcaseFloating {
+				continue // the same target as the pinned scan: counted once per language
+			}
 			lr := byLang[tg.Language]
 			lr.Targets++
 			if pinned {
@@ -210,6 +232,7 @@ func (s Summary) markdown() string {
 			cell(formatQualified(r)), cell(formatReasons(r.TopUndetermined)), truncated,
 			formatDuration(r.DurationSeconds), result)
 	}
+	b.WriteString(s.showcaseMarkdown())
 	if len(failed) > 0 {
 		b.WriteString("\n### Failures\n\n")
 		for _, r := range failed {
@@ -281,6 +304,8 @@ func plainFailure(f Failure) string {
 		return fmt.Sprintf("%d disqualified without valid grounds (%s)", len(f.Findings), firstOf(f.Findings))
 	case KindTruncated:
 		return "the scan ran out of time"
+	case KindLedger:
+		return "showcase rows differ from the ledger"
 	case KindNoResult:
 		return "the scan job did not finish"
 	case KindMalformed:

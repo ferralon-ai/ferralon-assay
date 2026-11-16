@@ -84,9 +84,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// The one new signal: an AFFIRMATIVE, decisive OSS "affected". A known-malicious package
 		// resolved to a version the advisory enumerates as affected. Ordered FIRST so it wins over a
 		// co-present reachability candidate or disqualification — presence is deterministic proof the
-		// bad artifact is installed, not a reachability lean. Affirmatives are never trust-gated
-		// (inv.5), and the whole design keeps disqualify's trust gate untouched by never minting a
-		// not-affected here.
+		// bad artifact is installed, not a reachability lean. It never mints a not-affected.
 		res, _ := maliciousPresenceResult(store, assessmentID)
 		f = report.AdvisoryFinding{
 			Advisory: adv,
@@ -97,14 +95,14 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			},
 		}
 	case disqualified(store, assessmentID):
-		_, reason := disqualResult(store, assessmentID)
+		res := disqualRecord(store, assessmentID)
 		f = report.AdvisoryFinding{
 			Advisory: adv,
 			Package:  pkg,
 			Verdict:  report.VerdictDisqualified,
 			Evidence: report.EvidenceSummary{
-				Basis:  disqualBasis(reason),
-				Detail: disqualDetail(reason),
+				Basis:  disqualBasis(res.Reason),
+				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source),
 			},
 		}
 	case hasCandidate(store, assessmentID):
@@ -228,7 +226,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 // whatever verdict the row reaches, so they are read for every row and gate none.
 func annotations(store artifact.Store, assessmentID string) []plugin.Annotation {
 	inv, _ := inventory(store, assessmentID)
-	return inv.Annotations
+	return withoutReadPins(inv.Annotations)
 }
 
 // guardsOnPath returns the advisory-declared guard symbols present on the candidate
@@ -926,15 +924,66 @@ func reachPaths(store artifact.Store, assessmentID string) []plugin.ReachPath {
 
 // disqualResult reads the disqualification_discovery artifact (TypeDiscovery).
 func disqualResult(store artifact.Store, assessmentID string) (disqualified bool, reason string) {
+	res := disqualRecord(store, assessmentID)
+	return res.Disqualified, res.Reason
+}
+
+// disqualRecord decodes the disqualification_discovery artifact; a missing or undecodable one
+// reads as the zero (not disqualified) result.
+func disqualRecord(store artifact.Store, assessmentID string) pipeline.DisqualResult {
 	arts, err := store.Query(assessmentID, artifact.TypeDiscovery)
 	if err != nil || len(arts) == 0 {
-		return false, ""
+		return pipeline.DisqualResult{}
 	}
 	var res pipeline.DisqualResult
 	if err := json.Unmarshal(arts[0].Payload, &res); err != nil {
-		return false, ""
+		return pipeline.DisqualResult{}
 	}
-	return res.Disqualified, res.Reason
+	return res
+}
+
+// refuteAttribution names, in the customer-visible detail, the advisory record a version or symbol
+// refute relied on: the advisory id, then 12-hex prefixes of the record's digest pin and of the
+// corpus that served it (the discovery artifact keeps both in full; the report's provenance carries
+// the corpus digest), then the feed the record declares, cut to maxFeedName runes. A refute decoded without a
+// source names nothing, which only an artifact written before attribution existed can produce.
+func refuteAttribution(src *pipeline.RefuteSource) string {
+	if src == nil || src.Advisory == "" {
+		return ""
+	}
+	parts := []string{"advisory " + src.Advisory}
+	if src.Record != "" {
+		parts = append(parts, "record "+shortDigest(src.Record))
+	}
+	if src.Corpus != "" {
+		parts = append(parts, "corpus "+shortDigest(src.Corpus))
+	}
+	if src.Feed != "" {
+		parts = append(parts, "feed "+truncateRunes(src.Feed, maxFeedName))
+	}
+	if src.BuiltIn {
+		parts = append(parts, "built into the scanner")
+	}
+	return " (per " + strings.Join(parts, ", ") + ")"
+}
+
+// maxFeedName bounds the record-declared feed name carried into customer-visible detail.
+const maxFeedName = 64
+
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
+}
+
+// shortDigest keeps an "<algo>:<hex>" digest's algorithm and the first 12 hex characters.
+func shortDigest(d string) string {
+	algo, hex, ok := strings.Cut(d, ":")
+	if !ok || len(hex) <= 12 {
+		return d
+	}
+	return algo + ":" + hex[:12]
 }
 
 // disqualBasis records the refutation grounds a disqualification stands on. Only the version and
@@ -1045,6 +1094,9 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 		if len(inv.ResolvedVersions) > 0 && !pipeline.ToolchainSubject(store, assessmentID) {
 			return adv, &report.Package{Ecosystem: ecosystemFor(inv.Language), Name: name, PURL: purl, Root: pipeline.RootSubject(store, assessmentID)}
 		}
+		if pins := readPinsOf(inv, name); len(pins) > 0 {
+			return adv, readPinsPackage(name, purl, inv, pins, pipeline.RootSubject(store, assessmentID))
+		}
 		return adv, nil
 	}
 	// The Go toolchain is not an SBOM dependency package. When the adjudicated element is the
@@ -1099,6 +1151,55 @@ func cfamilyObservedPackage(name, purl string, inv inventoryFacts, sbom []report
 		}
 	}
 	return pkg
+}
+
+// readPinReason is the annotation reason a resolver discloses a read but uncounted pin under
+// (pythonanalysis.ReadPinReason): Path is the file it was read from, Detail "<name>==<version>".
+const readPinReason = "disclosure:read_pin"
+
+// readPinsOf returns the pins the inventory's resolver read for the package name but did not
+// count, in the order read. They are disclosure only: the version axis never reads them.
+func readPinsOf(inv inventoryFacts, name string) []report.ReadPin {
+	want := normalizePackageName("pypi", name)
+	var pins []report.ReadPin
+	for _, a := range inv.Annotations {
+		if a.Reason != readPinReason {
+			continue
+		}
+		pinned, version, ok := strings.Cut(a.Detail, "==")
+		if ok && version != "" && normalizePackageName("pypi", pinned) == want {
+			pins = append(pins, report.ReadPin{Version: version, Source: a.Path})
+		}
+	}
+	return pins
+}
+
+// readPinsPackage names a package whose version did not resolve although pins were read for it:
+// a surface the resolver could not read, or a uv source, may install another version. Version
+// stays empty, so G1 (admittedPackage) rejects the shape and nothing on the version axis sees
+// the pins. PartialReason is the inventory's own: an unrecognised install surface when one was
+// named, else its first flag.
+func readPinsPackage(name, purl string, inv inventoryFacts, pins []report.ReadPin, root bool) *report.Package {
+	pkg := &report.Package{Ecosystem: ecosystemFor(inv.Language), Name: name, PURL: purl, Root: root, ReadPins: &pins}
+	for _, f := range inv.PartialityFlags {
+		if strings.HasPrefix(f, plugin.PartialReasonUnrecognisedInstallSurface) {
+			pkg.PartialReason = f
+			return pkg
+		}
+	}
+	if len(inv.PartialityFlags) > 0 {
+		pkg.PartialReason = inv.PartialityFlags[0]
+	}
+	return pkg
+}
+
+// withoutReadPins drops the read-pin disclosures from the inventory's annotations: they ride on
+// the row's package (readPinsOf), and are not assumptions a verdict rests on.
+func withoutReadPins(as []plugin.Annotation) []plugin.Annotation {
+	if !slices.ContainsFunc(as, func(a plugin.Annotation) bool { return a.Reason == readPinReason }) {
+		return as
+	}
+	return slices.DeleteFunc(slices.Clone(as), func(a plugin.Annotation) bool { return a.Reason == readPinReason })
 }
 
 type inventoryFacts struct {
@@ -1481,7 +1582,7 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 		ecosystem = ecosystemFor(inv.Language)
 	}
 	var notes []report.PartialityNote
-	for _, a := range inv.Annotations {
+	for _, a := range withoutReadPins(inv.Annotations) {
 		notes = append(notes, report.PartialityNote{Reason: a.Reason, Ecosystem: ecosystem, Path: a.Path, Detail: a.Detail})
 	}
 	if disqualified(store, assessmentID) {

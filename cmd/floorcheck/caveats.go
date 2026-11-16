@@ -276,8 +276,13 @@ func (s *Summary) addCaveats(c Caveats, mappingErr error, results map[string]*sc
 	targets := map[string]int{}
 	for i := range s.Repos {
 		res := &s.Repos[i]
-		targets[res.Language]++
-		sr := results[res.Repo]
+		// The floating showcase scan is the same target as the pinned one: its row gets its own
+		// caveats, but the roll-up counts the target once per language, as summarizeWith does.
+		floating := res.Lane == laneShowcaseFloating
+		if !floating {
+			targets[res.Language]++
+		}
+		sr := results[resultKey(res.Repo, res.Lane)]
 		if sr == nil || !sr.hasReport {
 			continue
 		}
@@ -286,6 +291,9 @@ func (s *Summary) addCaveats(c Caveats, mappingErr error, results map[string]*sc
 			continue
 		}
 		res.Caveats = repoCaveats(c, res.Language, r)
+		if floating {
+			continue
+		}
 		if byLang[res.Language] == nil {
 			byLang[res.Language] = map[string]*CaveatRollup{}
 		}

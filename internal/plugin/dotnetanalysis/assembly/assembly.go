@@ -353,6 +353,31 @@ func (a *Assembly) FieldOwner(rid uint32) *TypeDef {
 	return &a.Types[i-1]
 }
 
+// InstanceFieldSigs returns the signature blobs of td's instance (non-static) fields, from
+// its FieldList range. ok is false when the range cannot be read: td is not one of this
+// assembly's types, the assembly uses a FieldPtr indirection, or the ranges are not ordered.
+func (a *Assembly) InstanceFieldSigs(td *TypeDef) (sigs [][]byte, ok bool) {
+	if a.md == nil || td == nil || td.RID == 0 || int(td.RID) > len(a.Types) || &a.Types[td.RID-1] != td || a.md.rowCount[tFieldPtr] > 0 {
+		return nil, false
+	}
+	start, end := td.fieldList, a.md.rowCount[tField]+1
+	if int(td.RID) < len(a.Types) {
+		end = a.Types[td.RID].fieldList
+	}
+	if start == 0 || end < start || end > a.md.rowCount[tField]+1 {
+		return nil, false
+	}
+	for rid := start; rid < end; rid++ {
+		if a.rowVal(tField, rid, 0)&fdStatic == 0 {
+			sigs = append(sigs, a.md.blob(a.rowVal(tField, rid, 2)))
+		}
+	}
+	return sigs, true
+}
+
+// fdStatic is FieldAttributes.Static (§II.23.1.5).
+const fdStatic = 0x0010
+
 // Read parses a managed assembly's bytes into the typed model. It never loads the
 // assembly into any runtime — it parses bytes only. A malformed PE or metadata
 // returns a descriptive error (never a panic); use ReadResult for the batch path

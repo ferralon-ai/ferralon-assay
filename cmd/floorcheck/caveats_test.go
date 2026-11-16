@@ -258,6 +258,44 @@ func TestAddCaveats(t *testing.T) {
 	}
 }
 
+// The floating showcase scan is the same target as the pinned one: its row reads its own report,
+// and the roll-up counts the target once.
+func TestAddCaveatsShowcase(t *testing.T) {
+	sc := &Showcase{Policy: "full", Targets: []Target{{Repo: "o/show", Language: "js"}}}
+	tg := Targets{Policy: "published-24h", Showcase: sc}
+	results := map[string]*scanResult{
+		resultKey("o/show", laneShowcase):         withReport(ok(), reportJSON(dnrA, uninspectRun)),
+		resultKey("o/show", laneShowcaseFloating): withReport(ok(), reportJSON(dnrA, "")),
+	}
+	s := summarizeWith(tg, results, nil, nil, "", "")
+	s.addCaveats(mustCaveats(t), nil, results)
+
+	if len(s.Repos) != 2 || s.Repos[1].Lane != laneShowcaseFloating {
+		t.Fatalf("fixture: want the pinned and floating showcase rows, got %+v", s.Repos)
+	}
+	ids := func(hs []CaveatHit) string {
+		var out []string
+		for _, h := range hs {
+			out = append(out, h.Caveat)
+		}
+		return strings.Join(out, ",")
+	}
+	if !strings.Contains(ids(s.Repos[0].Caveats), "JS-UNINSPECTABLE-RUNWIDE") {
+		t.Errorf("pinned row caveats = %q, want its own report's JS-UNINSPECTABLE-RUNWIDE", ids(s.Repos[0].Caveats))
+	}
+	if strings.Contains(ids(s.Repos[1].Caveats), "JS-UNINSPECTABLE-RUNWIDE") || ids(s.Repos[1].Caveats) == "" {
+		t.Errorf("floating row caveats = %q, want its own report's, without JS-UNINSPECTABLE-RUNWIDE", ids(s.Repos[1].Caveats))
+	}
+	if len(s.Caveats) != 1 || s.Caveats[0].Language != "js" {
+		t.Fatalf("roll-up = %+v, want js only", s.Caveats)
+	}
+	for _, ru := range s.Caveats[0].Caveats {
+		if ru.Repos != 1 {
+			t.Errorf("roll-up %s counts %d repos, want the showcase target once", ru.Caveat, ru.Repos)
+		}
+	}
+}
+
 var errBadMapping = func() error {
 	_, err := parseCaveats([]byte(`{"mappings":[`))
 	return err

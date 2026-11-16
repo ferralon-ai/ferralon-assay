@@ -62,7 +62,8 @@ func versionBelowIntroduced(ver string, rng affectedRange) (below bool, ok bool)
 // versionAboveRangeTop reports whether ver orders past rng's upper end. Only UpperExclusive is an
 // upper end. A range with a LastAffected bound and no UpperExclusive is open-ended above, as is one
 // floored by LowerInclusive alone: GHSA writes "<= X" for an advisory with no patch yet, so a
-// release past X may still be affected. A range with no bound at all keeps the upper-exclusive
+// release past X may still be affected. versionOutsideRanges first caps such a range when a later
+// range in the same set bounds it (capOpenLastAffected). A range with no bound at all keeps the upper-exclusive
 // reading of an empty bound.
 func versionAboveRangeTop(ver string, rng affectedRange) (above bool, ok bool) {
 	switch {
@@ -73,6 +74,67 @@ func versionAboveRangeTop(ver string, rng affectedRange) (above bool, ok bool) {
 	default:
 		return versionOutsideUpper(ver, rng)
 	}
+}
+
+// capOpenLastAffected returns rngs with each range that ends at LastAffected alone capped at the
+// lowest introduced, among the set's other ranges from the same source, that orders above its
+// LastAffected and above its own introduced: a record that describes a later branch line in its own
+// range has said where the earlier line stops. Legacy ranges merged beside an element's
+// (withDisagreeingLegacyRanges) are another source, and one never caps the other. The
+// cap reads an upper end the record implies, so it only ever places more versions outside; a
+// version between LastAffected and the cap stays inside. The topmost such range, and the one range
+// of a single-range set, has nothing above it and stays open-ended. Any bound the scheme cannot
+// order leaves that range uncapped. rngs is never modified.
+func capOpenLastAffected(rngs []affectedRange) []affectedRange {
+	if len(rngs) < 2 {
+		return rngs
+	}
+	out := make([]affectedRange, len(rngs))
+	copy(out, rngs)
+	for i, r := range rngs {
+		if r.UpperExclusive != "" || r.LastAffected == "" || !rangeTypeOrderable(r.Type) {
+			continue
+		}
+		if c, ok := nextIntroduced(i, rngs); ok {
+			out[i].UpperExclusive = c
+		}
+	}
+	return out
+}
+
+// nextIntroduced returns the lowest LowerInclusive among the other ranges of rngs from rngs[i]'s
+// source that orders strictly above rngs[i]'s LastAffected and its own LowerInclusive, under its
+// scheme. ok is false when there is none, or when any ordering it needs is unknown.
+func nextIntroduced(i int, rngs []affectedRange) (string, bool) {
+	r := rngs[i]
+	var low string
+	for j, c := range rngs {
+		if j == i || c.Legacy != r.Legacy || c.LowerInclusive == "" || c.Scheme != r.Scheme || !rangeTypeOrderable(c.Type) {
+			continue
+		}
+		cmp, ok := compareVersions(c.LowerInclusive, r.LastAffected, r.Scheme)
+		if !ok {
+			return "", false
+		}
+		if cmp <= 0 {
+			continue
+		}
+		if low != "" {
+			if cmp, ok = compareVersions(c.LowerInclusive, low, r.Scheme); !ok {
+				return "", false
+			}
+			if cmp >= 0 {
+				continue
+			}
+		}
+		low = c.LowerInclusive
+	}
+	if low != "" && r.LowerInclusive != "" {
+		if cmp, ok := compareVersions(low, r.LowerInclusive, r.Scheme); !ok || cmp <= 0 {
+			return "", false
+		}
+	}
+	return low, low != ""
 }
 
 // rangesForFloorVersion drops the LowerInclusive bounds when the resolved version is only a floor on the
@@ -161,7 +223,11 @@ func withDisagreeingLegacyRanges(rngs []affectedRange, pkg AffectedPackage, fact
 	if !legacyRangesDisagree(pkg.AffectedRanges, facts.AffectedRanges) {
 		return rngs
 	}
-	return append(rngs, buildAffectedRanges(facts.AffectedRanges, "", scheme)...)
+	legacy := buildAffectedRanges(facts.AffectedRanges, "", scheme)
+	for i := range legacy {
+		legacy[i].Legacy = true
+	}
+	return append(rngs, legacy...)
 }
 
 // describesPrimary reports whether pkg is the element the advisory's scalar block names.

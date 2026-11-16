@@ -129,8 +129,36 @@ var gradleActionOrigins = []string{
 type gradleResolution struct {
 	Path      string           `json:"path"`
 	Script    bool             `json:"script"` // a project's build script classpath
+	Origin    *gradleOrigin    `json:"origin"`
 	Failure   string           `json:"failure"`
 	Artifacts []gradleResolved `json:"artifacts"`
+}
+
+// gradleOrigin is the code that asked for a resolution: the nearest frame on the resolving thread
+// outside Gradle, the JDK and Groovy, and the file its class was loaded from.
+type gradleOrigin struct {
+	Frame  string `json:"frame"`  // class.method
+	Source string `json:"source"` // the class's jar or directory
+}
+
+// dependencyManagementExclusions is the io.spring.dependency-management plugin's Maven-exclusion
+// pass. Before a configuration resolves, the plugin copies its dependencies into a detached
+// configuration, reads that copy's component graph (never its files) for what Maven's exclusion
+// rules drop, and removes those from the configuration, whose own resolution is what installs.
+// The copy is a local of that method and never enters the configuration container, so no task
+// packages it and no configuration extends it. Its files are fetched only because the listener
+// reads every resolution's files. Read from the plugin's 1.0.11.RELEASE and 1.1.6 bytecode, so
+// only the 1.0 and 1.1 minor lines are recognised.
+const dependencyManagementExclusions = "io.spring.gradle.dependencymanagement.internal.ExclusionConfiguringAction.findExcludedDependencies"
+
+var dependencyManagementJar = regexp.MustCompile(`^dependency-management-plugin-1\.[01]\.[0-9]+(\.RELEASE)?\.jar$`)
+
+// exclusionPass reports whether r is the dependency-management plugin's exclusion pass, asked for
+// by the plugin's own jar. The copy repeats the configuration's dependencies, so a file it shares
+// with the graph is accounted for by the configuration's own resolution. A file only the copy
+// resolved still counts against completeness if a task reads it.
+func exclusionPass(r gradleResolution) bool {
+	return r.Origin != nil && r.Origin.Frame == dependencyManagementExclusions && dependencyManagementJar.MatchString(filepath.Base(r.Origin.Source))
 }
 
 // gradleResolved is one file a resolution resolved.
@@ -150,7 +178,8 @@ type gradleResolved struct {
 // repository, is what the build made from its own sources (a sibling's classes, say), and
 // Gradle's transforms cache holds what it derived from an artifact some resolution resolved (the
 // Kotlin compiler's classpath snapshots). A repository module's file is never the build's own,
-// wherever the repository placed it.
+// wherever the repository placed it. A file only the dependency-management plugin's
+// exclusion pass resolved, and no task reads, is not one the build installs.
 func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]string, error) {
 	var reasons []string
 	files := graphFiles(g)
@@ -208,6 +237,14 @@ func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]st
 	depended := func(path string) bool {
 		return slices.ContainsFunc(dependents[path], func(d string) bool { return !alias[d] })
 	}
+	read := map[string]bool{}
+	for _, p := range projects {
+		for _, t := range p.Tasks {
+			for _, f := range t.Outside {
+				read[f] = true
+			}
+		}
+	}
 	for _, p := range projects {
 		for _, c := range p.Uncollected {
 			reasons = append(reasons, "project "+p.Path+": configuration "+c+" was not collected")
@@ -257,8 +294,12 @@ func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]st
 			reasons = append(reasons, "resolution of "+r.Path+" failed: "+firstLine(r.Failure))
 			continue
 		}
+		exclusion := exclusionPass(r)
 		for _, a := range r.Artifacts {
 			if !a.Project && !strings.HasSuffix(a.File, ".pom") && !files[a.File] && (a.Module || !built(a.File)) {
+				if exclusion && !read[a.File] {
+					continue
+				}
 				reasons = append(reasons, "resolution of "+r.Path+" resolved "+a.File+", which no collected configuration lists")
 			}
 		}
@@ -393,6 +434,11 @@ var mavenPlugins = map[string]map[string]bool{
 	"org.codehaus.mojo:build-helper-maven-plugin": setOf("add-source", "add-test-source", "add-resource", "add-test-resource",
 		"parse-version", "regex-property", "regex-properties", "timestamp-property", "uptodate-property", "uptodate-properties",
 		"cpu-count", "local-ip", "reserve-network-port", "rootlocation", "maven-version", "released-version"),
+	// create, create-timestamp and hgchangeset set build properties from the SCM and the clock;
+	// create-metadata, left out, can add a properties file to the resources it writes.
+	"org.codehaus.mojo:buildnumber-maven-plugin": setOf("create", "create-timestamp", "hgchangeset", "help"),
+	// publish bundles and uploads the artifacts the build already made, in place of deploy.
+	"org.sonatype.central:central-publishing-maven-plugin":      setOf("publish"),
 	"org.codehaus.mojo:versions-maven-plugin":                   nil,
 	"org.codehaus.mojo:license-maven-plugin":                    nil,
 	"org.jacoco:jacoco-maven-plugin":                            nil,
@@ -426,6 +472,16 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 		reasons = append(reasons, ".mvn/extensions.xml loads build extensions")
 	}
 	repos := mavenRepos(modules)
+	byCoord := map[string]*Module{}
+	reactorVersions := map[string]string{} // group:artifact -> the module's version
+	for i := range modules {
+		for _, n := range modules[i].Nodes {
+			if n.ID == modules[i].Root {
+				byCoord[n.Group+":"+n.Artifact] = &modules[i]
+				reactorVersions[n.Group+":"+n.Artifact] = n.Version
+			}
+		}
+	}
 	moduleDir := map[string]string{}
 	for _, rp := range reactor {
 		moduleDir[rp.key] = filepath.Join(dir, filepath.FromSlash(path.Dir(rp.file)))
@@ -466,6 +522,17 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 		for _, pl := range p.Build.Plugins.Plugin {
 			key := pl.key()
 			goals, listed := mavenPlugins[key]
+			if key == "org.apache.maven.plugins:maven-assembly-plugin" {
+				for _, ex := range pl.Executions.Execution {
+					if !ex.bound() {
+						continue
+					}
+					if why := assemblyUnlisted(dir, base, repos, p, pl, ex); why != "" {
+						reasons = append(reasons, who+": "+key+" execution "+ex.ID+": "+why)
+					}
+				}
+				continue
+			}
 			if !listed {
 				for _, ex := range pl.Executions.Execution {
 					if ex.bound() {
@@ -492,7 +559,7 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 					continue
 				}
 				for _, g := range ex.Goals.Goal {
-					if g = strings.TrimSpace(g); goals != nil && !goals[g] {
+					if g = strings.TrimSpace(g); goals != nil && !goals[g] && !boundedCopy(byCoord[who], p, reactorVersions, pl, ex, g) {
 						reasons = append(reasons, who+": "+key+":"+g+" (execution "+ex.ID+") installs what the graph does not list")
 					}
 				}
@@ -503,6 +570,25 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 		}
 	}
 	return sortedUnique(reasons), nil
+}
+
+// boundedCopy reports whether goal g of ex is a maven-dependency-plugin copy or unpack that
+// unlistedInPOM recorded on m with every artifactItem resolved to a coordinate: what it installs
+// is then bounded to coordinates the graph names, and checked per coordinate. An unpack also
+// extracts the archives nested in what it unpacks, so it is bounded only when every item is a
+// reactor module at its own version, whose contents the graph resolves for that module.
+func boundedCopy(m *Module, p effectiveProject, reactor map[string]string, pl effectivePlugin, ex effectiveExecution, g string) bool {
+	if m == nil || pl.ArtifactID != "maven-dependency-plugin" || len(m.UnlistedTargets["maven-dependency-plugin execution "+ex.ID]) == 0 {
+		return false
+	}
+	switch g {
+	case "copy":
+		return true
+	case "unpack":
+		_, ok := itemCoordinates(p, reactor, true, ex.Configuration, pl.Configuration)
+		return ok
+	}
+	return false
 }
 
 // key is the plugin's groupId:artifactId; an effective POM may leave out Maven's own group.
@@ -667,10 +753,16 @@ func mavenOutputs(dir string, reactor []reactorProject, effective []effectivePro
 // as the tool resolved them. Another tool's graph has none: its files are not laid out by a Maven
 // local repository, and one in the checkout can be the project's own.
 func LocalRepositories(g *Graph) []string {
-	if g == nil || g.Tool.Name != ToolMaven {
+	if g == nil {
 		return nil
 	}
-	return mavenRepos(g.Modules)
+	var modules []Module
+	for _, m := range g.Modules {
+		if g.ModuleTool(m) == ToolMaven {
+			modules = append(modules, m)
+		}
+	}
+	return mavenRepos(modules)
 }
 
 // mavenRepos are the local repository directories the graph's artifacts lie in.

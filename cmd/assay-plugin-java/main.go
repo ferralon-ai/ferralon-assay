@@ -37,8 +37,13 @@ const (
 	envAnalyzerDocker = brand.EnvPrefix + "_JAVA_ANALYZER_DOCKER"
 )
 
+// envRunCacheDir carries the per-scan run cache directory the host sets for this subprocess (see
+// plugin.WithJavaRunCacheDir); empty or unset, nothing is cached.
+const envRunCacheDir = brand.EnvPrefix + "_JAVA_RUN_CACHE_DIR"
+
 func main() {
-	if err := run(context.Background(), os.Stdin, os.Stdout); err != nil {
+	ctx := javaanalysis.WithRunCacheDir(context.Background(), os.Getenv(envRunCacheDir))
+	if err := run(ctx, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

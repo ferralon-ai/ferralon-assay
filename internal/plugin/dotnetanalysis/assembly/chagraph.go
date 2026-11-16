@@ -27,7 +27,10 @@ package assembly
 // a declared DispatchBoundary — it hides a real call in the obfuscation threat model,
 // so it is never a dropped edge; compilers rarely emit it.)
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // DispatchState is one of the three C3 outcomes.
 type DispatchState int
@@ -76,10 +79,14 @@ type DispatchResult struct {
 	OutOfSetBases []OutOfSetBase
 }
 
-// OutOfSetBase is an out-of-set base type, as the TypeRef Asm reads it.
+// OutOfSetBase is an out-of-set base type, as the TypeRef Asm reads it. Iface marks an
+// out-of-set interface a class with no body for an interface slot implements: the runtime
+// binds the slot to a default method, which that interface can supply.
 type OutOfSetBase struct {
-	Asm *Assembly
-	Ref TypeRef
+	Asm   *Assembly
+	Ref   TypeRef
+	Iface bool
+	Via   *TypeDef // for Iface: the receiver class whose slot it can fill
 }
 
 // SigCompatible reports whether signature sigA (read in asmA) can name the method whose
@@ -107,6 +114,45 @@ type CHA struct {
 	asms        []*Assembly
 	byKey       map[string][]*typeNode
 	methodOwner map[*MethodDef]*typeNode
+
+	// bridges reports whether an out-of-set interface can link an in-set class to an
+	// in-set interface it does not declare; nil means any can.
+	bridges  func(*Assembly, TypeRef) bool
+	bridged  []*typeNode // computed on first use; nil until then
+	bridgeOK bool
+}
+
+// SetBridgeFilter narrows which out-of-set interfaces can link an in-set class to an
+// in-set interface (an out-of-set interface can extend one, so the class implements it
+// without declaring it). Framework code cannot name an in-set type, so a caller that
+// knows the framework passes a filter excluding it.
+func (c *CHA) SetBridgeFilter(f func(*Assembly, TypeRef) bool) {
+	c.bridges, c.bridged, c.bridgeOK = f, nil, false
+}
+
+// bridgedClasses returns the in-set classes declaring an out-of-set interface the bridge
+// filter admits, directly or through an in-set interface, sorted by key. Subclasses are
+// not listed: the dispatch BFS reaches them through derived edges.
+func (c *CHA) bridgedClasses() []*typeNode {
+	if c.bridgeOK {
+		return c.bridged
+	}
+	for _, nodes := range c.byKey {
+		for _, n := range nodes {
+			if n.isInterface() {
+				continue
+			}
+			for _, b := range c.outOfSetIfaces(n, nil) {
+				if c.bridges == nil || c.bridges(b.Asm, b.Ref) {
+					c.bridged = append(c.bridged, n)
+					break
+				}
+			}
+		}
+	}
+	slices.SortFunc(c.bridged, func(a, b *typeNode) int { return strings.Compare(a.key, b.key) })
+	c.bridgeOK = true
+	return c.bridged
 }
 
 func typeKey(namespace, name string) string {
@@ -378,34 +424,72 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig [
 			}
 		}
 	}
-	// walked marks classes whose inherited body is already accounted for: the first body
-	// at or above a node is the same whichever descendant the walk started from.
-	walked := map[*typeNode]bool{}
+	// walked records, per class, whether a body was found at or above it and, if not, the
+	// out-of-set interfaces at or above it: both are the same whichever descendant the
+	// walk started from.
+	type walkMemo struct {
+		found  bool
+		ifaces []OutOfSetBase
+	}
+	walked := map[*typeNode]walkMemo{}
 	inherit := func(t *typeNode) {
-		for n := t; ; {
-			if walked[n] {
-				return
+		var chain []*typeNode
+		var own [][]OutOfSetBase
+		var acc walkMemo
+		for n := t; ; n = n.base {
+			if m, ok := walked[n]; ok {
+				acc = m
+				break
 			}
-			walked[n] = true
+			chain = append(chain, n)
 			if n != t {
 				if ms := slotBodies(n); len(ms) > 0 {
 					add(n, ms)
-					return
+					own = append(own, nil)
+					acc.found = true
+					break
 				}
 			}
+			var mine []OutOfSetBase
+			if ownerIsIface {
+				mine = c.outOfSetIfaces(n, nil)
+			}
+			own = append(own, mine)
 			if n.base == nil {
 				if !n.def.Extends.Token.IsNull() && (!isRootBase(n.def.Extends) || objectVirtual(name)) {
 					bases = append(bases, OutOfSetBase{Asm: n.asm, Ref: n.def.Extends})
 				}
-				return
+				break
 			}
-			n = n.base
+		}
+		for i := len(chain) - 1; i >= 0; i-- {
+			if !acc.found {
+				acc.ifaces = append(slices.Clip(own[i]), acc.ifaces...)
+			}
+			walked[chain[i]] = acc
+		}
+		// With no class body for an interface slot the runtime binds a default method,
+		// which an out-of-set interface on the chain can supply when t is the receiver.
+		// A found body leaves acc.ifaces empty.
+		for _, b := range acc.ifaces {
+			b.Via = t.def
+			bases = append(bases, b)
 		}
 	}
 
-	// BFS the reverse edges: owner + all transitive subclasses/implementers.
+	// BFS the reverse edges: owner + all transitive subclasses/implementers. A class can
+	// also implement an in-set interface through an out-of-set one that extends it, an
+	// edge no loaded metadata records; such classes join the search as implementers.
 	queue := []*typeNode{owner}
 	visited := map[*typeNode]bool{owner: true}
+	if ownerIsIface {
+		for _, b := range c.bridgedClasses() {
+			if !visited[b] {
+				visited[b] = true
+				queue = append(queue, b)
+			}
+		}
+	}
 	for len(queue) > 0 {
 		t := queue[0]
 		queue = queue[1:]
@@ -424,6 +508,25 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig [
 		}
 	}
 	return targets, bases
+}
+
+// outOfSetIfaces appends the out-of-set interfaces n implements, directly or through an
+// in-set interface it implements.
+func (c *CHA) outOfSetIfaces(n *typeNode, acc []OutOfSetBase) []OutOfSetBase {
+	seen := map[*typeNode]bool{}
+	var walk func(t *typeNode)
+	walk = func(t *typeNode) {
+		for _, ref := range t.def.Interfaces {
+			if i := c.lookup(t.asm, ref); i == nil {
+				acc = append(acc, OutOfSetBase{Asm: t.asm, Ref: ref, Iface: true})
+			} else if !seen[i] {
+				seen[i] = true
+				walk(i)
+			}
+		}
+	}
+	walk(n)
+	return acc
 }
 
 // interfaceTarget resolves how type t satisfies interface member iface.name/sig:

@@ -226,10 +226,45 @@ func TestPackageLabel(t *testing.T) {
 		{"resolved with a package-scoped limit", Package{Name: "lodash", Version: "4.17.20", PartialReason: plugin.PartialReasonToolFailure}, "lodash@4.17.20"},
 		{"observed, not resolved", Package{Name: "zlib", Version: "1.2.11", PartialReason: plugin.PartialReasonSourceUnpinned + ":sole_source_unproven"}, "zlib (pinned 1.2.11, not resolved)"},
 		{"no version", Package{Name: "zlib", PartialReason: plugin.PartialReasonLockfileAmbiguous}, "zlib"},
+		{"one pin read, not resolved", Package{Name: "django", PartialReason: plugin.PartialReasonToolFailure,
+			ReadPins: &[]ReadPin{{Version: "1.8.2", Source: "requirements.txt"}}}, "django (read 1.8.2 in requirements.txt, not resolved)"},
+		{"two pins read, not resolved", Package{Name: "django", ReadPins: &[]ReadPin{{Version: "1.8.2", Source: "api/requirements.txt"},
+			{Version: "1.8.7", Source: "web/requirements.txt"}}}, "django (read 1.8.2 in api/requirements.txt, 1.8.7 in web/requirements.txt, not resolved)"},
+		{"no pin read", Package{Name: "django", ReadPins: &[]ReadPin{}}, "django"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.pkg.Label(); got != tc.want {
 				t.Errorf("Label() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// ReadPins is additive: a package without read pins serializes exactly as before, and one with
+// them carries each pin and its source.
+func TestPackageReadPinsJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pkg  Package
+		want string
+	}{
+		{"resolved", Package{Ecosystem: "PyPI", Name: "django", Version: "1.8.2", PURL: "pkg:pypi/django"},
+			`{"ecosystem":"PyPI","name":"django","version":"1.8.2","purl":"pkg:pypi/django","direct":false}`},
+		{"pins read, not resolved", Package{Ecosystem: "PyPI", Name: "django", PURL: "pkg:pypi/django", PartialReason: plugin.PartialReasonToolFailure,
+			ReadPins: &[]ReadPin{{Version: "1.8.2", Source: "requirements.txt"}}},
+			`{"ecosystem":"PyPI","name":"django","version":"","purl":"pkg:pypi/django","direct":false,"partial_reason":"tool_failure","read_pins":[{"version":"1.8.2","source":"requirements.txt"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(tc.pkg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != tc.want {
+				t.Fatalf("json = %s, want %s", b, tc.want)
+			}
+			var back Package
+			if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back, tc.pkg) {
+				t.Fatalf("round trip = %+v (%v), want %+v", back, err, tc.pkg)
 			}
 		})
 	}

@@ -1043,6 +1043,98 @@ func TestVeto_EnvKeeps(t *testing.T) {
 	}
 }
 
+// A lane's Library makes . or source of the one literal word it names install nothing; any
+// other word, a path to it, an expansion, an argument after it, a file of that name where the
+// command runs, or a lane with no Library withholds as before.
+func TestVeto_Library(t *testing.T) {
+	lib := testSpec
+	lib.Library = func(word string) bool { return word == "git-sh-setup" }
+	tests := []struct {
+		name  string
+		spec  Spec
+		files map[string]string
+		want  bool // withheld
+	}{
+		{"dot", lib, map[string]string{"install.sh": ". git-sh-setup\ninst sync\n"}, false},
+		{"source", lib, map[string]string{"install.sh": "source git-sh-setup\n"}, false},
+		{"quoted", lib, map[string]string{"install.sh": `. "git-sh-setup"` + "\n"}, false},
+		{"live hook", lib, map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n"}, false},
+		{"another word", lib, map[string]string{"install.sh": ". git-sh-setup2\n"}, true},
+		{"path to it", lib, map[string]string{"install.sh": ". ./git-sh-setup\n"}, true},
+		{"absolute path to it", lib, map[string]string{"install.sh": ". /usr/lib/git-core/git-sh-setup\n"}, true},
+		{"expansion", lib, map[string]string{"install.sh": ". $LIB\n"}, true},
+		{"expansion naming it", lib, map[string]string{"install.sh": ". ${D}git-sh-setup\n"}, true},
+		{"argument after it", lib, map[string]string{"install.sh": ". git-sh-setup x\n"}, true},
+		{"file of that name beside the command", lib, map[string]string{"install.sh": ". git-sh-setup\n", "git-sh-setup": "inst add x\n"}, true},
+		{"lane with no Library", testSpec, map[string]string{"install.sh": ". git-sh-setup\n"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n"}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			if got := withheld(writeTree(t, files), tt.spec); got != tt.want {
+				t.Fatalf("withheld = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// AndList puts two commands in one list only when && alone joins them in one line of one
+// surface, and follows no command a run wrapper or nested shell starts.
+func TestVeto_AndList(t *testing.T) {
+	type at struct {
+		list int
+		ok   bool
+	}
+	tests := []struct {
+		name  string
+		files map[string]string
+		same  bool // the two inst commands share a list, when the second is followed
+		ok    bool // the second is followed
+	}{
+		{"&&", map[string]string{"install.sh": "inst a && inst b\n"}, true, true},
+		{"&& across a cd", map[string]string{"install.sh": "inst a && cd sub && inst b\n"}, true, true},
+		{"Dockerfile RUN", map[string]string{"Dockerfile": "FROM x\nRUN inst a && inst b\n"}, true, true},
+		{";", map[string]string{"install.sh": "inst a; inst b\n"}, false, true},
+		{"lines", map[string]string{"install.sh": "inst a\ninst b\n"}, false, true},
+		{"||", map[string]string{"install.sh": "inst a || inst b\n"}, false, true},
+		{"|", map[string]string{"install.sh": "inst a | inst b\n"}, false, true},
+		{"&", map[string]string{"install.sh": "inst a & inst b\n"}, false, true},
+		{"Dockerfile RUNs", map[string]string{"Dockerfile": "FROM x\nRUN inst a\nRUN inst b\n"}, false, true},
+		{"two surfaces", map[string]string{"a.sh": "inst a\n", "b.sh": "inst b\n"}, false, true},
+		{"run wrapper", map[string]string{"install.sh": "inst a && instw run inst b\n"}, false, false},
+		{"nested shell", map[string]string{"install.sh": "inst a && sh -c 'inst b'\n"}, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"inst.toml": "[deps]\n", "sub/x": "\n"}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			root := writeTree(t, files)
+			var seen []at
+			var v *Veto
+			spec := testSpec
+			spec.Allowed = func(words []string, b Binder) bool {
+				l, ok := v.AndList()
+				seen = append(seen, at{l, ok})
+				return true
+			}
+			v = New(root, testRead(root), spec)
+			none := func(string, []byte) (string, bool) { return "", false }
+			buildtree.Candidates(root, v.Classify(none), v.FullyRead)
+			if len(seen) != 2 {
+				t.Fatalf("Allowed asked %d times, want 2", len(seen))
+			}
+			if first, last := seen[0], seen[1]; !first.ok || last.ok != tt.ok || last.ok && (first.list == last.list) != tt.same {
+				t.Fatalf("AndList = %+v then %+v, want same list %v and ok %v", first, last, tt.same, tt.ok)
+			}
+		})
+	}
+}
+
 // A symlinked package.json passes read when the lane's read follows the link, as a WalkDir walk
 // with a Stat-based read does, and passes walkedSurface; inside Prefixed only unlinked refuses
 // it.

@@ -35,16 +35,23 @@ import (
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
 	// STRONG tier: use the IL whole-program engine when the first-party compiled IL is
 	// present. It returns handled=false to DEGRADE (no first-party IL / a reader hazard).
-	if res, handled := ilReachability(req); handled {
+	res, handled, absent := ilReachability(req)
+	if handled {
 		return res, nil
 	}
 	res, err := lexicalReachability(ctx, req)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err // load failure of the fallback stays hard (inv.4)
 	}
-	// The degrade is DECLARED: tool_failure marks that the IL confident-safe path did not
-	// run, so the caller never reads the lexical candidate-narrower as a proven result.
-	res.Partiality = withReason(res.Partiality, plugin.PartialReasonToolFailure)
+	// The degrade is DECLARED: a tool_failure sub-reason marks that the IL confident-safe path
+	// did not run and says why, so the caller never reads the lexical candidate-narrower as a
+	// proven result. It is also a scoped first-party limit with no Targets, so the Report
+	// discloses where the IL was looked for.
+	if absent.Reason == "" {
+		absent.Reason = plugin.PartialReasonToolFailure
+	}
+	res.Partiality = withReason(res.Partiality, absent.Reason)
+	res.Partiality.Scoped = append(res.Partiality.Scoped, absent)
 	return res, nil
 }
 

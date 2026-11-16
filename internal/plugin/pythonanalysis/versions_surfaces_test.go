@@ -322,3 +322,99 @@ func TestResolveVersions_PyprojectPixiUnread(t *testing.T) {
 		}), "pyjwt", "2.8.0")
 	})
 }
+
+// Three script-surface shapes withhold only what they can change. Sourcing git-sh-setup, git's
+// shell library, installs nothing. An apt install of only pip, the interpreter and packages
+// that are not Python's installs no distribution but pip, which stays withheld. A pip install
+// of a tool no manifest names withholds the tool and every coordinate the manifests do not pin
+// exactly, and every pin as well unless the tool is installed before the requirements, in one
+// && list. The controls withhold every pin, as before.
+func TestResolveVersions_ScriptSurfaceNarrowed(t *testing.T) {
+	const (
+		reqs   = "jinja2==3.1.4\nflask>=2.0\npip==24.0\n"
+		docker = "FROM python:3.12\nWORKDIR /app\nCOPY requirements.txt .\nRUN "
+		chain  = docker + "pip install setuptools_scm && pip install -r requirements.txt\n"
+		lockUV = "version = 1\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n\n" +
+			"[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
+	)
+	all := []string{"jinja2", "flask", "pip"}
+	// tree is the requirements beside files.
+	tree := func(files map[string]string) map[string]string {
+		files["requirements.txt"] = reqs
+		return files
+	}
+	tests := []struct {
+		name     string
+		files    map[string]string
+		resolved []string
+		withheld []string // unresolved and partial
+	}{
+		// git-sh-setup.
+		{"live sample hooks source git-sh-setup", tree(map[string]string{".git/hooks/pre-rebase.sample": "#!/bin/sh\n. git-sh-setup\n", "build.sh": "#!/bin/sh\nls .git\n"}), []string{"jinja2"}, []string{"pip"}},
+		{"live hook sources git-sh-setup", tree(map[string]string{".git/hooks/pre-commit": "#!/bin/sh\nsource git-sh-setup\n"}), []string{"jinja2"}, []string{"pip"}},
+		{"control: ./git-sh-setup", tree(map[string]string{".git/hooks/pre-commit": "#!/bin/sh\n. ./git-sh-setup\n"}), nil, all},
+		{"control: another library", tree(map[string]string{".git/hooks/pre-commit": "#!/bin/sh\n. git-sh-lib\n"}), nil, all},
+		{"control: an expansion", tree(map[string]string{".git/hooks/pre-commit": "#!/bin/sh\n. $LIB/git-sh-setup\n"}), nil, all},
+
+		// apt.
+		{"apt beside packages that are not Python's", tree(map[string]string{"Dockerfile": "FROM debian\nRUN apt-get update && apt-get install -y git libpq-dev build-essential python python-dev python-pip\n"}), []string{"jinja2"}, []string{"pip"}},
+		{"apt of every listed package", tree(map[string]string{"install.sh": "apt-get -y -q install --no-install-recommends python2 python2.7 python2.7-dev python3 python3.12 python3-dev python3.12-dev python3-venv python3.12-venv python3-pip\n"}), []string{"jinja2"}, []string{"pip"}},
+		{"apt with versions, releases and case", tree(map[string]string{"install.sh": "apt install git=1:2.39.2-1 libssl-dev/bookworm Python3-Pip\n"}), []string{"jinja2"}, []string{"pip"}},
+		{"control: python3-django", tree(map[string]string{"install.sh": "apt-get install -y python3-pip python3-django\n"}), nil, all},
+		{"control: python-setuptools", tree(map[string]string{"install.sh": "apt-get install -y python-pip python-setuptools\n"}), nil, all},
+		{"control: py3 package", tree(map[string]string{"install.sh": "apt-get install -y python3-pip py3-yaml\n"}), nil, all},
+		{"control: $PKGS", tree(map[string]string{"install.sh": "apt-get install -y python3-pip $PKGS\n"}), nil, all},
+		{"control: a .deb path", tree(map[string]string{"install.sh": "apt-get install -y python3-pip ./tool.deb\n"}), nil, all},
+		{"control: a redirect", tree(map[string]string{"install.sh": "apt-get install -y python3-pip > apt.log\n"}), nil, all},
+		{"control: sudo", tree(map[string]string{"install.sh": "sudo apt-get install -y python3-pip\n"}), nil, all},
+		{"control: apk", tree(map[string]string{"install.sh": "apk add py3-pip\n"}), nil, all},
+		{"control: yum", tree(map[string]string{"install.sh": "yum install -y python3-pip\n"}), nil, all},
+
+		// A tool outside the manifests.
+		{"tool before the requirements", tree(map[string]string{"Dockerfile": chain}), []string{"jinja2"}, []string{"flask", "pip", "setuptools-scm"}},
+		{"tools with flags and a version, through python -m pip", tree(map[string]string{"Dockerfile": docker + "python3 -m pip install -U --no-cache-dir setuptools_scm==8.1.0 wheel && python3 -m pip install -r requirements.txt\n"}), []string{"jinja2"}, []string{"flask", "pip", "setuptools-scm", "wheel"}},
+		{"pin in a file no install runs", tree(map[string]string{"Dockerfile": chain, "docs/requirements.txt": "sphinx==7.2.6\n"}), []string{"jinja2"}, []string{"flask", "sphinx", "setuptools-scm"}},
+		{"control: tool after the requirements", tree(map[string]string{"Dockerfile": docker + "pip install -r requirements.txt && pip install setuptools_scm\n"}), nil, append(all, "setuptools-scm")},
+		{"control: tool on the line before", tree(map[string]string{"install.sh": "pip install setuptools_scm\npip install -r requirements.txt\n"}), nil, all},
+		{"control: tool before ;", tree(map[string]string{"install.sh": "pip install setuptools_scm; pip install -r requirements.txt\n"}), nil, all},
+		{"control: tool and no requirements install", tree(map[string]string{"install.sh": "pip install setuptools_scm\n"}), nil, all},
+		{"control: requirements installed again elsewhere", tree(map[string]string{"Dockerfile": chain, "install.sh": "pip install -r requirements.txt\n"}), nil, all},
+		{"control: pip install -e .", tree(map[string]string{"Dockerfile": docker + "pip install -e . && pip install -r requirements.txt\n"}), nil, all},
+		{"control: a name the manifest holds", tree(map[string]string{"Dockerfile": docker + "pip install jinja2 && pip install -r requirements.txt\n"}), nil, all},
+		{"control: an index", tree(map[string]string{"Dockerfile": docker + "pip install --index-url https://example.com/simple setuptools_scm && pip install -r requirements.txt\n"}), nil, all},
+		{"control: a VCS spec", tree(map[string]string{"Dockerfile": docker + "pip install git+https://github.com/a/b && pip install -r requirements.txt\n"}), nil, all},
+		{"control: extras", tree(map[string]string{"Dockerfile": docker + "pip install 'black[d]' && pip install -r requirements.txt\n"}), nil, all},
+		{"control: a pipenv sync", tree(map[string]string{"Dockerfile": chain, "Pipfile": "[packages]\n", "Pipfile.lock": "{}\n", "sync.sh": "pipenv sync\n"}), nil, all},
+		{"control: a complete lock", tree(map[string]string{"Dockerfile": chain, "pyproject.toml": "[project]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"jinja2==3.1.4\"]\n", "uv.lock": lockUV}), nil, all},
+		{"one installer through python3 -m pip", tree(map[string]string{"Dockerfile": docker + "python3 -m pip install black && python3 -m pip install -r requirements.txt\n"}), []string{"jinja2"}, []string{"flask", "pip", "black"}},
+		{"one installer through pip", tree(map[string]string{"Dockerfile": docker + "pip install black && pip install -r requirements.txt\n"}), []string{"jinja2"}, []string{"flask", "pip", "black"}},
+		{"control: pip3 then pip2", tree(map[string]string{"Dockerfile": docker + "pip3 install black && pip2 install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: python3.11 then python3.12", tree(map[string]string{"Dockerfile": docker + "python3.11 -m pip install black && python3.12 -m pip install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: pip then pip3", tree(map[string]string{"Dockerfile": docker + "pip install black && pip3 install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: pip then python -m pip", tree(map[string]string{"Dockerfile": docker + "pip install black && python -m pip install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: a venv pip then PATH pip", tree(map[string]string{"Dockerfile": docker + "/opt/venv/bin/pip install black && pip install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: a venv python -m pip then PATH python", tree(map[string]string{"Dockerfile": docker + "/opt/venv/bin/python -m pip install black && python -m pip install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: an absolute pip3 then PATH pip3", tree(map[string]string{"Dockerfile": docker + "/usr/bin/pip3 install black && pip3 install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: two absolute pip3 paths", tree(map[string]string{"Dockerfile": docker + "/usr/local/bin/pip3 install black && /usr/bin/pip3 install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: --user on the tool only", tree(map[string]string{"Dockerfile": docker + "pip install --user black && pip install -r requirements.txt\n"}), nil, append(all, "black")},
+		{"control: --user on the requirements only", tree(map[string]string{"Dockerfile": docker + "pip install black && pip install --user -r requirements.txt\n"}), nil, append(all, "black")},
+		{"one installer through one absolute path", tree(map[string]string{"Dockerfile": docker + "/opt/venv/bin/pip install black && /opt/venv/bin/pip install -r requirements.txt\n"}), []string{"jinja2"}, []string{"flask", "pip", "black"}},
+		{"one installer through --user", tree(map[string]string{"Dockerfile": docker + "pip install --user black && pip install --user -r requirements.txt\n"}), []string{"jinja2"}, []string{"flask", "pip", "black"}},
+		{"control: a pip config named", tree(map[string]string{"Dockerfile": "FROM python:3.12\n# pip reads /etc/pip.conf\n" + chain[len("FROM python:3.12\n"):]}), nil, all},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeTree(t, tt.files)
+			for _, c := range tt.resolved {
+				if r := resolveVersion(t, dir, c); !r.Match.Resolved {
+					t.Errorf("%s: Resolved = false, want true (%+v %+v)", c, r.Match, r.Partiality)
+				}
+			}
+			for _, c := range tt.withheld {
+				if r := resolveVersion(t, dir, c); r.Match.Resolved || r.Partiality.Complete {
+					t.Errorf("%s: Resolved = %v, Complete = %v, want both false", c, r.Match.Resolved, r.Partiality.Complete)
+				}
+			}
+		})
+	}
+}

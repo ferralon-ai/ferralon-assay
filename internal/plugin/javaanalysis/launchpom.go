@@ -91,7 +91,12 @@ type mvnPOM struct {
 	Profiles   []mvnProfile
 }
 
-type mvnParent struct{ GroupID, ArtifactID, Version, RelativePath string }
+// mvnParent is a POM's parent. RelativePath is its <relativePath>, trimmed, nil when the POM
+// names none.
+type mvnParent struct {
+	GroupID, ArtifactID, Version string
+	RelativePath                 *string
+}
 
 type mvnProfile struct {
 	ID         string
@@ -112,10 +117,10 @@ type xmlPOM struct {
 }
 
 type xmlParent struct {
-	GroupID      string `xml:"groupId"`
-	ArtifactID   string `xml:"artifactId"`
-	Version      string `xml:"version"`
-	RelativePath string `xml:"relativePath"`
+	GroupID      string  `xml:"groupId"`
+	ArtifactID   string  `xml:"artifactId"`
+	Version      string  `xml:"version"`
+	RelativePath *string `xml:"relativePath"`
 }
 
 // pomProps captures the child elements of a <properties> block as name→value pairs.
@@ -165,12 +170,15 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 		Version:    javaTrim(xp.Version),
 		Packaging:  javaTrim(xp.Packaging),
 		Parent: mvnParent{
-			GroupID:      javaTrim(xp.Parent.GroupID),
-			ArtifactID:   javaTrim(xp.Parent.ArtifactID),
-			Version:      javaTrim(xp.Parent.Version),
-			RelativePath: javaTrim(xp.Parent.RelativePath),
+			GroupID:    javaTrim(xp.Parent.GroupID),
+			ArtifactID: javaTrim(xp.Parent.ArtifactID),
+			Version:    javaTrim(xp.Parent.Version),
 		},
 		Properties: xp.Properties.Entries,
+	}
+	if xp.Parent.RelativePath != nil {
+		rel := javaTrim(*xp.Parent.RelativePath)
+		p.Parent.RelativePath = &rel
 	}
 	if p.Properties == nil {
 		p.Properties = map[string]string{}

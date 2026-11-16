@@ -28,6 +28,13 @@ type Meta struct {
 	// Outcome is the scan step's outcome as GitHub Actions reports it: success, failure, cancelled
 	// or skipped.
 	Outcome string `json:"outcome"`
+	// Lane is "showcase-floating" for the report-only twin of a showcase scan; empty otherwise.
+	Lane string `json:"lane,omitempty"`
+	// CorpusRelease and GoVersion record what the scan read and ran under, when the job knows.
+	CorpusRelease string `json:"corpus_release,omitempty"`
+	GoVersion     string `json:"go_version,omitempty"`
+	// PeakRSSKB is the scan's peak resident memory in KiB, summed over the scanner and its analyzers.
+	PeakRSSKB *int64 `json:"peak_rss_kb,omitempty"`
 	// ExitCode is the scanner's exit code; nil when the scanner never exited (it never started, or
 	// the job was stopped first).
 	ExitCode *int `json:"exit_code"`
@@ -44,6 +51,9 @@ const (
 	KindTruncated      = "scan_truncated"
 	KindUngroundedNE   = "ungrounded_not_exploitable"
 	KindUngroundedDisq = "ungrounded_disqualified"
+	// KindLedger is a showcase scan whose rows differ from its ledger, or a ledger that does not
+	// match the pinned build scope.
+	KindLedger = "ledger_mismatch"
 )
 
 // Failure is one reason a repository failed the floor.
@@ -89,6 +99,17 @@ type RepoResult struct {
 	// Caveats are the capability-matrix caveats the report fired (caveats.go). Informational:
 	// they never fail the repository. Nil when there is no readable report.
 	Caveats []CaveatHit `json:"caveats"`
+	// Lane is the showcase lane kind for a showcase scan; empty on the other lanes.
+	Lane          string `json:"lane,omitempty"`
+	CorpusRelease string `json:"corpus_release,omitempty"`
+	GoVersion     string `json:"go_version,omitempty"`
+	PeakRSSKB     *int64 `json:"peak_rss_kb,omitempty"`
+	// Reasons counts every finding's engine reason by verdict ("verdict/reason"), on showcase scans.
+	Reasons map[string]int `json:"reasons,omitempty"`
+	// Drift is, on the floating showcase scan, one line per row that differs from the ledger. It
+	// never fails the run; so does ReportOnly, which holds the failures the scan would otherwise have.
+	Drift      []string  `json:"drift,omitempty"`
+	ReportOnly []Failure `json:"report_only,omitempty"`
 }
 
 // topReasons is how many undetermined_reason codes a repository's line names.
@@ -283,6 +304,7 @@ func evaluate(t Target, policy string, sr *scanResult) RepoResult {
 		return res
 	}
 	res.AssayCommit = sr.meta.AssayCommit
+	res.CorpusRelease, res.GoVersion, res.PeakRSSKB = sr.meta.CorpusRelease, sr.meta.GoVersion, sr.meta.PeakRSSKB
 	if sr.meta.Policy != "" {
 		res.Policy = sr.meta.Policy
 	}
@@ -329,7 +351,11 @@ func readResults(dir string) (map[string]*scanResult, error) {
 		if m.Repo == "" {
 			return fmt.Errorf("%s: no repo", path)
 		}
-		if _, dup := out[m.Repo]; dup {
+		key := m.Repo
+		if m.Lane == laneShowcaseFloating {
+			key = resultKey(m.Repo, m.Lane)
+		}
+		if _, dup := out[key]; dup {
 			return fmt.Errorf("%s: a second result for %s", path, m.Repo)
 		}
 		sr := &scanResult{meta: m}
@@ -340,7 +366,7 @@ func readResults(dir string) (map[string]*scanResult, error) {
 		case !errors.Is(err, fs.ErrNotExist):
 			return err
 		}
-		out[m.Repo] = sr
+		out[key] = sr
 		return nil
 	})
 	return out, err

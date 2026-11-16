@@ -1,0 +1,125 @@
+{
+  "affected": [
+    {
+      "coordinate": "org.bouncycastle:bcprov-jdk12",
+      "fixed_versions": [
+        "1.78"
+      ],
+      "purl": "pkg:maven/org.bouncycastle/bcprov-jdk12",
+      "ranges": [
+        {
+          "fixed": "1.78",
+          "introduced": "1.61",
+          "upper_exclusive": "1.78"
+        }
+      ],
+      "version_scheme": "maven"
+    },
+    {
+      "coordinate": "org.bouncycastle:bcprov-jdk14",
+      "fixed_versions": [
+        "1.78"
+      ],
+      "purl": "pkg:maven/org.bouncycastle/bcprov-jdk14",
+      "ranges": [
+        {
+          "fixed": "1.78",
+          "introduced": "1.61",
+          "upper_exclusive": "1.78"
+        }
+      ],
+      "version_scheme": "maven"
+    },
+    {
+      "coordinate": "org.bouncycastle:bcprov-jdk15on",
+      "fixed_versions": [
+        "1.78"
+      ],
+      "purl": "pkg:maven/org.bouncycastle/bcprov-jdk15on",
+      "ranges": [
+        {
+          "fixed": "1.78",
+          "introduced": "1.61",
+          "upper_exclusive": "1.78"
+        }
+      ],
+      "version_scheme": "maven"
+    },
+    {
+      "coordinate": "org.bouncycastle:bcprov-jdk15to18",
+      "fixed_versions": [
+        "1.78"
+      ],
+      "purl": "pkg:maven/org.bouncycastle/bcprov-jdk15to18",
+      "ranges": [
+        {
+          "fixed": "1.78",
+          "introduced": "1.61",
+          "upper_exclusive": "1.78"
+        }
+      ],
+      "version_scheme": "maven"
+    },
+    {
+      "coordinate": "org.bouncycastle:bcprov-jdk18on",
+      "fixed_versions": [
+        "1.78"
+      ],
+      "purl": "pkg:maven/org.bouncycastle/bcprov-jdk18on",
+      "ranges": [
+        {
+          "fixed": "1.78",
+          "introduced": "1.61",
+          "upper_exclusive": "1.78"
+        }
+      ],
+      "version_scheme": "maven"
+    },
+    {
+      "coordinate": "org.bouncycastle:bcprov-lts8on",
+      "fixed_versions": [
+        "2.73.6"
+      ],
+      "purl": "pkg:maven/org.bouncycastle/bcprov-lts8on",
+      "ranges": [
+        {
+          "fixed": "2.73.6",
+          "upper_exclusive": "2.73.6"
+        }
+      ],
+      "version_scheme": "maven"
+    },
+    {
+      "coordinate": "org.bouncycastle:bctls-fips",
+      "fixed_versions": [
+        "1.0.19"
+      ],
+      "purl": "pkg:maven/org.bouncycastle/bctls-fips",
+      "ranges": [
+        {
+          "fixed": "1.0.19",
+          "upper_exclusive": "1.0.19"
+        }
+      ],
+      "version_scheme": "maven"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "1.78",
+      "fixed_version": "1.78"
+    }
+  ],
+  "aliases": [
+    "CVE-2024-34447"
+  ],
+  "coordinate": "org.bouncycastle:bcprov-jdk12",
+  "purl": "pkg:maven/org.bouncycastle/bcprov-jdk12",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "An issue was discovered in the Bouncy Castle Crypto Package For Java before BC TLS Java 1.0.19 (ships with BC Java 1.78, BC Java (LTS) 2.73.6) and before BC FIPS TLS Java 1.0.19. When endpoint identification is enabled in the BCJSSE and an SSL socket is created without an explicit hostname (as happens with HttpsURLConnection), hostname verification could be performed against a DNS-resolved IP address in some situations, opening up a possibility of DNS poisoning.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "version_scheme": "maven",
+  "vuln_id": "GHSA-4h8f-2wvx-gg5w"
+}

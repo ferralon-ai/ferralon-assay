@@ -1,20 +1,22 @@
 # The floor run
 
-Every night, `.github/workflows/floor.yml` builds the scanner from `main` and scans each demo
-repository listed in `floor/targets.json`. It fails if any repository shows a `not_exploitable`
-finding without grounds, or if a scan failed, timed out or was cut short. The job summary shows
-what Assay returned for each repository, grouped by language. Two things depend on it:
+The floor is a diagnostic test suite for the engine. Each fixture under
+`cmd/floorcheck/fixtures/<owner>__<repo>@<sha12>/` pins a repository at a full commit, the lane's
+runtime, and the advisories it is judged on (`intel/advisories/`, a records-shape directory corpus
+pinned by sha256). Its `expect.yaml` lists the expected finding per advisory: the adjudicated truth
+and the weakest verdict that still counts as met. Expectations change only by hand, in the PR that
+moves the finding.
 
-- **No ungrounded `not_exploitable`.** The grounds gate in `trigger/grounds.go` only lets a finding
-  become `not_exploitable` when it has evidence. G0: an analysis step that did not run leaves the
-  advisory `undetermined`, even when grounds exist. G1: the advisory was admitted on a package
-  whose installed version resolved. G2: either every advisory symbol resolved inside that package
-  and was searched from the entry points, or the analyzer refuted the package on positive
-  evidence. Otherwise the finding is `undetermined`, with its reason. The gate is tested in-process;
-  the floor run checks its output on real repositories after every merge.
-- **The language claim.** The per-language table is the measured answer to "what does Assay
-  return for a Go, Java, JavaScript or Python repository today?". Languages that have no target
-  are listed as gaps.
+A person starts every run. `.github/workflows/floor.yml` runs only by `workflow_dispatch`, with a
+`fixtures` selector (empty runs all of them): it builds the scanner and `floorcheck` once, then runs
+one matrix job per fixture. Locally, `floorcheck run <fixture>… --out DIR` does the same scan and
+comparison. A fixture passes when its scan is complete, every advisory it carries was assessed, and
+every finding meets its floor. A worse verdict is a regression (exit 1); a scan that failed, was cut
+short or left an advisory unassessed is incomplete (exit 2).
+
+The sections below describe `floorcheck check`, which compares a scan's `report.json` with a demo
+repository listed in `floor/targets.json` and its ledger in `floor/expect/`. `floor.yml` does not
+run it.
 
 ## What fails a repository
 

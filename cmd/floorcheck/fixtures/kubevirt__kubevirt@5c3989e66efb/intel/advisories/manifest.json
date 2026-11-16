@@ -1,0 +1,24 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 2,
+  "records": [
+    {
+      "identifier": "CVE-2026-116591",
+      "path": "2026/10/CVE-2026-116591.json",
+      "output_digest": "sha256:accbb6a99df9f6933814257318415414468cf375941fabec3743f6016df619cc"
+    },
+    {
+      "identifier": "CVE-2026-63209",
+      "path": "2026/09/CVE-2026-63209.json",
+      "output_digest": "sha256:5c6620bf80a38b8cb413f777923dc3c4b9690bc776411849adf2e6fc18077768"
+    }
+  ],
+  "corpus_digest": "sha256:651e0cb26a62bdb55ed53dac2009512f41f2acb75c63eee0a7f9661bf48687a9",
+  "provenance": {
+    "generator": "floor fixture extraction",
+    "policy_id": "floor-fixture",
+    "policy_query": "the records this fixture's adjudicated expectations name",
+    "source_corpus_digest": "sha256:2233ff305c007bbfdd0e88d8e121f26a7699927ce277d87092ed08caab987af0"
+  }
+}

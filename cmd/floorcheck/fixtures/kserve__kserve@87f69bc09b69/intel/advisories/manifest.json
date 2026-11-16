@@ -1,0 +1,19 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 1,
+  "records": [
+    {
+      "identifier": "CVE-2026-54462",
+      "path": "2026/10/CVE-2026-54462.json",
+      "output_digest": "sha256:7811a244e289821a83b4e1f09bfa3b2033d09cd97e21cadb1d038888ec151b40"
+    }
+  ],
+  "corpus_digest": "sha256:117e5141d099209403525e3432a4a7792a844d3775faf6193c28f5397c20b849",
+  "provenance": {
+    "generator": "floor fixture extraction",
+    "policy_id": "floor-fixture",
+    "policy_query": "the records this fixture's adjudicated expectations name",
+    "source_corpus_digest": "sha256:2233ff305c007bbfdd0e88d8e121f26a7699927ce277d87092ed08caab987af0"
+  }
+}

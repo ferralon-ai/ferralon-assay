@@ -1,0 +1,58 @@
+schema: ferralon.floor-expect.v1
+scan: complete
+findings:
+  - advisory: CVE-2025-41249
+    package: "org.springframework:spring-core@5.3.15"
+    truth: reachable
+    floor: undetermined
+    note: "org.springframework:spring-core 5.3.15, in range"
+  - advisory: CVE-2026-19032
+    package: "com.fasterxml.jackson.core:jackson-databind@2.13.1"
+    truth: reachable
+    floor: undetermined
+    note: "jackson-databind 2.13.1, in range"
+  - advisory: CVE-2026-41848
+    package: "org.springframework:spring-core@5.3.15"
+    truth: reachable
+    floor: undetermined
+    note: "org.springframework:spring-core 5.3.15, in range"
+  - advisory: CVE-2026-54512
+    package: "com.fasterxml.jackson.core:jackson-databind@2.13.1"
+    truth: reachable
+    floor: undetermined
+    note: "jackson-databind 2.13.1, in range"
+  - advisory: CVE-2026-59889
+    package: "com.fasterxml.jackson.core:jackson-databind@2.13.1"
+    truth: reachable
+    floor: undetermined
+    note: "jackson-databind 2.13.1, in range"
+  - advisory: CVE-2026-68497
+    package: "com.fasterxml.jackson.core:jackson-databind@2.13.1"
+    truth: not_affected
+    floor: undetermined
+    note: "out of range (introduced 2.14.0)"
+  - advisory: CVE-2026-83557
+    package: "com.fasterxml.jackson.core:jackson-databind@2.13.1"
+    truth: reachable
+    floor: undetermined
+    note: "jackson-databind 2.13.1, in range"
+  - advisory: CVE-2026-89425
+    package: "com.fasterxml.jackson.core:jackson-core@2.13.1"
+    truth: reachable
+    floor: undetermined
+    note: "jackson-core 2.13.1, in range"
+  - advisory: CVE-2026-91776
+    package: "com.fasterxml.jackson.core:jackson-databind@2.13.1"
+    truth: reachable
+    floor: undetermined
+    note: "jackson-databind 2.13.1, in range"
+  - advisory: CVE-2026-91777
+    package: "com.fasterxml.jackson.core:jackson-databind@2.13.1"
+    truth: reachable
+    floor: undetermined
+    note: "jackson-databind 2.13.1, in range"
+  - advisory: GHSA-673j-qm5f-xpv8
+    package: "org.postgresql:postgresql@42.3.1"
+    truth: reachable
+    floor: undetermined
+    note: "org.postgresql:postgresql 42.3.1, in range"

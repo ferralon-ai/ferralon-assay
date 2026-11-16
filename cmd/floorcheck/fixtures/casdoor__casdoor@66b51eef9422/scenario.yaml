@@ -1,0 +1,13 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/casdoor/casdoor
+commit: 66b51eef9422bdd8f2f215f37ea29858548fb918
+lang: go
+build:
+  go: 1.26.10
+  goos: linux
+  goarch: amd64
+  cgo: false
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "3e53eb2d36d29e5760fb3e5b81b4a541aade9280be56139d7e0f4d724d8f685d" }
+  provenance: corpus-92d72057330c

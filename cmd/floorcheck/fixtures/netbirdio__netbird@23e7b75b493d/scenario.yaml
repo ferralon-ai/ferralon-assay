@@ -1,0 +1,13 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/netbirdio/netbird
+commit: 23e7b75b493d79c33bff4d53c750a5aed5e520e6
+lang: go
+build:
+  go: 1.26.10
+  goos: linux
+  goarch: amd64
+  cgo: false
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "6bd6c103a3e0055c4d19f3ea550b7d3ba451f0aced114c663718b17a15e499de" }
+  provenance: corpus-92d72057330c

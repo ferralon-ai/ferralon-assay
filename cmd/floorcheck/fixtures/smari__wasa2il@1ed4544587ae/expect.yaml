@@ -1,0 +1,8 @@
+schema: ferralon.floor-expect.v1
+scan: complete
+findings:
+  - advisory: CVE-2016-2512
+    package: "django@1.8.7"
+    truth: reachable
+    floor: reachable_candidate
+    note: "the SBOM now carries the Django pin (1.8.7; fixed in 1.8.10)"

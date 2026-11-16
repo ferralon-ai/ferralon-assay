@@ -1,0 +1,10 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/spring-projects/spring-petclinic
+commit: 702747f4330073c6f73fbec426e0e0dcdaa2c33d
+lang: java
+build:
+  jdk: "21"
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "edc096bb3bc181d8f7ed575247394d491b1ac9ebad80e8022a4840913b12237e" }
+  provenance: corpus-92d72057330c

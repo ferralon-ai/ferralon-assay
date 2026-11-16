@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -108,6 +109,8 @@ func TestFloorWorkflow(t *testing.T) {
 		{"fixture", "node-version: ${{ matrix.node }}"},
 		{"fixture", "python-version: ${{ matrix.python }}"},
 		{"fixture", "actions/upload-artifact@v4\nalways()"},
+		{"fixture", "sparse-checkout: cmd/floorcheck/fixtures"},
+		{"fixture", "\nalways()\nset -uo pipefail\nmkdir -p \"$RUNNER_TEMP/floor-obs\""},
 		{"summary", "pattern: floor-obs-*"},
 		{"summary", "GITHUB_STEP_SUMMARY"},
 	} {
@@ -209,7 +212,7 @@ func TestFloorWorkflowSummary(t *testing.T) {
 				data := []byte("{\"fixtures\": [")
 				if outcome != "damaged" {
 					var err error
-					data, err = json.Marshal(RunSummary{Schema: "x", Fixtures: []FixtureSummary{{Fixture: name, Outcome: outcome}}})
+					data, err = json.Marshal(RunSummary{Schema: "x", Fixtures: []FixtureSummary{{Fixture: name, Outcome: outcome, Unexpected: 7, Drift: 4}}})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -229,6 +232,10 @@ func TestFloorWorkflowSummary(t *testing.T) {
 			code, out := runScript(t, dir, script, "MATRIX="+string(matrix), "GITHUB_STEP_SUMMARY="+filepath.Join(dir, "step.md"))
 			if code != tc.want {
 				t.Errorf("exit %d, want %d\n%s", code, tc.want, out)
+			}
+			if md, _ := os.ReadFile(filepath.Join(dir, "step.md")); tc.outcomes["c"] == OutcomePass &&
+				!strings.Contains(string(md), "| c | pass | 0 | 0 | 0 | 0 | 7 | 4 |") {
+				t.Errorf("the table does not show fixture c's unexpected and drift counts:\n%s", md)
 			}
 		})
 	}
@@ -253,8 +260,10 @@ func TestFloorWorkflowScanTimeoutBound(t *testing.T) {
 	if err := yaml.Unmarshal(readWorkflow(t), &w); err != nil {
 		t.Fatal(err)
 	}
-	if got := w.Jobs["fixture"].TimeoutMinutes; got < 60+15 {
-		t.Errorf("fixture job timeout %dm leaves no room past a 60m scan for checkout and warm-up", got)
+	// The job runs setup and checkout, the module warm-up, then the longest scan the plan job admits.
+	const maxScan, setup = 60, 15
+	if got, want := w.Jobs["fixture"].TimeoutMinutes, maxScan+int(warmTimeout/time.Minute)+setup; got < want {
+		t.Errorf("fixture job timeout %dm, want at least %dm: a %dm scan, the %v warm-up and %dm of setup and checkout", got, want, maxScan, warmTimeout, setup)
 	}
 }
 

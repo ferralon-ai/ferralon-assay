@@ -19,7 +19,9 @@ A `not_exploitable` row stands on named grounds in every ecosystem. It needs an 
 resolved version, and either every advisory symbol resolved inside that package and searched from the
 entry points, or a positive refutation of the package. In Go it can also rest on the build itself: no
 module in the build holds the advisory's package, and none of the build's modules declares an advisory
-symbol. The row's `evidence.basis` and `evidence.detail` state which. Anything short of that is
+symbol, or the module is in the build and no file of the source, whatever its build constraints,
+imports any of the advisory's vulnerable packages of it (`vulnerable_symbol_absent`; the detail names
+the packages). The row's `evidence.basis` and `evidence.detail` state which. Anything short of that is
 `undetermined`, with the missing ground as its reason.
 
 In Go, a refutation also has to hold for code outside the build that imports your packages. The

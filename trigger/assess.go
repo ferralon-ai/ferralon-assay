@@ -1354,16 +1354,10 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
 	admitted, _, ok := admittedPackage(store, assessmentID, pkg)
-	if r := reach.Refutation; !ok || r == nil || !analyzerRefutation(r.Basis) || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
+	if r := reach.Refutation; !ok || r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
 		return reasons
 	}
 	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return r == plugin.PartialReasonExcludedFilesBuildConstraint })
-}
-
-// analyzerRefutation reports whether basis is one the Go lane states from a completed govulncheck
-// search of the module.
-func analyzerRefutation(basis string) bool {
-	return basis == plugin.RefutationAnalyzerSymbolNotReached || basis == plugin.RefutationAnalyzerPackageNotImported
 }
 
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a
@@ -1531,8 +1525,8 @@ func goPathWithin(p, root string) bool {
 //   - The subject's toolchain must NOT have been scanned (M4). This is the clause that LIFTS the
 //     undetermined verdict rather than adding to it: once the analysis has actually run under an
 //     exact subject toolchain, the empty path set IS evidence about the subject, and
-//     not_exploitable/vulnerable_symbol_unreachable becomes the established claim it always purported
-//     to be.
+//     not_exploitable, on the basis the refutation states, becomes the established claim it always
+//     purported to be.
 //
 // What is left is the empty path set govulncheck produced against the ANALYZER's Go rather than
 // the subject's.

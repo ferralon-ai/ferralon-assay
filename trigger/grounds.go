@@ -29,7 +29,9 @@ import (
 //     Arm A carries them too, since the lane's search started from the same entry points.
 //
 // Both arms show the code present and unreached, so the basis is BasisSymbolUnreachable. That holds
-// for package_not_loaded too: the package is installed, and nothing loaded imports it.
+// for package_not_loaded too: the package is installed, and nothing loaded imports it. The one
+// exception is analyzer_package_not_imported: no build of the source imports any of the advisory's
+// vulnerable packages of the module, so the basis is BasisSymbolAbsent.
 //
 // Both arms speak for the admitted package only, so neither grounds an advisory that also names
 // another package: that package's symbols were never resolved or searched, and it may be installed

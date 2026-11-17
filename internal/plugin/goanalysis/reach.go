@@ -237,7 +237,7 @@ func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 		} else {
 			entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir)
 			res = withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env, entrypoints)
-			res = restateNotImported(res, scanned, loaded.Packages)
+			res = restateNotImported(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env)
 			res.LibraryEntrypoints = entrypoints.record()
 		}
 	}
@@ -247,11 +247,13 @@ func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 }
 
 // restateNotImported restates a module refutation the withholds kept as
-// analyzer_package_not_imported when the build imports none of the advisory's vulnerable packages
-// of that module: govulncheck matched the module alone, the advisory's entries list the module's
-// vulnerable packages, the load is complete, and it holds none of them. With no listed package, a
-// package-level finding, or an incomplete load, the refutation keeps its basis.
-func restateNotImported(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
+// analyzer_package_not_imported when no build of this source imports any of the advisory's
+// vulnerable packages of that module: govulncheck matched the module alone, the advisory's entries
+// list the module's vulnerable packages, the load is complete and holds none of them, and no file
+// the build left out imports one (leftOutImporters). With no listed package, a package-level
+// finding, an incomplete load, a left-out file that imports one, or a step of that check failing,
+// the refutation keeps its basis. The detail names the packages and the load's cgo setting.
+func restateNotImported(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached {
 		return res
@@ -268,13 +270,21 @@ func restateNotImported(res plugin.ReachabilityResult, scanned vulnScan, pkgs []
 	if slices.ContainsFunc(vulnerable, func(p string) bool { return loaded[p] != nil }) {
 		return res
 	}
+	if found, failed := leftOutImporters(ctx, pkgs, module, vulnerable, release, buildDir, env); found || failed {
+		return res
+	}
+	pinned, err := cgoPinned(ctx, buildDir, env)
+	if err != nil {
+		return res
+	}
 	names := vulnerable
 	if len(names) > 5 {
 		names = append(slices.Clone(names[:5]), fmt.Sprintf("%d more", len(vulnerable)-5))
 	}
 	restated := *r
 	restated.Basis = plugin.RefutationAnalyzerPackageNotImported
-	restated.Detail = fmt.Sprintf("%s; the build imports none of the advisory's vulnerable packages of %s: %s", r.Detail, module, strings.Join(names, ", "))
+	restated.Detail = fmt.Sprintf("%s; the build (CGO_ENABLED=%s) imports none of the advisory's vulnerable packages of %s, and neither does a file it leaves out: %s",
+		r.Detail, envOr(pinned, "CGO_ENABLED", ""), module, strings.Join(names, ", "))
 	res.Refutation = &restated
 	return res
 }

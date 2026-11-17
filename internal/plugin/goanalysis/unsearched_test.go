@@ -487,21 +487,26 @@ func TestWithholdForUnsearchedMethods_DeclaringPackageNotLoaded(t *testing.T) {
 }
 
 // TestWithholdForUnsearchedMethods_EntryPoints: only an exported method of an exported package-level
-// type in an entry package counts, and the Cause names the method and the entry package.
+// type in an entry package counts, and the Cause names the method and the entry package. Neither
+// depends on the order the package's types are walked in: a method promoted into an unexported and an
+// exported type of one entry package counts through the exported one on every run.
 func TestWithholdForUnsearchedMethods_EntryPoints(t *testing.T) {
 	const lib = "package lib\n\nimport \"example.com/vulnmod\"\n\n"
 	const generic = "type Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { vulnmod.Bad() }\n"
+	const boxCause = "unsearched method (example.com/m/lib.Box[T]).Dispatch, reached through entry package example.com/m/lib, may call into example.com/vulnmod"
 	cases := []struct {
-		name     string
-		files    map[string]string
-		decl     plugin.LibraryEntrypoints
-		withheld bool
+		name  string
+		files map[string]string
+		decl  plugin.LibraryEntrypoints
+		cause string // "" when the refutation stands
 	}{
-		{"an unexported generic type in an entry package", map[string]string{"lib/lib.go": lib + "type pool[T any] struct{ v T }\n\nfunc (*pool[T]) Get() { vulnmod.Bad() }\n"}, plugin.LibraryEntrypoints{}, false},
-		{"an exported generic type in an entry package", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{}, true},
-		{"an exported generic type outside the entry set", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsPaths, Include: []string{"other"}}, false},
-		{"an exported generic type, entry points none", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsNone}, false},
-		{"an exported generic type, entry path listed", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsPaths, Include: []string{"lib"}}, true},
+		{"an unexported generic type in an entry package", map[string]string{"lib/lib.go": lib + "type pool[T any] struct{ v T }\n\nfunc (*pool[T]) Get() { vulnmod.Bad() }\n"}, plugin.LibraryEntrypoints{}, ""},
+		{"an exported generic type in an entry package", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{}, boxCause},
+		{"an exported generic type outside the entry set", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsPaths, Include: []string{"other"}}, ""},
+		{"an exported generic type, entry points none", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsNone}, ""},
+		{"an exported generic type, entry path listed", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsPaths, Include: []string{"lib"}}, boxCause},
+		{"a method promoted into an unexported and an exported type of an entry package", map[string]string{"lib/lib.go": lib + "type a struct{ vulnmod.T }\n\ntype Outer struct{ vulnmod.T }\n"}, plugin.LibraryEntrypoints{},
+			"unsearched method (example.com/vulnmod.T).M, reached through entry package example.com/m/lib, may call into example.com/vulnmod"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -510,7 +515,7 @@ func TestWithholdForUnsearchedMethods_EntryPoints(t *testing.T) {
 				"main.go":             "package main\n\nfunc main() {}\n",
 				"other/other.go":      "package other\n",
 				"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
-				"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Bad() {}\n",
+				"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Bad() {}\n\ntype T struct{}\n\nfunc (T) M() { Bad() }\n",
 			}
 			dir := writeTree(t, merge(files, tc.files))
 			load, err := LoadProgram(context.Background(), dir)
@@ -518,12 +523,17 @@ func TestWithholdForUnsearchedMethods_EntryPoints(t *testing.T) {
 				t.Fatal(err)
 			}
 			scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
-			res := withholdForUnsearchedMethods(narrowedRefutation(), scanned, load.Packages, resolveEntrypoints(load.Packages, tc.decl, dir))
-			if withheld := res.Refutation == nil; withheld != tc.withheld {
-				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
-			}
-			if c := res.Partiality.Cause; tc.withheld && (!strings.Contains(c, "Dispatch") || !strings.Contains(c, "example.com/m/lib")) {
-				t.Errorf("cause %q does not name the method and entry package", res.Partiality.Cause)
+			entry := resolveEntrypoints(load.Packages, tc.decl, dir)
+			// The package's types are walked off a map: repeat the step so a result that depends on
+			// that order shows.
+			for range 50 {
+				res := withholdForUnsearchedMethods(narrowedRefutation(), scanned, load.Packages, entry)
+				if withheld := res.Refutation == nil; withheld != (tc.cause != "") {
+					t.Fatalf("withheld = %v, want %v", withheld, tc.cause != "")
+				}
+				if res.Partiality.Cause != tc.cause {
+					t.Fatalf("cause = %q, want %q", res.Partiality.Cause, tc.cause)
+				}
 			}
 		})
 	}

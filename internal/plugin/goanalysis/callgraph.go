@@ -1,6 +1,7 @@
 package goanalysis
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"go/types"
@@ -450,8 +451,12 @@ func (s *ssaProgram) memberFuncs(m ssa.Member) []*ssa.Function {
 // govulncheck searches none of them, so it can miss a call into a vulnerable module made only there.
 func unsearchedMethods(pkgs []*packages.Package) []*types.Func {
 	var out []*types.Func
+	seen := map[*types.Func]bool{}
 	for _, m := range unsearchedMethodsOf(pkgs) {
-		out = append(out, m.fn)
+		if !seen[m.fn] {
+			seen[m.fn] = true
+			out = append(out, m.fn)
+		}
 	}
 	return out
 }
@@ -464,7 +469,9 @@ type unsearchedMethod struct {
 	recv *types.TypeName
 }
 
-// unsearchedMethodsOf is unsearchedMethods with each method's reaching package and type.
+// unsearchedMethodsOf is unsearchedMethods with each method's reaching package and type, once for
+// every type that reaches it. Packages are walked by path and each package's types in source order,
+// so the result does not depend on the order of pkgs or of the package's definitions map.
 func unsearchedMethodsOf(pkgs []*packages.Package) []unsearchedMethod {
 	top := map[*types.Package]bool{}
 	for _, p := range pkgs {
@@ -481,20 +488,16 @@ func unsearchedMethodsOf(pkgs []*packages.Package) []unsearchedMethod {
 		return ok && top[fn.Pkg()] && named.TypeParams().Len() == 0 && named.Obj().Parent() == fn.Pkg().Scope()
 	}
 	var out []unsearchedMethod
-	for _, p := range pkgs {
+	for _, p := range slices.SortedFunc(slices.Values(pkgs), func(a, b *packages.Package) int { return strings.Compare(a.PkgPath, b.PkgPath) }) {
 		if !top[p.Types] || p.TypesInfo == nil {
 			continue
 		}
-		seen := map[*types.Func]bool{}
-		for _, obj := range p.TypesInfo.Defs {
-			tn, ok := obj.(*types.TypeName)
-			if !ok {
-				continue
-			}
+		for _, tn := range typeNamesInOrder(p) {
 			typ := types.Unalias(tn.Type())
 			if types.IsInterface(typ) {
 				continue
 			}
+			seen := map[*types.Func]bool{}
 			for _, t := range []types.Type{typ, types.NewPointer(typ)} {
 				ms := types.NewMethodSet(t)
 				for i := range ms.Len() {
@@ -512,6 +515,22 @@ func unsearchedMethodsOf(pkgs []*packages.Package) []unsearchedMethod {
 			}
 		}
 	}
+	return out
+}
+
+// typeNamesInOrder returns the type names p's files define, in source order: by file name, then
+// offset.
+func typeNamesInOrder(p *packages.Package) []*types.TypeName {
+	var out []*types.TypeName
+	for _, obj := range p.TypesInfo.Defs {
+		if tn, ok := obj.(*types.TypeName); ok {
+			out = append(out, tn)
+		}
+	}
+	slices.SortFunc(out, func(a, b *types.TypeName) int {
+		pa, pb := p.Fset.Position(a.Pos()), p.Fset.Position(b.Pos())
+		return cmp.Or(strings.Compare(pa.Filename, pb.Filename), cmp.Compare(pa.Offset, pb.Offset))
+	})
 	return out
 }
 

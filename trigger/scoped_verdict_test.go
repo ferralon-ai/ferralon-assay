@@ -15,7 +15,8 @@ import (
 // library view's verdict and carries a not_exploitable scoped to the shipped binaries; the OpenVEX
 // statement for it names the binary as its product, and SARIF carries the scope. A program view of
 // another package, or none, adds nothing, and neither row kind carries one past a did-not-run limit,
-// which holds a library not_exploitable back too.
+// which holds a library not_exploitable back too. A candidate whose recorded path enters at the binary
+// carries none either; one entering elsewhere still does.
 func TestFinding_ScopedVerdict(t *testing.T) {
 	view := func(pkg string) *plugin.ProgramView {
 		return &plugin.ProgramView{
@@ -44,6 +45,16 @@ func TestFinding_ScopedVerdict(t *testing.T) {
 		fx.footprint = footprint
 		return fx
 	}
+	// entering is a reachable candidate the program view rules out, whose recorded path starts in pkg,
+	// as the call-graph fallback records one.
+	entering := func(pkg string) groundsFixture {
+		fx := candidate(net)
+		fx.reach.Paths = []plugin.ReachPath{{
+			Sink:  plugin.Symbol{Package: "golang.org/x/net/html", Name: "Parse"},
+			Trace: []plugin.Symbol{{Package: pkg, Name: "main"}, {Package: "golang.org/x/net/html", Name: "Parse"}},
+		}}
+		return fx
+	}
 	for _, tc := range []struct {
 		name   string
 		fx     groundsFixture
@@ -57,6 +68,8 @@ func TestFinding_ScopedVerdict(t *testing.T) {
 		{"a withheld refutation beside a step that did not run", withheld(net, plugin.PartialReasonToolFailure), report.VerdictUndetermined, report.ReasonAnalysisDidNotRun, false},
 		{"a reachable candidate the program view rules out", candidate(net), report.VerdictReachableCandidate, "", true},
 		{"a reachable candidate beside a step that did not run", candidate(net, plugin.PartialReasonToolFailure), report.VerdictReachableCandidate, "", false},
+		{"a reachable candidate whose path enters at the binary", entering("example.com/m/cmd/tool"), report.VerdictReachableCandidate, "", false},
+		{"a reachable candidate whose path enters elsewhere", entering("example.com/m/api"), report.VerdictReachableCandidate, "", true},
 	} {
 		f := tc.fx.finding(t)
 		if f.Verdict != tc.row || f.UndeterminedReason != tc.reason {
@@ -65,13 +78,6 @@ func TestFinding_ScopedVerdict(t *testing.T) {
 		if (len(f.ScopedVerdicts) > 0) != tc.want {
 			t.Fatalf("%s: scoped verdicts = %+v, want present %v", tc.name, f.ScopedVerdicts, tc.want)
 		}
-		if !tc.want {
-			continue
-		}
-		sv := f.ScopedVerdicts[0]
-		if sv.Verdict != report.VerdictNotExploitable || sv.Scope.Kind != report.ScopeBinaries || !slices.Equal(sv.Scope.Targets, []string{"cmd/tool"}) {
-			t.Errorf("%s: scoped verdict = %+v", tc.name, sv)
-		}
 		r := report.Report{SchemaVersion: report.SchemaVersion, Subject: report.Subject{Repo: "example.com/m", ResolvedCommit: "abc123"}, Advisories: []report.AdvisoryFinding{f}}
 		if err := r.Validate(); err != nil {
 			t.Fatalf("%s: Validate: %v", tc.name, err)
@@ -79,6 +85,16 @@ func TestFinding_ScopedVerdict(t *testing.T) {
 		doc, err := projection.ProjectReportVEX(r)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !tc.want {
+			if len(doc.Statements) != 1 || doc.Statements[0].Status == projection.VEXStatusNotAffected {
+				t.Errorf("%s: statements = %+v, want the library view's alone, not not_affected", tc.name, doc.Statements)
+			}
+			continue
+		}
+		sv := f.ScopedVerdicts[0]
+		if sv.Verdict != report.VerdictNotExploitable || sv.Scope.Kind != report.ScopeBinaries || !slices.Equal(sv.Scope.Targets, []string{"cmd/tool"}) {
+			t.Errorf("%s: scoped verdict = %+v", tc.name, sv)
 		}
 		if len(doc.Statements) != 2 {
 			t.Fatalf("%s: %d statements, want the library view's and the binary's", tc.name, len(doc.Statements))

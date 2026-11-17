@@ -205,7 +205,7 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Effect.** The refutation is withheld with `library_escape`, and the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that stands only because of what you declared carries that declaration on the report as an assumption.
 
-**Scoped answer.** When the build ships programs, the lane also runs a program view, and a row held here can carry a `not_exploitable` scoped to those binaries: see [Binary-scoped verdicts](../binary-scoped-verdicts.md).
+**Scoped answer.** When the build ships programs, the lane also runs a program view, and a row held here can carry a `not_exploitable` scoped to those binaries: see [Binary-scoped verdicts](../binary-scoped-verdicts.md). A row that records a reach or taint path starting in one of those binaries' `main` packages carries none, for any of them: the path is a call the program view did not see.
 
 ### GO-NO-SYMBOLS
 

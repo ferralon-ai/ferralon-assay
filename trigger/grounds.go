@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -97,7 +98,8 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 // candidate never reached that gate, so a toolchain axis left undetermined or a did-not-run limit in
 // the footprint holds its scoped verdict back as it would hold a library one. It then takes the same
 // positive grounds as arm B of notExploitableGrounds: the admitted package's version resolved, the
-// advisory names no other package, and the refutation is of the admitted package.
+// advisory names no other package, and the refutation is of the admitted package. A path the row
+// records that enters at a binary holds the verdict back for every binary (entersBinary).
 func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) []report.ScopedVerdict {
 	if reason, undetermined := undeterminedReason(store, assessmentID, pkg); undetermined && reason != report.ReasonRefutationWithheld {
 		return nil
@@ -109,7 +111,7 @@ func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Packa
 	}
 	admitted, label, ok := admittedPackage(store, assessmentID, pkg)
 	if !ok || namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted, mods) ||
-		!inAdmitted(view.Refutation.Package, admitted, pkg != nil && pkg.Root) {
+		!inAdmitted(view.Refutation.Package, admitted, pkg != nil && pkg.Root) || entersBinary(store, assessmentID, view) {
 		return nil
 	}
 	return []report.ScopedVerdict{{
@@ -120,6 +122,21 @@ func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Packa
 			Detail: fmt.Sprintf("%s: %s (%s)", label, view.Refutation.Detail, view.Refutation.Basis),
 		},
 	}}
+}
+
+// entersBinary reports whether a reach or taint path the row records starts in the main package of
+// one of the view's binaries. Such a path, as the call-graph fallback finds when govulncheck gives only
+// module-level evidence, is a call the program view's run from those mains did not see, so that run's
+// silence holds for none of them: one path is recorded per sink, and the next binary may be reached the
+// same way.
+func entersBinary(store artifact.Store, assessmentID string, view *plugin.ProgramView) bool {
+	mains := make(map[string]bool, len(view.Binaries))
+	for _, b := range view.Binaries {
+		mains[path.Join(view.Module, b)] = true
+	}
+	return slices.ContainsFunc(append(reachPaths(store, assessmentID), taintPaths(store, assessmentID)...), func(p plugin.ReachPath) bool {
+		return mains[p.Ingress.Package] || len(p.Trace) > 0 && mains[p.Trace[0].Package]
+	})
 }
 
 // vettedSymbols reports whether the advisory's symbol set is complete enough for an absence of the

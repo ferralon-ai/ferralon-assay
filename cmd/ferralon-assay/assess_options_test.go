@@ -23,7 +23,7 @@ func TestBaselineAssessOptions_KeepsTheSubjectGoToolchainOut(t *testing.T) {
 	t.Setenv(envSubjectToolchainReach, "1")
 	f := runFlagsFor(t, "-subject-go-version", "1.22.5")
 	pluginApplied := false
-	opts, err := f.baselineAssessOptions(func(*pipeline.AssessConfig) { pluginApplied = true })
+	opts, err := f.baselineAssessOptions(func(*pipeline.AssessConfig) { pluginApplied = true }, "go")
 	if err != nil {
 		t.Fatalf("baselineAssessOptions: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestRunAssessOptions(t *testing.T) {
 		t.Setenv(envSubjectToolchainReach, "1")
 		f := runFlagsFor(t, "-subject-go-version", "1.22.5")
 		pluginApplied := false
-		opts, err := f.runAssessOptions(func(*pipeline.AssessConfig) { pluginApplied = true })
+		opts, err := f.runAssessOptions(func(*pipeline.AssessConfig) { pluginApplied = true }, "go")
 		if err != nil {
 			t.Fatalf("runAssessOptions: %v", err)
 		}
@@ -68,7 +68,7 @@ func TestRunAssessOptions(t *testing.T) {
 		t.Setenv(envSubjectGoVersion, "")
 		t.Setenv(envCIGoVersion, "")
 		t.Setenv(envSubjectToolchainReach, "")
-		opts, err := runFlagsFor(t).runAssessOptions(func(*pipeline.AssessConfig) {})
+		opts, err := runFlagsFor(t).runAssessOptions(func(*pipeline.AssessConfig) {}, "go")
 		if err != nil {
 			t.Fatalf("runAssessOptions: %v", err)
 		}
@@ -77,7 +77,7 @@ func TestRunAssessOptions(t *testing.T) {
 		}
 	})
 	t.Run("corpus error", func(t *testing.T) {
-		if _, err := runFlagsFor(t, "-advisory-corpus-policy", "full").runAssessOptions(func(*pipeline.AssessConfig) {}); err == nil {
+		if _, err := runFlagsFor(t, "-advisory-corpus-policy", "full").runAssessOptions(func(*pipeline.AssessConfig) {}, "go"); err == nil {
 			t.Error("want the corpus policy error")
 		}
 	})

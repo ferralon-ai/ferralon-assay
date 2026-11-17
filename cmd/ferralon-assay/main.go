@@ -201,7 +201,7 @@ func runBaseline(args []string) error {
 	}
 	defer cleanup()
 
-	assessOptions, err := f.baselineAssessOptions(pipeline.WithPlugin(acq.plugin))
+	assessOptions, err := f.baselineAssessOptions(pipeline.WithPlugin(acq.plugin), acq.language)
 	if err != nil {
 		return err
 	}

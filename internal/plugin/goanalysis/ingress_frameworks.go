@@ -1,6 +1,7 @@
 package goanalysis
 
 import (
+	"go/ast"
 	"go/token"
 	"go/types"
 	"strings"
@@ -24,16 +25,18 @@ var (
 	// beegoMappedRegistrars take a pattern, a controller and the mapping of HTTP
 	// methods to controller methods ("get,post:Login;delete:Logout").
 	beegoMappedRegistrars = map[string]bool{"Router": true, "NSRouter": true}
-	// beegoControllerRegistrars route a controller's methods by a rule outside the
-	// call: a comment annotation (Include), the method's own name (AutoRouter), or an
-	// option value (RouterWithOpts, Add). Every exported method the controller
-	// declares is taken as routed.
-	beegoControllerRegistrars = map[string]bool{
-		"Include": true, "NSInclude": true, "AddInclude": true,
+	// beegoAnnotatedRegistrars route the controller methods whose doc comment carries
+	// an @router annotation, and no others.
+	beegoAnnotatedRegistrars = map[string]bool{"Include": true, "NSInclude": true, "AddInclude": true}
+	// beegoAutoRegistrars route every exported method the controller declares, by the
+	// method's own name.
+	beegoAutoRegistrars = map[string]bool{
 		"AutoRouter": true, "NSAutoRouter": true, "AddAuto": true,
 		"AutoPrefix": true, "NSAutoPrefix": true, "AddAutoPrefix": true,
-		"RouterWithOpts": true, "Add": true,
 	}
+	// beegoOptionRegistrars take a pattern, a controller and options that name the
+	// routed methods in a value this reads no further; see handlerShaped.
+	beegoOptionRegistrars = map[string]bool{"RouterWithOpts": true, "Add": true}
 	// beegoFuncRegistrars take a pattern and a handler: a HandleFunc, a filter, an
 	// http.Handler, or a controller method expression.
 	beegoFuncRegistrars = map[string]bool{
@@ -120,17 +123,26 @@ func (s *ssaProgram) beegoRoutes(name string, args []ssa.Value) []route {
 		mapped, known := beegoMappedMethods(args[2:])
 		switch {
 		case !known:
-			emit(s.declaredMethods(ctrl, beegoPkgPaths, nil))
+			emit(handlerShaped(s.declaredMethods(ctrl, beegoPkgPaths, nil)))
 		case len(mapped) == 0:
 			emit(s.declaredMethods(ctrl, beegoPkgPaths, beegoRESTMethods))
 		default:
 			emit(s.declaredMethods(ctrl, beegoPkgPaths, mapped))
 		}
-	case beegoControllerRegistrars[name]:
+	case beegoAnnotatedRegistrars[name], beegoAutoRegistrars[name], beegoOptionRegistrars[name]:
 		for _, a := range flattenVariadic(args) {
-			if ctrl := s.controllerType(a, beegoPkgPaths); ctrl != nil {
-				emit(s.declaredMethods(ctrl, beegoPkgPaths, nil))
+			ctrl := s.controllerType(a, beegoPkgPaths)
+			if ctrl == nil {
+				continue
 			}
+			methods := s.declaredMethods(ctrl, beegoPkgPaths, nil)
+			switch {
+			case beegoAnnotatedRegistrars[name]:
+				methods = routerAnnotated(methods)
+			case beegoOptionRegistrars[name]:
+				methods = handlerShaped(methods)
+			}
+			emit(methods)
 		}
 	case beegoFuncRegistrars[name]:
 		for _, a := range flattenVariadic(args) {
@@ -140,6 +152,40 @@ func (s *ssaProgram) beegoRoutes(name string, args []ssa.Value) []route {
 		}
 	}
 	return routes
+}
+
+// routerAnnotated keeps the methods whose doc comment has a line starting "@router",
+// the annotation beego's Include reads a controller's routes from.
+func routerAnnotated(fns []*ssa.Function) []*ssa.Function {
+	var out []*ssa.Function
+	for _, fn := range fns {
+		decl, ok := fn.Syntax().(*ast.FuncDecl)
+		if !ok || decl.Doc == nil {
+			continue
+		}
+		for _, c := range decl.Doc.List {
+			if strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(c.Text, "//")), "@router") {
+				out = append(out, fn)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// handlerShaped keeps the methods beego can dispatch a request to without knowing
+// more than the method's name: no parameters and no results. It stands in where the
+// routed methods are named by a value this cannot read (a non-constant mapping, an
+// option), so a controller's helpers, which take arguments or return values, are not
+// taken as routed.
+func handlerShaped(fns []*ssa.Function) []*ssa.Function {
+	var out []*ssa.Function
+	for _, fn := range fns {
+		if fn.Signature.Params().Len() == 0 && fn.Signature.Results().Len() == 0 {
+			out = append(out, fn)
+		}
+	}
+	return out
 }
 
 // beegoMappedMethods reads the controller method names out of a Router call's

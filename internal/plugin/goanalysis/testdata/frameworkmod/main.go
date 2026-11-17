@@ -88,9 +88,17 @@ type DynController struct{ web.Controller }
 
 func (c *DynController) Anything() { sinkBeegoDyn(c.Ctx.Input.Query("u")) }
 
+// Helper takes an argument, so no mapping can route a request to it.
+func (c *DynController) Helper(v string) { sinkNeverRegistered(v) }
+
 type IncController struct{ web.Controller }
 
+// Annotated is routed by its annotation.
+// @router /inc [get]
 func (c *IncController) Annotated() { sinkBeegoInclude(c.Ctx.Input.Query("u")) }
+
+// Unannotated has no @router annotation, so Include routes nothing to it.
+func (c *IncController) Unannotated() { sinkNeverRegistered(c.Ctx.Input.Query("u")) }
 
 type AutoController struct{ web.Controller }
 
@@ -100,6 +108,8 @@ type AddController struct{ web.Controller }
 
 func (c *AddController) Added() { sinkBeegoAdd(c.Ctx.Input.Query("u")) }
 
+func (c *AddController) Helper(v string) { sinkNeverRegistered(v) }
+
 type NSController struct{ web.Controller }
 
 func (c *NSController) NSRouted() { sinkBeegoNSRouter(c.Ctx.Input.Query("u")) }
@@ -107,7 +117,10 @@ func (c *NSController) NSMethod() { sinkBeegoNSMethod(c.Ctx.Input.Query("u")) }
 
 type NSIncController struct{ web.Controller }
 
+// @router /nsinc [post]
 func (c *NSIncController) Included() { sinkBeegoNSInclude(c.Ctx.Input.Query("u")) }
+
+func (c *NSIncController) Unannotated() { sinkNeverRegistered(c.Ctx.Input.Query("u")) }
 
 type ServerController struct{ web.Controller }
 

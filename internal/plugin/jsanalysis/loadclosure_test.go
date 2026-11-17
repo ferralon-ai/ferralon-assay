@@ -102,6 +102,7 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		{name: "unread package loaded", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle()}, unread: []string{"used"}},
 		{name: "itself unread and not loaded", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle()}, unread: []string{"idle"}, want: true},
 
+		{name: "build installs a package no lockfile records", first: map[string]string{"index.js": app, "Dockerfile": "FROM node:22\nRUN npm install extra\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "install script in a read package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"package.json": `{"name":"other","version":"1.0.0","scripts":{"postinstall":"node x.js"}}`})}},
 		{name: "lock install script on an unread package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), {path: "node_modules/other", name: "other", version: "1.0.0", files: map[string]string{"package.json": `{"name":"other","version":"1.0.0"}`}, lockInstallScript: true}}, unread: []string{"other"}},
 

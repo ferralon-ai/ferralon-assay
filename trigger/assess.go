@@ -1416,7 +1416,11 @@ func didNotRunReasons(store artifact.Store, assessmentID string, pkg *report.Pac
 	}
 	if scoped := footprintScoped(store, assessmentID); len(scoped) > 0 {
 		admitted, _, resolved := admittedPackage(store, assessmentID, pkg)
+		notImported := resolved && refutedNotImported(store, assessmentID, admitted, pkg != nil && pkg.Root)
 		for _, r := range scoped {
+			if notImported && boundedCgo(r) {
+				continue
+			}
 			if scopedLimitCounts(r, admitted, resolved, pkg != nil && pkg.Root) {
 				reasons = append(reasons, r.Reason)
 			}
@@ -1437,6 +1441,25 @@ func didNotRunReasons(store artifact.Store, assessmentID string, pkg *report.Pac
 		}
 	}
 	return out
+}
+
+// refutedNotImported reports whether the assessment holds, on the admitted package, a refutation that
+// rests on the build importing none of the advisory's vulnerable packages
+// (plugin.RefutationAnalyzerPackageNotImported).
+func refutedNotImported(store artifact.Store, assessmentID string, admitted pkgKey, root bool) bool {
+	reach, _ := reachabilityResult(store, assessmentID)
+	r := reach.Refutation
+	return r != nil && r.Basis == plugin.RefutationAnalyzerPackageNotImported && inAdmitted(r.Package, admitted, root)
+}
+
+// boundedCgo reports whether r is the Go lane's bounded cgo limit: a cgo package named with the
+// modules its C code, and the files CGO_ENABLED=0 dropped, can call into. Every import of those files
+// is already in the build, and C calls back only into Go symbols the build compiles in, so neither
+// brings in a package the build does not import; a refutation resting on that (refutedNotImported)
+// holds against it. The run-wide cgo limit, declared when a dropped file imports a package outside
+// the build, has no targets and is not this one.
+func boundedCgo(r artifact.ScopedPartialityFlag) bool {
+	return r.Reason == plugin.PartialReasonCgo && len(r.Targets) > 0
 }
 
 // outsideBuildExempt holds the did-not-run limits that cannot undermine outsideBuildGrounds. Those

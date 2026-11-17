@@ -28,14 +28,15 @@ var (
 	// beegoAnnotatedRegistrars route the controller methods whose doc comment carries
 	// an @router annotation, and no others.
 	beegoAnnotatedRegistrars = map[string]bool{"Include": true, "NSInclude": true, "AddInclude": true}
-	// beegoAutoRegistrars route every exported method the controller declares, by the
-	// method's own name.
+	// beegoAutoRegistrars route every exported method the controller declares that
+	// takes no parameter, by the method's own name.
 	beegoAutoRegistrars = map[string]bool{
 		"AutoRouter": true, "NSAutoRouter": true, "AddAuto": true,
 		"AutoPrefix": true, "NSAutoPrefix": true, "AddAutoPrefix": true,
 	}
-	// beegoOptionRegistrars take a pattern, a controller and options that name the
-	// routed methods in a value this reads no further; see handlerShaped.
+	// beegoOptionRegistrars take a pattern, a controller and options. With no option
+	// they route as a Router call with no mapping does; an option names the routed
+	// methods in a value this reads no further, see handlerShaped.
 	beegoOptionRegistrars = map[string]bool{"RouterWithOpts": true, "Add": true}
 	// beegoFuncRegistrars take a pattern and a handler: a HandleFunc, a filter, an
 	// http.Handler, or a controller method expression.
@@ -51,6 +52,9 @@ var (
 	// beegoRESTMethods are the controller methods a route with no mapping dispatches
 	// to, by the request's HTTP method.
 	beegoRESTMethods = []string{"Get", "Post", "Delete", "Put", "Head", "Patch", "Options", "Trace"}
+	// beegoLifecycleMethods are the controller methods beego runs around every request
+	// it routes to the controller, whichever method the route names.
+	beegoLifecycleMethods = []string{"Prepare", "Finish"}
 
 	restfulPkgPaths = map[string]bool{
 		"github.com/emicklei/go-restful":    true,
@@ -106,8 +110,11 @@ func (s *ssaProgram) beegoRoutes(name string, args []ssa.Value) []route {
 		}
 	}
 	var routes []route
-	emit := func(fns []*ssa.Function) {
-		for _, fn := range fns {
+	emit := func(ctrl types.Type, fns []*ssa.Function) {
+		if len(fns) == 0 {
+			return
+		}
+		for _, fn := range append(fns, s.declaredMethods(ctrl, beegoPkgPaths, beegoLifecycleMethods)...) {
 			routes = append(routes, route{selector: selector, symbol: s.scipFunc(fn)})
 		}
 	}
@@ -123,31 +130,43 @@ func (s *ssaProgram) beegoRoutes(name string, args []ssa.Value) []route {
 		mapped, known := beegoMappedMethods(args[2:])
 		switch {
 		case !known:
-			emit(handlerShaped(s.declaredMethods(ctrl, beegoPkgPaths, nil)))
+			emit(ctrl, handlerShaped(s.declaredMethods(ctrl, beegoPkgPaths, nil)))
 		case len(mapped) == 0:
-			emit(s.declaredMethods(ctrl, beegoPkgPaths, beegoRESTMethods))
+			emit(ctrl, s.declaredMethods(ctrl, beegoPkgPaths, beegoRESTMethods))
 		default:
-			emit(s.declaredMethods(ctrl, beegoPkgPaths, mapped))
+			emit(ctrl, s.declaredMethods(ctrl, beegoPkgPaths, mapped))
 		}
-	case beegoAnnotatedRegistrars[name], beegoAutoRegistrars[name], beegoOptionRegistrars[name]:
+	case beegoOptionRegistrars[name]:
+		if len(args) < 2 {
+			return nil
+		}
+		ctrl := s.controllerType(args[1], beegoPkgPaths)
+		if ctrl == nil {
+			return nil
+		}
+		if noVariadic(args[2:]) {
+			emit(ctrl, s.declaredMethods(ctrl, beegoPkgPaths, beegoRESTMethods))
+		} else {
+			emit(ctrl, handlerShaped(s.declaredMethods(ctrl, beegoPkgPaths, nil)))
+		}
+	case beegoAnnotatedRegistrars[name], beegoAutoRegistrars[name]:
 		for _, a := range flattenVariadic(args) {
 			ctrl := s.controllerType(a, beegoPkgPaths)
 			if ctrl == nil {
 				continue
 			}
 			methods := s.declaredMethods(ctrl, beegoPkgPaths, nil)
-			switch {
-			case beegoAnnotatedRegistrars[name]:
+			if beegoAnnotatedRegistrars[name] {
 				methods = routerAnnotated(methods)
-			case beegoOptionRegistrars[name]:
+			} else {
 				methods = handlerShaped(methods)
 			}
-			emit(methods)
+			emit(ctrl, methods)
 		}
 	case beegoFuncRegistrars[name]:
 		for _, a := range flattenVariadic(args) {
 			if fn := s.boxedHandler(a, beegoPkgPaths); fn != nil {
-				emit([]*ssa.Function{fn})
+				routes = append(routes, route{selector: selector, symbol: s.scipFunc(fn)})
 			}
 		}
 	}
@@ -164,7 +183,7 @@ func routerAnnotated(fns []*ssa.Function) []*ssa.Function {
 			continue
 		}
 		for _, c := range decl.Doc.List {
-			if strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(c.Text, "//")), "@router") {
+			if strings.HasPrefix(strings.TrimSpace(strings.TrimLeft(c.Text, "/")), "@router") {
 				out = append(out, fn)
 				break
 			}
@@ -174,14 +193,15 @@ func routerAnnotated(fns []*ssa.Function) []*ssa.Function {
 }
 
 // handlerShaped keeps the methods beego can dispatch a request to without knowing
-// more than the method's name: no parameters and no results. It stands in where the
-// routed methods are named by a value this cannot read (a non-constant mapping, an
-// option), so a controller's helpers, which take arguments or return values, are not
-// taken as routed.
+// more than the method's name: those with no parameter, since beego calls a routed
+// method with no argument and discards what it returns. It stands in where the routed
+// methods are named by a value this cannot read (a non-constant mapping, an option)
+// or by the method's own name (an auto router), so a controller's helpers that take
+// arguments are not taken as routed.
 func handlerShaped(fns []*ssa.Function) []*ssa.Function {
 	var out []*ssa.Function
 	for _, fn := range fns {
-		if fn.Signature.Params().Len() == 0 && fn.Signature.Results().Len() == 0 {
+		if fn.Signature.Params().Len() == 0 {
 			out = append(out, fn)
 		}
 	}
@@ -193,16 +213,11 @@ func handlerShaped(fns []*ssa.Function) []*ssa.Function {
 // each "<http methods>:<controller method>". known is false when a mapping is given
 // but is no constant, so the routed methods cannot be read.
 func beegoMappedMethods(args []ssa.Value) (methods []string, known bool) {
-	vals := flattenVariadic(args)
-	if len(vals) == 0 {
+	if noVariadic(args) {
 		return nil, true
 	}
-	mapping, ok := constString(vals[0])
+	mapping, ok := constString(flattenVariadic(args)[0])
 	if !ok {
-		// An empty variadic is a nil slice constant: no mapping was given.
-		if c, isConst := vals[0].(*ssa.Const); isConst && c.Value == nil {
-			return nil, true
-		}
 		return nil, false
 	}
 	for _, entry := range strings.Split(mapping, ";") {
@@ -212,6 +227,17 @@ func beegoMappedMethods(args []ssa.Value) (methods []string, known bool) {
 		}
 	}
 	return methods, true
+}
+
+// noVariadic reports whether a call passed nothing for its variadic parameter, which
+// SSA spells as no argument or as a nil slice constant.
+func noVariadic(args []ssa.Value) bool {
+	vals := flattenVariadic(args)
+	if len(vals) == 0 {
+		return true
+	}
+	c, ok := vals[0].(*ssa.Const)
+	return ok && len(vals) == 1 && c.Value == nil
 }
 
 // restfulRoutes returns the routes one go-restful call registers. RouteBuilder.To

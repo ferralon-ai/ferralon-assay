@@ -39,6 +39,8 @@ func sinkBeegoDyn(v string)        { sunk = append(sunk, v) }
 func sinkBeegoInclude(v string)    { sunk = append(sunk, v) }
 func sinkBeegoAuto(v string)       { sunk = append(sunk, v) }
 func sinkBeegoAdd(v string)        { sunk = append(sunk, v) }
+func sinkBeegoOpts(v string)       { sunk = append(sunk, v) }
+func sinkBeegoPrepare(v string)    { sunk = append(sunk, v) }
 func sinkBeegoNSRouter(v string)   { sunk = append(sunk, v) }
 func sinkBeegoNSInclude(v string)  { sunk = append(sunk, v) }
 func sinkBeegoNSMethod(v string)   { sunk = append(sunk, v) }
@@ -72,6 +74,9 @@ type AuthController struct{ web.Controller }
 func (c *AuthController) Login()     { sinkBeegoMapped(c.Ctx.Input.Query("u")) }
 func (c *AuthController) NotMapped() { sinkNeverRegistered(c.Ctx.Input.Query("u")) }
 
+// Prepare runs ahead of every request routed to the controller.
+func (c *AuthController) Prepare() { sinkBeegoPrepare(c.Ctx.Input.Query("u")) }
+
 type MultiController struct{ web.Controller }
 
 func (c *MultiController) Multi()  { sinkBeegoMulti(c.Ctx.Input.Query("u")) }
@@ -104,11 +109,25 @@ type AutoController struct{ web.Controller }
 
 func (c *AutoController) Auto() { sinkBeegoAuto(c.Ctx.Input.Query("u")) }
 
+// Helper takes an argument, so the auto router cannot call it.
+func (c *AutoController) Helper(v string) { sinkNeverRegistered(v) }
+
 type AddController struct{ web.Controller }
 
-func (c *AddController) Added() { sinkBeegoAdd(c.Ctx.Input.Query("u")) }
+// AddController is added with no option, so only its REST verbs are routed.
+func (c *AddController) Get()   { sinkBeegoAdd(c.Ctx.Input.Query("u")) }
+func (c *AddController) Added() { sinkNeverRegistered(c.Ctx.Input.Query("u")) }
 
-func (c *AddController) Helper(v string) { sinkNeverRegistered(v) }
+// OptController is added with an option that names its routed methods.
+type OptController struct{ web.Controller }
+
+// Opted returns a value, which beego discards.
+func (c *OptController) Opted() error {
+	sinkBeegoOpts(c.Ctx.Input.Query("u"))
+	return nil
+}
+
+func (c *OptController) Helper(v string) { sinkNeverRegistered(v) }
 
 type NSController struct{ web.Controller }
 
@@ -247,6 +266,8 @@ func lookUpgrade(w http.ResponseWriter, r *http.Request, room string) {
 
 func mapping() string { return "post:Anything" }
 
+func routeOption() web.ControllerOption { return func() {} }
+
 func main() {
 	s := &server{}
 
@@ -257,6 +278,7 @@ func main() {
 	web.Include(&IncController{}, &MultiController{}) // MultiController is routed by pattern above as well
 	web.AutoRouter(&AutoController{})
 	web.BeeApp.Handlers.Add("/api/add", &AddController{})
+	web.BeeApp.Handlers.Add("/api/opt", &OptController{}, routeOption())
 	web.BeeApp.Router("/api/server", &ServerController{}, "get:Served")
 	ns := web.NewNamespace("/v1",
 		web.NSRouter("/ns", &NSController{}, "get:NSRouted"),

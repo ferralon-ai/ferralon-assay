@@ -25,6 +25,7 @@ type depPkg struct {
 	path, name, version string
 	files               map[string]string
 	lockInstallScript   bool
+	lockBin             map[string]string
 	tgz                 []byte
 }
 
@@ -77,6 +78,9 @@ func newDepFixture(t *testing.T, firstParty map[string]string, pkgs ...*depPkg) 
 		}
 		if p.lockInstallScript {
 			entry["hasInstallScript"] = true
+		}
+		if p.lockBin != nil {
+			entry["bin"] = p.lockBin
 		}
 		lockPkgs[p.path] = entry
 	}
@@ -358,7 +362,7 @@ func TestDepGraph_Controls(t *testing.T) {
 	})
 
 	t.Run("native_addon_scoped", func(t *testing.T) {
-		f := newDepFixture(t, map[string]string{"index.js": idle}, plain(map[string]string{"build/Release/dep.node": "\x7fELF"}))
+		f := newDepFixture(t, map[string]string{"index.js": "require('dep');\n"}, plain(map[string]string{"build/Release/dep.node": "\x7fELF"}))
 		cg := withDeps(t, f.dir, f.memStore())
 		if !hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
 			t.Errorf("a native addon must scope its package; got %+v", cg.Partiality)

@@ -40,6 +40,7 @@ type npmLockPkg struct {
 	Integrity            string            `json:"integrity"`
 	Link                 bool              `json:"link"`
 	HasInstallScript     bool              `json:"hasInstallScript"`
+	Bin                  map[string]string `json:"bin"`
 	Dependencies         map[string]string `json:"dependencies"`
 	DevDependencies      map[string]string `json:"devDependencies"`
 	OptionalDependencies map[string]string `json:"optionalDependencies"`

@@ -549,25 +549,39 @@ func readOneDep(ctx context.Context, store artifactcache.Store, e *depEntry, par
 // callGraphFor builds the call graph for buildDir, with the dependency code depCache holds
 // when it names a store. The dependency graph is built once per scan through the run cache.
 func callGraphFor(ctx context.Context, buildDir, depCache string) (plugin.CallGraphResult, error) {
+	res, _, err := callGraphAndClosure(ctx, buildDir, depCache)
+	return res, err
+}
+
+// cachedGraph is the run cache's entry for one build: the call graph and the load closure it
+// was built over.
+type cachedGraph struct {
+	Graph   plugin.CallGraphResult `json:"graph"`
+	Closure *loadClosure           `json:"closure"`
+}
+
+// callGraphAndClosure is callGraphFor plus the load closure of the same build. The closure is
+// nil when no dependency code is read: nothing then says what loads.
+func callGraphAndClosure(ctx context.Context, buildDir, depCache string) (plugin.CallGraphResult, *loadClosure, error) {
 	if depCache == "" {
 		res, _, err := callGraphInternal(buildDir)
-		return res, err
+		return res, nil, err
 	}
 	b, err := runCached(ctx, "callgraph", []string{buildDir, depCache}, func() ([]byte, error) {
-		res, _, err := callGraphWithDeps(ctx, buildDir, artifactcache.NewDiskStore(depCache), depReadBudget)
+		res, _, lc, err := callGraphWithClosure(ctx, buildDir, artifactcache.NewDiskStore(depCache), depReadBudget)
 		if err != nil {
 			return nil, err
 		}
-		return json.Marshal(res)
+		return json.Marshal(cachedGraph{Graph: res, Closure: lc})
 	})
 	if err != nil {
-		return plugin.CallGraphResult{}, err
+		return plugin.CallGraphResult{}, nil, err
 	}
-	var res plugin.CallGraphResult
-	if err := json.Unmarshal(b, &res); err != nil {
-		return plugin.CallGraphResult{}, fmt.Errorf("jsanalysis: decode cached call graph: %w", err)
+	var c cachedGraph
+	if err := json.Unmarshal(b, &c); err != nil {
+		return plugin.CallGraphResult{}, nil, fmt.Errorf("jsanalysis: decode cached call graph: %w", err)
 	}
-	return res, nil
+	return c.Graph, c.Closure, nil
 }
 
 // callGraphWithDeps builds the call graph with the lock-pinned dependency code store holds
@@ -575,9 +589,17 @@ func callGraphFor(ctx context.Context, buildDir, depCache string) (plugin.CallGr
 // code covers (coverReadPackages); dependency code adds edges and limits. A cancelled ctx is an
 // error, never a partial graph.
 func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache.Store, budget time.Duration) (plugin.CallGraphResult, map[plugin.CallEdge]provenance, error) {
+	res, prov, _, err := callGraphWithClosure(ctx, buildDir, store, budget)
+	return res, prov, err
+}
+
+// callGraphWithClosure is callGraphWithDeps plus the build's load closure (loadclosure.go).
+// While the closure is not complete the graph and its limits are what they would be without
+// it; once it is, dependency limits count only where the code holding them loads.
+func callGraphWithClosure(ctx context.Context, buildDir string, store artifactcache.Store, budget time.Duration) (plugin.CallGraphResult, map[plugin.CallEdge]provenance, *loadClosure, error) {
 	prog, err := loadProgram(buildDir)
 	if err != nil {
-		return plugin.CallGraphResult{}, nil, err
+		return plugin.CallGraphResult{}, nil, nil, err
 	}
 	g := buildGraph(prog)
 	baseFlags := g.flags
@@ -593,9 +615,12 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 	entries := layout.entries()
 	parsed := readDeps(bctx, store, entries)
 	if err := ctx.Err(); err != nil {
-		return plugin.CallGraphResult{}, nil, err
+		return plugin.CallGraphResult{}, nil, nil, err
 	}
 
+	lr := newLoadRecord()
+	lr.veto(layout.berry, "the install layout is Yarn Plug'n'Play")
+	lr.veto(layout.incomplete, "the lockfiles do not enumerate every installed package")
 	dflags := partialFlags{}
 	if layout.berry || layout.incomplete {
 		dflags.uninspectable = true
@@ -612,12 +637,15 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 	// script runs at install whether or not anything loads the package.
 	unread := func(reason string, e *depEntry) {
 		addScoped(reason, e.purl)
+		lr.hidden = append(lr.hidden, e)
 		if e.lockInstallScript || e.scriptsUnknown {
 			dflags.uninspectable = true
+			lr.veto(true, "unread package "+e.name+" may run an install script")
 		}
 	}
 	for _, e := range layout.unplaced {
 		unread(plugin.PartialReasonUninspectablePackage, e)
+		lr.veto(true, "package "+e.name+" has no known install path")
 	}
 	for i, e := range entries {
 		p := parsed[i]
@@ -629,14 +657,17 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 			unread(plugin.PartialReasonToolFailure, e)
 			if p.overran {
 				dflags.toolFailure = true
+				lr.veto(true, "the parse of package "+e.name+" was cut off")
 			}
 			continue
 		}
 		switch {
 		case p.pkg.installScript:
 			dflags.uninspectable = true
+			lr.veto(true, "package "+e.name+" runs an install script")
 		case p.pkg.native:
 			addScoped(plugin.PartialReasonUninspectablePackage, e.purl)
+			lr.hidden = append(lr.hidden, e)
 		}
 		if e.deps != nil {
 			// A pnpm or yarn classic package: a copy bundled in its tarball is not in the lock,
@@ -644,17 +675,19 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 			e.bundles = bundledNames(p.pkg.files)
 			if len(e.bundles) > 0 {
 				dflags.uninspectable = true
+				lr.veto(true, "package "+e.name+" bundles packages the lockfile does not list")
 			}
 		}
 		if e.patched {
 			// The install rewrites this package's code; only its verified manifest facts hold.
 			addScoped(plugin.PartialReasonUninspectablePackage, e.purl)
+			lr.hidden = append(lr.hidden, e)
 			continue
 		}
 		d.pkgs[e.path] = p.pkg
 		for _, pr := range p.files {
 			if pr.skipped {
-				dflags.unsupported = true
+				lr.module(pr.module).flags.unsupported = true
 			}
 			fp := fileParse{module: pr.module, escapes: pr.escapes, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses, bindings: pr.bindings}
 			depFiles = append(depFiles, fp)
@@ -667,17 +700,24 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 
 	firstParty := prog.files[:len(prog.files)-len(depFiles)]
 	aug := newGraphBuild()
-	if !augment(bctx, prog, firstParty, depFiles, g, aug, &dflags) {
+	if !augment(bctx, prog, firstParty, depFiles, g, aug, lr) {
 		if err := ctx.Err(); err != nil {
-			return plugin.CallGraphResult{}, nil, err
+			return plugin.CallGraphResult{}, nil, nil, err
 		}
 		flags := baseFlags
 		flags.toolFailure = true
-		flags.scoped = sortedScoped(dflags.scoped)
+		flags.scoped = sortedScoped(lr.merged(dflags, nil).scoped)
 		b := g.built(g.result(callGraphPartiality(prog, flags)), flags.unlisted)
 		b.report(buildDir)
-		return b.res, b.prov, nil
+		return b.res, b.prov, lr.incomplete(entries, "the dependency read ran out of time"), nil
 	}
+
+	// Everything dependency code declares, as when no closure is known: the graph below is
+	// built under it, and it stands whenever the closure is not complete.
+	firstExempt, firstProto := g.anyExempt, g.anyProto
+	all := lr.merged(dflags, nil)
+	g.depUnbounded = g.depUnbounded || lr.anyUnbounded()
+	lr.veto(g.depUnbounded, "a load or call in dependency code is not bounded")
 
 	reached := reachedFrom(baseRoots, g.edges, aug.edges)
 	versions := map[string]int{}
@@ -692,24 +732,40 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 		g.add(plugin.CallEdge{Caller: sym(rewrite(e.Caller.SCIP)), Callee: sym(rewrite(e.Callee.SCIP))}, aug.prov[e])
 	}
 
+	var kept []pkgSite
 	if !layout.berry && !layout.incomplete && !g.depUnbounded {
-		coverReadPackages(prog, g, rewrite)
+		kept = coverReadPackages(prog, g, rewrite)
 	}
-	flags := mergeFlags(g.flags, dflags)
-	flags.scoped = sortedScoped(flags.scoped)
-	if g.anyExempt && g.anyProto {
-		flags.evaluated = true
-		flags.unlisted = true
+	lc := lr.close(prog, g, aug, baseRoots, entries, kept)
+
+	// render folds the dependency limits dep into the first-party ones. Unresolved and Escaped
+	// list first-party code only: dependency code's declined sites, the dependency frames a
+	// declined site anywhere can land on, and a run-wide dependency limit are in neither.
+	// Dependency code read with nothing declined anywhere hides no site.
+	render := func(dep partialFlags, exempt, proto bool) partialFlags {
+		flags := mergeFlags(g.flags, dep)
+		flags.scoped = sortedScoped(flags.scoped)
+		if exempt && proto {
+			flags.evaluated = true
+			flags.unlisted = true
+		}
+		if dep.uninspectable || len(depFiles) > 0 && (g.declined > 0 || depDeclined(dep)) {
+			flags.unlisted = true
+		}
+		return flags
 	}
-	// Unresolved and Escaped list first-party code only: dependency code's declined sites, the
-	// dependency frames a declined site anywhere can land on, and a run-wide dependency limit
-	// are in neither. Dependency code read with nothing declined anywhere hides no site.
-	if dflags.uninspectable || len(depFiles) > 0 && (g.declined > 0 || depDeclined(dflags)) {
-		flags.unlisted = true
+	flags := render(all, firstExempt || lr.anyExempt(nil), firstProto || lr.anyProto(nil))
+	unlisted := flags.unlisted
+	if lc.Complete {
+		// Only loaded code runs: a limit in a module outside the closure hides nothing, and
+		// what the remaining run-wide limits hide are calls, which land on loaded code only.
+		flags = render(lr.merged(partialFlags{}, lc.modules), firstExempt || lr.anyExempt(lc.modules), firstProto || lr.anyProto(lc.modules))
+		unlisted = flags.unlisted
+		flags = lc.scopeCalls(flags)
 	}
-	b := g.built(g.result(callGraphPartiality(prog, flags)), flags.unlisted)
+	b := g.built(g.result(callGraphPartiality(prog, flags)), unlisted)
 	b.report(buildDir)
-	return b.res, b.prov, nil
+	return b.res, b.prov, lc, nil
 }
 
 // coverReadPackages retracts the first-party declines that dependency code read into prog
@@ -719,8 +775,9 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 // code attached and every resolver's candidates in play: one that now resolves to a function
 // whose edge is in g is no longer declined, and one into a read package that names no single
 // function, or whose edge is unconnected or absent, stays declined as dynamic dispatch. Every
-// other site keeps its decline, and g.flags.uninspectable is recomputed from what stays.
-func coverReadPackages(prog *program, g *graphBuild, rewrite func(string) string) {
+// other site keeps its decline, and g.flags.uninspectable is recomputed from what stays. It
+// returns the loads it left declined.
+func coverReadPackages(prog *program, g *graphBuild, rewrite func(string) string) []pkgSite {
 	rs := prog.resolver()
 	rs.anyResolver = true
 	linked := func(caller, callee string) bool {
@@ -728,6 +785,7 @@ func coverReadPackages(prog *program, g *graphBuild, rewrite func(string) string
 			g.seen[plugin.CallEdge{Caller: sym(rewrite(caller)), Callee: sym(rewrite(callee))}]
 	}
 	drop := map[int]bool{}
+	var keptLoads []pkgSite
 	for _, s := range g.pkgLoads {
 		mods, ok := rs.readLoad(s.module, s.spec, s.viaRequire)
 		for _, m := range mods {
@@ -735,6 +793,8 @@ func coverReadPackages(prog *program, g *graphBuild, rewrite func(string) string
 		}
 		if ok {
 			drop[s.at] = true
+		} else {
+			keptLoads = append(keptLoads, s)
 		}
 	}
 	entered := g.entered
@@ -766,6 +826,7 @@ func coverReadPackages(prog *program, g *graphBuild, rewrite func(string) string
 	for _, u := range g.unresolved {
 		accumulateReason(&g.flags, u.Reason)
 	}
+	return keptLoads
 }
 
 // readLoad returns the modules a first-party load of bare specifier spec may run and whether
@@ -872,7 +933,7 @@ func (rs *resolver) relativeLoadBounded(p *depPackage, fromModule, spec, m strin
 // augment adds the edges dependency code contributes to aug: module loads, calls resolved
 // through the layout, versioned boundary edges and conditional roots. It reports false when
 // ctx ends first.
-func augment(ctx context.Context, prog *program, firstParty, depFiles []fileParse, g, aug *graphBuild, flags *partialFlags) bool {
+func augment(ctx context.Context, prog *program, firstParty, depFiles []fileParse, g, aug *graphBuild, lr *loadRecord) bool {
 	rs := prog.resolver()
 	pkgRS := &resolver{prog: prog, bctx: rs.bctx, packageOnly: true}
 	// anyRS links, besides what Node loads, every module a bundler may load for a bare load
@@ -921,6 +982,9 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 			return false
 		}
 		for _, ls := range f.bindings.specifiers {
+			if loadCapableBuiltin(ls.spec) {
+				lr.veto(true, "first-party code loads "+ls.spec+", which can load or run other code")
+			}
 			if !isDepSpecifier(ls.spec) {
 				continue
 			}
@@ -930,9 +994,11 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 			if _, _, ok := rs.resolveWorkspaceMember(f.module, ls.spec); ok {
 				continue
 			}
-			_, mods := rs.depTargets(f.module, ls.spec, ls.viaRequire)
+			e, mods := rs.depTargets(f.module, ls.spec, ls.viaRequire)
+			lr.load(e)
 			loadEdges(f, mods, loadAlgo(ls.viaRequire))
-			_, mods = anyRS.depTargets(f.module, ls.spec, ls.viaRequire)
+			e, mods = anyRS.depTargets(f.module, ls.spec, ls.viaRequire)
+			lr.load(e)
 			loadEdges(f, mods, loadAlgo(ls.viaRequire))
 			if frontend(f.module) {
 				anyFrontend = true
@@ -962,12 +1028,15 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 		}
 		pkg := d.pkgOf(f.module)
 		b := f.bindings
+		// Each module's limits are recorded apart, so they can count only where it loads.
+		ml := lr.module(f.module)
+		flags := &ml.flags
 		flags.dynImport = flags.dynImport || b.dynImport
 		flags.computedReq = flags.computedReq || b.computedReq
 		flags.unreadModule = flags.unreadModule || b.nativeLoad
 		flags.evaluated = flags.evaluated || b.evaluated
-		g.anyExempt = g.anyExempt || b.literalExempt
-		g.anyProto = g.anyProto || b.protoWrite
+		ml.exempt = b.literalExempt
+		ml.proto = b.protoWrite
 		for _, pl := range b.prefixLoads {
 			if pl.dyn {
 				flags.dynImport = true
@@ -977,7 +1046,7 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 		}
 		init := sym(moduleInitSCIP(f.module))
 		if len(b.specifiers) > 0 && pkg.remapsAlong(moduleDir(strings.TrimPrefix(f.module, pkg.entry.path+"/"))) {
-			g.depUnbounded = true
+			ml.unbounded = true
 		}
 		for _, ls := range b.specifiers {
 			algo := loadAlgo(ls.viaRequire)
@@ -985,7 +1054,7 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 			case isRelativeLoad(ls.spec):
 				m, dir, viaDir := rs.resolveRelativeDir(f.module, ls.spec)
 				if m != "" && !rs.relativeLoadBounded(pkg, f.module, ls.spec, m) {
-					g.depUnbounded = true
+					ml.unbounded = true
 				}
 				if viaDir && anyFrontend {
 					// A bundler loading a package root ("require('..')" from inside it) takes its
@@ -1013,6 +1082,7 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 				flags.unreadModule = true
 			case isNodeBuiltin(ls.spec):
 				flags.uninspectable = true
+				ml.loadsCode = ml.loadsCode || loadCapableBuiltin(ls.spec)
 			default:
 				e, mods := rs.depTargets(f.module, ls.spec, ls.viaRequire)
 				if e == nil {
@@ -1030,8 +1100,10 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 						}
 					}
 					flags.scoped = append(flags.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonUninspectablePackage, Package: pkg.entry.purl, Targets: targets})
+					ml.mayLoad = append(ml.mayLoad, targets...)
 					continue
 				}
+				ml.loads = append(ml.loads, e)
 				if len(mods) == 0 && d.pkgs[e.path] != nil {
 					// A read package whose entry selects no parsed module: what the load runs
 					// is not read.
@@ -1053,7 +1125,7 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 					_, sub := splitBareSpecifier(ls.spec)
 					all, ok := anyRS.loadCandidates(p, sub, ls.viaRequire)
 					if !ok || rs.aliased(ls.spec) {
-						g.depUnbounded = true
+						ml.unbounded = true
 					}
 					loadEdges(f, all, algo)
 				}
@@ -1083,7 +1155,7 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 					if ar.Kind == resolvePackage && ar.Reason == plugin.PartialReasonDynamicDispatch {
 						accumulateReason(flags, plugin.PartialReasonDynamicDispatch)
 					} else {
-						g.depUnbounded = true
+						ml.unbounded = true
 					}
 				}
 			}

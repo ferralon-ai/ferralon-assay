@@ -80,6 +80,9 @@ func sinkIfaceArg(v string)      { sunk = append(sunk, v) }
 func sinkIfacePtrArg(v string)   { sunk = append(sunk, v) }
 func sinkIfaceOtherArg(v string) { sunk = append(sunk, v) }
 func sinkIfaceRecv(v string)     { sunk = append(sunk, v) }
+func sinkIfaceNever(v string)    { sunk = append(sunk, v) }
+func sinkIfaceEmbedded(v string) { sunk = append(sunk, v) }
+func sinkIfaceNarrow(v string)   { sunk = append(sunk, v) }
 func sinkIfaceDep(v []byte)      { sunk = append(sunk, v) }
 
 // greeting is never derived from the request.
@@ -137,6 +140,33 @@ func (p *pointerVerifier) Verify(token, secret string) bool {
 	sinkIfacePtrArg(token)
 	return p.n > 0
 }
+
+// neverVerifier has verifier's method but is never held in a verifier, so no call
+// through one reaches it.
+type neverVerifier struct{}
+
+func (neverVerifier) Verify(token, secret string) bool {
+	sinkIfaceNever(token)
+	return false
+}
+
+// closer and wideCloser share the method Close: wideCloser embeds closer. A call through
+// either reaches only the types that call's value holds.
+type closer interface{ Close(reason string) }
+
+type wideCloser interface {
+	closer
+	Flush()
+}
+
+type wideConn struct{}
+
+func (wideConn) Close(reason string) { sinkIfaceEmbedded(reason) }
+func (wideConn) Flush()              {}
+
+type narrowConn struct{}
+
+func (narrowConn) Close(reason string) { sinkIfaceNarrow(reason) }
 
 // echoer is called on a receiver that holds request data, with no argument.
 type echoer interface{ Echo() string }
@@ -253,6 +283,10 @@ func flows(w http.ResponseWriter, r *http.Request) {
 	for _, v := range []verifier{valueVerifier{}, &pointerVerifier{}} {
 		v.Verify(r.Method, "const")
 	}
+	var wide wideCloser = wideConn{}
+	wide.Close(r.Method)
+	var narrow closer = narrowConn{}
+	narrow.Close("const")
 	var e echoer = reqEcho{s: r.Method}
 	e.Echo()
 	var out http.ResponseWriter = capture{}

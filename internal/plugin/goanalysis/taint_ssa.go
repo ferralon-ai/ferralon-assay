@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
 )
 
@@ -31,8 +32,10 @@ type taintAnalysis struct {
 	onPath map[*ssa.Function]bool
 	// hits maps a sink SCIP id to the ingress SCIP id that reached it.
 	hits map[string]string
-	// impls caches implementations by interface method.
-	impls map[*types.Func][]*ssa.Function
+	// graph is the VTA call graph, built on the first call through an interface.
+	graph *callgraph.Graph
+	// impls caches implementations by call site.
+	impls map[ssa.CallInstruction][]*ssa.Function
 }
 
 type taintOrigin struct {
@@ -52,7 +55,7 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 		origin:  map[ssa.Value]taintOrigin{},
 		onPath:  map[*ssa.Function]bool{},
 		hits:    map[string]string{},
-		impls:   map[*types.Func][]*ssa.Function{},
+		impls:   map[ssa.CallInstruction][]*ssa.Function{},
 	}
 
 	var work []ssa.Value
@@ -305,7 +308,7 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 	}
 
 	if common.IsInvoke() {
-		ta.propagateInvoke(common, v, o, seed)
+		ta.propagateInvoke(in, v, o, seed)
 	}
 
 	callee := common.StaticCallee()
@@ -389,18 +392,16 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 
 // propagateInvoke handles a tainted argument v of a call to a method of an interface the
 // build's own code declares. The call has no static callee, so v goes to every method of
-// the build's own types that the call can reach (implementations): each is a sink hit, as
-// a static call to it would be, and its matching parameter is tainted. A sanitizer takes
-// nothing. A tainted receiver alone forwards nothing, and neither does any call's result:
-// seeding it would taint the result of every such call made with a tainted ctx.
-func (ta *taintAnalysis) propagateInvoke(common *ssa.CallCommon, v ssa.Value, o taintOrigin, seed func(ssa.Value, taintOrigin)) {
+// the build's own types that the call graph resolves the call to (implementations): each
+// is a sink hit, as a static call to it would be, and its matching parameter is tainted.
+// A tainted receiver alone forwards nothing, and neither does any call's result: seeding
+// it would taint the result of every such call made with a tainted ctx.
+func (ta *taintAnalysis) propagateInvoke(in ssa.CallInstruction, v ssa.Value, o taintOrigin, seed func(ssa.Value, taintOrigin)) {
+	common := in.Common()
 	if !argContains(common.Args, v) {
 		return
 	}
-	for _, impl := range ta.implementations(common) {
-		if isSanitizer(impl) {
-			continue
-		}
+	for _, impl := range ta.implementations(in) {
 		sym := ta.sp.scipFunc(impl)
 		if ta.sinks == nil || ta.sinks[sym] {
 			if _, seen := ta.hits[sym]; !seen {
@@ -417,41 +418,33 @@ func (ta *taintAnalysis) propagateInvoke(common *ssa.CallCommon, v ssa.Value, o 
 	}
 }
 
-// implementations returns the methods an invoke of common's interface method can reach:
-// the method of each named, non-generic type of a package with built bodies that
-// implements the interface, by value or by pointer, where that method has a body. It is
-// empty unless the method's own package has built bodies too, so io.Writer's Write does
-// not reach every Write the build declares. The order is compareFuncs'.
-func (ta *taintAnalysis) implementations(common *ssa.CallCommon) []*ssa.Function {
-	m := common.Method
-	if impls, ok := ta.impls[m]; ok {
+// implementations returns the methods the invoke in can reach: the callees the VTA call
+// graph gives the call site, the same graph a reachable path's frames come from, so
+// taint enters no method the call cannot be shown to reach. Only a method declared with
+// a body in a package with built bodies counts, and none does unless the interface
+// method's own package has built bodies too, so io.Writer's Write does not reach every
+// Write the build declares. The order is compareFuncs'.
+func (ta *taintAnalysis) implementations(in ssa.CallInstruction) []*ssa.Function {
+	if impls, ok := ta.impls[in]; ok {
 		return impls
 	}
 	var impls []*ssa.Function
-	iface, _ := common.Value.Type().Underlying().(*types.Interface)
-	if iface != nil && built(ta.sp.prog.Package(m.Pkg())) {
-		for _, pkg := range ta.sp.prog.AllPackages() {
-			if !built(pkg) {
-				continue
-			}
-			for _, mem := range pkg.Members {
-				t, ok := mem.(*ssa.Type)
-				if !ok {
+	prog := ta.sp.prog
+	if built(prog.Package(in.Common().Method.Pkg())) {
+		if ta.graph == nil {
+			ta.graph, _ = ta.sp.buildGraph("vta")
+		}
+		if node := ta.graph.Nodes[in.Parent()]; node != nil {
+			for _, e := range node.Out {
+				if e.Site != in {
 					continue
 				}
-				named, ok := t.Type().(*types.Named)
-				if !ok || named.TypeParams().Len() > 0 || types.IsInterface(named) {
-					continue
+				fn := e.Callee.Func
+				// A wrapper stands for the method it wraps.
+				if obj, ok := fn.Object().(*types.Func); ok && fn.Synthetic != "" {
+					fn = prog.FuncValue(obj)
 				}
-				ptr := types.NewPointer(named)
-				if !types.Implements(named, iface) && !types.Implements(ptr, iface) {
-					continue
-				}
-				sel := ta.sp.prog.MethodSets.MethodSet(ptr).Lookup(m.Pkg(), m.Name())
-				if sel == nil {
-					continue
-				}
-				if fn := ta.sp.prog.FuncValue(sel.Obj().(*types.Func)); fn != nil && fn.Blocks != nil {
+				if fn != nil && fn.Blocks != nil && built(fn.Pkg) {
 					impls = append(impls, fn)
 				}
 			}
@@ -459,7 +452,7 @@ func (ta *taintAnalysis) implementations(common *ssa.CallCommon) []*ssa.Function
 		slices.SortFunc(impls, ta.sp.compareFuncs)
 		impls = slices.Compact(impls)
 	}
-	ta.impls[m] = impls
+	ta.impls[in] = impls
 	return impls
 }
 

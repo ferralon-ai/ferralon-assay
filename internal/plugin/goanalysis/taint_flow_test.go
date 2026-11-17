@@ -161,8 +161,9 @@ func TestRunTaint_FlowShapes(t *testing.T) {
 
 // TestRunTaint_InterfaceCallHitsImplementations: a tainted argument of a call through an
 // interface the module declares is a hit on each implementation, credited to the
-// ingress, as a static call to it would be; the implementation of an interface a
-// dependency declares, and one reached only on a tainted receiver, are not.
+// ingress, as a static call to it would be; a type the call's value never holds, the
+// implementation of an interface a dependency declares, and one reached only on a
+// tainted receiver, are not.
 func TestRunTaint_InterfaceCallHitsImplementations(t *testing.T) {
 	app := buildTaintModule(t, "tegron.test/taintflowmod", "testdata/taintflowmod/main.go")
 	sp := &ssaProgram{prog: app.Prog}
@@ -174,6 +175,9 @@ func TestRunTaint_InterfaceCallHitsImplementations(t *testing.T) {
 	}{
 		{"valueVerifier", "Verify", false, true},
 		{"pointerVerifier", "Verify", true, true},
+		{"neverVerifier", "Verify", false, false},
+		{"wideConn", "Close", false, true},
+		{"narrowConn", "Close", false, false},
 		{"reqEcho", "Echo", false, false},
 		{"capture", "Write", false, false},
 	} {

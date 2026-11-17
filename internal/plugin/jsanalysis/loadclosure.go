@@ -15,8 +15,9 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// The load closure is every module that can run: the first-party modules, the modules a
-// package.json script starts, and everything those load, to a fixed point. It is complete only
+// The load closure is every module that can run: the first-party modules, the modules a launch
+// text starts (a package.json script, a process, container, deployment or CI file, a shell
+// script), and everything those load, to a fixed point. It is complete only
 // when nothing in it can load code the lane cannot name. A package with no module in a complete
 // closure, and which no closure module names in a load, never runs.
 
@@ -24,14 +25,15 @@ import (
 type entryRoot struct {
 	Lane string `json:"lane"`
 	// Kind is "module" (a first-party source file's top level), "bin" (an installed package's
-	// binary a package.json script names) or "script" (a module a script word loads by
+	// binary a launch text names) or "script" (a module a launch text's word loads by
 	// specifier, as in `node -r dotenv/config`).
 	Kind string `json:"kind"`
 	// Selector is the root file: a path relative to the scanned tree, or
 	// "npm:<package>/<path in package>" for a file of an installed package.
 	Selector string `json:"selector"`
 	Name     string `json:"name,omitempty"`
-	// Origin is where the root was inferred from: "<dir>/package.json#scripts.<name>".
+	// Origin is where the root was inferred from: "<dir>/package.json#scripts.<name>",
+	// "<dir>/package.json#<key>", or the launch file's path.
 	Origin string `json:"origin,omitempty"`
 
 	module string
@@ -324,7 +326,7 @@ type launchText struct {
 const maxLaunchText = 1 << 20
 
 // unparsedSourceExt are source extensions Node or a bundler runs and the lane does not parse.
-var unparsedSourceExt = map[string]bool{".mts": true, ".cts": true, ".svelte": true, ".astro": true}
+var unparsedSourceExt = map[string]bool{".mts": true, ".cts": true, ".svelte": true, ".astro": true, ".mdx": true}
 
 // manifestProse are the package.json keys that hold names and prose, never a command or a module
 // the project starts: dependency names would root every dependency.
@@ -343,16 +345,20 @@ var manifestProse = map[string]bool{
 func launchFile(rel string) bool {
 	base := strings.ToLower(path.Base(rel))
 	ext := path.Ext(base)
-	yaml := ext == ".yml" || ext == ".yaml"
 	switch {
-	case base == "procfile", strings.HasPrefix(base, "procfile."),
+	// A lockfile names every installed package and starts nothing.
+	case base == "pnpm-lock.yaml":
+		return false
+	// Every YAML and TOML file: compose, Kubernetes and Helm manifests, CI and platform
+	// configs all carry start commands and NODE_OPTIONS, under no fixed name.
+	case ext == ".yml", ext == ".yaml", ext == ".toml",
+		base == "procfile", strings.HasPrefix(base, "procfile."),
 		strings.HasPrefix(base, "dockerfile"), strings.HasPrefix(base, "containerfile"), ext == ".dockerfile",
-		yaml && (strings.HasPrefix(base, "docker-compose") || strings.HasPrefix(base, "compose")),
 		strings.HasPrefix(base, "ecosystem."), strings.HasPrefix(base, "pm2."),
-		base == ".npmrc", base == ".yarnrc", base == ".env", strings.HasPrefix(base, ".env."),
+		base == ".npmrc", base == ".yarnrc", base == ".env", strings.HasPrefix(base, ".env."), base == ".envrc",
 		ext == ".sh", ext == ".bash", ext == ".zsh", ext == ".cmd", ext == ".bat", ext == ".ps1",
 		base == "makefile", base == "justfile", base == "jenkinsfile",
-		base == ".gitlab-ci.yml", base == "nodemon.json", base == "app.json", base == "app.yaml":
+		base == "nodemon.json", base == "app.json":
 		return true
 	}
 	for _, dir := range []string{".husky/", ".github/workflows/", ".circleci/", ".devcontainer/"} {
@@ -454,7 +460,7 @@ func launchTexts(prog *program, lr *loadRecord) []launchText {
 	return out
 }
 
-// scriptLoadWords splits a package.json script into the words that can name a file, a binary or a
+// scriptLoadWords splits a launch text into the words that can name a file, a binary or a
 // module specifier.
 func scriptLoadWords(script string) []string {
 	return strings.FieldsFunc(script, func(r rune) bool {
@@ -516,6 +522,27 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 	}
 
 	texts := launchTexts(prog, lr)
+	scanned := map[string]bool{}
+	for _, lt := range texts {
+		scanned[lt.rel] = true
+	}
+	// runsUnread reports whether w names a first-party file with no extension that is no launch
+	// text: `node ./server` runs it as a module, and the lane parses no such file.
+	runsUnread := func(from, w string) bool {
+		if w == "" || strings.HasPrefix(w, "-") || path.Ext(w) != "" {
+			return false
+		}
+		for _, base := range []string{path.Dir(from), "."} {
+			rel := path.Join(base, w)
+			if strings.HasPrefix(rel, "..") || strings.Contains(rel, "node_modules/") || scanned[rel] {
+				continue
+			}
+			if fi, err := os.Lstat(filepath.Join(prog.root, filepath.FromSlash(rel))); err == nil && fi.Mode().IsRegular() {
+				return true
+			}
+		}
+		return false
+	}
 
 	rs := prog.resolver()
 	var roots []entryRoot
@@ -550,6 +577,7 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 				fetches = manager
 			}
 			manager = w == "npm" || w == "pnpm" || w == "yarn" || w == "bun"
+			lr.veto(runsUnread(rel, w), origin+" names "+w+", a file the lane does not read")
 			if i := strings.LastIndex(w, "node_modules/"); i >= 0 {
 				w = w[i+len("node_modules/"):]
 			}

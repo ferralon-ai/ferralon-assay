@@ -51,6 +51,9 @@ type loadClosure struct {
 	Loaded    []string `json:"loaded,omitempty"`
 	// Roots are the inferred entry points other than first-party modules.
 	Roots []entryRoot `json:"roots,omitempty"`
+	// Assumptions are what the closure rests on beyond what was read, in the words a refutation
+	// carries (plugin.Refutation.Assumptions).
+	Assumptions []string `json:"assumptions,omitempty"`
 
 	modules map[string]bool
 }

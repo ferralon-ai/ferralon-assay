@@ -46,6 +46,9 @@ type Binder interface {
 	// Nearest(name) is nil, any of that does not hold, or one may be there that is not read
 	// here.
 	Enclosing(name string) (found []string, ok bool)
+	// Bind records that the command reads a file of each name somewhere this cannot place, so
+	// that a command naming one withholds (Rebound).
+	Bind(names ...string)
 }
 
 // cursor is a Binder that also follows directory changes and other commands.
@@ -124,6 +127,12 @@ func (c *hostCursor) cd(words []string) {
 			return
 		}
 		c.dirs[i] = n
+	}
+}
+
+func (c *hostCursor) Bind(names ...string) {
+	for _, n := range names {
+		c.v.bind(n)
 	}
 }
 

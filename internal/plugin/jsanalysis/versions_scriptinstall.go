@@ -205,7 +205,7 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 				return true
 			}
 			dir, rest, ok := lanePrefix(args)
-			return ok && laneNPMFlagsLoose(rest) && laneAssumesLock(b, dir, root, locks, assumed, lockNPM, lockNPMv1)
+			return ok && laneNPMFlagsLoose(rest) && laneAssumesLock(b, dir, root, locks, assumed, lockNPM)
 		case "install", "i":
 			dir, rest, ok := lanePrefix(args)
 			if !ok {
@@ -214,33 +214,38 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 			if laneNPMFlags(rest) && laneLockPreserving(b, dir, root, locks) {
 				return true
 			}
-			return laneNPMFlagsLoose(rest) && laneAssumesLock(b, dir, root, locks, assumed, lockNPM, lockNPMv1)
+			return laneNPMFlagsLoose(rest) && laneAssumesLock(b, dir, root, locks, assumed, lockNPM)
 		case "run", "run-script":
 			dir, rest, ok := lanePrefix(args)
 			if !ok || len(rest) == 0 || rest[0] == "" || strings.HasPrefix(rest[0], "-") {
 				return false
 			}
 			if len(rest) == 1 {
-				return dir == "" || lanePackage(b, dir)
+				return laneRunsInTree(b, dir)
 			}
 			return rest[1] == "--" && laneScriptTakesArgs(b, dir, rest[0], rest[2:])
 		case "start":
 			dir, rest, ok := lanePrefix(args)
-			return ok && len(rest) == 0 && (dir == "" || lanePackage(b, dir))
+			return ok && len(rest) == 0 && laneRunsInTree(b, dir)
 		case "test", "t":
-			return len(args) == 0
+			return len(args) == 0 && laneRunsInTree(b, "")
 		}
 	case "yarn":
 		switch words[1] {
 		case "run":
-			return len(words) == 3 && words[2] != "" && !strings.HasPrefix(words[2], "-")
+			return len(words) == 3 && words[2] != "" && !strings.HasPrefix(words[2], "-") && laneRunsInTree(b, "")
 		case "test", "start":
-			return len(words) == 2
+			return len(words) == 2 && laneRunsInTree(b, "")
 		case "install":
 			// yarn 1 does not hold a workspace to its lock even under --frozen-lockfile: when a
 			// member adds a dependency or moves a range past the locked version it exits 0 and
 			// installs versions yarn.lock does not record. That is what lockAssumption states.
 			return scriptsurface.FlagsOnly(words[2:], yarnInstallFlags) &&
+				laneAssumesLock(b, "", root, locks, assumed, lockYarn)
+		}
+		if strings.HasPrefix(words[1], "-") {
+			// yarn with flags alone is yarn install.
+			return scriptsurface.FlagsOnly(words[1:], yarnInstallFlags) &&
 				laneAssumesLock(b, "", root, locks, assumed, lockYarn)
 		}
 		if !yarnBuiltins[words[1]] {
@@ -326,32 +331,68 @@ var (
 	}
 )
 
+// lockFilesOf names the lockfiles each kind of lock is read from.
+var lockFilesOf = map[string][]string{
+	lockNPM:  npmLocks,
+	lockYarn: {"yarn.lock"},
+	lockPnpm: {"pnpm-lock.yaml"},
+}
+
 // laneAssumesLock reports whether a bare install (no package named, no flag that turns the lock
-// off) run with package root dir ("" when it has no --prefix) has a lock of one of kinds to
-// install from, and sets assumed. With a --prefix the package.json there must be read here
-// (Prefixed), and a lock of kinds must sit in that directory or above it. Without one, the
-// command installs for whichever package.json it runs beside: the ones it binds to (Nearest)
-// when the rule knows where it runs, else every package.json in the tree, and each must have a
-// lock of kinds in its directory or above it. A package.json with no such lock installs versions
-// nothing read here records, which withholds.
-func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]lockInfo, assumed *bool, kinds ...string) bool {
+// off) run with package root dir ("" when it has no --prefix) installs for projects a lock of
+// kind governs, with nothing read here saying it will not hold to that lock, and sets assumed.
+//
+// The projects are the package.json files the command binds to (Prefixed with a --prefix,
+// else Nearest); when the rule cannot place the command (a Dockerfile that copies the whole
+// context), every package.json in the tree, and the names are bound so that a command naming
+// one withholds. Each must be read here, and the nearest lockfiles at or above it must all be
+// of kind and, unless the manifest declares an install rewrite, which the lock answers and
+// lockCovers cannot check, cover what it declares. For npm, every .npmrc there or above
+// inside root sets only npmrcAssumedKeys. What it leaves to the assumption: an override or
+// workspace the lock was written under, a setting or flag that changes resolution, and an
+// installer that re-resolves a range the lock already satisfies.
+func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]lockInfo, assumed *bool, kind string) bool {
+	names := lockFilesOf[kind]
 	var pkgs []string
 	switch {
 	case dir != "":
-		pkgs = b.Prefixed(dir, "package.json")
-		if pkgs == nil {
-			return false
-		}
+		pkgs = b.Prefixed(dir, "package.json", names...)
 	default:
-		if pkgs = b.Nearest("package.json"); pkgs == nil {
+		if pkgs = b.Nearest("package.json", names...); pkgs == nil {
+			b.Bind(append([]string{"package.json"}, names...)...)
 			pkgs = packageManifests(root)
 		}
 	}
 	if len(pkgs) == 0 {
 		return false
 	}
+	byDir := map[string][]lockInfo{}
+	for path, l := range locks {
+		byDir[filepath.Dir(path)] = append(byDir[filepath.Dir(path)], l)
+	}
 	for _, p := range pkgs {
-		if !lockAbove(root, filepath.Dir(p), locks, kinds) {
+		m, ok := readPackageJSON(p)
+		if !ok {
+			return false
+		}
+		d := filepath.Dir(p)
+		lockDir, governing := governingLocks(d, byDir)
+		rel, err := filepath.Rel(lockDir, d)
+		if len(governing) == 0 || err != nil || !inTree(root, lockDir) {
+			return false
+		}
+		for _, l := range governing {
+			if l.kind != kind && !(kind == lockNPM && l.kind == lockNPMv1) {
+				return false
+			}
+			if !m.rewrites && !lockCovers(l, lockDir, filepath.ToSlash(rel), m.declared) {
+				return false
+			}
+		}
+		if kind == lockNPM && !npmrcSets(root, d, npmrcAssumedKeys) {
+			return false
+		}
+		if workspaceAt(root, d) && !membersCovered(root, d, byDir) {
 			return false
 		}
 	}
@@ -361,24 +402,72 @@ func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]
 	return true
 }
 
-// lockAbove reports whether a lock of one of kinds, parsed here, is in dir or a directory above
-// it inside root.
-func lockAbove(root, dir string, locks map[string]lockInfo, kinds []string) bool {
-	for {
-		for path, l := range locks {
-			if filepath.Dir(path) == dir && slices.Contains(kinds, l.kind) {
-				return true
+// workspaceAt reports whether an install in dir may install other projects too: a package.json
+// there or above inside root names workspaces (npmWorkspaceAt), or a pnpm-workspace.yaml is
+// there or above.
+func workspaceAt(root, dir string) bool {
+	if npmWorkspaceAt(root, dir) {
+		return true
+	}
+	for d := dir; inTree(root, d); d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, "pnpm-workspace.yaml")); err == nil || !absent(err) {
+			return true
+		}
+		if d == root {
+			break
+		}
+	}
+	return false
+}
+
+// membersCovered reports whether, for every directory at or above dir inside root that holds
+// lockfiles, every package.json under it can be read and is covered by each of them: a
+// workspace install resolves every member against the workspace root's lock, wherever that
+// root is, and a member that lock does not cover is installed past it.
+func membersCovered(root, dir string, byDir map[string][]lockInfo) bool {
+	manifests := packageManifests(root)
+	for lockDir := dir; inTree(root, lockDir); lockDir = filepath.Dir(lockDir) {
+		for _, p := range manifests {
+			d := filepath.Dir(p)
+			if len(byDir[lockDir]) == 0 || !inTree(lockDir, d) {
+				continue
+			}
+			m, ok := readPackageJSON(p)
+			rel, err := filepath.Rel(lockDir, d)
+			if !ok || err != nil {
+				return false
+			}
+			for _, l := range byDir[lockDir] {
+				if !lockCovers(l, lockDir, filepath.ToSlash(rel), m.declared) {
+					return false
+				}
 			}
 		}
-		if dir == root {
-			return false
+		if lockDir == root {
+			break
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return false
-		}
-		dir = parent
 	}
+	return true
+}
+
+// inTree reports whether dir is root or under it.
+func inTree(root, dir string) bool {
+	rel, err := filepath.Rel(root, dir)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// laneRunsInTree binds a command that only runs a package.json script to the package.json it
+// reads: the one at its --prefix, which must be read here, or with none the nearest, and when
+// the rule cannot place the command the name alone, so that a command naming it withholds.
+// The script it runs is gated where it is written.
+func laneRunsInTree(b scriptsurface.Binder, dir string) bool {
+	if dir != "" {
+		return b.Prefixed(dir, "package.json") != nil
+	}
+	if b.Nearest("package.json") == nil {
+		b.Bind("package.json")
+	}
+	return true
 }
 
 // laneScriptTakesArgs reports whether "npm run <name> -- <args>" only runs a script: npm
@@ -431,21 +520,16 @@ func laneWrapsScriptRun(words []string, b scriptsurface.Binder) bool {
 		}
 	}
 	tail := words[at+1:]
-	switch head, _ := scriptsurface.CommandName(tail[0]); head {
-	case "npm":
-		switch tail[1] {
-		case "start", "test":
-			return len(tail) == 2
-		case "run", "run-script":
-			return len(tail) == 3 && tail[2] != "" && !strings.HasPrefix(tail[2], "-")
-		}
-	case "yarn":
-		switch tail[1] {
-		case "start", "test":
-			return len(tail) == 2
-		case "run":
-			return len(tail) == 3 && tail[2] != "" && !strings.HasPrefix(tail[2], "-")
-		}
+	head, _ := scriptsurface.CommandName(tail[0])
+	if head != "npm" && head != "yarn" {
+		return false
+	}
+	switch tail[1] {
+	case "start", "test":
+		return len(tail) == 2 && laneRunsInTree(b, "")
+	case "run", "run-script":
+		return (tail[1] == "run" || head == "npm") && len(tail) == 3 && tail[2] != "" &&
+			!strings.HasPrefix(tail[2], "-") && laneRunsInTree(b, "")
 	}
 	return false
 }
@@ -710,10 +794,29 @@ func laneLockPreserving(b scriptsurface.Binder, dir, root string, locks map[stri
 
 // npmrcLockSafe reports whether every .npmrc in dir or a directory above it inside root sets
 // only npmrcLockSafeKeys, and can be read.
-func npmrcLockSafe(root, dir string) bool {
+func npmrcLockSafe(root, dir string) bool { return npmrcSets(root, dir, npmrcLockSafeKeys) }
+
+// npmrcAssumedKeys are npmrcLockSafeKeys and the settings that change how npm resolves or
+// reports while still reading and writing the lock: an install under them rests on
+// lockAssumption. package-lock and shrinkwrap, which turn the lock off, are not among them.
+var npmrcAssumedKeys = func() map[string]bool {
+	keys := map[string]bool{
+		"legacy-peer-deps": true, "strict-peer-deps": true, "engine-strict": true, "save-exact": true,
+		"save-prefix": true, "prefer-offline": true, "ignore-scripts": true, "fetch-retries": true,
+		"fetch-timeout": true, "maxsockets": true,
+	}
+	for k := range npmrcLockSafeKeys {
+		keys[k] = true
+	}
+	return keys
+}()
+
+// npmrcSets reports whether every .npmrc in dir or a directory above it inside root sets only
+// keys, and can be read.
+func npmrcSets(root, dir string, keys map[string]bool) bool {
 	for {
 		f := filepath.Join(dir, ".npmrc")
-		if _, err := os.Lstat(f); err == nil && !npmrcSetsOnly(root, f, npmrcLockSafeKeys) || err != nil && !absent(err) {
+		if _, err := os.Lstat(f); err == nil && !npmrcSetsOnly(root, f, keys) || err != nil && !absent(err) {
 			return false
 		}
 		if dir == root {

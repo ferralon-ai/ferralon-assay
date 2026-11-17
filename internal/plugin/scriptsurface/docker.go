@@ -380,11 +380,20 @@ func (c *dockerCursor) Configs(name string) ([]string, bool) {
 			}
 		case e.dir && !e.taint && (e.dst == "/" || e.dst == "/home"):
 			return nil, false // may hold a home directory, with a file of that name in it
-		case !e.dir && path.Base(e.dst) == name:
-			if e.taint {
+		case e.taint:
+			// Contents this cannot read, written to the file or to a home directory.
+			if path.Base(e.dst) == name || e.dst == "/" || e.dst == "/root" || e.dst == "/home" || path.Dir(e.dst) == "/home" {
 				return nil, false
 			}
+		case !e.dir && path.Base(e.dst) == name:
 			found = append(found, e.hosts...)
+		case !e.dir:
+			// A destination that is an existing directory keeps the source's own name.
+			for _, h := range e.hosts {
+				if filepath.Base(h) == name {
+					found = append(found, h)
+				}
+			}
 		case e.dir && !e.taint:
 			for _, h := range e.hosts {
 				f := filepath.Join(h, name)

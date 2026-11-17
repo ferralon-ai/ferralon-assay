@@ -464,8 +464,9 @@ func settingFileHolds(root, f, name, kind string) bool {
 // overridesHold reports whether no override the package.json at manifest states (overrides,
 // resolutions, pnpm.overrides) pins a package to a range that a version held for it, in a lock
 // beside the manifest, falls outside: an install would then replace that version. Only an
-// override of a bare package name with a version range is checked. One this cannot compare (a
-// nested or selector key, a git, file or alias value) is left to lockAssumption.
+// override of a bare package name with a version range can be compared. Any other (a nested
+// or selector key, a git, file or alias value) does not hold, except a "$name" reference to
+// the manifest's own range for that package.
 func overridesHold(manifest string, held []lockInfo) bool {
 	data, err := readRegular(manifest)
 	if err != nil {
@@ -485,11 +486,17 @@ func overridesHold(manifest string, held []lockInfo) bool {
 		for key, raw := range set {
 			var spec string
 			if json.Unmarshal(raw, &spec) != nil {
-				continue
+				return false
 			}
 			name := strings.TrimPrefix(key, "**/")
-			if _, ok := parseRange(spec); !ok || !validNPMName(name) {
+			if !validNPMName(name) || strings.ContainsAny(name[1:], "@<>= ") || strings.Count(name, "/") > strings.Count(name[:1], "@") {
+				return false // a selector or a path of packages
+			}
+			if strings.HasPrefix(spec, "$") {
 				continue
+			}
+			if _, ok := parseRange(spec); !ok {
+				return false
 			}
 			name = normalizeNPMCoordinate(name)
 			for _, l := range held {

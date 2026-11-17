@@ -251,11 +251,12 @@ jobs:
             jq -r '
               def n: if . == 0 or . == null then "-" else "**\(.)**" end;
               def mark(o; col): if o == col then {regressed: "✗", met: "✓", improved: "↑", incomplete: "?"}[col] else "" end;
+              def cell: tostring | gsub("\\|"; "\\|");
               sort_by(.fixture)[]
               | "| **\(.fixture)** | **\(.outcome)** | \(.counts.regressed | n) | \(.counts.met | n) | \(.counts.improved | n) | \(.counts.incomplete | n) | \(.unexpected | n) | \(.drift | n) |",
                 ((.expectations // [])[]
                  | .outcome as $o
-                 | "| &nbsp;&nbsp;↳ \(.advisory)\(if (.package // "-") != "-" then " `\(.package)`" else "" end) | \($o) <sub>floor \(.floor)\(if .observed then ", saw \(.observed)" else "" end)</sub> | \(mark($o; "regressed")) | \(mark($o; "met")) | \(mark($o; "improved")) | \(mark($o; "incomplete")) | | |")' all.json
+                 | "| &nbsp;&nbsp;↳ \(.advisory | cell)\(if (.package // "") | IN("", "-") then "" else " `\(.package | cell)`" end) | \($o) <sub>floor \(.floor)\(if .observed then ", saw \(.observed)" else "" end)</sub> | \(mark($o; "regressed")) | \(mark($o; "met")) | \(mark($o; "improved")) | \(mark($o; "incomplete")) | | |")' all.json
             for m in $missing; do echo "| $m | no observation | | | | | | |"; done
             jq -r '
               def section(t; k): [sort_by(.fixture)[] | .fixture as $f | (.[k] // [])[] | "- \($f): \(.)"]

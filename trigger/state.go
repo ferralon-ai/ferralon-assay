@@ -375,6 +375,9 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
+	// The baseline's rows were reached under its entry-point statement; under another they are
+	// assessed again, not inherited.
+	entryChanged := restated(baseline, req.AssessOptions)
 	cut := 0
 	for _, adv := range req.Advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
@@ -419,7 +422,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		if !inherited {
 			_, inherited = baselineRows[advisory.ID+"\x00"]
 		}
-		if inherited && !affectedPackageChanged(st, assessmentID, pkg, changedSet) {
+		if inherited && !entryChanged && !affectedPackageChanged(st, assessmentID, pkg, changedSet) {
 			continue
 		}
 		reFindings[advisory.ID+"\x00"+advisory.Source] = f
@@ -546,6 +549,44 @@ func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *repo
 		}
 	}
 	return !anyNamed
+}
+
+// restated reports whether the run states a go library entry-point statement other than the one the
+// stored Report's refutations rest on, so the rows it holds were reached under another one. A Report
+// that records no golang set is read as auto: the lane records its set whenever a refutation exists.
+// A recorded statement that does not parse counts as another.
+func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
+	was := plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}
+	for _, r := range stored.LibraryEntrypoints {
+		if r.Ecosystem != "golang" {
+			continue
+		}
+		var err error
+		if was, err = plugin.ParseLibraryEntrypoints(r.Input); err != nil {
+			return true
+		}
+	}
+	return !pipeline.SameLibraryStatement(was, pipeline.LibraryStatementOf(opts...))
+}
+
+// restatedRetry is the stored rows a cve-watch run assesses again because the entry-point statement
+// changed since they were reached: every row not already assessed this run (by retry or as a new
+// advisory). A row withheld as dependency_not_fetched is left to notFetchedRetry, whose conditions
+// it keeps.
+func restatedRetry(prior *report.Report, newIDs []string, retry []report.AdvisoryFinding) []report.AdvisoryFinding {
+	done := map[string]bool{}
+	for _, f := range retry {
+		done[f.Advisory.ID+"\x00"+f.Advisory.Source] = true
+	}
+	for _, f := range prior.Advisories {
+		key := f.Advisory.ID + "\x00" + f.Advisory.Source
+		if done[key] || f.UndeterminedReason == report.ReasonDependencyNotFetched || (f.Advisory.Source == osvSource && slices.Contains(newIDs, f.Advisory.ID)) {
+			continue
+		}
+		done[key] = true
+		retry = append(retry, f)
+	}
+	return retry
 }
 
 // canonicalKey is the changed-set key under the ecosystem's name-equivalence rule.

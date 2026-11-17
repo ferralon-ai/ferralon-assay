@@ -42,8 +42,9 @@ func reportJSON(t *testing.T, r *report.Report) string {
 
 // TestEntrypointsInput_StateStore: a changed entrypoints value is treated as a changed
 // library-entrypoints value. A re-analysis records the entry points of the value it ran with in place of
-// the stored report's, and an unchanged value records the same set again; where the value is not
-// re-resolved (the PR inherit fast path) the stored set stands. Whichever way the value is given, as
+// the stored report's, and an unchanged value records the same set again; a value that differs from the
+// stored one is re-analysed on the PR inherit fast path too, so no row stays under the old one.
+// Whichever way the value is given, as
 // library-entrypoints or as the clauses it stands for, the Report is byte-identical.
 func TestEntrypointsInput_StateStore(t *testing.T) {
 	stored := []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "none", Packages: []string{}}}
@@ -110,7 +111,8 @@ func TestEntrypointsInput_StateStore(t *testing.T) {
 		{"PR re-analysis, value unchanged", prReanalysis, "none", "none"},
 		{"CVE-watch, value changed", cveWatch, "pkg/api,!pkg/api/x", "pkg/api,!pkg/api/x"},
 		{"CVE-watch, value unchanged", cveWatch, "none", "none"},
-		{"PR inherit fast path keeps the stored set", fastPath, "pkg/api", "none"},
+		{"PR inherit fast path, value changed", fastPath, "pkg/api", "pkg/api"},
+		{"PR inherit fast path, value unchanged", fastPath, "none", "none"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,6 +141,89 @@ func TestEntrypointsInput_StateStore(t *testing.T) {
 			}
 			if a, c := reportJSON(t, viaAlias), reportJSON(t, viaClauses); a != c {
 				t.Errorf("reports differ:\n via library-entrypoints %s\n via entrypoints         %s", a, c)
+			}
+		})
+	}
+}
+
+// TestEntrypointsInput_Restated: reuse compares the go library statement. A run whose statement
+// differs from the one the stored Report's refutations rest on assesses again instead of inheriting
+// (the PR fast path, and a CVE-watch run with no new advisory); an equal one inherits; a stored Report
+// that records no set reads as auto, so it equals only the default.
+func TestEntrypointsInput_Restated(t *testing.T) {
+	none := []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "none", Packages: []string{}}}
+	auto := []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{}}}
+	opts := func(t *testing.T, value string) []pipeline.AssessOption {
+		t.Helper()
+		le, err := plugin.ParseLibraryEntrypoints(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		o := []pipeline.AssessOption{
+			pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
+			pipeline.WithPlugin(requestEntrypointsPlugin{refutingGoPlugin{inventory: plugin.Complete()}}),
+		}
+		if value != "" {
+			o = append(o, pipeline.WithLibraryEntrypoints(le))
+		}
+		return o
+	}
+	cases := []struct {
+		name   string
+		stored []plugin.ResolvedLibraryEntrypoints
+		value  string // library-entrypoints syntax; "" states nothing
+		assess bool   // the run assesses again
+	}{
+		{"equal statement inherits", none, "none", false},
+		{"changed statement assesses", none, "pkg/api", true},
+		{"changed to the default assesses", none, "", true},
+		{"changed to an explicit auto assesses", none, "auto", true},
+		{"recorded auto, stated auto", auto, "auto", false},
+		{"recorded auto, none stated", auto, "none", true},
+		{"nothing recorded, nothing stated", nil, "", false},
+		{"nothing recorded, auto stated", nil, "auto", false},
+		{"nothing recorded, none stated", nil, "none", true},
+		{"nothing recorded, a path stated", nil, "pkg/api", true},
+	}
+	for _, tc := range cases {
+		t.Run("PR/"+tc.name, func(t *testing.T) {
+			store, baseline := groundedBaseline()
+			baseline.LibraryEntrypoints = tc.stored
+			res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+				Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				PRSBOM:        baseline.SBOM,
+				Advisories:    []assessment.VulnRef{wiringAdvisory},
+				AssessOptions: opts(t, tc.value),
+			})
+			if err != nil {
+				t.Fatalf("RunPRInherit: %v", err)
+			}
+			if res.Inherited == tc.assess {
+				t.Errorf("Inherited = %v, want %v", res.Inherited, !tc.assess)
+			}
+			if tc.assess && wiringVerdict(t, res.Report) != report.VerdictNotExploitable {
+				t.Errorf("assessed verdict = %v", wiringVerdict(t, res.Report))
+			}
+		})
+		t.Run("CVE-watch/"+tc.name, func(t *testing.T) {
+			store, _ := seedBaseline(t)
+			store.state.Report.LibraryEntrypoints = tc.stored
+			store.state.Cursor = wiringAdvisory.ID
+			osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
+			res, err := RunCVEWatch(context.Background(), store, osv, CVEWatchRequest{
+				Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				AssessOptions: opts(t, tc.value),
+			})
+			if err != nil {
+				t.Fatalf("RunCVEWatch: %v", err)
+			}
+			if res.Heartbeat == tc.assess {
+				t.Errorf("Heartbeat = %v, want %v", res.Heartbeat, !tc.assess)
+			}
+			if tc.assess && (res.Report == nil || len(res.Reassessed) != 1 || res.Reassessed[0] != wiringAdvisory.ID) {
+				t.Errorf("Reassessed = %v, report nil = %v; want the stored row assessed again", res.Reassessed, res.Report == nil)
 			}
 		})
 	}

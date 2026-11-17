@@ -120,6 +120,24 @@ func libraryStatement(o plugin.EntryOverride) (le *plugin.LibraryEntrypoints, wh
 	return &st, ""
 }
 
+// LibraryStatementOf is the go library entry-point statement a run assessed with opts makes: the
+// WithLibraryEntrypoints one, else the one its entrypoints input routes to the go lane, else auto.
+// It is the statement reachability_ingress hands the lane, without the checkout root.
+func LibraryStatementOf(opts ...AssessOption) plugin.LibraryEntrypoints {
+	var cfg AssessConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	declared := cfg.LibraryEntrypoints
+	if declared == nil && len(cfg.Entrypoints) > 0 {
+		declared, _ = RouteEntrypoints(cfg.Entrypoints, "")
+	}
+	if declared == nil {
+		return plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}
+	}
+	return *declared
+}
+
 // SameLibraryStatement reports whether two library-entrypoints statements say the same thing: the
 // same mode, with the same paths in any order. An unset mode reads as auto.
 func SameLibraryStatement(a, b plugin.LibraryEntrypoints) bool {

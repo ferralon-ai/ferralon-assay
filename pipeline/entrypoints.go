@@ -17,10 +17,11 @@ import (
 // clauses written as library-entrypoints make. It is nil when the input states nothing for the go
 // library scope. Every other clause fails closed, because no other lane reads an override yet: the
 // error says so, and a run that were to proceed would analyse a different set of entry points than
-// the caller declared. A clause is a clause whatever lane the scan runs; a "js:" clause on a Go
-// scan fails the run too.
+// the caller declared. A clause that asks for something is refused whatever lane the scan runs; a "js:none" clause on a
+// Go scan fails the run too.
 //
-// A bare "auto" changes nothing and is accepted everywhere. A bare "none" names all six lanes, so it
+// A bare "auto" changes nothing and is accepted everywhere; so is an explicit "<lane>:auto" or
+// "<lane>:<kind>=auto" with no other clause for that lane, which states the default. A bare "none" names all six lanes, so it
 // binds the lane the scan runs and no other: that lane must be able to honour it, and the go lane
 // cannot, since a lane-wide "none" also drops the go lane's mains and handlers and its request
 // field holds library roots only (the error says to write go:library=none). A lane the scan does
@@ -48,6 +49,9 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 			return nil, laneRefusal(lane, why, o.Input)
 		}
 		if lane != plugin.EntryLaneGo {
+			if statesDefault(o) {
+				continue
+			}
 			return nil, laneRefusal(lane, "", o.Input)
 		}
 		le, ok := libraryStatement(o)
@@ -57,6 +61,23 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 		routed = le
 	}
 	return routed, nil
+}
+
+// statesDefault reports whether an override asks for nothing: auto at the lane scope and at every
+// kind scope, with no path selected or denied.
+func statesDefault(o plugin.EntryOverride) bool {
+	plain := func(k plugin.KindOverride) bool {
+		return (k.Mode == "" || k.Mode == plugin.LibraryEntrypointsAuto) && len(k.Include) == 0 && len(k.Exclude) == 0
+	}
+	if !plain(o.KindOverride) {
+		return false
+	}
+	for _, k := range o.Kinds {
+		if !plain(k) {
+			return false
+		}
+	}
+	return true
 }
 
 func laneRefusal(lane, why, input string) error {

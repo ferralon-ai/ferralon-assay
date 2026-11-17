@@ -38,8 +38,8 @@ holds only because of what you declared carries that declaration on the report a
 the Report lists the sets under `library_entrypoints`.
 
 `entrypoints` takes one clause per lane, `<lane>:<selector>` or `<lane>:<kind>=<selector>`, over the
-lanes `go`, `java`, `kotlin`, `js`, `python` and `dotnet`. A bare `auto` changes nothing. Today only
-the Go library entry points read a clause. A clause for any other lane, or for the Go lane as a
+lanes `go`, `java`, `kotlin`, `js`, `python` and `dotnet`. A bare `auto` changes nothing, and neither does `<lane>:auto` or `<lane>:<kind>=auto` on its own. Today only
+the Go library entry points read a clause. Any other clause for another lane, or for the Go lane as a
 whole or for its mains and handlers, stops the run before it analyses anything: `lane java does not
 accept entry-point overrides yet`. A bare `none` names every lane, so it binds the lane the scan runs
 and must be one that can drop all of its roots; on a Go scan it stops the run and asks for

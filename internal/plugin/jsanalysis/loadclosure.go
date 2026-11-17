@@ -247,7 +247,7 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 	}
 	// A prefix load is a computed load whose literal prefix names more than the bound does.
 	prefixed := func(pkgPath, module, prefix string) {
-		named, ok := prefixTargets(entries, pkgPath, module, prefix)
+		named, ok := prefixTargets(d, entries, pkgPath, module, prefix)
 		lr.veto(!ok, "a computed load in "+module+" starts with "+strconv.Quote(prefix)+", which can name code outside its package")
 		for _, e := range named {
 			admit(e)
@@ -347,20 +347,21 @@ func computedLoadAssumption(packages []string) string {
 // code. It reports false when the prefix can name code no bound describes: a directory outside
 // the loading package or inside a node_modules, an absolute path, a URL, a package alias, or a
 // built-in that loads or runs other code.
-func prefixTargets(entries []*depEntry, pkgPath, module, prefix string) ([]*depEntry, bool) {
+func prefixTargets(d *depGraph, entries []*depEntry, pkgPath, module, prefix string) ([]*depEntry, bool) {
 	// Whatever the prefix names, its path must not enter a node_modules, and the runtime part
 	// must not be able to complete its last segment into `..` or `node_modules`. A backslash
 	// separates paths where the scanned code runs on Windows; import() decodes a percent sign
 	// and drops a tab or line break. Names are compared without case, as a file system that
 	// folds case resolves them.
+	written := prefix
 	prefix = strings.ToLower(prefix)
 	segs := strings.Split(prefix, "/")
-	if strings.ContainsAny(prefix, "\\%\t\n\r") || slices.Contains(segs, "node_modules") || opensSegment(segs[len(segs)-1], "..", "node_modules") {
+	if len(prefix) != len(written) || strings.ContainsAny(prefix, "\\%\t\n\r") || slices.Contains(segs, "node_modules") || opensSegment(segs[len(segs)-1], "..", "node_modules") {
 		return nil, false
 	}
 	if strings.HasPrefix(prefix, "./") || strings.HasPrefix(prefix, "../") {
 		slash := strings.LastIndexByte(prefix, '/')
-		dir := path.Join(moduleDir(module), prefix[:slash])
+		dir := path.Join(moduleDir(module), written[:slash])
 		rel, inside := dir, dir != ".." && !strings.HasPrefix(dir, "../")
 		if pkgPath != "" {
 			rel, inside = strings.CutPrefix(dir+"/", pkgPath+"/")
@@ -380,10 +381,16 @@ func prefixTargets(entries []*depEntry, pkgPath, module, prefix string) ([]*depE
 		if slices.Contains(loadCapableBuiltins, name) {
 			return nil, false
 		}
-		var named []*depEntry
-		for _, e := range entries {
-			if strings.EqualFold(e.name, name) {
-				named = append(named, e)
+		// The copy Node resolves the name as written to (an alias included), and every
+		// package of that name under another case.
+		asWritten := strings.Join(strings.Split(written[len(written)-len(p):], "/")[:n], "/")
+		e, named := d.layout.walk(moduleDir(module), asWritten)
+		if e != nil {
+			named = []*depEntry{e}
+		}
+		for _, x := range entries {
+			if strings.EqualFold(x.name, name) && !slices.Contains(named, x) {
+				named = append(named, x)
 			}
 		}
 		return named, true

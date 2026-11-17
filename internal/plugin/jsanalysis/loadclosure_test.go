@@ -488,3 +488,22 @@ func TestLaunchFile(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadClosure_PrefixLoadByAlias: a prefix load that names a package by an alias another
+// package declared admits the package the alias installs.
+func TestLoadClosure_PrefixLoadByAlias(t *testing.T) {
+	o := sp("o", "1.0.0", map[string]string{"qa": "npm:z@1.0.0"}, nil)
+	p := sp("p", "1.0.0", nil, map[string]string{"index.js": "exports.run = function run(n) { return require('qa/' + n); };\n"})
+	z := sp("z", "1.0.0", nil, map[string]string{"index.js": qGo})
+	z.descs = []string{"qa@npm:z@1.0.0"}
+	dir := semProgram(t, yarnLockFile, yarnLockText(t, o, p, z), map[string]string{
+		"package.json": manifestWith("app", map[string]string{"p": "1.0.0", "o": "1.0.0"}, ""),
+	})
+	_, _, lc, err := callGraphWithClosure(context.Background(), dir, semStore(t, o, p, z), time.Minute)
+	if err != nil {
+		t.Fatalf("callGraphWithClosure: %v", err)
+	}
+	if !lc.Complete || !slices.Contains(lc.Loaded, "pkg:npm/z") {
+		t.Errorf("p loads z through the alias qa on a complete closure; got %+v", *lc)
+	}
+}

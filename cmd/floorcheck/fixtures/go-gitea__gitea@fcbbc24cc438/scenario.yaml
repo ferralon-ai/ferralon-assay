@@ -1,0 +1,13 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/go-gitea/gitea
+commit: fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+lang: go
+build:
+  go: 1.23.12
+  goos: linux
+  goarch: amd64
+  cgo: false
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "f831fdc7c3ce925eda04f1a429ad01cc05639580128ba252f65f580186dd8a96" }
+  provenance: corpus-92d72057330c

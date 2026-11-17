@@ -56,7 +56,7 @@ Two graphs. First-party source gets a lexical declaration parser; compiled outpu
 |---|---|---|
 | First-party lexical graph (simple name + arity; ambiguous calls become `dynamic_dispatch`) | Partial | [JAVA-LEXICAL-INITIALIZERS](#java-lexical-initializers), [JAVA-LEXICAL-ARITY-ONLY](#java-lexical-arity-only) |
 | SCIP via scip-java (optional, container, Prove path) | Partial | [JAVA-SCIP-OPTIONAL](#java-scip-optional) |
-| First-party bytecode from build output (trusted only if covering the sources and newer) | Complete | else `first_party_bytecode_absent` |
+| First-party bytecode from build output (trusted only if covering the sources and newer); the scan compiles the main classes with the project's own Maven or Gradle when the output is absent or stale | Complete | else `first_party_bytecode_absent`, naming the command and the cause of its failure |
 | Dependency bytecode from graph JARs (digest recheck, multi-release) | Complete |  |
 | CHA engine with JDK platform tables, lambdas, `<clinit>` and init closure, hidden-seed bounding in linked mode | Complete | [JAVA-CHA-IMPRECISION](#java-cha-imprecision) (precision, not soundness) |
 | RTA, JDK receiver model | Planned |  |

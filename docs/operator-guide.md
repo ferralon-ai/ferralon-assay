@@ -273,6 +273,19 @@ The scan does the same for the whole build when a module's Maven or Gradle toolc
 other than the stated one, or when the graph cannot say which JDK a module uses: an Android project,
 or a graph file written before toolchains were recorded.
 
+## Compiling the first-party classes
+
+The Java and Kotlin lanes search the build's compiled classes. When the checkout holds none for a module,
+or a class is older than its source, a scan with `-build-graph auto` runs the project's own compile
+before the analysis: `mvn -B compile` (with the stated `-P` profiles and properties) for Maven, or
+`gradle classes` for Gradle, with the repository's `mvnw` or `gradlew` when it has one. Tests are not run.
+A job that builds before the scan, so `target/` or `build/` is present and current, is not rebuilt.
+
+The scan logs the command it ran, or why it could not, to stderr. When the output still does not cover the
+sources, the affected results are undetermined with the reason `first_party_bytecode_absent`, and its
+path names the command to run and the end of the tool's error. A scan with `-build-graph off`, or one
+that reads a graph file, does not run the build tool: run that command in a step before the scan.
+
 ## Resolving the JVM build graph
 
 `resolve-graph` runs your repository's own Maven or Gradle and writes the resolved dependency graph as

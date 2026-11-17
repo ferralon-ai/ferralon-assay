@@ -91,3 +91,13 @@ fetches from the repositories the build configures with the job's credentials, a
 would; a branch that rewrites those repositories sends those credentials to the host it names. A scan
 with `-build-graph off`, or one that reads a graph resolved ahead of the scan, does not run the build
 tool.
+
+When the checkout holds no compiled main classes, or they are older than the sources, the same scan
+also runs the repository's own `mvn compile` or `gradle classes` (the wrapper when the repository has
+one) so the Java and Kotlin lanes can read the build's bytecode. That run executes the build's compiler
+plugins, annotation processors and code generators on the runner, with the job's credentials and the
+repositories the build configures, and writes the build's output directory (`target/`, `build/`) into the
+checkout, where a later step of the job sees it. It does not run tests, and it does not run when the
+output is already present and current. It is bounded by its own time limit; a run that fails or is not
+possible leaves the scan to go on and the affected results undetermined, with the command and the cause
+in the reason.

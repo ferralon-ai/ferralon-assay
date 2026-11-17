@@ -142,14 +142,23 @@ func TestReconciledResult_SummaryEqualsFullDecode(t *testing.T) {
 					}
 
 					// Garble the edges entry and keep it present: a result with no path still reads
-					// only the summary, and one with a path decodes the edges entry and fails.
+					// only the summary, and one with a path reads only the index, so neither decodes it.
 					if err := os.WriteFile(runCachePath(cache, "reconcile", key), []byte("not json"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					got, err = reconciledFromCache(ctx, ft.scanned, dir, load)
+					if err != nil || !reflect.DeepEqual(got, want) {
+						t.Fatalf("the edges entry was decoded: %+v, %v", got, err)
+					}
+
+					// With the index gone as well, a result with a path decodes the edges entry and fails.
+					if err := os.Remove(runCachePath(cache, "reconcile-index", key)); err != nil {
 						t.Fatal(err)
 					}
 					got, err = reconciledFromCache(ctx, ft.scanned, dir, load)
 					if ft.withPath {
 						if err == nil {
-							t.Fatalf("with a path the garbled edges entry was not decoded: %+v", got)
+							t.Fatalf("with a path and no index the garbled edges entry was not decoded: %+v", got)
 						}
 					} else if err != nil || !reflect.DeepEqual(got, want) {
 						t.Fatalf("with no path the edges entry was decoded: %+v, %v", got, err)
@@ -399,7 +408,7 @@ func TestReconcileGraph_KeyedByKnown(t *testing.T) {
 	// not load it, so the reach is known.
 	var knownA []string
 	knownB := []string{"example.com/vulnmod"}
-	kinds := []string{"reconcile", "reconcile-marker", "reconcile-summary"}
+	kinds := []string{"reconcile", "reconcile-marker", "reconcile-summary", "reconcile-index"}
 
 	for _, tc := range []struct {
 		name    string

@@ -210,13 +210,15 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // refutation. entry is the caller's statement of the build's library entry points.
 func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
 	// reconcile reads the graph's edges only to corroborate a path, so a result evidenceResult derives
-	// no path for reads the summary instead. A result with a path reads the whole graph, every field
-	// of it from the one edges entry.
-	graph := reconcileCallGraph
-	if len(stacksToReachPaths(findingsToStacks(scanned.findings))) == 0 {
-		graph = reconcileSummaryGraph
+	// no path for reads the summary instead. A result with a path reads the index of the edges entry
+	// (reconcile_index.go), and the whole edges entry only when the index cannot be trusted.
+	var g reconcileGraph
+	var err error
+	if paths := stacksToReachPaths(findingsToStacks(scanned.findings)); len(paths) == 0 {
+		g, err = reconcileSummaryGraph(ctx, buildDir, scanned.partial.readImports(), load)
+	} else {
+		g, err = reconcileGraphForPaths(ctx, buildDir, scanned.partial.readImports(), load, paths)
 	}
-	g, err := graph(ctx, buildDir, scanned.partial.readImports(), load)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
@@ -1220,7 +1222,7 @@ func reconcileCallGraph(ctx context.Context, buildDir string, known []string, lo
 }
 
 // storeReconcileGraph decodes the graph one compute encoded as b and stores it in the run cache in
-// dir under key: the edges entry, then its summary.
+// dir under key: the edges entry, then its summary and its index.
 func storeReconcileGraph(dir string, key []string, b []byte) (reconcileGraph, error) {
 	g, err := decodeReconcileGraph(b)
 	if err != nil {
@@ -1228,6 +1230,7 @@ func storeReconcileGraph(dir string, key []string, b []byte) (reconcileGraph, er
 	}
 	if writeRunCacheEntry(dir, "reconcile", runCachePath(dir, "reconcile", key), b) {
 		storeReconcileSummary(dir, key, g)
+		storeReconcileIndex(dir, key, g)
 	}
 	return g, nil
 }

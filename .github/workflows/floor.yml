@@ -226,6 +226,7 @@ jobs:
           jq -r '.include[].name' <<< "$MATRIX" | sort > planned.txt
           jq -r '.[].fixture' all.json | sort > judged.txt
           missing="$(comm -23 planned.txt judged.txt)"
+          unobserved=$(grep -c . <<< "$missing" || true)
           planned=$(wc -l < planned.txt | tr -d ' ')
           passed=$(jq '[.[] | select(.outcome == "pass")] | length' all.json)
           verdict=pass
@@ -234,12 +235,13 @@ jobs:
           elif [ -n "$missing" ] || jq -e 'any(.[]; .outcome != "pass")' all.json > /dev/null; then
             verdict=incomplete
           fi
-          headline="$(jq -r --arg v "$verdict" --arg p "$planned" --arg n "$passed" '
+          headline="$(jq -r --arg v "$verdict" --arg p "$planned" --arg n "$passed" --arg u "$unobserved" '
             {pass: "✅", regressed: "❌", incomplete: "⚠️"}[$v] + " Floor run " + $v + ": " + $n + " of " + $p + " fixtures pass · "
             + ([.[].counts.regressed] | add // 0 | tostring) + " regressed · "
             + ([.[].counts.met] | add // 0 | tostring) + " met · "
             + ([.[].counts.improved] | add // 0 | tostring) + " improved · "
-            + ([.[].counts.incomplete] | add // 0 | tostring) + " incomplete"' all.json)"
+            + ([.[].counts.incomplete] | add // 0 | tostring) + " incomplete"
+            + (if $u != "0" then " · " + $u + " without an observation" else "" end)' all.json)"
           {
             echo "## $headline"
             echo

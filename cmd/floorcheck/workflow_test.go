@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -220,6 +221,8 @@ func TestFloorWorkflowSummary(t *testing.T) {
 		{"one missing", map[string]string{"a": OutcomePass, "b": OutcomePass}, 2},
 		{"one damaged", map[string]string{"a": OutcomePass, "b": "damaged", "c": OutcomePass}, 2},
 		{"damaged beside a regression", map[string]string{"a": "damaged", "b": OutcomeRegressed, "c": OutcomePass}, 1},
+		{"no observations", map[string]string{}, 2},
+		{"all damaged", map[string]string{"a": "damaged", "b": "damaged", "c": "damaged"}, 2},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,8 +236,11 @@ func TestFloorWorkflowSummary(t *testing.T) {
 				if outcome != "damaged" {
 					var err error
 					fs := FixtureSummary{Fixture: name, Outcome: outcome, Counts: Counts{Met: 3}, Unexpected: 7, Drift: 4}
-					if outcome == OutcomeRegressed {
+					switch outcome {
+					case OutcomeRegressed:
 						fs.Counts.Regressed, fs.Regressed = 1, []string{"CVE-1 lost"}
+					case OutcomeIncomplete:
+						fs.Counts.Incomplete, fs.Incomplete = 1, []string{"CVE-2 unjudged"}
 					}
 					data, err = json.Marshal(RunSummary{Schema: "x", Fixtures: []FixtureSummary{fs}})
 					if err != nil {
@@ -267,6 +273,24 @@ func TestFloorWorkflowSummary(t *testing.T) {
 			}
 			if tc.want == 1 && !strings.Contains(string(md), "### Regressed\n\n- b: CVE-1 lost") {
 				t.Errorf("the summary does not list the regression:\n%s", md)
+			}
+			for name, outcome := range tc.outcomes {
+				if outcome == OutcomeIncomplete && !strings.Contains(string(md), "### Incomplete\n\n- "+name+": CVE-2 unjudged") {
+					t.Errorf("the summary does not list %s's incomplete expectation:\n%s", name, md)
+				}
+			}
+			unobserved := 0
+			for _, n := range planned {
+				if o, ok := tc.outcomes[n]; !ok || o == "damaged" {
+					unobserved++
+				}
+			}
+			if hasU := strings.Contains(string(md), fmt.Sprintf("· %d without an observation", unobserved)); hasU != (unobserved > 0) {
+				t.Errorf("the headline miscounts the %d fixtures without an observation:\n%s", unobserved, md)
+			}
+			level := map[int]string{0: "::notice title=Floor run::", 1: "::error title=Floor run::", 2: "::warning title=Floor run::"}[tc.want]
+			if !strings.Contains(out, level+strings.TrimPrefix(strings.SplitN(string(md), "\n", 2)[0], "## ")) {
+				t.Errorf("the run does not annotate its headline at %q:\n%s", level, out)
 			}
 		})
 	}

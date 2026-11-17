@@ -53,7 +53,9 @@ var siteReasons = []string{
 // declares reports whether the graph declares reason, run-wide or bounded to the code that
 // loads.
 func declares(p plugin.Partiality, reason string) bool {
-	return hasReason(p, reason) || slices.ContainsFunc(p.Scoped, func(s plugin.ScopedReason) bool { return s.Reason == reason })
+	return hasReason(p, reason) || slices.ContainsFunc(p.Scoped, func(s plugin.ScopedReason) bool {
+		return s.Reason == reason && s.Package == "" && slices.Contains(s.Targets, "")
+	})
 }
 
 // completenessViolations checks one build against Eric's contract: every declined site is an

@@ -1494,7 +1494,7 @@ func semKeys[V any](m map[string]V) []string {
 }
 
 // semLoad matches a first-party load of a literal specifier.
-var semLoad = regexp.MustCompile(`(require\(|import\(|from |import )'([^']+)'`)
+var semLoad = regexp.MustCompile(`(require\(|import\(|from |import )['"]([^'"]+)['"]`)
 
 // semLoadsOnly reduces a first-party module to its loads: what it loads still runs, and nothing
 // in it calls.

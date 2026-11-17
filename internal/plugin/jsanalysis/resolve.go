@@ -1066,6 +1066,10 @@ type pkgManifest struct {
 	browserBare bool
 	// bin maps each command the package installs to its package-relative file.
 	bin map[string]string
+	// binDir is directories.bin: every file in it is a command. binUnread is set when bin is
+	// neither a string nor a map of strings.
+	binDir    string
+	binUnread bool
 }
 
 type rawPkg struct {
@@ -1078,6 +1082,9 @@ type rawPkg struct {
 	Module     string          `json:"module"`
 	Browser    json.RawMessage `json:"browser"`
 	Bin        json.RawMessage `json:"bin"`
+	Dirs       struct {
+		Bin string `json:"bin"`
+	} `json:"directories"`
 
 	Dependencies         map[string]json.RawMessage `json:"dependencies"`
 	DevDependencies      map[string]json.RawMessage `json:"devDependencies"`
@@ -1123,9 +1130,10 @@ func parsePkgManifest(data []byte) *pkgManifest {
 			// A string bin installs one command named after the package, less its scope.
 			m.bin = map[string]string{path.Base(rp.Name): one}
 		} else {
-			_ = json.Unmarshal(rp.Bin, &m.bin)
+			m.binUnread = json.Unmarshal(rp.Bin, &m.bin) != nil
 		}
 	}
+	m.binDir = rp.Dirs.Bin
 	if len(rp.Exports) > 0 {
 		_ = json.Unmarshal(rp.Exports, &m.exports)
 	}

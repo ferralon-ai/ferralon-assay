@@ -3,6 +3,7 @@ package jsanalysis
 import (
 	"cmp"
 	"encoding/json"
+	"io"
 	"maps"
 	"net/url"
 	"os"
@@ -154,7 +155,7 @@ func (lr *loadRecord) incomplete(entries []*depEntry, why string) *loadClosure {
 func loadCapableBuiltin(spec string) bool {
 	name, _ := splitBareSpecifier(strings.TrimPrefix(spec, "node:"))
 	switch name {
-	case "module", "child_process", "worker_threads", "vm", "cluster", "repl", "inspector":
+	case "module", "child_process", "worker_threads", "vm", "cluster", "repl", "inspector", "test", "wasi", "sqlite":
 		return true
 	}
 	return false
@@ -362,7 +363,7 @@ func firstPartyManifests(prog *program, lr *loadRecord) []string {
 			return nil //nolint:nilerr // keep walking: the other manifests are still read.
 		}
 		if de.IsDir() {
-			if p != prog.root && skipDir(de.Name()) {
+			if de.Name() == "node_modules" || de.Name() == ".git" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -433,6 +434,147 @@ func npmOrigin(purl string) (string, bool) {
 	return originPURL(name), true
 }
 
+// launchText is one text the lane reads for the commands that start the project.
+type launchText struct {
+	rel    string // the file, relative to the tree root
+	origin string // rel, plus "#scripts.<name>" or "#<key>" inside a package.json
+	text   string
+}
+
+// maxLaunchText bounds one launch file; a larger one is not read and vetoes.
+const maxLaunchText = 1 << 20
+
+// unparsedSourceExt are source extensions Node or a bundler runs and the lane does not parse.
+var unparsedSourceExt = map[string]bool{".mts": true, ".cts": true, ".svelte": true, ".astro": true}
+
+// manifestProse are the package.json keys that hold names and prose, never a command or a module
+// the project starts: dependency names would root every dependency.
+var manifestProse = map[string]bool{
+	"name": true, "version": true, "description": true, "keywords": true, "author": true, "contributors": true,
+	"maintainers": true, "license": true, "repository": true, "bugs": true, "homepage": true, "funding": true,
+	"engines": true, "packageManager": true, "workspaces": true, "private": true, "publishConfig": true,
+	"dependencies": true, "devDependencies": true, "peerDependencies": true, "peerDependenciesMeta": true,
+	"optionalDependencies": true, "bundledDependencies": true, "bundleDependencies": true,
+	"overrides": true, "resolutions": true, "pnpm": true, "scripts": true,
+}
+
+// launchFile reports whether a first-party file's name marks it as one that starts processes:
+// a process file, a container or compose file, a process-manager config, an npm or environment
+// config, a shell or make script, a git hook or a CI workflow.
+func launchFile(rel string) bool {
+	base := strings.ToLower(path.Base(rel))
+	ext := path.Ext(base)
+	yaml := ext == ".yml" || ext == ".yaml"
+	switch {
+	case base == "procfile", strings.HasPrefix(base, "procfile."),
+		strings.HasPrefix(base, "dockerfile"), strings.HasPrefix(base, "containerfile"), ext == ".dockerfile",
+		yaml && (strings.HasPrefix(base, "docker-compose") || strings.HasPrefix(base, "compose")),
+		strings.HasPrefix(base, "ecosystem."), strings.HasPrefix(base, "pm2."),
+		base == ".npmrc", base == ".yarnrc", base == ".env", strings.HasPrefix(base, ".env."),
+		ext == ".sh", ext == ".bash", ext == ".zsh", ext == ".cmd", ext == ".bat", ext == ".ps1",
+		base == "makefile", base == "justfile", base == "jenkinsfile",
+		base == ".gitlab-ci.yml", base == "nodemon.json", base == "app.json", base == "app.yaml":
+		return true
+	}
+	for _, dir := range []string{".husky/", ".github/workflows/", ".circleci/", ".devcontainer/"} {
+		if strings.HasPrefix(rel, dir) || strings.Contains(rel, "/"+dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// launchTexts returns every text of the first-party tree that can start the project: each
+// package.json script, every other package.json value outside manifestProse, every launchFile,
+// and every file that opens with an interpreter line. It walks the whole tree but installed
+// packages, and vetoes on lr for a source file the lane does not parse: such a file is a root
+// the closure cannot follow.
+func launchTexts(prog *program, lr *loadRecord) []launchText {
+	var out []launchText
+	read := func(p, rel string) (string, bool) {
+		data, err := os.ReadFile(p)
+		if err != nil || len(data) > maxLaunchText {
+			lr.veto(true, rel+" could not be read for the commands it starts")
+			return "", false
+		}
+		return string(data), true
+	}
+	_ = filepath.WalkDir(prog.root, func(p string, de os.DirEntry, err error) error {
+		if err != nil {
+			lr.veto(true, "a first-party directory could not be read")
+			return nil //nolint:nilerr // keep walking: the other files are still read.
+		}
+		r, rerr := filepath.Rel(prog.root, p)
+		if rerr != nil {
+			return nil //nolint:nilerr // WalkDir only yields paths under its root.
+		}
+		rel := filepath.ToSlash(r)
+		if de.IsDir() {
+			if de.Name() == "node_modules" || de.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !de.Type().IsRegular() {
+			return nil
+		}
+		name := de.Name()
+		ext := filepath.Ext(name)
+		declaration := strings.HasSuffix(name, ".d.ts") || strings.HasSuffix(name, ".d.mts") || strings.HasSuffix(name, ".d.cts")
+		switch {
+		case declaration:
+			return nil
+		case isSourceExt(ext) || unparsedSourceExt[ext]:
+			parsed := isSourceExt(ext)
+			for _, dir := range strings.Split(path.Dir(rel), "/") {
+				parsed = parsed && (dir == "." || !skipDir(dir))
+			}
+			lr.veto(!parsed, "first-party source "+rel+" is not parsed")
+			if launchFile(rel) {
+				if text, ok := read(p, rel); ok {
+					out = append(out, launchText{rel: rel, origin: rel, text: text})
+				}
+			}
+		case name == "package.json":
+			text, ok := read(p, rel)
+			var keys map[string]json.RawMessage
+			var pj packageJSON
+			if !ok || json.Unmarshal([]byte(text), &keys) != nil || json.Unmarshal([]byte(text), &pj) != nil {
+				lr.veto(true, rel+" could not be read for its scripts")
+				return nil
+			}
+			for _, script := range slices.Sorted(maps.Keys(pj.Scripts)) {
+				out = append(out, launchText{rel: rel, origin: rel + "#scripts." + script, text: pj.Scripts[script]})
+			}
+			for _, key := range slices.Sorted(maps.Keys(keys)) {
+				if !manifestProse[key] {
+					out = append(out, launchText{rel: rel, origin: rel + "#" + key, text: string(keys[key])})
+				}
+			}
+		case launchFile(rel):
+			if text, ok := read(p, rel); ok {
+				out = append(out, launchText{rel: rel, origin: rel, text: text})
+			}
+		default:
+			f, err := os.Open(p)
+			if err != nil {
+				lr.veto(true, rel+" could not be read for the commands it starts")
+				return nil
+			}
+			var head [2]byte
+			n, _ := io.ReadFull(f, head[:])
+			_ = f.Close()
+			if n == 2 && string(head[:]) == "#!" {
+				if text, ok := read(p, rel); ok {
+					out = append(out, launchText{rel: rel, origin: rel, text: text})
+				}
+			}
+		}
+		return nil
+	})
+	return out
+}
+
 // scriptLoadWords splits a package.json script into the words that can name a file, a binary or a
 // module specifier.
 func scriptLoadWords(script string) []string {
@@ -445,7 +587,7 @@ func scriptLoadWords(script string) []string {
 	})
 }
 
-// inferScriptRoots returns the entry points the tree's package.json scripts start inside
+// inferScriptRoots returns the entry points the tree's launch texts (launchTexts) start inside
 // installed packages, and the lock entries they run. A script is a shell line the lane does not
 // interpret: every word that names an installed package's binary roots that binary, and every
 // word that resolves as a module specifier from the script's directory roots what it loads. A
@@ -471,12 +613,30 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 			continue
 		}
 		read[e] = true
+		lr.veto(pkg.manifest.binUnread, "package "+e.name+" declares binaries the lane cannot read")
+		named := map[string]bool{}
 		for name, rel := range pkg.manifest.bin {
+			named[name] = true
 			bins[name] = append(bins[name], bin{e: e, pkg: pkg, rel: rel})
+		}
+		// npm installs every file of directories.bin as a command named after the file.
+		if dir := pkg.manifest.binDir; dir != "" {
+			for _, f := range slices.Sorted(maps.Keys(pkg.modules)) {
+				if path.Dir(f) == path.Clean(dir) {
+					named[path.Base(f)] = true
+					bins[path.Base(f)] = append(bins[path.Base(f)], bin{e: e, pkg: pkg, rel: f})
+				}
+			}
+		}
+		// A command the lock records and the manifest places nowhere has no file to root.
+		for _, name := range e.bins {
+			if !named[name] {
+				bins[name] = append(bins[name], bin{e: e, pkg: pkg})
+			}
 		}
 	}
 
-	manifests := firstPartyManifests(prog, lr)
+	texts := launchTexts(prog, lr)
 
 	rs := prog.resolver()
 	var roots []entryRoot
@@ -489,85 +649,82 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 			roots = append(roots, r)
 		}
 	}
-	for _, mp := range manifests {
-		rel, err := filepath.Rel(prog.root, mp)
-		if err != nil {
-			continue
-		}
-		rel = filepath.ToSlash(rel)
-		data, err := os.ReadFile(mp)
-		var pj packageJSON
-		if err != nil || json.Unmarshal(data, &pj) != nil {
-			lr.veto(true, rel+" could not be read for its scripts")
-			continue
-		}
-		for _, script := range slices.Sorted(maps.Keys(pj.Scripts)) {
-			origin := rel + "#scripts." + script
-			fetches := false
-			for _, w := range scriptLoadWords(pj.Scripts[script]) {
-				// A runner that fetches a command the install does not hold runs code no
-				// lockfile names, which may load anything installed.
-				if fetches && !strings.HasPrefix(w, "-") {
-					fetches = false
-					if i := strings.LastIndex(w, "@"); i > 0 {
-						w = w[:i]
-					}
-					lr.veto(len(bins[w]) == 0, "script "+origin+" runs "+w+" through a package runner and no installed package provides it")
+	for _, lt := range texts {
+		rel, origin := lt.rel, lt.origin
+		fetches, manager := false, false
+		for _, w := range scriptLoadWords(lt.text) {
+			// A runner that fetches a command the install does not hold runs code no
+			// lockfile names, which may load anything installed.
+			if fetches && !strings.HasPrefix(w, "-") {
+				fetches = false
+				if i := strings.LastIndex(w, "@"); i > 0 {
+					w = w[:i]
 				}
-				switch w {
-				case "npx", "pnpx", "bunx", "dlx", "exec":
-					fetches = true
-				}
-				if i := strings.LastIndex(w, "node_modules/"); i >= 0 {
-					w = w[i+len("node_modules/"):]
-				}
-				name := w
-				if b, ok := strings.CutPrefix(w, ".bin/"); ok {
-					name = b
-				}
-				for _, b := range bins[name] {
-					r := entryRoot{Lane: "js", Kind: "bin", Name: name, Origin: origin}
-					if b.pkg == nil {
-						add(r, b.e)
-						continue
-					}
-					target := path.Clean(b.rel)
-					m, ok := b.pkg.modules[target]
-					if !ok {
-						lr.veto(true, "script binary "+name+" of package "+b.e.name+" is not a source file the lane parses")
-						add(r, b.e)
-						continue
-					}
-					r.Selector = "npm:" + b.e.name + "/" + target
-					r.module = b.e.path + "/" + m
+				lr.veto(len(bins[w]) == 0, origin+" runs "+w+" through a package runner and no installed package provides it")
+			}
+			// exec and dlx are package-runner verbs only after a package manager: a shell's
+			// own exec runs a command already on the line.
+			switch w {
+			case "npx", "pnpx", "bunx":
+				fetches = true
+			case "dlx", "exec":
+				fetches = manager
+			}
+			manager = w == "npm" || w == "pnpm" || w == "yarn" || w == "bun"
+			if i := strings.LastIndex(w, "node_modules/"); i >= 0 {
+				w = w[i+len("node_modules/"):]
+			}
+			name := w
+			if b, ok := strings.CutPrefix(w, ".bin/"); ok {
+				name = b
+			}
+			for _, b := range bins[name] {
+				r := entryRoot{Lane: "js", Kind: "bin", Name: name, Origin: origin}
+				if b.pkg == nil {
 					add(r, b.e)
-				}
-				pkgName, _ := splitBareSpecifier(w)
-				if strings.HasPrefix(w, ".") || strings.HasPrefix(w, "-") || strings.HasPrefix(w, "/") || !validNPMName(pkgName) {
 					continue
 				}
-				for _, viaRequire := range []bool{true, false} {
-					e, mods := rs.depTargets(rel, w, viaRequire)
-					if e == nil {
-						continue
+				if b.rel == "" {
+					lr.veto(true, "script binary "+name+" of package "+b.e.name+" names no file in its package.json")
+					add(r, b.e)
+					continue
+				}
+				target := path.Clean(b.rel)
+				m, ok := b.pkg.modules[target]
+				if !ok {
+					lr.veto(true, "script binary "+name+" of package "+b.e.name+" is not a source file the lane parses")
+					add(r, b.e)
+					continue
+				}
+				r.Selector = "npm:" + b.e.name + "/" + target
+				r.module = b.e.path + "/" + m
+				add(r, b.e)
+			}
+			pkgName, _ := splitBareSpecifier(w)
+			if strings.HasPrefix(w, ".") || strings.HasPrefix(w, "-") || strings.HasPrefix(w, "/") || !validNPMName(pkgName) {
+				continue
+			}
+			for _, viaRequire := range []bool{true, false} {
+				e, mods := rs.depTargets(rel, w, viaRequire)
+				if e == nil {
+					continue
+				}
+				if len(mods) == 0 {
+					if read[e] {
+						lr.veto(true, "script word "+w+" names package "+e.name+" and selects no module the lane parses")
 					}
-					if len(mods) == 0 {
-						if read[e] {
-							lr.veto(true, "script word "+w+" names package "+e.name+" and selects no module the lane parses")
+					add(entryRoot{}, e)
+				}
+				for _, m := range mods {
+					id := strings.TrimPrefix(m, e.path+"/")
+					file := id
+					for _, f := range slices.Sorted(maps.Keys(d.pkgs[e.path].modules)) {
+						if d.pkgs[e.path].modules[f] == id {
+							file = f
+							break
 						}
-						add(entryRoot{}, e)
 					}
-					for _, m := range mods {
-						id := strings.TrimPrefix(m, e.path+"/")
-						file := id
-						for _, f := range slices.Sorted(maps.Keys(d.pkgs[e.path].modules)) {
-							if d.pkgs[e.path].modules[f] == id {
-								file = f
-								break
-							}
-						}
-						add(entryRoot{Lane: "js", Kind: "script", Selector: "npm:" + e.name + "/" + file, Name: w, Origin: origin, module: m}, e)
-					}
+					add(entryRoot{Lane: "js", Kind: "script", Selector: "npm:" + e.name + "/" + file, Name: w, Origin: origin, module: m}, e)
 				}
 			}
 		}

@@ -497,6 +497,27 @@ func excludedRoots(graph []listedPackage, unloadable []string) (excluded, kept [
 	return excluded, kept
 }
 
+// embedPatternMiss matches the go command's error for a //go:embed pattern that names no file to
+// embed: nothing matches it, or the directory it names holds nothing embeddable.
+var embedPatternMiss = regexp.MustCompile(`^pattern \S+: (no matching files found|cannot embed directory \S+: contains no embeddable files)$`)
+
+// onlyEmbedPatternMisses reports whether every package error in errs, the errors of a `go list -e`
+// under GOPROXY=off one to a line, is a //go:embed pattern that names no file to embed (a build
+// output the checkout does not hold, such as a front end's dist directory). A pattern is matched
+// against the files of the package's own directory, inside its module, and a module the go command
+// has resolved is on disk whole, so no fetch adds the file. Such a package's Go files and imports
+// are read all the same, and neither govulncheck's load nor the build listing of a partial run
+// (listBuildPackages) resolves an embed pattern. Any other error, a module to fetch among them, is
+// not one of these, and no errors at all is trivially all of them.
+func onlyEmbedPatternMisses(errs []byte) bool {
+	for line := range strings.SplitSeq(string(errs), "\n") {
+		if line = strings.TrimSpace(line); line != "" && !embedPatternMiss.MatchString(line) {
+			return false
+		}
+	}
+	return true
+}
+
 // listBuildPackages lists the packages of ./... and their dependencies in buildDir under env, as
 // the govulncheck load sees them: tests excluded. It never fetches: a settled failure already
 // resolved every module offline (packagesResolveOffline).

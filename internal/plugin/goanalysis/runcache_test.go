@@ -800,6 +800,14 @@ func TestPackagesResolveOffline(t *testing.T) {
 		{name: "type error", files: map[string]string{"go.mod": "module example.com/m\n\ngo 1.22\n", "main.go": "package main\n\nfunc main() { var x int = \"s\"; _ = x }\n"}, want: true},
 		{name: "missing cgo header", files: map[string]string{"go.mod": "module example.com/m\n\ngo 1.22\n", "main.go": "package main\n\n// #include <assay/absent.h>\nimport \"C\"\n\nfunc main() {}\n"}, want: true},
 		{name: "needs a module fetch", files: map[string]string{"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire example.com/absent v1.0.0\n", "main.go": "package main\n\nimport _ \"example.com/absent\"\n\nfunc main() {}\n"}, want: false},
+		{name: "go list fails outright", files: map[string]string{"main.go": "package main\n\nfunc main() {}\n"}, want: false},
+		{name: "embed pattern matches no file", files: map[string]string{"go.mod": "module example.com/m\n\ngo 1.22\n", "main.go": "package main\n\nimport \"embed\"\n\n//go:embed all:frontend/dist\nvar assets embed.FS\n\nfunc main() { _ = assets }\n"}, want: true},
+		{name: "embed directory holds nothing embeddable", files: map[string]string{"go.mod": "module example.com/m\n\ngo 1.22\n", "dist/.gitkeep": "", "main.go": "package main\n\nimport \"embed\"\n\n//go:embed dist\nvar assets embed.FS\n\nfunc main() { _ = assets }\n"}, want: true},
+		{name: "embed pattern matches no file beside a module fetch", files: map[string]string{
+			"go.mod":         "module example.com/m\n\ngo 1.22\n\nrequire example.com/absent v1.0.0\n",
+			"main.go":        "package main\n\nimport \"embed\"\n\n//go:embed all:frontend/dist\nvar assets embed.FS\n\nfunc main() { _ = assets }\n",
+			"cmd/x/fetch.go": "package main\n\nimport _ \"example.com/absent\"\n\nfunc main() {}\n",
+		}, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

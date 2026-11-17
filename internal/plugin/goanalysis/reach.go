@@ -1176,13 +1176,15 @@ func loadPackageErrors(err error) []packages.Error {
 // packagesResolveOffline reports whether every package a govulncheck load of buildDir reads
 // resolves from local files: `go list` of the same packages under env, with module fetching turned
 // off, reports no error. A package error of the failed load then cannot be a module fetch that a
-// later run might complete; what remains (cgo, type checking) reads only files already on disk.
+// later run might complete; what remains (cgo, type checking) reads only files already on disk. An
+// error that only says a //go:embed pattern matched no file is not one a fetch completes either
+// (onlyEmbedPatternMisses).
 func packagesResolveOffline(ctx context.Context, buildDir string, env []string) bool {
 	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-f", "{{with .Error}}{{.Err}}{{end}}", "./...")
 	cmd.Dir = buildDir
 	cmd.Env = append(slices.Clone(env), "GOPROXY=off")
 	out, err := cmd.Output()
-	return err == nil && len(bytes.TrimSpace(out)) == 0
+	return err == nil && onlyEmbedPatternMisses(out)
 }
 
 // reconcileGraph is the call graph Reachability reconciles paths against, with what reflection's

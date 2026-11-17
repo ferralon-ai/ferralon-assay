@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // --- script installs: JavaScript forms ----------------------------------------------
@@ -53,14 +55,19 @@ import (
 // scriptSpec is the JavaScript lane's part of the rule for the build at root, whose lockfiles
 // (path → what parseLockfile read) are locks. It names no run wrapper: npm and yarn run a
 // package.json script, gated where it is written, not a command line.
-func scriptSpec(root string, locks map[string]lockInfo) scriptsurface.Spec {
+//
+// assumed is set when an allowed command is a bare install that the rule cannot show installs
+// exactly what a lock read here records (laneAssumesLock): the result then rests on
+// lockAssumption, which the caller discloses.
+func scriptSpec(root string, locks map[string]lockInfo, assumed *bool) scriptsurface.Spec {
 	return scriptsurface.Spec{
 		Token:    laneToken,
 		Env:      laneEnvRE,
 		EnvKeeps: laneEnvKeeps,
 		Allowed: func(words []string, b scriptsurface.Binder) bool {
-			return laneAllowed(words, b, root, locks)
+			return laneAllowed(words, b, root, locks, assumed)
 		},
+		ReadOnly:    laneReadOnly,
 		Concurrent:  laneConcurrent,
 		ReadRegular: readRegular,
 		Absent:      absent,
@@ -160,9 +167,19 @@ func laneNPMFlags(args []string) bool {
 	return true
 }
 
+// lockAssumption is the assumption a result rests on when the build runs a bare install the
+// rule cannot hold to a lock by reading (laneAssumesLock).
+const lockAssumption = "install commands honour the committed lockfile"
+
+// AnnotationInstallHonoursLock is the reason for lockAssumption on a versions result.
+const AnnotationInstallHonoursLock = plugin.AnnotationAssumptionPrefix + "install_honours_lockfile"
+
 // laneAllowed reports whether a command holding a package-manager token, already free of
-// expansions and redirects, is one of the allowed forms and binds to files read here.
-func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[string]lockInfo) bool {
+// expansions and redirects, is one of the allowed forms. A form that installs binds to files
+// read here or sets assumed (laneAssumesLock); a form that only runs a script withholds only
+// when it is told to run somewhere else (--prefix) that is not read here, since every
+// package.json script in the tree is gated where it is written.
+func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[string]lockInfo, assumed *bool) bool {
 	for len(words) > 0 && laneKeptAssignment(words[0]) {
 		words = words[1:]
 	}
@@ -173,46 +190,301 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 	if !ok || len(words) < 2 {
 		return false
 	}
+	if !laneToken(head) {
+		return laneWrapsScriptRun(words, b)
+	}
 	switch head {
 	case "npm":
-		switch words[1] {
+		verb, args, ok := npmVerb(words[1:])
+		if !ok {
+			return false
+		}
+		switch verb {
 		case "ci":
-			return laneNPMFlags(words[2:]) && b.Nearest("package.json", "package-lock.json", "npm-shrinkwrap.json") != nil
+			if laneNPMFlags(args) && b.Nearest("package.json", "package-lock.json", "npm-shrinkwrap.json") != nil {
+				return true
+			}
+			dir, rest, ok := lanePrefix(args)
+			return ok && laneNPMFlagsLoose(rest) && laneAssumesLock(b, dir, root, locks, assumed, lockNPM, lockNPMv1)
 		case "install", "i":
-			dir, rest, ok := lanePrefix(words[2:])
-			return ok && laneNPMFlags(rest) && laneLockPreserving(b, dir, root, locks)
+			dir, rest, ok := lanePrefix(args)
+			if !ok {
+				return false
+			}
+			if laneNPMFlags(rest) && laneLockPreserving(b, dir, root, locks) {
+				return true
+			}
+			return laneNPMFlagsLoose(rest) && laneAssumesLock(b, dir, root, locks, assumed, lockNPM, lockNPMv1)
 		case "run", "run-script":
-			dir, rest, ok := lanePrefix(words[2:])
-			return ok && len(rest) == 1 && rest[0] != "" && !strings.HasPrefix(rest[0], "-") && lanePackage(b, dir)
+			dir, rest, ok := lanePrefix(args)
+			if !ok || len(rest) == 0 || rest[0] == "" || strings.HasPrefix(rest[0], "-") {
+				return false
+			}
+			if len(rest) == 1 {
+				return dir == "" || lanePackage(b, dir)
+			}
+			return rest[1] == "--" && laneScriptTakesArgs(b, dir, rest[0], rest[2:])
 		case "start":
-			dir, rest, ok := lanePrefix(words[2:])
-			return ok && len(rest) == 0 && lanePackage(b, dir)
+			dir, rest, ok := lanePrefix(args)
+			return ok && len(rest) == 0 && (dir == "" || lanePackage(b, dir))
 		case "test", "t":
-			return len(words) == 2 && b.Nearest("package.json") != nil
+			return len(args) == 0
 		}
 	case "yarn":
 		switch words[1] {
 		case "run":
-			return laneRunsScript(words, b)
+			return len(words) == 3 && words[2] != "" && !strings.HasPrefix(words[2], "-")
 		case "test", "start":
-			return len(words) == 2 && b.Nearest("package.json") != nil
+			return len(words) == 2
+		case "install":
+			// yarn 1 does not hold a workspace to its lock even under --frozen-lockfile: when a
+			// member adds a dependency or moves a range past the locked version it exits 0 and
+			// installs versions yarn.lock does not record. That is what lockAssumption states.
+			return scriptsurface.FlagsOnly(words[2:], yarnInstallFlags) &&
+				laneAssumesLock(b, "", root, locks, assumed, lockYarn)
 		}
 		if !yarnBuiltins[words[1]] {
 			return laneYarnRunsName(words, b)
 		}
-		// No yarn install is allowed, --frozen-lockfile included: yarn 1 does not hold a
-		// workspace to its lock under that flag. When a member adds a dependency or moves a
-		// range past the locked version, or a new member appears, yarn 1.22 exits 0, installs
-		// versions yarn.lock does not record and leaves the lock byte-identical. yarn 2+
-		// --immutable is not recognised by yarn 1, which ignores it.
 		return false
 	case "npx":
 		return laneNpxRunsDependency(words, b)
 	case "pnpm":
-		return words[1] == "install" && scriptsurface.FlagsOnly(words[2:], laneFlags, "--frozen-lockfile") &&
-			b.Nearest("package.json", "pnpm-lock.yaml") != nil
+		if words[1] != "install" && words[1] != "i" {
+			return false
+		}
+		if scriptsurface.FlagsOnly(words[2:], laneFlags, "--frozen-lockfile") && b.Nearest("package.json", "pnpm-lock.yaml") != nil {
+			return true
+		}
+		return scriptsurface.FlagsOnly(words[2:], pnpmInstallFlags) &&
+			laneAssumesLock(b, "", root, locks, assumed, lockPnpm)
+	case "nx":
+		return laneNxRunsTarget(words)
 	}
 	return false
+}
+
+// npmValueFlags are the npm flags whose value may be the next word.
+var npmValueFlags = map[string]bool{"--prefix": true, "--omit": true, "--include": true, "--only": true, "--loglevel": true}
+
+// npmVerb splits what follows npm into its command and every other word in order, flags
+// written before the command included (npm --prefix api install). ok is false when there is
+// no command.
+func npmVerb(words []string) (verb string, args []string, ok bool) {
+	for i := 0; i < len(words); i++ {
+		w := words[i]
+		if !strings.HasPrefix(w, "-") {
+			return w, append(args, words[i+1:]...), w != ""
+		}
+		args = append(args, w)
+		if npmValueFlags[w] && i+1 < len(words) {
+			i++
+			args = append(args, words[i])
+		}
+	}
+	return "", nil, false
+}
+
+// npmLooseFlags are npm flags that change how an install fetches, reports or checks peers,
+// never which lock it reads or whether it writes one.
+var npmLooseFlags = map[string]bool{
+	"--force": true, "-f": true, "--legacy-peer-deps": true, "--no-audit": true, "--no-fund": true,
+	"--silent": true, "--quiet": true, "-s": true, "-q": true, "--prefer-offline": true,
+	"--no-progress": true, "--verbose": true, "--no-optional": true,
+}
+
+// laneNPMFlagsLoose is laneNPMFlags that also takes npmLooseFlags and --loglevel with a value.
+// Every other flag withholds: --no-package-lock, --package-lock=false and --no-save among them.
+func laneNPMFlagsLoose(args []string) bool {
+	var strict []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case npmLooseFlags[a]:
+		case a == "--loglevel":
+			if i+1 >= len(args) {
+				return false
+			}
+			i++
+		case strings.HasPrefix(a, "--loglevel="):
+		default:
+			strict = append(strict, a)
+		}
+	}
+	return laneNPMFlags(strict)
+}
+
+// yarnInstallFlags and pnpmInstallFlags are the flags a bare install under lockAssumption may
+// carry: none makes the installer ignore its lock or install a named package.
+var (
+	yarnInstallFlags = map[string]bool{
+		"--frozen-lockfile": true, "--immutable": true, "--production": true, "--ignore-scripts": true,
+		"--non-interactive": true, "--silent": true, "--prefer-offline": true, "--check-files": true,
+	}
+	pnpmInstallFlags = map[string]bool{
+		"--production": true, "--prod": true, "--ignore-scripts": true, "--frozen-lockfile": true,
+		"--prefer-offline": true, "--silent": true,
+	}
+)
+
+// laneAssumesLock reports whether a bare install (no package named, no flag that turns the lock
+// off) run with package root dir ("" when it has no --prefix) has a lock of one of kinds to
+// install from, and sets assumed. With a --prefix the package.json there must be read here
+// (Prefixed), and a lock of kinds must sit in that directory or above it. Without one, the
+// command installs for whichever package.json it runs beside: the ones it binds to (Nearest)
+// when the rule knows where it runs, else every package.json in the tree, and each must have a
+// lock of kinds in its directory or above it. A package.json with no such lock installs versions
+// nothing read here records, which withholds.
+func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]lockInfo, assumed *bool, kinds ...string) bool {
+	var pkgs []string
+	switch {
+	case dir != "":
+		pkgs = b.Prefixed(dir, "package.json")
+		if pkgs == nil {
+			return false
+		}
+	default:
+		if pkgs = b.Nearest("package.json"); pkgs == nil {
+			pkgs = packageManifests(root)
+		}
+	}
+	if len(pkgs) == 0 {
+		return false
+	}
+	for _, p := range pkgs {
+		if !lockAbove(root, filepath.Dir(p), locks, kinds) {
+			return false
+		}
+	}
+	if assumed != nil {
+		*assumed = true
+	}
+	return true
+}
+
+// lockAbove reports whether a lock of one of kinds, parsed here, is in dir or a directory above
+// it inside root.
+func lockAbove(root, dir string, locks map[string]lockInfo, kinds []string) bool {
+	for {
+		for path, l := range locks {
+			if filepath.Dir(path) == dir && slices.Contains(kinds, l.kind) {
+				return true
+			}
+		}
+		if dir == root {
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+// laneScriptTakesArgs reports whether "npm run <name> -- <args>" only runs a script: npm
+// appends args to the script's text, so the package.json it binds to must be read here, its
+// script name must name no token, which the args could turn into an install, and no arg may
+// name one.
+func laneScriptTakesArgs(b scriptsurface.Binder, dir, name string, args []string) bool {
+	for _, a := range args {
+		if laneNamesToken(a) {
+			return false
+		}
+	}
+	var pkgs []string
+	if dir == "" {
+		pkgs = b.Nearest("package.json")
+	} else {
+		pkgs = b.Prefixed(dir, "package.json")
+	}
+	if pkgs == nil {
+		return false
+	}
+	for _, p := range pkgs {
+		raw, ok := readManifest(p)
+		if !ok {
+			return false
+		}
+		var scripts map[string]string
+		if s, has := raw["scripts"]; has && json.Unmarshal(s, &scripts) != nil {
+			return false
+		}
+		text, has := scripts[name]
+		if !has || laneNamesToken(text) {
+			return false
+		}
+	}
+	return true
+}
+
+// laneWrapsScriptRun reports whether words is "<program> … -- <pm> start|test|run <name>": a
+// program that is no token and names none, handing the words after its -- to a command that
+// only runs a script. An install after the -- withholds: a wrapper may add words to it (xargs).
+func laneWrapsScriptRun(words []string, b scriptsurface.Binder) bool {
+	at := slices.Index(words, "--")
+	if at < 1 || at+2 >= len(words) {
+		return false
+	}
+	for _, w := range words[:at] {
+		if laneNamesToken(w) {
+			return false
+		}
+	}
+	tail := words[at+1:]
+	switch head, _ := scriptsurface.CommandName(tail[0]); head {
+	case "npm":
+		switch tail[1] {
+		case "start", "test":
+			return len(tail) == 2
+		case "run", "run-script":
+			return len(tail) == 3 && tail[2] != "" && !strings.HasPrefix(tail[2], "-")
+		}
+	case "yarn":
+		switch tail[1] {
+		case "start", "test":
+			return len(tail) == 2
+		case "run":
+			return len(tail) == 3 && tail[2] != "" && !strings.HasPrefix(tail[2], "-")
+		}
+	}
+	return false
+}
+
+// nxChanges are the nx commands that add or move packages, write the manifest, or run a
+// command line of their own.
+var nxChanges = map[string]bool{
+	"add": true, "migrate": true, "init": true, "import": true, "generate": true, "g": true,
+	"exec": true, "release": true, "connect": true, "connect-to-nx-cloud": true, "repair": true,
+	"create-nx-workspace": true,
+}
+
+// laneNxRunsTarget reports whether words is nx running project targets (nx build, nx run
+// app:serve, nx run-many -t test): the first word is no flag and none of nxChanges, and no
+// other word names a token.
+func laneNxRunsTarget(words []string) bool {
+	if words[1] == "" || strings.HasPrefix(words[1], "-") || nxChanges[words[1]] {
+		return false
+	}
+	for _, w := range words[1:] {
+		if laneNamesToken(w) {
+			return false
+		}
+	}
+	return true
+}
+
+// readOnlyCommands only read the files their arguments name, whatever those arguments are.
+var readOnlyCommands = map[string]bool{
+	"jq": true, "cat": true, "grep": true, "egrep": true, "fgrep": true, "head": true, "tail": true,
+	"wc": true, "ls": true, "test": true, "[": true, "diff": true, "cmp": true, "stat": true,
+	"sha256sum": true, "shasum": true, "md5sum": true, "echo": true, "printf": true,
+}
+
+// laneReadOnly reports whether a command with no token and no redirect is one of
+// readOnlyCommands, so naming a file an allowed command binds to does not rewrite it.
+func laneReadOnly(words []string) bool {
+	head, ok := scriptsurface.CommandName(words[0])
+	return ok && readOnlyCommands[head]
 }
 
 // yarnBuiltins covers the first words yarn 1 (1.22) and yarn 2+ (4.5, its bundled plugins

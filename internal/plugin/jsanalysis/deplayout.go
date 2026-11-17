@@ -43,6 +43,10 @@ type depEntry struct {
 	// patched marks a pnpm entry the install patches: its tarball is verified for its manifest
 	// facts, and its code, which is not what runs, is never read.
 	patched bool
+	// bins are the commands the lock says the entry installs; binsKnown is set when the lock
+	// records them (npm v2/v3), so an unread entry's commands are still known.
+	bins      []string
+	binsKnown bool
 }
 
 // depLayout is the install tree the selected lockfiles describe, keyed by install path. Node's
@@ -482,6 +486,8 @@ func (l *depLayout) addNpmV2(prefix string, pkgs map[string]npmLockPkg) {
 			purl:              makePURL(name, version),
 			digest:            mapIntegrity(pkg.Integrity),
 			lockInstallScript: pkg.HasInstallScript,
+			bins:              slices.Sorted(maps.Keys(pkg.Bin)),
+			binsKnown:         true,
 		}
 		e.unreadable = pkg.Link || e.digest == "" || isGitResolved(pkg.Resolved) ||
 			strings.HasPrefix(pkg.Resolved, "file:") || strings.HasPrefix(pkg.Version, "file:") ||

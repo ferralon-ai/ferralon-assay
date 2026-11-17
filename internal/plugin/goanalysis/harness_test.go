@@ -19,10 +19,10 @@ func assertParses(t *testing.T, src string) {
 	}
 }
 
-// TestGenerateHarness_EmitsSkeletonCallingSink asserts the emitted source imports
-// the sink's package and calls the sink symbol, is declared a SKELETON (not a
+// TestGenerateHarness_EmitsSkeletonNamingSink asserts the emitted source names the
+// sink's package and symbol, is declared a SKELETON (not a
 // working exploit), and carries a TODO for attacker-controlled input.
-func TestGenerateHarness_EmitsSkeletonCallingSink(t *testing.T) {
+func TestGenerateHarness_EmitsSkeletonNamingSink(t *testing.T) {
 	sink := "scip-go gomod tegron.test/fixturemod . tegron.test/fixturemod/util/Sink()."
 	res, err := GenerateHarness(context.Background(), plugin.GenerateHarnessRequest{
 		Sink: sink,
@@ -38,10 +38,10 @@ func TestGenerateHarness_EmitsSkeletonCallingSink(t *testing.T) {
 		t.Error("harness must be declared a skeleton")
 	}
 	if !strings.Contains(res.Source, "tegron.test/fixturemod/util") {
-		t.Errorf("source must import the sink package; got:\n%s", res.Source)
+		t.Errorf("source must name the sink package; got:\n%s", res.Source)
 	}
 	if !strings.Contains(res.Source, "Sink") {
-		t.Errorf("source must call the sink symbol; got:\n%s", res.Source)
+		t.Errorf("source must name the sink symbol; got:\n%s", res.Source)
 	}
 	if !strings.Contains(res.Source, "TODO") {
 		t.Errorf("source must mark attacker-controlled input with a TODO; got:\n%s", res.Source)

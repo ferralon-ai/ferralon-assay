@@ -28,8 +28,8 @@ type sinkSymbol struct {
 // such (Skeleton=true, Partial).
 //
 // The skeleton compiles as emitted. The request names no build directory, so the
-// sink's signature is not resolved here: the skeleton references the sink and
-// skips (see generateHarness for the form a resolved signature gives).
+// sink's signature is not resolved here: the skeleton names the sink and skips
+// (see generateHarness for the form a resolved signature gives).
 //
 // Partiality is declared, never overclaimed (inv.5): an unparseable sink SCIP, an
 // unknown input shape, and the fact that this is a skeleton rather than a working
@@ -199,23 +199,20 @@ func renderHarness(sym sinkSymbol, body harnessBody, ingress, kind string) strin
 }
 
 // unresolvedHarnessBody is the body for a sink whose signature is not known: it
-// names the sink, so the skeleton fails to build if the symbol is gone, and skips.
-// A method is named through its pointer receiver type, whose method set holds the
-// methods of either receiver kind. A symbol that cannot be named from another
-// package is not imported at all.
+// skips, naming the sink in the reason. It neither imports nor references the
+// sink, because whether a reference compiles (a generic function, an interface
+// method, a main package, a symbol since removed) is itself unknown without the
+// signature.
 func unresolvedHarnessBody(sym sinkSymbol) harnessBody {
-	if why := unnameable(sym, ""); why != "" {
-		return harnessBody{skip: "call the sink with attacker-controlled input; " + why}
-	}
-	ref := fmt.Sprintf("_ = %s.%s", sinkAlias, sym.name)
+	name := sym.pkgPath + "." + sym.name
 	if sym.receiver != "" {
-		ref = fmt.Sprintf("_ = (*%s.%s).%s", sinkAlias, sym.receiver, sym.name)
+		name = sym.pkgPath + "." + sym.receiver + "." + sym.name
 	}
-	return harnessBody{
-		imports: map[string]string{sym.pkgPath: sinkAlias},
-		stmts:   []string{ref},
-		skip:    "call the sink with attacker-controlled input; its signature was not resolved",
+	why := unnameable(sym, "")
+	if why == "" {
+		why = "its signature was not resolved"
 	}
+	return harnessBody{skip: "call " + name + " with attacker-controlled input; " + why}
 }
 
 // unnameable says why a test outside the sink's package cannot name the sink, or
@@ -229,21 +226,23 @@ func unnameable(sym sinkSymbol, mainModule string) string {
 		return "the sink is unexported, so the test belongs in its package"
 	}
 	if !importableFrom(sym.pkgPath, mainModule) {
-		return "the sink is in an internal package this test cannot import"
+		return "the sink is in an internal or vendored package this test cannot import"
 	}
 	return ""
 }
 
 // importableFrom reports whether a test at the root of mainModule may import
-// pkgPath: any package with no internal element, and an internal package only
-// directly under that root.
+// pkgPath: any package with no internal or vendor element, and an internal package
+// only directly under that root.
 func importableFrom(pkgPath, mainModule string) bool {
 	elems := strings.Split(pkgPath, "/")
 	for i, e := range elems {
-		if e != "internal" {
-			continue
+		switch e {
+		case "vendor":
+			return false
+		case "internal":
+			return mainModule != "" && strings.Join(elems[:i], "/") == mainModule
 		}
-		return mainModule != "" && strings.Join(elems[:i], "/") == mainModule
 	}
 	return true
 }
@@ -278,11 +277,7 @@ func resolvedHarnessBody(ctx context.Context, buildDir string, sym sinkSymbol) (
 		h.names[reserved] = true
 	}
 	skip := func(why string) (harnessBody, bool) {
-		return harnessBody{
-			imports: map[string]string{sym.pkgPath: sinkAlias},
-			stmts:   unresolvedHarnessBody(sym).stmts,
-			skip:    "call the sink with attacker-controlled input; " + why,
-		}, true
+		return harnessBody{skip: "call the sink with attacker-controlled input; " + why}, true
 	}
 
 	var fn *types.Func
@@ -295,9 +290,9 @@ func resolvedHarnessBody(ctx context.Context, buildDir string, sym sinkSymbol) (
 		if tn == nil {
 			return harnessBody{}, false
 		}
-		named, _ := tn.Type().(*types.Named)
+		named, _ := types.Unalias(tn.Type()).(*types.Named)
 		if named == nil || named.TypeParams().Len() > 0 {
-			return harnessBody{skip: "call the sink with attacker-controlled input; its receiver type is generic or an alias"}, true
+			return harnessBody{skip: "call the sink with attacker-controlled input; its receiver type is generic, so the test must choose its type arguments"}, true
 		}
 		if types.IsInterface(named) {
 			return harnessBody{skip: "call the sink with attacker-controlled input; it is an interface method, so the test must choose an implementation"}, true

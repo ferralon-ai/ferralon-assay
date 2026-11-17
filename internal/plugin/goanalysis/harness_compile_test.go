@@ -47,6 +47,12 @@ func (*T) Ptr(b []byte) error { return nil }
 
 func Generic[X any](x X) {}
 
+type G[X any] struct{}
+
+func (G[X]) M(s string) {}
+
+type Alias = T
+
 func Hidden(h hidden) {}
 
 func unexported(s string) {}
@@ -89,6 +95,10 @@ func TestGenerateHarness_SkeletonsCompile(t *testing.T) {
 		{"ptrmethod", "sinks/T#Ptr().", "_ = recv.Ptr([]byte(in))"},
 		{"ifacemethod", "sinks/I#M().", "t.Skip("},
 		{"generic", "sinks/Generic().", "t.Skip("},
+		{"genericrecv", "sinks/G#M().", "t.Skip("},
+		{"aliasrecv", "sinks/Alias#Val().", "recv.Val(in)"},
+		{"missing", "sinks/Missing().", "t.Skip("},
+		{"missingrecv", "sinks/Nope#M().", "t.Skip("},
 		{"hiddenparam", "sinks/Hidden().", "t.Skip("},
 		{"unexported", "sinks/unexported().", "t.Skip("},
 		{"aliasclash", "v2/Read().", "sink.Read(a0, a1)"},
@@ -126,11 +136,6 @@ func TestGenerateHarness_SkeletonsCompile(t *testing.T) {
 			unresolved, err := GenerateHarness(ctx, req)
 			if err != nil {
 				t.Fatalf("%s/%s: %v", tc.name, kind, err)
-			}
-			// Without a signature a generic sink, an interface method and a sink in a main package
-			// cannot be told apart from an ordinary one, so those are checked only resolved.
-			if tc.name == "generic" || tc.name == "mainpkg" || tc.name == "ifacemethod" {
-				continue
 			}
 			if !strings.Contains(unresolved.Source, "t.Skip(") {
 				t.Errorf("%s/%s: unresolved skeleton does not skip:\n%s", tc.name, kind, unresolved.Source)

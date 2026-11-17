@@ -816,6 +816,21 @@ func subjectToolchainEnv(ctx context.Context, baseEnv []string, buildDir, wanted
 	return baseEnv, local, false
 }
 
+// govulncheckEnv is env with GOVERSION set to the release the go command uses in buildDir.
+// govulncheck matches standard-library advisories against GOVERSION, and without one in its
+// environment asks `go env GOVERSION` in the process's working directory, not in buildDir: under
+// GOTOOLCHAIN=auto that is the installed release, while the packages it loads are the ones the
+// module's go and toolchain lines select. Setting it keeps the advisory match and the loaded
+// standard library on one release. When the release cannot be resolved env is returned as is; the
+// load then fails for the same reason.
+func govulncheckEnv(ctx context.Context, buildDir string, env []string) []string {
+	v := goEnvVersion(ctx, buildDir, env)
+	if v == "" {
+		return env
+	}
+	return append(slices.Clip(env), "GOVERSION="+v)
+}
+
 // goEnvVersion reports `go env GOVERSION` for buildDir under env — the release the go command
 // would actually use there, which under the default GOTOOLCHAIN=auto depends on the module's own
 // directives and is therefore a property of the directory, not of the installed binary. Any
@@ -1075,7 +1090,7 @@ func govulncheckStream(ctx context.Context, buildDir string, env, patterns []str
 	cmd := scan.Command(ctx, append([]string{"-C", buildDir, "-json", "-mode=source", "-scan=symbol"}, patterns...)...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	cmd.Env = env
+	cmd.Env = govulncheckEnv(ctx, buildDir, env)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("govulncheck start (%q): %w", buildDir, err)
 	}

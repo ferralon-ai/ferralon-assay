@@ -233,6 +233,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	cut, rows := 0, len(admitted.Admitted)
 	var assessed []report.Advisory
 	passes := newAdvisoryPasses(analysis, requestsFor(admitted.Admitted, req.Codebase), assessOpts)
+	defer passes.close()
 	for i, adv := range admitted.Admitted {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, stopped, err := passes.assess(i)

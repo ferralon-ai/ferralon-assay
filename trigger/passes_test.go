@@ -357,6 +357,13 @@ type stopOnManifestPlugin struct {
 	n     int32
 }
 
+// Reachability holds every analysis until the scan stops, so the first pass running ahead of it
+// never lets an advisory finish before the stop.
+func (p stopOnManifestPlugin) Reachability(ctx context.Context, _ plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	<-ctx.Done()
+	return plugin.ReachabilityResult{}, ctx.Err()
+}
+
 func (p stopOnManifestPlugin) BuildManifest(ctx context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
 	if p.calls.Add(1) != p.n {
 		return p.refutingGoPlugin.BuildManifest(ctx, req)
@@ -366,8 +373,8 @@ func (p stopOnManifestPlugin) BuildManifest(ctx context.Context, req plugin.Buil
 	return plugin.BuildManifestResult{}, ctx.Err()
 }
 
-// TestBaseline_StopDuringFirstPass: a stop inside the third advisory's manifest stage, before any
-// advisory has been analysed, leaves the advisory settled before it its disqualified row and cuts
+// TestBaseline_StopDuringFirstPass: a stop inside the third advisory's manifest stage, with every
+// analysis still in flight, leaves the advisory settled before it its disqualified row and cuts
 // every other one, the advisories that need analysis included, and the note counts them.
 func TestBaseline_StopDuringFirstPass(t *testing.T) {
 	analysis, cancel := context.WithCancelCause(context.Background())
@@ -430,5 +437,80 @@ func TestBaseline_FirstPassErrorIsAnAssessmentFailure(t *testing.T) {
 	slices.Sort(observed)
 	if !slices.Equal(observed, []string{"GO-A-1", "GO-A-2", "GO-A-3"}) {
 		t.Errorf("advisories timed = %v, want all three", observed)
+	}
+}
+
+// slowManifestPlugin is refutingGoPlugin whose BuildManifest calls after the first fast never
+// return until the scan stops: the inventory stage of every advisory from then on is a slow one, as
+// a lane's per-coordinate membership calls make it.
+type slowManifestPlugin struct {
+	refutingGoPlugin
+	calls *atomic.Int32
+	fast  int32
+}
+
+func (p slowManifestPlugin) BuildManifest(ctx context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
+	if p.calls.Add(1) <= p.fast {
+		return p.refutingGoPlugin.BuildManifest(ctx, req)
+	}
+	<-ctx.Done()
+	return plugin.BuildManifestResult{}, ctx.Err()
+}
+
+// TestBaseline_SlowInventoryDoesNotDelayAnalysis: with an inventory stage that stalls from the
+// third advisory on, a scan stopped once two advisories are analysed keeps both. One serial pass
+// analyses exactly those two before it stalls in the third; a first pass that ran to completion
+// before any analysis would never get past the stall and keep none. The logical clock is the
+// advisory timing hook: the stop is the second finished assessment. The timer is only a backstop
+// that turns a regression into a failed assertion instead of a hang.
+func TestBaseline_SlowInventoryDoesNotDelayAnalysis(t *testing.T) {
+	const k = 2
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	backstop := time.AfterFunc(5*time.Second, func() { cancel(errors.New("backstop")) })
+	t.Cleanup(func() { backstop.Stop() })
+	var assessed atomic.Int32
+	analysis = WithTiming(analysis, func(phase string, _ time.Duration) {
+		if phase == "advisory" && assessed.Add(1) == k {
+			cancel(errTestStop)
+		}
+	})
+	opts := []pipeline.AssessOption{
+		pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
+		pipeline.WithPlugin(slowManifestPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, calls: &atomic.Int32{}, fast: k}),
+		pipeline.WithAdvisorySource(disqualifiableSource{}),
+	}
+	rep := runPasses(t, passAdvisories("GO-A-1", "GO-A-2", "GO-A-3", "GO-A-4"), opts, analysis)
+	checkCutShort(t, rep, map[string]report.Verdict{
+		"GO-A-1": report.VerdictNotExploitable, "GO-A-2": report.VerdictNotExploitable,
+		"GO-A-3": report.VerdictUndetermined, "GO-A-4": report.VerdictUndetermined,
+	}, "2 of 4 advisories were not assessed: test stop")
+}
+
+// TestBaseline_ManyAdvisoriesOverlappedPasses runs the overlapped passes over many advisories with
+// nothing stopping them, for -race: the rows are the ones each advisory settles or analyses to, in
+// the Report's order.
+func TestBaseline_ManyAdvisoriesOverlappedPasses(t *testing.T) {
+	var ids []string
+	want := map[string]report.Verdict{}
+	for i := 0; i < 40; i++ {
+		id := fmt.Sprintf("GO-A-%d", i)
+		v := report.VerdictNotExploitable
+		if i%3 == 0 {
+			id, v = fmt.Sprintf("GO-D-%d", i), report.VerdictDisqualified
+		}
+		ids = append(ids, id)
+		want[id] = v
+	}
+	opts, analysis := passOptions(t, "never", stopAndWait)
+	rep := runPasses(t, passAdvisories(ids...), opts, analysis)
+	checkCutShort(t, rep, want, "")
+	got := make([]string, len(rep.Advisories))
+	for i, f := range rep.Advisories {
+		got[i] = f.Advisory.ID
+	}
+	slices.Sort(ids)
+	if !reflect.DeepEqual(got, ids) {
+		t.Errorf("row order = %v, want the Report's order %v", got, ids)
 	}
 }

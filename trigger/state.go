@@ -322,6 +322,7 @@ func assessUnrowed(ctx context.Context, req PRInheritRequest, advisories []asses
 	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
 	passes := newAdvisoryPasses(analysis, requestsFor(advisories, req.Codebase), assessOpts)
+	defer passes.close()
 	for i, adv := range advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, stopped, err := passes.assess(i)
@@ -378,6 +379,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
 	passes := newAdvisoryPasses(analysis, requestsFor(req.Advisories, req.Codebase), assessOpts)
+	defer passes.close()
 	for i, adv := range req.Advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, stopped, err := passes.assess(i)
@@ -627,6 +629,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		reqs[i] = assessment.Request{Vulnerability: w.ref, Codebase: req.Codebase}
 	}
 	passes := newAdvisoryPasses(analysis, reqs, assessOpts)
+	defer passes.close()
 	// assess assesses todo[i] and keys the finding under its key, the row it replaces.
 	assess := func(i int) {
 		ref, pkg, key := todo[i].ref, todo[i].pkg, todo[i].key

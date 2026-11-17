@@ -83,7 +83,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		refutation = &plugin.Refutation{
 			Basis:   plugin.RefutationPackageNotLoaded,
 			Package: req.Package,
-			Detail:  "no installed copy of the package is loaded by a first-party module, by a binary or module a package.json script names, or by anything those load",
+			// A clear from a closure that holds a computed load rests on its bound.
+			Assumptions: closure.Assumptions,
+			Detail:      "no installed copy of the package is loaded by a first-party module, by a binary or module a package.json script names, or by anything those load",
 		}
 	}
 	if len(reasons) == 0 && len(cg.Partiality.Scoped) == 0 {

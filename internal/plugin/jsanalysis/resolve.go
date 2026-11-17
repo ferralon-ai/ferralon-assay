@@ -1043,12 +1043,16 @@ func stripJSExt(p string) string {
 // pkgManifest is the resolver's view of a package.json: identity, module type, and the
 // raw exports/imports maps (interpreted by resolveExportsField).
 type pkgManifest struct {
-	name       string
-	typ        string
-	main       string
-	workspaces []string
-	exports    interface{}
-	imports    interface{}
+	// declared are the names under dependencies, peerDependencies and optionalDependencies;
+	// devDeclared those under devDependencies, which only the project's own install places.
+	declared    []string
+	devDeclared []string
+	name        string
+	typ         string
+	main        string
+	workspaces  []string
+	exports     interface{}
+	imports     interface{}
 	// frontEntries are the module and browser field targets a bundler building for the
 	// browser may load in place of main: the module field, a string browser field, and every
 	// path an object browser field maps to.
@@ -1074,6 +1078,11 @@ type rawPkg struct {
 	Module     string          `json:"module"`
 	Browser    json.RawMessage `json:"browser"`
 	Bin        json.RawMessage `json:"bin"`
+
+	Dependencies         map[string]json.RawMessage `json:"dependencies"`
+	DevDependencies      map[string]json.RawMessage `json:"devDependencies"`
+	PeerDependencies     map[string]json.RawMessage `json:"peerDependencies"`
+	OptionalDependencies map[string]json.RawMessage `json:"optionalDependencies"`
 }
 
 func parsePkgManifest(data []byte) *pkgManifest {
@@ -1082,6 +1091,10 @@ func parsePkgManifest(data []byte) *pkgManifest {
 		return nil
 	}
 	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: rp.Main, module: rp.Module}
+	for _, deps := range []map[string]json.RawMessage{rp.Dependencies, rp.PeerDependencies, rp.OptionalDependencies} {
+		m.declared = append(m.declared, slices.Sorted(maps.Keys(deps))...)
+	}
+	m.devDeclared = slices.Sorted(maps.Keys(rp.DevDependencies))
 	if rp.Module != "" {
 		m.frontEntries = append(m.frontEntries, rp.Module)
 	}

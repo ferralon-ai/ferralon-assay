@@ -45,6 +45,8 @@ type loadClosure struct {
 	// and every one with a module in the closure or named by a load in it.
 	Installed []string `json:"installed,omitempty"`
 	Loaded    []string `json:"loaded,omitempty"`
+	// Assumptions are the disclosed assumptions a refutation from this closure rests on.
+	Assumptions []string `json:"assumptions,omitempty"`
 	// Roots are the inferred entry points other than first-party modules.
 	Roots []entryRoot `json:"roots,omitempty"`
 
@@ -206,11 +208,51 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 	for _, r := range roots {
 		queue = append(queue, moduleInitSCIP(r.module))
 	}
+	// A computed load names its module at run time. It is taken to stay inside its bound (see
+	// computedLoadBound), so every module of every package in the bound may run.
+	bound := map[*depEntry]bool{}
+	whole := map[string]bool{}
+	computed := map[string]bool{}
+	admit := func(e *depEntry) {
+		if bound[e] {
+			return
+		}
+		bound[e] = true
+		loads(e)
+		pkg := d.pkgs[e.path]
+		if pkg == nil {
+			return
+		}
+		for _, id := range slices.Sorted(maps.Values(pkg.modules)) {
+			queue = append(queue, moduleInitSCIP(e.path+"/"+id))
+		}
+	}
+	project := projectDirectDeps(prog, lr)
+	if g.flags.dynImport || g.flags.computedReq {
+		computed["first-party code"] = true
+		for _, e := range project {
+			admit(e)
+		}
+	}
 	for len(queue) > 0 {
 		n := queue[0]
 		queue = queue[1:]
 		if reached[n] {
 			continue
+		}
+		if m, ok := owner[n]; ok && !whole[m] {
+			whole[m] = true
+			ml, pkg := lr.mods[m], d.pkgOf(m)
+			if ml != nil && pkg != nil && (ml.flags.dynImport || ml.flags.computedReq) {
+				computed[pkg.entry.name] = true
+				admit(pkg.entry)
+				for _, e := range computedLoadBound(d, pkg) {
+					admit(e)
+				}
+				for _, e := range project {
+					admit(e)
+				}
+			}
 		}
 		reached[n] = true
 		if m, ok := owner[n]; ok && !lc.modules[m] {
@@ -238,8 +280,6 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 			loaded[t] = true
 		}
 		f := ml.flags
-		lr.veto(f.dynImport, "loaded module "+m+" imports a computed specifier")
-		lr.veto(f.computedReq, "loaded module "+m+" requires a computed specifier")
 		lr.veto(f.unreadModule, "loaded module "+m+" loads a module that is not read")
 		lr.veto(f.evaluated, "loaded module "+m+" evaluates code")
 		lr.veto(f.toolFailure || f.unsupported, "loaded module "+m+" is not fully parsed")
@@ -248,8 +288,6 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 	lr.veto((g.anyExempt || lr.anyExempt(lc.modules)) && (g.anyProto || lr.anyProto(lc.modules)),
 		"a loaded module sets a prototype while a computed read is accepted for its literal receiver")
 
-	lr.veto(g.flags.dynImport, "first-party code imports a computed specifier")
-	lr.veto(g.flags.computedReq, "first-party code requires a computed specifier")
 	lr.veto(g.flags.unreadModule, "first-party code loads a module that is not read")
 	lr.veto(g.flags.evaluated, "first-party code evaluates code")
 	lr.veto(prog.readFailed || prog.skipped || prog.unreadSource, "first-party code is not fully read")
@@ -257,15 +295,90 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 		lr.veto(!isNodeBuiltin(s.spec), "first-party load of "+s.spec+" is not covered by read code")
 	}
 
+	if len(computed) > 0 {
+		lc.Assumptions = []string{computedLoadAssumption(slices.Sorted(maps.Keys(computed)))}
+	}
 	lc.Loaded = slices.Sorted(maps.Keys(loaded))
 	lc.Vetoes = slices.Sorted(maps.Keys(lr.vetoes))
 	lc.Complete = len(lc.Vetoes) == 0
 	return lc
 }
 
-// scopeCalls bounds the limits that hide calls, not loads, to what a complete closure loads: a
-// call the lane does not list, or one into code it does not open, lands only on code that has
-// loaded.
+// computedLoadAssumption is the assumption a clear rests on when the closure holds a computed
+// load: packages are the packages whose loaded code holds one.
+func computedLoadAssumption(packages []string) string {
+	return "computed module loads in " + strings.Join(packages, ", ") +
+		" are assumed to resolve only to those packages' declared dependencies and the project's direct dependencies"
+}
+
+// computedLoadBound returns the installed packages a computed load in pkg is taken to reach
+// beyond pkg itself and the project's direct dependencies: the copies Node resolves pkg's
+// declared dependencies, peer and optional ones included, to. A name with no single copy on the
+// walk admits every candidate.
+func computedLoadBound(d *depGraph, pkg *depPackage) []*depEntry {
+	if pkg.manifest == nil {
+		return nil
+	}
+	return resolveDeclared(d, pkg.entry.path, pkg.manifest.declared)
+}
+
+func resolveDeclared(d *depGraph, fromDir string, names []string) []*depEntry {
+	var out []*depEntry
+	for _, name := range names {
+		e, candidates := d.layout.walk(fromDir, name)
+		if e != nil {
+			candidates = []*depEntry{e}
+		}
+		out = append(out, candidates...)
+	}
+	return out
+}
+
+// projectDirectDeps returns the installed copies of every dependency a first-party
+// package.json declares, development ones included, resolved from its directory.
+func projectDirectDeps(prog *program, lr *loadRecord) []*depEntry {
+	var out []*depEntry
+	for _, mp := range firstPartyManifests(prog, lr) {
+		data, err := os.ReadFile(mp)
+		rel, rerr := filepath.Rel(prog.root, filepath.Dir(mp))
+		m := parsePkgManifest(data)
+		if err != nil || rerr != nil || m == nil {
+			lr.veto(true, "a first-party package.json could not be read for its dependencies")
+			continue
+		}
+		dir := filepath.ToSlash(rel)
+		out = append(out, resolveDeclared(prog.deps, dir, m.declared)...)
+		out = append(out, resolveDeclared(prog.deps, dir, m.devDeclared)...)
+	}
+	return out
+}
+
+// firstPartyManifests returns every first-party package.json, sorted.
+func firstPartyManifests(prog *program, lr *loadRecord) []string {
+	var manifests []string
+	_ = filepath.WalkDir(prog.root, func(p string, de os.DirEntry, err error) error {
+		if err != nil {
+			lr.veto(true, "a first-party directory could not be read")
+			return nil //nolint:nilerr // keep walking: the other manifests are still read.
+		}
+		if de.IsDir() {
+			if p != prog.root && skipDir(de.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if de.Name() == "package.json" {
+			manifests = append(manifests, p)
+		}
+		return nil
+	})
+	slices.Sort(manifests)
+	return manifests
+}
+
+// scopeCalls bounds the limits that hide calls, and the computed loads taken to stay inside
+// their bound, to what a complete closure loads: a call the lane does not list, one into code
+// it does not open, or a bounded computed load lands only on code that has loaded.
 func (lc *loadClosure) scopeCalls(flags partialFlags) partialFlags {
 	targets := append(append([]string(nil), lc.Loaded...), "")
 	bound := func(reason string) {
@@ -278,6 +391,14 @@ func (lc *loadClosure) scopeCalls(flags partialFlags) partialFlags {
 	if flags.unlisted {
 		flags.unlisted = false
 		bound(plugin.PartialReasonUnlistedSites)
+	}
+	if flags.dynImport {
+		flags.dynImport = false
+		bound(plugin.PartialReasonDynamicImportSpecifier)
+	}
+	if flags.computedReq {
+		flags.computedReq = false
+		bound(plugin.PartialReasonComputedRequireSpecifier)
 	}
 	flags.scoped = sortedScoped(flags.scoped)
 	return flags
@@ -355,24 +476,7 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 		}
 	}
 
-	var manifests []string
-	_ = filepath.WalkDir(prog.root, func(p string, de os.DirEntry, err error) error {
-		if err != nil {
-			lr.veto(true, "a first-party directory could not be read")
-			return nil //nolint:nilerr // keep walking: the other manifests are still read.
-		}
-		if de.IsDir() {
-			if p != prog.root && skipDir(de.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if de.Name() == "package.json" {
-			manifests = append(manifests, p)
-		}
-		return nil
-	})
-	slices.Sort(manifests)
+	manifests := firstPartyManifests(prog, lr)
 
 	rs := prog.resolver()
 	var roots []entryRoot

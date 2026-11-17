@@ -46,7 +46,16 @@ func TestLoadClosure_Refutes(t *testing.T) {
 	)
 	idle := func() *depPkg { return closurePkg("idle", nil) }
 	used := func(src string) *depPkg { return closurePkg("used", map[string]string{"index.js": src}) }
-	const usedPlain = "exports.run = function run() {};\n"
+	const (
+		usedPlain    = "exports.run = function run() {};\n"
+		computedLoad = "exports.run = function run(n) { return require(n); };\n"
+	)
+	usedDeclaring := func(field string) *depPkg {
+		return closurePkg("used", map[string]string{"package.json": `{"name":"used","version":"1.0.0","main":"index.js","` + field + `":{"idle":"*"}}`, "index.js": computedLoad})
+	}
+	projectDeclaring := func(field string) string {
+		return `{"name":"app","version":"1.0.0","` + field + `":{"idle":"*"}}`
+	}
 	scripts := func(line string) string {
 		return `{"name":"app","version":"1.0.0","scripts":{"start":"` + line + `"}}`
 	}
@@ -56,6 +65,8 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		pkgs   []*depPkg
 		unread []string
 		want   bool
+		// assumed names the packages whose computed loads the closure bounds.
+		assumed string
 	}{
 		{name: "nothing loads it", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true},
 		{name: "first-party loads it", first: map[string]string{"index.js": app + "require('idle');\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
@@ -66,14 +77,41 @@ func TestLoadClosure_Refutes(t *testing.T) {
 			{path: "node_modules/used/node_modules/idle", name: "idle", version: "2.0.0", files: map[string]string{"package.json": `{"name":"idle","version":"2.0.0","main":"index.js"}`, "index.js": usedPlain}},
 		}},
 
-		{name: "computed require in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("exports.run = function run(n) { return require(n); };\n"), idle()}},
-		{name: "computed import in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("exports.run = function run(n) { return import(n); };\n"), idle()}},
+		// A computed load is bounded to the loading package, its declared dependencies and the
+		// project's direct dependencies; a package outside the bound clears on that assumption.
+		{name: "computed require in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(computedLoad), idle()}, want: true, assumed: "used"},
+		{name: "computed import in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("exports.run = function run(n) { return import(n); };\n"), idle()}, want: true, assumed: "used"},
+		{name: "computed load, declared by the loading package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{usedDeclaring("dependencies"), idle()}, assumed: "used"},
+		{name: "computed load, peer of the loading package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{usedDeclaring("peerDependencies"), idle()}, assumed: "used"},
+		{name: "computed load, optional for the loading package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{usedDeclaring("optionalDependencies"), idle()}, assumed: "used"},
+		{name: "computed load, development dependency of the loading package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{usedDeclaring("devDependencies"), idle()}, want: true, assumed: "used"},
+		{name: "computed load, declared by the project", first: map[string]string{"index.js": app, "package.json": projectDeclaring("dependencies")}, pkgs: []*depPkg{used(computedLoad), idle()}, assumed: "used"},
+		{name: "computed load, development dependency of the project", first: map[string]string{"index.js": app, "package.json": projectDeclaring("devDependencies")}, pkgs: []*depPkg{used(computedLoad), idle()}, assumed: "used"},
+		{name: "computed load, declared by a workspace member", first: map[string]string{"index.js": app, "packages/a/package.json": projectDeclaring("dependencies")}, pkgs: []*depPkg{used(computedLoad), idle()}, assumed: "used"},
+		{name: "project dependency with no computed load anywhere", first: map[string]string{"index.js": app, "package.json": projectDeclaring("dependencies")}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true},
+		{name: "computed load reaches a package that declares it", first: map[string]string{"index.js": app}, pkgs: []*depPkg{
+			closurePkg("used", map[string]string{"package.json": `{"name":"used","version":"1.0.0","main":"index.js","dependencies":{"mid":"*"}}`, "index.js": computedLoad}),
+			closurePkg("mid", map[string]string{"package.json": `{"name":"mid","version":"1.0.0","main":"index.js","dependencies":{"idle":"*"}}`}), idle()}, want: true, assumed: "used"},
+		{name: "computed load reaches a module that loads it", first: map[string]string{"index.js": app}, pkgs: []*depPkg{
+			closurePkg("used", map[string]string{"package.json": `{"name":"used","version":"1.0.0","main":"index.js","dependencies":{"mid":"*"}}`, "index.js": computedLoad}),
+			closurePkg("mid", map[string]string{"lib/deep.js": "require('idle');\n"}), idle()}, assumed: "used"},
+		{name: "computed load reaches another computed load", first: map[string]string{"index.js": app}, pkgs: []*depPkg{
+			closurePkg("used", map[string]string{"package.json": `{"name":"used","version":"1.0.0","main":"index.js","dependencies":{"mid":"*"}}`, "index.js": computedLoad}),
+			closurePkg("mid", map[string]string{"package.json": `{"name":"mid","version":"1.0.0","main":"index.js","dependencies":{"idle":"*"}}`, "lib/deep.js": computedLoad}), idle()}, assumed: "mid, used"},
+		{name: "computed load reaches evaluated code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{
+			closurePkg("used", map[string]string{"package.json": `{"name":"used","version":"1.0.0","main":"index.js","dependencies":{"mid":"*"}}`, "index.js": computedLoad}),
+			closurePkg("mid", map[string]string{"lib/deep.js": "module.exports = function (s) { return eval(s); };\n"}), idle()}},
+		{name: "computed load in an unreached module of a loaded package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{
+			closurePkg("used", map[string]string{"package.json": `{"name":"used","version":"1.0.0","main":"index.js","dependencies":{"idle":"*"}}`, "lib/deep.js": computedLoad}), idle()}, want: true},
+		{name: "computed load reaches its own unreached module", first: map[string]string{"index.js": app}, pkgs: []*depPkg{
+			closurePkg("used", map[string]string{"index.js": computedLoad, "lib/deep.js": "require('idle');\n"}), idle()}, assumed: "used"},
 		{name: "eval in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("exports.run = function run(s) { return eval(s); };\n"), idle()}},
 		{name: "child process in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("const cp = require('child_process');\n" + usedPlain), idle()}},
 		{name: "node: child process in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("const cp = require('node:child_process');\n" + usedPlain), idle()}},
 		{name: "createRequire in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("const m = require('module');\n" + usedPlain), idle()}},
 		{name: "other builtin in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("const fs = require('fs');\n" + usedPlain), idle()}, want: true},
-		{name: "computed require in first-party code", first: map[string]string{"index.js": app + "module.exports = function (n) { return require(n); };\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "computed require in first-party code", first: map[string]string{"index.js": app + "module.exports = function (n) { return require(n); };\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true, assumed: "first-party code"},
+		{name: "computed require in first-party code, declared by the project", first: map[string]string{"index.js": app + "module.exports = function (n) { return require(n); };\n", "package.json": projectDeclaring("optionalDependencies")}, pkgs: []*depPkg{used(usedPlain), idle()}, assumed: "first-party code"},
 		{name: "child process in first-party code", first: map[string]string{"index.js": app + "require('child_process');\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 
 		{name: "computed require outside the closure", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"index.js": "exports.run = function run(n) { return require(n); };\n"})}, want: true},
@@ -114,6 +152,13 @@ func TestLoadClosure_Refutes(t *testing.T) {
 			_, lc := closureOf(t, f, tc.unread...)
 			if got := lc.refutes(purl); got != tc.want {
 				t.Errorf("refutes(%s) = %v, want %v; closure %+v", purl, got, tc.want, lc)
+			}
+			var want []string
+			if tc.assumed != "" {
+				want = []string{"computed module loads in " + tc.assumed + " are assumed to resolve only to those packages' declared dependencies and the project's direct dependencies"}
+			}
+			if lc.Complete && !slices.Equal(lc.Assumptions, want) {
+				t.Errorf("assumptions = %q, want %q", lc.Assumptions, want)
 			}
 			if lc.refutes("pkg:npm/used@1.0.0") {
 				t.Errorf("a package first-party code loads is refuted; closure %+v", lc)

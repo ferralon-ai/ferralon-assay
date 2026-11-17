@@ -153,6 +153,7 @@ func TestRunFixtures(t *testing.T) {
 		"-advisory-signals":       filepath.Join(realRoot, "intel/corpus-test/signals.json.gz"),
 		"-advisory-corpus-policy": "full",
 		"-scan-timeout":           "22m",
+		"-subject-go-version":     "go1.23.12",
 		"-out":                    filepath.Join(out, "met"),
 	} {
 		if got := argValue(req.Args, flag); got != want {

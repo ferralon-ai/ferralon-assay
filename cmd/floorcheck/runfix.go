@@ -558,7 +558,8 @@ func scanAndCompare(ctx context.Context, o runOptions, name string, fx Fixture, 
 }
 
 // scanArgs is the scanner's command line for a fixture: the flags floor/scan.sh passes, from the
-// scenario, then the scenario's own scan.flags.
+// scenario, the scenario's pinned Go release as the subject's toolchain, then the scenario's own
+// scan.flags.
 func scanArgs(fx Fixture, target, outDir, timeout string) []string {
 	repo, _ := subjectRepo(fx.Scenario.Repo)
 	args := []string{
@@ -575,6 +576,9 @@ func scanArgs(fx Fixture, target, outDir, timeout string) []string {
 		args = append(args, "-advisory-signals", fx.SignalsPath)
 	}
 	args = append(args, "-require-advisory-corpus", "-scan-timeout", timeout)
+	if g := fx.Scenario.Build.Go; g != "" {
+		args = append(args, "-subject-go-version", "go"+g)
+	}
 	return append(args, fx.Scenario.Scan.Flags...)
 }
 

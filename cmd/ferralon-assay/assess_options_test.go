@@ -14,28 +14,45 @@ func applyAll(opts []pipeline.AssessOption) pipeline.AssessConfig {
 	return cfg
 }
 
-// TestBaselineAssessOptions_KeepsTheSubjectGoToolchainOut pins that baseline keeps the subject Go
-// toolchain and its reachability gate out of its options.
-func TestBaselineAssessOptions_KeepsTheSubjectGoToolchainOut(t *testing.T) {
+// TestBaselineAssessOptions pins that baseline takes the subject's Go toolchain and the
+// subject-toolchain reachability setting, as the run path does.
+func TestBaselineAssessOptions(t *testing.T) {
 	t.Setenv(envAdvisoryCorpusDir, "")
 	t.Setenv(envAdvisoryCorpusPolicy, "")
 	t.Setenv(envCIGoVersion, "")
-	t.Setenv(envSubjectToolchainReach, "1")
-	f := runFlagsFor(t, "-subject-go-version", "1.22.5")
-	pluginApplied := false
-	opts, err := f.baselineAssessOptions(func(*pipeline.AssessConfig) { pluginApplied = true })
-	if err != nil {
-		t.Fatalf("baselineAssessOptions: %v", err)
+	tests := []struct {
+		name      string
+		reach     string
+		args      []string
+		envGo     string
+		wantGo    string
+		wantReach bool
+	}{
+		{name: "declared by flag", reach: "1", args: []string{"-subject-go-version", "1.22.5"}, wantGo: "1.22.5", wantReach: true},
+		{name: "declared by env", envGo: "1.25.14", wantGo: "1.25.14", wantReach: true},
+		{name: "nothing stated", wantReach: true},
+		{name: "reachability turned off", reach: "false", args: []string{"-subject-go-version", "1.22.5"}, wantGo: "1.22.5"},
 	}
-	cfg := applyAll(opts)
-	if !pluginApplied {
-		t.Error("plugin option dropped")
-	}
-	if cfg.SubjectGoVersion != "" {
-		t.Errorf("baseline took the subject Go toolchain %q", cfg.SubjectGoVersion)
-	}
-	if cfg.SubjectToolchainReachability {
-		t.Error("baseline took the run path's subject-toolchain reachability gate")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(envSubjectToolchainReach, tt.reach)
+			t.Setenv(envSubjectGoVersion, tt.envGo)
+			pluginApplied := false
+			opts, err := runFlagsFor(t, tt.args...).baselineAssessOptions(func(*pipeline.AssessConfig) { pluginApplied = true })
+			if err != nil {
+				t.Fatalf("baselineAssessOptions: %v", err)
+			}
+			cfg := applyAll(opts)
+			if !pluginApplied {
+				t.Error("plugin option dropped")
+			}
+			if cfg.SubjectGoVersion != tt.wantGo {
+				t.Errorf("SubjectGoVersion = %q, want %q", cfg.SubjectGoVersion, tt.wantGo)
+			}
+			if cfg.SubjectToolchainReachability != tt.wantReach {
+				t.Errorf("SubjectToolchainReachability = %v, want %v", cfg.SubjectToolchainReachability, tt.wantReach)
+			}
+		})
 	}
 }
 

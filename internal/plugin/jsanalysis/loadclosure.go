@@ -348,13 +348,18 @@ func computedLoadAssumption(packages []string) string {
 // the loading package or inside a node_modules, an absolute path, a URL, a package alias, or a
 // built-in that loads or runs other code.
 func prefixTargets(d *depGraph, entries []*depEntry, pkgPath, module, prefix string) ([]*depEntry, bool) {
-	if strings.ContainsRune(prefix, '\\') {
-		return nil, false // a path separator where the scanned code runs on Windows
+	// Whatever the prefix names, its path must not enter a node_modules, and the runtime part
+	// must not be able to complete its last segment into `..` or `node_modules`. A backslash
+	// separates paths where the scanned code runs on Windows; a percent sign is decoded by
+	// import().
+	segs := strings.Split(prefix, "/")
+	if strings.ContainsAny(prefix, `\%`) || slices.Contains(segs, "node_modules") || opensSegment(segs[len(segs)-1], "..", "node_modules") {
+		return nil, false
 	}
 	if prefix == "." || prefix == ".." || strings.HasPrefix(prefix, "./") || strings.HasPrefix(prefix, "../") {
 		slash := strings.LastIndexByte(prefix, '/')
-		if slash < 0 || opensSegment(prefix[slash+1:], "..", "node_modules") {
-			return nil, false // the runtime part may complete the last segment
+		if slash < 0 {
+			return nil, false
 		}
 		dir := path.Join(moduleDir(module), prefix[:slash])
 		rel, inside := dir, dir != ".." && !strings.HasPrefix(dir, "../")
@@ -382,7 +387,7 @@ func prefixTargets(d *depGraph, entries []*depEntry, pkgPath, module, prefix str
 		}
 		return candidates, true
 	}
-	if slices.ContainsFunc(loadCapableBuiltins, func(b string) bool { return strings.HasPrefix(b, p) }) || opensSegment(p, loadSchemes...) {
+	if slices.ContainsFunc(loadCapableBuiltins, func(b string) bool { return strings.HasPrefix(b, p) }) || opensSegment(strings.ToLower(p), loadSchemes...) {
 		return nil, false
 	}
 	var named []*depEntry

@@ -235,7 +235,8 @@ func TestFloorWorkflowSummary(t *testing.T) {
 				data := []byte("{\"fixtures\": [")
 				if outcome != "damaged" {
 					var err error
-					fs := FixtureSummary{Fixture: name, Outcome: outcome, Counts: Counts{Met: 3}, Unexpected: 7, Drift: 4}
+					fs := FixtureSummary{Fixture: name, Outcome: outcome, Counts: Counts{Met: 3}, Unexpected: 7, Drift: 4,
+						Expectations: []ExpectSummary{{Advisory: "CVE-9-" + name, Package: "m", Outcome: OutcomeMet, Floor: "reachable_candidate", Observed: "reachable_candidate"}}}
 					switch outcome {
 					case OutcomeRegressed:
 						fs.Counts.Regressed, fs.Regressed = 1, []string{"CVE-1 lost"}
@@ -264,8 +265,15 @@ func TestFloorWorkflowSummary(t *testing.T) {
 				t.Errorf("exit %d, want %d\n%s", code, tc.want, out)
 			}
 			md, _ := os.ReadFile(filepath.Join(dir, "step.md"))
-			if tc.outcomes["c"] == OutcomePass && !strings.Contains(string(md), "| c | pass | 0 | 3 | 0 | 0 | 7 | 4 |") {
-				t.Errorf("the table does not show fixture c's unexpected and drift counts:\n%s", md)
+			if tc.outcomes["c"] == OutcomePass {
+				for _, row := range []string{
+					"| **c** | **pass** | - | **3** | - | - | **7** | **4** |",
+					"| &nbsp;&nbsp;↳ CVE-9-c `m` | met <sub>floor reachable_candidate, saw reachable_candidate</sub> |  | ✓ |  |  | | |",
+				} {
+					if !strings.Contains(string(md), row) {
+						t.Errorf("the table lacks %q:\n%s", row, md)
+					}
+				}
 			}
 			verdict := map[int]string{0: "pass", 1: "regressed", 2: "incomplete"}[tc.want]
 			if !strings.HasPrefix(string(md), "## ") || !strings.Contains(strings.SplitN(string(md), "\n", 2)[0], "Floor run "+verdict+": ") {

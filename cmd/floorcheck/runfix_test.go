@@ -215,6 +215,17 @@ func TestRunFixtures(t *testing.T) {
 	if sum.Exit != 1 || len(sum.Fixtures) != 4 {
 		t.Errorf("summary exit %d over %d fixtures", sum.Exit, len(sum.Fixtures))
 	}
+	for _, fs := range sum.Fixtures {
+		c := fs.Counts
+		if n := c.Regressed + c.Met + c.Improved + c.Incomplete; len(fs.Expectations) != n {
+			t.Errorf("%s: %d expectations in the summary, %d counted", fs.Fixture, len(fs.Expectations), n)
+		}
+		for _, e := range fs.Expectations {
+			if e.Advisory == "GO-1" && e.Outcome == OutcomeRegressed && (e.Floor != "not_exploitable" || e.Observed != "reachable_candidate") {
+				t.Errorf("%s: regressed GO-1 summarized as %+v", fs.Fixture, e)
+			}
+		}
+	}
 	md, err := os.ReadFile(filepath.Join(out, fileSummaryMD))
 	if err != nil {
 		t.Fatal(err)

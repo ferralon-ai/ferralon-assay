@@ -764,6 +764,17 @@ type FixtureSummary struct {
 	Incomplete []string `json:"incomplete,omitempty"`
 	Unexpected int      `json:"unexpected"`
 	Drift      int      `json:"drift"`
+	// Expectations is each expectation's outcome, in the fixture's order.
+	Expectations []ExpectSummary `json:"expectations,omitempty"`
+}
+
+// ExpectSummary is one expectation's outcome in a run summary.
+type ExpectSummary struct {
+	Advisory string         `json:"advisory"`
+	Package  string         `json:"package"`
+	Outcome  string         `json:"outcome"`
+	Floor    report.Verdict `json:"floor"`
+	Observed report.Verdict `json:"observed,omitempty"`
 }
 
 // Counts is how many expectations reached each outcome.
@@ -787,6 +798,11 @@ func summarizeRun(results []FixtureResult) RunSummary {
 			if e.Compared != nil {
 				observed = " observed " + string(e.Compared.Verdict)
 			}
+			es := ExpectSummary{Advisory: e.Advisory, Package: e.Package, Outcome: e.Outcome, Floor: e.Floor}
+			if e.Compared != nil {
+				es.Observed = e.Compared.Verdict
+			}
+			sum.Expectations = append(sum.Expectations, es)
 			switch e.Outcome {
 			case OutcomeRegressed:
 				sum.Counts.Regressed++

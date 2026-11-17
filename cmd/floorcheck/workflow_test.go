@@ -268,7 +268,7 @@ func TestFloorWorkflowSummary(t *testing.T) {
 			if tc.outcomes["c"] == OutcomePass {
 				for _, row := range []string{
 					"| **c** | **pass** | - | **3** | - | - | **7** | **4** |",
-					"| &nbsp;&nbsp;↳ CVE-9-c `m` | met <sub>floor reachable_candidate, saw reachable_candidate</sub> |  | ✓ |  |  | | |",
+					"| <sub>&nbsp;&nbsp;↳ CVE-9-c</sub><br><sup>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`m`</sup> |  |  | ✓ |  |  | | |",
 				} {
 					if !strings.Contains(string(md), row) {
 						t.Errorf("the table lacks %q:\n%s", row, md)

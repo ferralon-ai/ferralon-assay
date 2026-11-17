@@ -256,7 +256,7 @@ jobs:
               | "| **\(.fixture)** | **\(.outcome)** | \(.counts.regressed | n) | \(.counts.met | n) | \(.counts.improved | n) | \(.counts.incomplete | n) | \(.unexpected | n) | \(.drift | n) |",
                 ((.expectations // [])[]
                  | .outcome as $o
-                 | "| &nbsp;&nbsp;↳ \(.advisory | cell)\(if (.package // "") | IN("", "-") then "" else " `\(.package | cell)`" end) | \($o) <sub>floor \(.floor)\(if .observed then ", saw \(.observed)" else "" end)</sub> | \(mark($o; "regressed")) | \(mark($o; "met")) | \(mark($o; "improved")) | \(mark($o; "incomplete")) | | |")' all.json
+                 | "| <sub>&nbsp;&nbsp;↳ \(.advisory | cell)</sub>\(if (.package // "") | IN("", "-") then "" else "<br><sup>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`\(.package | cell)`</sup>" end) | \(if $o == "met" then "" else "\($o | .[:1] | ascii_upcase)\($o[1:])<br><sub>Expected:</sub><br><sup>\(.floor)</sup>\(if .observed then "<br><sub>Finding:</sub><br><sup>\(.observed)</sup>" else "" end)" end) | \(mark($o; "regressed")) | \(mark($o; "met")) | \(mark($o; "improved")) | \(mark($o; "incomplete")) | | |")' all.json
             for m in $missing; do echo "| $m | no observation | | | | | | |"; done
             jq -r '
               def section(t; k): [sort_by(.fixture)[] | .fixture as $f | (.[k] // [])[] | "- \($f): \(.)"]

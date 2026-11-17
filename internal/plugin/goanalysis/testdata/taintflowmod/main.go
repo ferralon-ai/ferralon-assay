@@ -12,8 +12,11 @@
 //
 // The controls sit beside them: field reads and a first-party call, which were always
 // tainted, and a library call, an append and a copy over values never derived from
-// the request, and a context passed to an interface method, which must stay
-// untainted. Apart from them sit the places taint stops: a store through a global
+// the request, and a context passed to an interface method, whose result must stay
+// untainted. A call to a method of an interface declared here carries its argument into
+// each implementation, by value or by pointer, and into nothing else: not the other
+// parameters, not through a tainted receiver, and not through an interface a dependency
+// declares. Apart from them sit the places taint stops: a store through a global
 // pointer, through a package-level struct value, and through a pointer a closure
 // captures, each read back afterwards, and a pointer a call writes through, library
 // (json.Unmarshal) or first-party, read back after the call. Those reads do receive
@@ -73,6 +76,12 @@ func sinkOutArgOwn(v string)      { sunk = append(sunk, v) }
 func sinkCtxOwn(v string)   { sunk = append(sunk, v) }
 func sinkCtxIface(v string) { sunk = append(sunk, v) }
 
+func sinkIfaceArg(v string)      { sunk = append(sunk, v) }
+func sinkIfacePtrArg(v string)   { sunk = append(sunk, v) }
+func sinkIfaceOtherArg(v string) { sunk = append(sunk, v) }
+func sinkIfaceRecv(v string)     { sunk = append(sunk, v) }
+func sinkIfaceDep(v []byte)      { sunk = append(sunk, v) }
+
 // greeting is never derived from the request.
 var greeting = " hello "
 
@@ -108,6 +117,45 @@ type store interface {
 type memStore struct{}
 
 func (memStore) Get(ctx http.Context, key string) string { return "v-" + key }
+
+// verifier is declared here and called through, so the call reaches both implementations.
+type verifier interface {
+	Verify(token, secret string) bool
+}
+
+type valueVerifier struct{}
+
+func (valueVerifier) Verify(token, secret string) bool {
+	sinkIfaceArg(token)
+	sinkIfaceOtherArg(secret)
+	return token == secret
+}
+
+type pointerVerifier struct{ n int }
+
+func (p *pointerVerifier) Verify(token, secret string) bool {
+	sinkIfacePtrArg(token)
+	return p.n > 0
+}
+
+// echoer is called on a receiver that holds request data, with no argument.
+type echoer interface{ Echo() string }
+
+type reqEcho struct{ s string }
+
+func (e reqEcho) Echo() string {
+	sinkIfaceRecv(e.s)
+	return e.s
+}
+
+// capture implements the http stand-in's ResponseWriter, an interface a dependency
+// declares.
+type capture struct{}
+
+func (capture) Write(b []byte) (int, error) {
+	sinkIfaceDep(b)
+	return len(b), nil
+}
 
 // named is the struct a call writes a request value into through a pointer.
 type named struct{ Name string }
@@ -199,6 +247,16 @@ func flows(w http.ResponseWriter, r *http.Request) {
 	sinkCtxOwn(lookup(ctx, "const"))
 	var st store = memStore{}
 	sinkCtxIface(st.Get(ctx, "const"))
+
+	// An argument of a call through an interface declared here reaches the matching
+	// parameter of every implementation.
+	for _, v := range []verifier{valueVerifier{}, &pointerVerifier{}} {
+		v.Verify(r.Method, "const")
+	}
+	var e echoer = reqEcho{s: r.Method}
+	e.Echo()
+	var out http.ResponseWriter = capture{}
+	out.Write([]byte(r.Method))
 }
 
 func main() {

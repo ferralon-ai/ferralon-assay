@@ -3,7 +3,8 @@
 // map lookup, the stores through an element or nested field address that a variadic
 // call, a slice literal or a nested struct makes, a store through a pointer field or a
 // slice view, the append and copy builtins, the spread of a request's context, the
-// sanitizer model that body-less forwarding brings into effect, and the places taint
+// sanitizer model that body-less forwarding brings into effect, a call through an
+// interface the module declares, and the places taint
 // stops: where the chain of bases ends, and at a pointer a call writes through.
 //
 // They run runTaint over taintflowmod's main.go, type-checked and built in memory
@@ -130,6 +131,13 @@ func TestRunTaint_FlowShapes(t *testing.T) {
 		// interface method, a call with no static callee, leaves the result clean.
 		{"first-party lookup(ctx, const)", "sinkCtxOwn", true},
 		{"interface method st.Get(ctx, const)", "sinkCtxIface", false},
+		// An argument of a call through an interface the module declares reaches the
+		// matching parameter of each implementation, and nothing else.
+		{"interface call, value-receiver implementation", "sinkIfaceArg", true},
+		{"interface call, pointer-receiver implementation", "sinkIfacePtrArg", true},
+		{"interface call, the implementation's other parameter", "sinkIfaceOtherArg", false},
+		{"interface call on a receiver holding request data", "sinkIfaceRecv", false},
+		{"call through an interface a dependency declares", "sinkIfaceDep", false},
 	}
 	app := buildTaintModule(t, "tegron.test/taintflowmod", "testdata/taintflowmod/main.go")
 	sp := &ssaProgram{prog: app.Prog}
@@ -147,6 +155,42 @@ func TestRunTaint_FlowShapes(t *testing.T) {
 	for _, r := range rows {
 		if _, got := hits[ids[r.sink]]; got != r.tainted {
 			t.Errorf("%s: tainted = %v, want %v", r.shape, got, r.tainted)
+		}
+	}
+}
+
+// TestRunTaint_InterfaceCallHitsImplementations: a tainted argument of a call through an
+// interface the module declares is a hit on each implementation, credited to the
+// ingress, as a static call to it would be; the implementation of an interface a
+// dependency declares, and one reached only on a tainted receiver, are not.
+func TestRunTaint_InterfaceCallHitsImplementations(t *testing.T) {
+	app := buildTaintModule(t, "tegron.test/taintflowmod", "testdata/taintflowmod/main.go")
+	sp := &ssaProgram{prog: app.Prog}
+	hits, _ := runTaint(sp, map[string]*ssa.Function{"flows": app.Func("flows")}, nil)
+	for _, r := range []struct {
+		typ, method string
+		pointer     bool
+		hit         bool
+	}{
+		{"valueVerifier", "Verify", false, true},
+		{"pointerVerifier", "Verify", true, true},
+		{"reqEcho", "Echo", false, false},
+		{"capture", "Write", false, false},
+	} {
+		var recv types.Type = app.Type(r.typ).Type()
+		if r.pointer {
+			recv = types.NewPointer(recv)
+		}
+		fn := app.Prog.LookupMethod(recv, app.Pkg, r.method)
+		if fn == nil {
+			t.Fatalf("no method %s.%s", r.typ, r.method)
+		}
+		ingress, got := hits[sp.scipFunc(fn)]
+		if got != r.hit {
+			t.Errorf("%s.%s: hit = %v, want %v", r.typ, r.method, got, r.hit)
+		}
+		if got && ingress != "flows" {
+			t.Errorf("%s.%s: credited to %q, want flows", r.typ, r.method, ingress)
 		}
 	}
 }

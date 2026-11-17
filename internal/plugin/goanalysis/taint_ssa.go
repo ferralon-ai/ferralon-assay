@@ -3,6 +3,8 @@ package goanalysis
 import (
 	"cmp"
 	"go/token"
+	"go/types"
+	"slices"
 	"sort"
 	"strings"
 
@@ -29,6 +31,8 @@ type taintAnalysis struct {
 	onPath map[*ssa.Function]bool
 	// hits maps a sink SCIP id to the ingress SCIP id that reached it.
 	hits map[string]string
+	// impls caches implementations by interface method.
+	impls map[*types.Func][]*ssa.Function
 }
 
 type taintOrigin struct {
@@ -48,6 +52,7 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 		origin:  map[ssa.Value]taintOrigin{},
 		onPath:  map[*ssa.Function]bool{},
 		hits:    map[string]string{},
+		impls:   map[*types.Func][]*ssa.Function{},
 	}
 
 	var work []ssa.Value
@@ -299,6 +304,10 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 		return
 	}
 
+	if common.IsInvoke() {
+		ta.propagateInvoke(common, v, o, seed)
+	}
+
 	callee := common.StaticCallee()
 
 	// Sink check: a tainted value used as an argument to a resolved sink call is
@@ -320,8 +329,10 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 		// callee (r.Header.Get, url.Values.Get, strings.TrimSpace) has none: an
 		// unmodeled transform forwards taint from a tainted argument, the receiver
 		// included, to its result. A (T, error) result's tuple carries it to its
-		// Extract. A dynamic call with no static callee forwards nothing; the
-		// append and copy builtins are modeled above (propagateBuiltin).
+		// Extract. A dynamic call with no static callee forwards nothing to its
+		// result (propagateInvoke carries an argument into the build's own
+		// implementations); the append and copy builtins are modeled above
+		// (propagateBuiltin).
 		// Only the result is tainted, never a pointer argument the callee writes
 		// through: json.Unmarshal(body, &v) and json.NewDecoder(r.Body).Decode(&req)
 		// leave v and req clean, so a sink that reads them is not a taint hit. This
@@ -374,6 +385,91 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 	if val, ok := in.(ssa.Value); ok {
 		seed(val, o)
 	}
+}
+
+// propagateInvoke handles a tainted argument v of a call to a method of an interface the
+// build's own code declares. The call has no static callee, so v goes to every method of
+// the build's own types that the call can reach (implementations): each is a sink hit, as
+// a static call to it would be, and its matching parameter is tainted. A sanitizer takes
+// nothing. A tainted receiver alone forwards nothing, and neither does any call's result:
+// seeding it would taint the result of every such call made with a tainted ctx.
+func (ta *taintAnalysis) propagateInvoke(common *ssa.CallCommon, v ssa.Value, o taintOrigin, seed func(ssa.Value, taintOrigin)) {
+	if !argContains(common.Args, v) {
+		return
+	}
+	for _, impl := range ta.implementations(common) {
+		if isSanitizer(impl) {
+			continue
+		}
+		sym := ta.sp.scipFunc(impl)
+		if ta.sinks == nil || ta.sinks[sym] {
+			if _, seen := ta.hits[sym]; !seen {
+				ta.hits[sym] = o.ingress
+			}
+		}
+		ta.onPath[impl] = true
+		for i, a := range common.Args {
+			// An invoke's Args leave the receiver out; a method's Params start with it.
+			if a == v && i+1 < len(impl.Params) {
+				seed(impl.Params[i+1], taintOrigin{ingress: o.ingress, enclFn: impl})
+			}
+		}
+	}
+}
+
+// implementations returns the methods an invoke of common's interface method can reach:
+// the method of each named, non-generic type of a package with built bodies that
+// implements the interface, by value or by pointer, where that method has a body. It is
+// empty unless the method's own package has built bodies too, so io.Writer's Write does
+// not reach every Write the build declares. The order is compareFuncs'.
+func (ta *taintAnalysis) implementations(common *ssa.CallCommon) []*ssa.Function {
+	m := common.Method
+	if impls, ok := ta.impls[m]; ok {
+		return impls
+	}
+	var impls []*ssa.Function
+	iface, _ := common.Value.Type().Underlying().(*types.Interface)
+	if iface != nil && built(ta.sp.prog.Package(m.Pkg())) {
+		for _, pkg := range ta.sp.prog.AllPackages() {
+			if !built(pkg) {
+				continue
+			}
+			for _, mem := range pkg.Members {
+				t, ok := mem.(*ssa.Type)
+				if !ok {
+					continue
+				}
+				named, ok := t.Type().(*types.Named)
+				if !ok || named.TypeParams().Len() > 0 || types.IsInterface(named) {
+					continue
+				}
+				ptr := types.NewPointer(named)
+				if !types.Implements(named, iface) && !types.Implements(ptr, iface) {
+					continue
+				}
+				sel := ta.sp.prog.MethodSets.MethodSet(ptr).Lookup(m.Pkg(), m.Name())
+				if sel == nil {
+					continue
+				}
+				if fn := ta.sp.prog.FuncValue(sel.Obj().(*types.Func)); fn != nil && fn.Blocks != nil {
+					impls = append(impls, fn)
+				}
+			}
+		}
+		slices.SortFunc(impls, ta.sp.compareFuncs)
+		impls = slices.Compact(impls)
+	}
+	ta.impls[m] = impls
+	return impls
+}
+
+// built reports whether pkg's function bodies were built: its init has one exactly then.
+func built(pkg *ssa.Package) bool {
+	if pkg == nil {
+		return false
+	}
+	init := pkg.Func("init")
+	return init != nil && init.Blocks != nil
 }
 
 // propagateBuiltin models the builtins that move data from one argument to another:

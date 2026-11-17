@@ -2,14 +2,21 @@ package trigger
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/statestore"
 )
 
 // disqualifiableSource serves GO-2021-0113's facts for every id, with the affected range closed
@@ -180,5 +187,248 @@ func TestSplitAssessStages(t *testing.T) {
 	}
 	if last := settle[len(settle)-1].Name(); last != "disqualification_discovery" {
 		t.Errorf("settle ends at %s, want disqualification_discovery", last)
+	}
+}
+
+const siblingGoMod = "module example.com/target\n\ngo 1.21\n\nrequire (\n\texample.com/lib v1.2.0\n\texample.com/lib/v2 v2.0.0\n)\n"
+
+// siblingSource serves one advisory affecting two major versions of example.com/lib, both in range
+// for the build, so the primary's assessment fans out to a sibling instance.
+type siblingSource struct{}
+
+func (siblingSource) Lookup(string) (pipeline.AdvisoryFacts, bool) {
+	facts, _ := fixtureSource().Lookup(wiringAdvisory.ID)
+	facts.Module, facts.PURL, facts.UpperExclusive, facts.FixedVersion = "example.com/lib", "pkg:golang/example.com/lib", "v1.5.0", "v1.5.0"
+	facts.AffectedPackages = []pipeline.AffectedPackage{
+		{Module: "example.com/lib", PURL: "pkg:golang/example.com/lib", UpperExclusive: "v1.5.0", FixedVersion: "v1.5.0"},
+		{Module: "example.com/lib/v2", PURL: "pkg:golang/example.com/lib/v2", UpperExclusive: "v2.5.0", FixedVersion: "v2.5.0"},
+	}
+	return facts, true
+}
+
+// stopOnNthPlugin is refutingGoPlugin whose nth Reachability call stops the scan.
+type stopOnNthPlugin struct {
+	refutingGoPlugin
+	stop  context.CancelFunc
+	calls *atomic.Int32
+	n     int32
+}
+
+func (p stopOnNthPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	if p.calls.Add(1) == p.n {
+		p.stop()
+		<-ctx.Done()
+		return plugin.ReachabilityResult{}, ctx.Err()
+	}
+	return p.refutingGoPlugin.Reachability(ctx, req)
+}
+
+// TestBaseline_CutShortCountsSiblingRows: an advisory whose assessment finished and whose sibling
+// instance the scan stopped before assessing has a scan_cut_short row for the sibling, and the
+// scan-level note counts it: the note's count is the number of scan_cut_short rows, of all rows.
+func TestBaseline_CutShortCountsSiblingRows(t *testing.T) {
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	p := stopOnNthPlugin{
+		refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()},
+		stop:             func() { cancel(errTestStop) },
+		calls:            &atomic.Int32{},
+		n:                2,
+	}
+	opts := []pipeline.AssessOption{
+		pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, siblingGoMod), lang: "go"}),
+		pipeline.WithPlugin(p),
+		pipeline.WithAdvisorySource(siblingSource{}),
+	}
+	rep := runPasses(t, passAdvisories("GO-S-1"), opts, analysis)
+	rows := rowsByID(rep)["GO-S-1"]
+	cutRows := 0
+	for _, f := range rows {
+		if f.UndeterminedReason == report.ReasonScanCutShort {
+			cutRows++
+		}
+	}
+	if len(rows) != 2 || cutRows != 1 {
+		t.Fatalf("rows for GO-S-1 = %+v, want the primary and one cut sibling", rows)
+	}
+	want := fmt.Sprintf("%d of %d advisories were not assessed: test stop", cutRows, len(rows))
+	if notes := cutShortNotes(rep); len(notes) != 1 || notes[0].Detail != want {
+		t.Errorf("scan_cut_short notes = %+v, want one %q", notes, want)
+	}
+}
+
+// storeState is the stored state a baseline report leaves.
+func storeState(r *report.Report) *statestore.State {
+	return &statestore.State{Report: r, SBOM: r.SBOM}
+}
+
+// TestCutShortKeepsDisqualified_EveryLoop: in the PR re-analysis (slow and fast path) and the
+// CVE-watch earnest run, a scan stopped inside GO-A-2's analysis still gives the disqualified
+// advisories after the stop their rows, and the note counts only the rows it cut.
+func TestCutShortKeepsDisqualified_EveryLoop(t *testing.T) {
+	ids := []string{"GO-A-1", "GO-A-2", "GO-D-1", "GO-A-3", "GO-D-2"}
+	want := map[string]report.Verdict{
+		"GO-A-1": report.VerdictNotExploitable, "GO-A-2": report.VerdictUndetermined, "GO-D-1": report.VerdictDisqualified,
+		"GO-A-3": report.VerdictUndetermined, "GO-D-2": report.VerdictDisqualified,
+	}
+	const note = "2 of 5 advisories were not assessed: test stop"
+	baseline := func(t *testing.T) *report.Report {
+		t.Helper()
+		opts, analysis := passOptions(t, "never", stopAndWait)
+		rep, err := buildBaselineReport(context.Background(), BaselineRequest{
+			Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "base-sha"},
+			Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+			Advisories:    passAdvisories("GO-A-1"),
+			AssessOptions: opts,
+			Analysis:      analysis,
+		})
+		if err != nil {
+			t.Fatalf("baseline: %v", err)
+		}
+		return rep
+	}
+	prInherit := func(t *testing.T, changeHead bool) *report.Report {
+		t.Helper()
+		base := baseline(t)
+		head := slices.Clone(base.SBOM.Packages)
+		if changeHead {
+			head = append(head, report.Package{Ecosystem: "Go", Name: "example.com/other", Version: "v1.0.0"})
+		}
+		opts, analysis := passOptions(t, "GO-A-2", stopAndWait)
+		res, err := RunPRInherit(context.Background(), &memStore{state: storeState(base)}, PRInheritRequest{
+			Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+			Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+			PRSBOM:        report.SBOM{Packages: head},
+			Advisories:    passAdvisories(ids...),
+			AssessOptions: opts,
+			Analysis:      analysis,
+		})
+		if err != nil {
+			t.Fatalf("RunPRInherit: %v", err)
+		}
+		if res.Inherited == changeHead {
+			t.Fatalf("Inherited = %v with a changed head = %v", res.Inherited, changeHead)
+		}
+		return res.Report
+	}
+	cases := []struct {
+		name string
+		run  func(t *testing.T) *report.Report
+	}{
+		{"PR re-analysis, changed head", func(t *testing.T) *report.Report { return prInherit(t, true) }},
+		{"PR re-analysis, unchanged head", func(t *testing.T) *report.Report { return prInherit(t, false) }},
+		{"CVE-watch earnest run", func(t *testing.T) *report.Report {
+			st := storeState(storedCorpus(passAdvisories("GO-A-1"), nil).state.Report)
+			st.Cursor = wiringAdvisory.ID
+			osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{
+				{ID: "GO-A-2", Package: wiringPkg}, {ID: "GO-D-1", Package: wiringPkg}, {ID: "GO-A-3", Package: wiringPkg}, {ID: "GO-D-2", Package: wiringPkg},
+			}}}
+			opts, analysis := passOptions(t, "GO-A-2", stopAndWait)
+			res, err := RunCVEWatch(context.Background(), &memStore{state: st}, osv, CVEWatchRequest{
+				Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				Advisories:    passAdvisories("GO-A-1"),
+				AssessOptions: opts,
+				Analysis:      analysis,
+			})
+			if err != nil {
+				t.Fatalf("RunCVEWatch: %v", err)
+			}
+			return res.Report
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := tc.run(t)
+			if err := rep.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			checkCutShort(t, rep, want, note)
+		})
+	}
+}
+
+// stopOnManifestPlugin is refutingGoPlugin whose nth BuildManifest call, one per advisory in its
+// inventory stage, stops the scan.
+type stopOnManifestPlugin struct {
+	refutingGoPlugin
+	stop  context.CancelFunc
+	calls *atomic.Int32
+	n     int32
+}
+
+func (p stopOnManifestPlugin) BuildManifest(ctx context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
+	if p.calls.Add(1) != p.n {
+		return p.refutingGoPlugin.BuildManifest(ctx, req)
+	}
+	p.stop()
+	<-ctx.Done()
+	return plugin.BuildManifestResult{}, ctx.Err()
+}
+
+// TestBaseline_StopDuringFirstPass: a stop inside the third advisory's manifest stage, before any
+// advisory has been analysed, leaves the advisory settled before it its disqualified row and cuts
+// every other one, the advisories that need analysis included, and the note counts them.
+func TestBaseline_StopDuringFirstPass(t *testing.T) {
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	p := stopOnManifestPlugin{
+		refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()},
+		stop:             func() { cancel(errTestStop) },
+		calls:            &atomic.Int32{},
+		n:                3,
+	}
+	opts := []pipeline.AssessOption{
+		pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
+		pipeline.WithPlugin(p),
+		pipeline.WithAdvisorySource(disqualifiableSource{}),
+	}
+	rep := runPasses(t, passAdvisories("GO-A-1", "GO-D-1", "GO-A-2", "GO-D-2"), opts, analysis)
+	checkCutShort(t, rep, map[string]report.Verdict{
+		"GO-A-1": report.VerdictUndetermined, "GO-D-1": report.VerdictDisqualified,
+		"GO-A-2": report.VerdictUndetermined, "GO-D-2": report.VerdictUndetermined,
+	}, "3 of 4 advisories were not assessed: test stop")
+}
+
+// failNthCheckout is fixedCheckout whose nth Fetch fails.
+type failNthCheckout struct {
+	fixedCheckout
+	calls *atomic.Int32
+	n     int32
+}
+
+func (c failNthCheckout) Fetch(ctx context.Context, repo, rev string) (checkout.WorkspacePlan, error) {
+	if c.calls.Add(1) == c.n {
+		return checkout.WorkspacePlan{}, errors.New("checkout failed")
+	}
+	return c.fixedCheckout.Fetch(ctx, repo, rev)
+}
+
+// TestBaseline_FirstPassErrorIsAnAssessmentFailure: an advisory whose first-pass stages fail gets the
+// failure row and note an assessment error always gets, the others keep their verdicts, and every
+// advisory, the failed one included, is counted by the per-advisory timing hook.
+func TestBaseline_FirstPassErrorIsAnAssessmentFailure(t *testing.T) {
+	opts, analysis := passOptions(t, "never", stopAndWait)
+	opts = append(opts, pipeline.WithCheckout(failNthCheckout{
+		fixedCheckout: fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"},
+		calls:         &atomic.Int32{},
+		n:             3,
+	}))
+	var observed []string
+	analysis = WithAdvisoryTiming(analysis, func(v assessment.VulnRef, _ time.Duration) { observed = append(observed, v.ID) })
+	rep := runPasses(t, passAdvisories("GO-A-1", "GO-A-2", "GO-A-3"), opts, analysis)
+
+	rows := rowsByID(rep)
+	for id, v := range map[string]report.Verdict{"GO-A-1": report.VerdictNotExploitable, "GO-A-2": report.VerdictUndetermined, "GO-A-3": report.VerdictNotExploitable} {
+		if len(rows[id]) != 1 || rows[id][0].Verdict != v {
+			t.Errorf("%s rows = %+v, want one %q", id, rows[id], v)
+		}
+	}
+	if got := rows["GO-A-2"]; len(got) == 1 && got[0].UndeterminedReason != report.ReasonAnalysisDidNotRun {
+		t.Errorf("GO-A-2 reason = %q, want %q", got[0].UndeterminedReason, report.ReasonAnalysisDidNotRun)
+	}
+	slices.Sort(observed)
+	if !slices.Equal(observed, []string{"GO-A-1", "GO-A-2", "GO-A-3"}) {
+		t.Errorf("advisories timed = %v, want all three", observed)
 	}
 }

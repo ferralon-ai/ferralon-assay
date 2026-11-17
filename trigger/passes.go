@@ -85,6 +85,7 @@ func settleWithin(analysis context.Context, req assessment.Request, settle []pip
 	}
 	s.elapsed = time.Since(start)
 	if err != nil {
+		observeAssessed(analysis, req.Vulnerability, start)
 		s.err = fmt.Errorf("trigger: assess %s: %w", req.Vulnerability.ID, err)
 		return s
 	}

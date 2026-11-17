@@ -74,6 +74,7 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		"sqlite in loaded code":                                        "loads a built-in that can load or run other code",
 		"read package's lock-recorded command with no manifest target": "names no file in its package.json",
 		"read package with an unreadable bin":                          "declares binaries the lane cannot read",
+		"unparsed .mdx source":                                         "docs/intro.mdx is not parsed",
 	}
 	for _, tc := range []struct {
 		name   string
@@ -142,6 +143,7 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		{name: "unread package loaded", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle()}, unread: []string{"used"}},
 		{name: "itself unread and not loaded", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle()}, unread: []string{"idle"}, want: true},
 
+		{name: "build installs a package no lockfile records", first: map[string]string{"index.js": app, "Dockerfile": "FROM node:22\nRUN npm install extra\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "install script in a read package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"package.json": `{"name":"other","version":"1.0.0","scripts":{"postinstall":"node x.js"}}`})}},
 		{name: "lock install script on an unread package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), {path: "node_modules/other", name: "other", version: "1.0.0", files: map[string]string{"package.json": `{"name":"other","version":"1.0.0"}`}, lockInstallScript: true}}, unread: []string{"other"}},
 
@@ -185,6 +187,22 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		{name: "Dockerfile CMD preloads it", first: map[string]string{"index.js": app, "Dockerfile": "FROM node:22\nCMD [\"node\",\"-r\",\"idle/register\",\"index.js\"]\n"}, pkgs: []*depPkg{used(usedPlain),
 			closurePkg("idle", map[string]string{"register.js": "module.exports = 1;\n"})}},
 		{name: "compose command preloads it", first: map[string]string{"index.js": app, "deploy/docker-compose.prod.yml": "services:\n  web:\n    command: node -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "Kubernetes env preloads it", first: map[string]string{"index.js": app, "k8s/deployment.yaml": "spec:\n  containers:\n  - env:\n    - name: NODE_OPTIONS\n      value: \"--require idle\"\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "Helm values preload it", first: map[string]string{"index.js": app, "chart/values.yaml": "env:\n  NODE_OPTIONS: --require idle\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "platform TOML process preloads it", first: map[string]string{"index.js": app, "fly.toml": "[processes]\napp = \"node -r idle index.js\"\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "platform YAML start command preloads it", first: map[string]string{"index.js": app, "render.yaml": "services:\n  - startCommand: node -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "composite action runs it", first: map[string]string{"index.js": app, ".github/actions/run/action.yml": "runs:\n  steps:\n    - run: node -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: ".envrc preloads it", first: map[string]string{"index.js": app, ".envrc": "export NODE_OPTIONS=\"--require idle\"\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "YAML that names nothing installed", first: map[string]string{"index.js": app, "k8s/deployment.yaml": "spec:\n  containers:\n  - command: [node, index.js]\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true},
+		{name: "unparsed .mdx source", first: map[string]string{"index.js": app, "docs/intro.mdx": "import Idle from 'idle'\n\n# Intro\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "script runs a file with no extension", first: map[string]string{"index.js": app, "server": "require('idle');\n", "package.json": scripts("node ./server")}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "launch text names a prose file with no extension", first: map[string]string{"index.js": app, "LICENSE": "MIT\n", "VERSION": "1.0.0\n", "Dockerfile": "FROM node:22\nCOPY package.json LICENSE ./\nRUN cat VERSION\nCMD [\"node\",\"index.js\"]\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true},
+		{name: "extensionless file named from a subdirectory, shadowed there", first: map[string]string{"index.js": app, "api/Dockerfile": "FROM node:22\nCMD node server\n", "api/server": "// nothing\n", "server": "require('idle');\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "prose that names NODE_OPTIONS is not a launch text", first: map[string]string{"index.js": app, "README.md": "Run with NODE_OPTIONS=--max-old-space-size=4096 and --require idle\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true},
+		{name: "JSON task definition sets NODE_OPTIONS", first: map[string]string{"index.js": app, "deploy/task-definition.json": "{\"environment\":[{\"name\":\"NODE_OPTIONS\",\"value\":\"--require idle\"}]}\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "Terraform sets NODE_OPTIONS", first: map[string]string{"index.js": app, "infra/main.tf": "environment = { NODE_OPTIONS = \"--require idle\" }\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "parsed source sets NODE_OPTIONS in a string", first: map[string]string{"index.js": app, "infra/stack.ts": "export const env = { NODE_OPTIONS: '--require idle' };\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: ".env-local preloads it", first: map[string]string{"index.js": app, ".env-local": "NODE_OPTIONS=--require=idle\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "process-manager config preloads it", first: map[string]string{"index.js": app, "ecosystem.config.js": "module.exports = { apps: [{ script: 'index.js', node_args: '-r idle' }] };\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "CI workflow runs its binary", first: map[string]string{"index.js": app, ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: node -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "git hook runs its binary", first: map[string]string{"index.js": app, ".husky/pre-commit": "node -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
@@ -372,5 +390,23 @@ func TestLoadClosure_ScriptRoots(t *testing.T) {
 	}
 	if !lc.Complete || !slices.Equal(lc.Loaded, []string{"pkg:npm/hook", "pkg:npm/tool"}) {
 		t.Errorf("want a complete closure loading hook and tool; got %+v", lc)
+	}
+}
+
+func TestLaunchFile(t *testing.T) {
+	for rel, want := range map[string]bool{
+		"pnpm-lock.yaml":                 false,
+		"packages/a/pnpm-lock.yaml":      false,
+		"k8s/deployment.yaml":            true,
+		"chart/values.yaml":              true,
+		"fly.toml":                       true,
+		".github/actions/run/action.yml": true,
+		".envrc":                         true,
+		".env-local":                     true,
+		"README.md":                      false,
+	} {
+		if got := launchFile(rel); got != want {
+			t.Errorf("launchFile(%q) = %v, want %v", rel, got, want)
+		}
 	}
 }

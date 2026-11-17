@@ -537,6 +537,42 @@ func assumptionLines(r report.Report) []string {
 			out = append(out, assumptionLine(n))
 		}
 	}
+	return append(out, declaredAssumptionLines(r)...)
+}
+
+// declaredAssumptionLines renders the declarations a not_exploitable verdict holds only under
+// (Evidence.Assumptions), one line per distinct declaration in first-seen order, naming every
+// advisory that rests on it. The declaration text carries paths the caller supplied, so it renders
+// inside a code span, as does each advisory ID.
+func declaredAssumptionLines(r report.Report) []string {
+	var order []string
+	ids := map[string][]string{}
+	for i := range r.Advisories {
+		f := &r.Advisories[i]
+		if f.Verdict != report.VerdictNotExploitable {
+			continue
+		}
+		for _, a := range f.Evidence.Assumptions {
+			if _, seen := ids[a]; !seen {
+				order = append(order, a)
+			}
+			if !slices.Contains(ids[a], f.Advisory.ID) {
+				ids[a] = append(ids[a], f.Advisory.ID)
+			}
+		}
+	}
+	out := make([]string, 0, len(order))
+	for _, a := range order {
+		adv := make([]string, len(ids[a]))
+		for i, id := range ids[a] {
+			adv[i] = mdCode(id)
+		}
+		verb := "holds"
+		if len(adv) > 1 {
+			verb = "hold"
+		}
+		out = append(out, fmt.Sprintf("%s %s only under the stated assumption: %s", strings.Join(adv, ", "), verb, mdCode(a)))
+	}
 	return out
 }
 

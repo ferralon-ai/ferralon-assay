@@ -212,6 +212,21 @@ func AssessStages(opts ...AssessOption) []Stage {
 	)
 }
 
+// SplitAssessStages is AssessStages cut after disqualification_discovery: settle holds the stages
+// that decide whether the advisory is disqualified and analyze the plugin-backed stages after it.
+// Running settle and then analyze over one assessment and store, the second under ResumingRun, runs
+// every stage once, in AssessStages' order, so a caller may stop between them having settled the
+// advisories that need no analysis.
+func SplitAssessStages(opts ...AssessOption) (settle, analyze []Stage) {
+	stages := AssessStages(opts...)
+	for i, s := range stages {
+		if s.Name() == (disqualificationDiscovery{}).Name() {
+			return stages[: i+1 : i+1], stages[i+1:]
+		}
+	}
+	return stages, nil
+}
+
 // SBOMStages returns ONLY the SBOM-producing stages — S1 advisory_intake + S2
 // codebase_inventory — in pipeline order, applying any options. It is the cheap
 // dependency-resolution slice the PR-inherit head-SBOM resolver runs (no S3–S6): S1
@@ -2756,6 +2771,13 @@ func settledByDisqualification(store artifact.Store, assessmentID string) (bool,
 		return false, nil
 	}
 	return res.Disqualified, nil
+}
+
+// SettledByDisqualification reports whether disqualification_discovery recorded the assessment as
+// disqualified, so that its verdict reads nothing the later stages write.
+func SettledByDisqualification(store artifact.Store, assessmentID string) bool {
+	settled, err := settledByDisqualification(store, assessmentID)
+	return err == nil && settled
 }
 
 // --- Stage 4: symbol_mapping --------------------------------------------------

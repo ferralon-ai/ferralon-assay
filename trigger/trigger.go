@@ -230,9 +230,10 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 
 	cut := 0
 	var assessed []report.Advisory
-	for _, adv := range admitted.Admitted {
+	passes := newAdvisoryPasses(analysis, requestsFor(admitted.Admitted, req.Codebase), assessOpts)
+	for i, adv := range admitted.Admitted {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
+		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
 			b.AddFinding(cutShortFinding(adv))
 			cut++

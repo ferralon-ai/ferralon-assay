@@ -321,9 +321,10 @@ func assessUnrowed(ctx context.Context, req PRInheritRequest, advisories []asses
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
-	for _, adv := range advisories {
+	passes := newAdvisoryPasses(analysis, requestsFor(advisories, req.Codebase), assessOpts)
+	for i, adv := range advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
+		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
 			findings = append(findings, cutShortFinding(adv))
 			cut++
@@ -376,9 +377,10 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
-	for _, adv := range req.Advisories {
+	passes := newAdvisoryPasses(analysis, requestsFor(req.Advisories, req.Codebase), assessOpts)
+	for i, adv := range req.Advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
+		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
 			reFindings[adv.ID+"\x00"+adv.Source] = cutShortFinding(adv)
 			freshIDs[adv.ID] = struct{}{}
@@ -594,11 +596,43 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	var assessed []report.Advisory
 	packages := map[string][]string{}
 	undetermined := map[string]bool{}
-	// assess assesses ref against pkg and keys the finding under key, the row it replaces.
-	assess := func(ref assessment.VulnRef, pkg *report.Package, key string) {
-		areq := assessment.Request{Vulnerability: ref, Codebase: req.Codebase}
+	// What is assessed, in order: the newly-relevant advisories, then each stored row to retry that
+	// no earlier assessment already keys.
+	type watched struct {
+		ref assessment.VulnRef
+		pkg *report.Package
+		key string
+	}
+	var todo []watched
+	keyed := map[string]struct{}{}
+	for _, a := range osvResult.Advisories {
+		if _, ok := newSet[a.ID]; !ok {
+			continue
+		}
+		pkg := a.Package
+		key := a.ID + "\x00" + osvSource
+		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, &pkg, key})
+		keyed[key] = struct{}{}
+	}
+	for _, f := range retry {
+		key := f.Advisory.ID + "\x00" + f.Advisory.Source
+		if _, ok := keyed[key]; ok {
+			continue
+		}
+		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key})
+		keyed[key] = struct{}{}
+	}
+	reqs := make([]assessment.Request, len(todo))
+	for i, w := range todo {
+		reqs[i] = assessment.Request{Vulnerability: w.ref, Codebase: req.Codebase}
+	}
+	passes := newAdvisoryPasses(analysis, reqs, assessOpts)
+	// assess assesses todo[i] and keys the finding under its key, the row it replaces.
+	assess := func(i int) {
+		ref, pkg, key := todo[i].ref, todo[i].pkg, todo[i].key
+		areq := reqs[i]
 		workSet = append(workSet, ref)
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
+		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
 			reFindings[key] = cutShortFinding(ref)
 			freshIDs[ref.ID] = struct{}{}
@@ -633,19 +667,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			undetermined[advisory.ID] = true
 		}
 	}
-	for _, a := range osvResult.Advisories {
-		if _, ok := newSet[a.ID]; !ok {
-			continue
-		}
-		pkg := a.Package
-		assess(assessment.VulnRef{ID: a.ID, Source: osvSource}, &pkg, a.ID+"\x00"+osvSource)
-	}
-	for _, f := range retry {
-		key := f.Advisory.ID + "\x00" + f.Advisory.Source
-		if _, ok := reFindings[key]; ok {
-			continue
-		}
-		assess(assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key)
+	for i := range todo {
+		assess(i)
 	}
 
 	b := report.NewBuilder(report.Subject{

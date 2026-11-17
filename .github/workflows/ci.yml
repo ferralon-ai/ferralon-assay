@@ -23,11 +23,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -54,11 +54,11 @@ jobs:
   # there; a pull request says yes only when it touches plugins/cfamily (the pin files and the cgx
   # entries of its go.mod/go.sum live there) or this workflow.
   cfamily-changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       run: ${{ steps.diff.outputs.run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -84,11 +84,11 @@ jobs:
     name: cfamily
     needs: cfamily-changes
     if: needs.cfamily-changes.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -103,13 +103,13 @@ jobs:
           go test ./...
 
   self-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # Read-only: the surfaces that need write scopes are switched off below, and no secret is used,
     # so the job behaves the same on a fork's pull request.
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Findings do not fail this job; only a failed Action or scan does. The scanner exits non-zero
       # on an error, never on a verdict, and the job keeps that contract. It checks that the Action

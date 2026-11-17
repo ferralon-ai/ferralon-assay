@@ -27,9 +27,9 @@ permissions:
 
 jobs:
   change-date-is-tbd:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: LICENSE Change Date is TBD (never committed to a branch)
         run: |

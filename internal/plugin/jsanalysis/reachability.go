@@ -29,7 +29,7 @@ import (
 //
 // A load failure is a hard error (inv.4).
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir, DependencyCache: req.DependencyCache})
+	cg, closure, err := callGraphAndClosure(ctx, req.BuildDir, req.DependencyCache)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
@@ -51,10 +51,16 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		reasons[plugin.PartialReasonDynamicDispatch] = true
 	}
 
+	// A package no module of a complete load closure loads never runs, so a symbol of it that
+	// nothing reaches is refuted, not unknown.
+	notLoaded := req.Package != "" && closure.refutes(req.Package)
 	var paths []plugin.ReachPath
 	for _, s := range req.Symbols {
 		sink := sym(s)
 		trace, ingress := ingressFirstPath(adj, ingressSources, sources, sink)
+		if trace == nil && notLoaded {
+			continue
+		}
 		if trace == nil {
 			// A sink the lexical graph cannot connect to any ingress is UNKNOWN, never
 			// "safe": the sink may be absent from the source graph (library/dynamic) or
@@ -72,12 +78,20 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		})
 	}
 
+	var refutation *plugin.Refutation
+	if notLoaded && len(paths) == 0 {
+		refutation = &plugin.Refutation{
+			Basis:   plugin.RefutationPackageNotLoaded,
+			Package: req.Package,
+			Detail:  "no installed copy of the package is loaded by a first-party module, by a binary or module a package.json script names, or by anything those load",
+		}
+	}
 	if len(reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
-		return plugin.ReachabilityResult{Partiality: plugin.Complete(), Paths: paths}, nil
+		return plugin.ReachabilityResult{Partiality: plugin.Complete(), Paths: paths, Refutation: refutation}, nil
 	}
 	part := plugin.Partial(sortedReasons(reasons)...)
 	part.Scoped = cg.Partiality.Scoped
-	return plugin.ReachabilityResult{Partiality: part, Paths: paths}, nil
+	return plugin.ReachabilityResult{Partiality: part, Paths: paths, Refutation: refutation}, nil
 }
 
 // ingressFirstPath finds the shortest path to sink from a discovered ingress, falling back

@@ -50,6 +50,12 @@ var siteReasons = []string{
 	plugin.PartialReasonEvaluatedCode,
 }
 
+// declares reports whether the graph declares reason, run-wide or bounded to the code that
+// loads.
+func declares(p plugin.Partiality, reason string) bool {
+	return hasReason(p, reason) || slices.ContainsFunc(p.Scoped, func(s plugin.ScopedReason) bool { return s.Reason == reason })
+}
+
 // completenessViolations checks one build against Eric's contract: every declined site is an
 // Unresolved entry; unlisted_sites is declared exactly when a declined site is not; every site
 // reason the graph declares is carried by an entry (or unlisted_sites is declared); an entry's
@@ -61,13 +67,13 @@ func completenessViolations(b builtGraph) []string {
 	if len(res.Unresolved) != b.declined {
 		v = append(v, fmt.Sprintf("%d Unresolved entries for %d declined sites", len(res.Unresolved), b.declined))
 	}
-	if got := hasReason(res.Partiality, plugin.PartialReasonUnlistedSites); got != b.unlisted {
+	if got := declares(res.Partiality, plugin.PartialReasonUnlistedSites); got != b.unlisted {
 		v = append(v, fmt.Sprintf("unlisted_sites declared=%v, unlisted=%v", got, b.unlisted))
 	}
 	carried := map[string]bool{}
 	for _, u := range res.Unresolved {
 		carried[u.Reason] = true
-		if !hasReason(res.Partiality, u.Reason) {
+		if !declares(res.Partiality, u.Reason) {
 			v = append(v, fmt.Sprintf("entry %s→%s carries %s, which the graph does not declare", u.Caller.SCIP, u.Callee, u.Reason))
 		}
 		if len(u.Targets) > 0 && u.Reason != plugin.PartialReasonDynamicDispatch {
@@ -545,13 +551,14 @@ func TestCompletenessViolations_CatchesADroppedEntry(t *testing.T) {
 // first-party code that declines nothing, hides no site. With the package
 // unread, the graph is the first-party one.
 func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
+	const loadsDep = "require('dep');\n"
 	dep := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: map[string]string{
 		"package.json": `{"name":"dep","version":"1.0.0"}`,
 		"index.js":     "function hook() { return 1; }\nexports.run = function run() { hook?.(); };\n",
 	}}
 	f := newDepFixture(t, map[string]string{"index.js": "require('dep').run();\n"}, dep)
 	head := withDeps(t, f.dir, f.memStore())
-	if !hasReason(head.Partiality, plugin.PartialReasonUnlistedSites) {
+	if !declares(head.Partiality, plugin.PartialReasonUnlistedSites) {
 		t.Errorf("dependency code read without unlisted_sites: %+v", head.Partiality)
 	}
 	for _, e := range head.Edges {
@@ -562,8 +569,8 @@ func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
 	if absent := withDeps(t, f.dir, artifactcache.NewDeclaredAbsentStore()); hasReason(absent.Partiality, plugin.PartialReasonUnlistedSites) {
 		t.Errorf("control: no dependency code read, yet unlisted_sites: %+v", absent.Partiality)
 	}
-	idle := newDepFixture(t, map[string]string{"index.js": guardIdle}, dep)
-	if cg := withDeps(t, idle.dir, idle.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUnlistedSites) {
+	idle := newDepFixture(t, map[string]string{"index.js": loadsDep}, dep)
+	if cg := withDeps(t, idle.dir, idle.memStore()); !declares(cg.Partiality, plugin.PartialReasonUnlistedSites) {
 		t.Errorf("a site declined in dependency code alone, without unlisted_sites: %+v", cg.Partiality)
 	}
 	plain := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: map[string]string{
@@ -575,7 +582,7 @@ func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
 		t.Errorf("control: nothing declined anywhere, yet partial: %+v", cg.Partiality)
 	}
 	hidden := newDepFixture(t, map[string]string{"index.js": "function main() { return missing(1); }\nmodule.exports = { main };\n"}, plain)
-	if cg := withDeps(t, hidden.dir, hidden.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUnlistedSites) {
+	if cg := withDeps(t, hidden.dir, hidden.memStore()); !declares(cg.Partiality, plugin.PartialReasonUnlistedSites) {
 		t.Errorf("a first-party site declined beside dependency frames Escaped omits, without unlisted_sites: %+v", cg.Partiality)
 	}
 
@@ -617,9 +624,9 @@ func TestCallGraph_DependencyCodeDeclaresUnlisted(t *testing.T) {
 			files := map[string]string{"package.json": `{"name":"dep","version":"1.0.0"}`, "index.js": tc.src}
 			maps.Copy(files, tc.extra)
 			p := &depPkg{path: "node_modules/dep", name: "dep", version: "1.0.0", files: files}
-			f := newDepFixture(t, map[string]string{"index.js": guardIdle}, append([]*depPkg{p}, tc.pkgs...)...)
+			f := newDepFixture(t, map[string]string{"index.js": loadsDep}, append([]*depPkg{p}, tc.pkgs...)...)
 			cg := withDeps(t, f.dir, f.memStore())
-			if cg.Partiality.Complete || !hasReason(cg.Partiality, plugin.PartialReasonUnlistedSites) {
+			if cg.Partiality.Complete || !declares(cg.Partiality, plugin.PartialReasonUnlistedSites) {
 				t.Errorf("a site declined in dependency code alone, without unlisted_sites: %+v", cg.Partiality)
 			}
 		})

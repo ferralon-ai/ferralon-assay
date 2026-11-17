@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -268,8 +269,13 @@ func reaches(cg plugin.CallGraphResult, name, version string) bool {
 	return slices.ContainsFunc(cg.Edges, func(e plugin.CallEdge) bool { return strings.HasPrefix(e.Callee.SCIP, want) })
 }
 
+// runWide reports whether the graph withholds over everything that runs: run-wide, or bounded
+// by a complete load closure to the code that loads, first-party included.
 func runWide(cg plugin.CallGraphResult) bool {
-	return hasReason(cg.Partiality, plugin.PartialReasonUninspectablePackage)
+	return hasReason(cg.Partiality, plugin.PartialReasonUninspectablePackage) ||
+		slices.ContainsFunc(cg.Partiality.Scoped, func(s plugin.ScopedReason) bool {
+			return s.Reason == plugin.PartialReasonUninspectablePackage && s.Package == "" && slices.Contains(s.Targets, "")
+		})
 }
 
 func hasScopedTo(p plugin.Partiality, pkg, target string) bool {
@@ -354,7 +360,7 @@ func TestSemantic_P3PnpmWorkspace(t *testing.T) {
 	lock = strings.Replace(lock, "importers:", "settings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:", 1)
 	dir := semProgram(t, pnpmLockFile, lock, map[string]string{
 		"package.json":              manifestWith("app", map[string]string{"lib": "workspace:*"}, ""),
-		"index.js":                  "require('lib');\n",
+		"index.js":                  guardIdle,
 		"pnpm-workspace.yaml":       "packages:\n  - 'packages/*'\nonlyBuiltDependencies:\n  - esbuild\nhoistPattern:\n  - '*'\n",
 		"packages/lib/package.json": manifestWith("lib", map[string]string{"p": "1.0.0"}, ""),
 		"packages/lib/index.js":     runsP,
@@ -415,7 +421,7 @@ func TestSemantic_G1SelfDescribingUnknownVersion(t *testing.T) {
 	}{{"9.0", false}, {"7.0", true}} {
 		lock := "lockfileVersion: '" + tc.ver + "'\n\nimporters:\n\n  '.': {}\n\npackages:\n\n  'opaque':\n    resolution: {integrity: " +
 			sri(q.build(t)) + "}\n    name: q\n    version: 1.0.0\n\nsnapshots:\n\n  'opaque': {}\n"
-		dir := semProgram(t, pnpmLockFile, lock, map[string]string{"package.json": manifestWith("app", nil, "")})
+		dir := semProgram(t, pnpmLockFile, lock, map[string]string{"package.json": manifestWith("app", nil, ""), "index.js": guardIdle})
 		if cg := semRun(t, dir, semStore(t, q)); runWide(cg) != tc.withheld {
 			t.Errorf("%s: run-wide = %v, want %v; got %+v", tc.ver, runWide(cg), tc.withheld, cg.Partiality)
 		}
@@ -1487,10 +1493,30 @@ func semKeys[V any](m map[string]V) []string {
 	return out
 }
 
+// semLoad matches a first-party load of a literal specifier.
+var semLoad = regexp.MustCompile(`(require\(|import\(|from |import )'([^']+)'`)
+
+// semLoadsOnly reduces a first-party module to its loads: what it loads still runs, and nothing
+// in it calls.
+func semLoadsOnly(src []byte) []byte {
+	var out []byte
+	for _, m := range semLoad.FindAllSubmatch(src, -1) {
+		if string(m[1]) == "require(" {
+			out = fmt.Appendf(out, "require('%s');\n", m[2])
+		} else {
+			out = fmt.Appendf(out, "import '%s';\n", m[2])
+		}
+	}
+	if out == nil {
+		return []byte(guardIdle)
+	}
+	return out
+}
+
 // semRun builds dir's call graph with store's dependency code twice. The edges come from the
 // build as written; the partiality comes from the same build with every first-party module
-// emptied. A first-party load of a package whose code is not read withholds run-wide in the
-// base graph, so only the emptied build shows whether the dependency lane itself withholds.
+// reduced to its loads. A first-party call into a package withholds in the base graph, so only
+// the reduced build shows whether the dependency lane itself withholds over the code that loads.
 func semRun(t *testing.T, dir string, store artifactcache.Store) plugin.CallGraphResult {
 	t.Helper()
 	loaded := withDeps(t, dir, store)
@@ -1501,7 +1527,11 @@ func semRun(t *testing.T, dir string, store artifactcache.Store) plugin.CallGrap
 		case d.IsDir() && d.Name() == "node_modules":
 			return filepath.SkipDir
 		case !d.IsDir() && strings.HasSuffix(p, ".js"):
-			return os.WriteFile(p, []byte(guardIdle), 0o644)
+			src, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(p, semLoadsOnly(src), 0o644)
 		}
 		return nil
 	})

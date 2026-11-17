@@ -71,13 +71,14 @@ The call graph is a source-lexical graph over first-party TS/JS: an import-scope
 
 ## 5. Reachability clearing
 
-Reachability here answers "can an entry point reach the vulnerable symbol". The lane reports reachable candidates with a path. It does not emit a clearing result: `Reachability` never sets `Searched` or `Refutation`, so there is no JS route to `not_exploitable`.
+Reachability here answers "can an entry point reach the vulnerable symbol". The lane reports reachable candidates with a path. It clears on one ground: `package_not_loaded`, when no installed copy of the advisory's package is loaded by anything that runs. It never sets `Searched`, so a package that loads is `reachable_candidate` or `undetermined`.
 
 | Feature | Status | Caveats |
 |---|---|---|
 | Reachable-candidate path (ingress to sink) | Complete |  |
 | `not_exploitable` from a completed search with a vetted symbol set | Planned | [JS-NO-CLEAR-GROUNDS](#js-no-clear-grounds) |
-| `not_exploitable` from `package_not_loaded` / `analyzer_symbol_not_reached` | Planned | [JS-NO-CLEAR-GROUNDS](#js-no-clear-grounds) |
+| `not_exploitable` from `package_not_loaded` | Partial | [JS-LOAD-CLOSURE](#js-load-closure) |
+| `not_exploitable` from `analyzer_symbol_not_reached` | Planned | [JS-NO-CLEAR-GROUNDS](#js-no-clear-grounds) |
 | Unread-code programs return undetermined/analysis_did_not_run | Complete |  |
 | Empty package never refutes | Complete |  |
 
@@ -104,7 +105,7 @@ Hazards are reported as partiality reasons. The question is how wide they bite. 
 | Scoped limits (Targets bound to packages) | Partial | [JS-SCOPE-ONLY-FOR-SOME](#js-scope-only-for-some) |
 | Run-wide `uninspectable_package` without dependency code | Partial | [JS-UNINSPECTABLE-RUNWIDE](#js-uninspectable-runwide) |
 | Run-wide dynamic code in dependency load paths (Express+mongoose) | Partial | [JS-LOADTIME-CODEGEN](#js-loadtime-codegen) |
-| Typical project can receive a clear | Planned | [JS-NO-CLEAR-GROUNDS](#js-no-clear-grounds) |
+| Typical project can receive a clear | Partial | [JS-LOAD-CLOSURE](#js-load-closure) |
 
 ## 8. Runtime confirmation
 
@@ -133,15 +134,23 @@ The lane hands the paid tier a reproducer skeleton and a path-presence taint res
 
 ### JS-NO-CLEAR-GROUNDS
 
-**Trigger.** Always.
+**Trigger.** The advisory's package is loaded.
 
-**Effect.** The reachability result sets neither `Searched` nor `Refutation`, so neither clearing ground can apply; JS returns `reachable_candidate` or `undetermined` only.
+**Effect.** The reachability result never sets `Searched`, so a symbol the search did not reach in a loaded package is `undetermined`, never `not_exploitable`.
+
+### JS-LOAD-CLOSURE
+
+The load closure is every module that runs: each first-party source file, each installed binary or module a `package.json` script names (root and workspace members; a script line is not interpreted, so every word that names a binary or resolves as a module specifier counts), and everything those load, to a fixed point. A package is `package_not_loaded` when the lockfile places at least one copy of it and the closure holds no module of any copy.
+
+**Trigger.** Any of these makes the closure incomplete, and nothing is cleared: dependency code not read; a layout the lockfile does not fully enumerate (npm v1, pnpm, Yarn classic, Yarn Plug'n'Play, bundled copies, no lockfile); a package with an install script; a script that runs a command through a package runner (`npx`, `dlx`, `exec`) that no installed package provides; a script binary that is not a source file the lane parses; and, inside the closure, a computed `require` or `import`, `eval` or `new Function`, a module the lane could not read or parse, a native addon, an unread or patched package, or a load of `module`, `child_process`, `worker_threads`, `vm`, `cluster`, `repl` or `inspector`.
+
+**Effect.** With a complete closure, a hazard in a package nothing loads is not declared, and `uninspectable_package` and `unlisted_sites` are scoped to the loaded packages and first-party code. With an incomplete closure the run-wide limits stand and no package is cleared.
 
 ### JS-LOADTIME-CODEGEN
 
-**Trigger.** A dependency read into the graph that runs `eval` or `new Function` at load time.
+**Trigger.** A dependency in the load closure ([JS-LOAD-CLOSURE](#js-load-closure)) that runs `eval` or `new Function`.
 
-**Effect.** Run-wide dynamic-code limit even with dependency code read.
+**Effect.** Run-wide dynamic-code limit even with dependency code read. The same code in a package nothing loads declares nothing.
 
 ### JS-EXHAUSTIVE-WITHHOLD
 

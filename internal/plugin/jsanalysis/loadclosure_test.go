@@ -62,19 +62,30 @@ func TestLoadClosure_Refutes(t *testing.T) {
 	// withheldBy names the veto a row must be withheld by; a row absent from it is withheld by
 	// the package being loaded.
 	withheldBy := map[string]string{
-		"script runs a command no installed package provides":          "through a package runner",
-		"unparsed .mts source":                                         "server.mts is not parsed",
-		"unparsed .cts source":                                         "server.cts is not parsed",
-		"unparsed .svelte source":                                      "App.svelte is not parsed",
-		"unparsed .astro source":                                       "page.astro is not parsed",
-		"source in a build output directory":                           "dist/server.js is not parsed",
-		"source in a hidden directory":                                 ".config/hooks.js is not parsed",
-		"node:test in loaded code":                                     "loads node:test, which can load or run other code",
-		"wasi in loaded code":                                          "loads a built-in that can load or run other code",
-		"sqlite in loaded code":                                        "loads a built-in that can load or run other code",
-		"read package's lock-recorded command with no manifest target": "names no file in its package.json",
-		"read package with an unreadable bin":                          "declares binaries the lane cannot read",
-		"unparsed .mdx source":                                         "docs/intro.mdx is not parsed",
+		"script runs a command no installed package provides":               "through a package runner",
+		"unparsed .mts source":                                              "server.mts is not parsed",
+		"unparsed .cts source":                                              "server.cts is not parsed",
+		"unparsed .svelte source":                                           "App.svelte is not parsed",
+		"unparsed .astro source":                                            "page.astro is not parsed",
+		"source in a build output directory":                                "dist/server.js is not parsed",
+		"source in a hidden directory":                                      ".config/hooks.js is not parsed",
+		"node:test in loaded code":                                          "loads node:test, which can load or run other code",
+		"wasi in loaded code":                                               "loads a built-in that can load or run other code",
+		"sqlite in loaded code":                                             "loads a built-in that can load or run other code",
+		"read package's lock-recorded command with no manifest target":      "names no file in its package.json",
+		"read package with an unreadable bin":                               "declares binaries the lane cannot read",
+		"unparsed .mdx source":                                              "docs/intro.mdx is not parsed",
+		"first-party prefix load into node_modules":                         "which can name code outside its package",
+		"first-party prefix load above the tree":                            "which can name code outside its package",
+		"first-party prefix load by an absolute path":                       "which can name code outside its package",
+		"first-party prefix load that may name a code-loading built-in":     "which can name code outside its package",
+		"first-party prefix load whose literal part steps out of a package": "which can name code outside its package",
+		"loaded package's prefix load leaves its directory":                 "which can name code outside its package",
+		"loaded package's prefix load with an open parent segment":          "which can name code outside its package",
+		"first-party code hands require on":                                 "first-party code hands a module loader on",
+		"loaded package exports its require":                                "used/index hands a module loader on",
+		"loaded package reads the wrapper's arguments":                      "used/index hands a module loader on",
+		"loaded package reaches the main module's loader":                   "used/index hands a module loader on",
 	}
 	for _, tc := range []struct {
 		name   string
@@ -132,6 +143,30 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		{name: "other builtin in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("const fs = require('fs');\n" + usedPlain), idle()}, want: true},
 		{name: "computed require in first-party code", first: map[string]string{"index.js": app + "module.exports = function (n) { return require(n); };\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true, assumed: "first-party code"},
 		{name: "computed require in first-party code, declared by the project", first: map[string]string{"index.js": app + "module.exports = function (n) { return require(n); };\n", "package.json": projectDeclaring("optionalDependencies")}, pkgs: []*depPkg{used(usedPlain), idle()}, assumed: "first-party code"},
+		// A prefix load names what its literal prefix names, beyond the bound.
+		{name: "first-party prefix load names it", first: map[string]string{"index.js": app + "module.exports = l => require('idle/locale/' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, assumed: "first-party code"},
+		{name: "first-party template prefix import names it", first: map[string]string{"index.js": app + "module.exports = l => import(`idle/${l}`);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, assumed: "first-party code"},
+		{name: "first-party prefix load names another package", first: map[string]string{"index.js": app + "module.exports = l => require('used/locale/' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true, assumed: "first-party code"},
+		{name: "first-party prefix load inside the tree", first: map[string]string{"index.js": app + "module.exports = l => require('./locale/' + l);\n", "locale/en.js": "module.exports = 1;\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true, assumed: "first-party code"},
+		{name: "first-party prefix load into node_modules", first: map[string]string{"index.js": app + "module.exports = l => require('./node_modules/' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "first-party prefix load above the tree", first: map[string]string{"index.js": app + "module.exports = l => require('../' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "first-party prefix load by an absolute path", first: map[string]string{"index.js": app + "module.exports = l => require('/srv/' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "first-party prefix load by the start of its name", first: map[string]string{"index.js": app + "module.exports = l => require('id' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, assumed: "first-party code"},
+		{name: "first-party prefix load by the start of another name", first: map[string]string{"index.js": app + "module.exports = l => require('use' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true, assumed: "first-party code"},
+		{name: "first-party prefix load that may name a code-loading built-in", first: map[string]string{"index.js": app + "module.exports = l => require('child_' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "first-party prefix load whose literal part steps out of a package", first: map[string]string{"index.js": app + "module.exports = l => require('used/../' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "loaded package's prefix load names it", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("exports.run = function run(l) { return require('idle/' + l); };\n"), idle()}, assumed: "used"},
+		{name: "loaded package's prefix load inside itself", first: map[string]string{"index.js": app}, pkgs: []*depPkg{closurePkg("used", map[string]string{"index.js": "exports.run = function run(l) { return require('./locale/' + l); };\n", "locale/en.js": "module.exports = 1;\n"}), idle()}, want: true, assumed: "used"},
+		{name: "loaded package's prefix load leaves its directory", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("exports.run = function run(n) { return require('../' + n); };\n"), idle()}},
+		{name: "loaded package's prefix load with an open parent segment", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("exports.run = function run(n) { return require('./.' + n); };\n"), idle()}},
+		{name: "prefix load in an unloaded package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"index.js": "exports.run = function run(n) { return require('../' + n); };\n"})}, want: true},
+		// A loader handed on loads what its receiver names, which no bound describes.
+		{name: "first-party code hands require on", first: map[string]string{"index.js": "const used = require('used');\nused.run(require);\n"}, pkgs: []*depPkg{used("exports.run = function run(r) { if (r) return r('idle'); };\n"), idle()}},
+		{name: "loaded package exports its require", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("exports.load = require;\n" + usedPlain), idle()}},
+		{name: "loaded package reads the wrapper's arguments", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("const r = arguments[1];\n" + usedPlain), idle()}},
+		{name: "loaded package reaches the main module's loader", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("exports.run = function run(n) { return process.mainModule.require(n); };\n"), idle()}},
+		{name: "loader handed on outside the closure", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"index.js": "exports.load = require;\n"})}, want: true},
+		{name: "loaded package with a dependency field that is not an object", first: map[string]string{"index.js": app}, pkgs: []*depPkg{closurePkg("used", map[string]string{"package.json": `{"name":"used","version":"1.0.0","main":"index.js","dependencies":[]}`}), idle()}, want: true},
 		{name: "child process in first-party code", first: map[string]string{"index.js": app + "require('child_process');\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 
 		{name: "computed require outside the closure", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"index.js": "exports.run = function run(n) { return require(n); };\n"})}, want: true},
@@ -232,7 +267,7 @@ func TestLoadClosure_Refutes(t *testing.T) {
 			}
 			var want []string
 			if tc.assumed != "" {
-				want = []string{"computed module loads in " + tc.assumed + " are assumed to resolve only to those packages' declared dependencies and the project's direct dependencies"}
+				want = []string{"computed module loads in " + tc.assumed + " are assumed to resolve only to that code's own modules, its declared dependencies, the project's direct dependencies and any package a literal prefix names"}
 			}
 			if lc.Complete && !slices.Equal(lc.Assumptions, want) {
 				t.Errorf("assumptions = %q, want %q", lc.Assumptions, want)

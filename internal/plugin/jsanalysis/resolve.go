@@ -1086,10 +1086,18 @@ type rawPkg struct {
 		Bin string `json:"bin"`
 	} `json:"directories"`
 
-	Dependencies         map[string]json.RawMessage `json:"dependencies"`
-	DevDependencies      map[string]json.RawMessage `json:"devDependencies"`
-	PeerDependencies     map[string]json.RawMessage `json:"peerDependencies"`
-	OptionalDependencies map[string]json.RawMessage `json:"optionalDependencies"`
+	Dependencies         json.RawMessage `json:"dependencies"`
+	DevDependencies      json.RawMessage `json:"devDependencies"`
+	PeerDependencies     json.RawMessage `json:"peerDependencies"`
+	OptionalDependencies json.RawMessage `json:"optionalDependencies"`
+}
+
+// declaredNames returns the names a package.json dependency field lists. A field that is not
+// an object lists none, as npm reads it.
+func declaredNames(field json.RawMessage) []string {
+	var deps map[string]json.RawMessage
+	_ = json.Unmarshal(field, &deps)
+	return slices.Sorted(maps.Keys(deps))
 }
 
 func parsePkgManifest(data []byte) *pkgManifest {
@@ -1098,10 +1106,10 @@ func parsePkgManifest(data []byte) *pkgManifest {
 		return nil
 	}
 	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: rp.Main, module: rp.Module}
-	for _, deps := range []map[string]json.RawMessage{rp.Dependencies, rp.PeerDependencies, rp.OptionalDependencies} {
-		m.declared = append(m.declared, slices.Sorted(maps.Keys(deps))...)
+	for _, deps := range []json.RawMessage{rp.Dependencies, rp.PeerDependencies, rp.OptionalDependencies} {
+		m.declared = append(m.declared, declaredNames(deps)...)
 	}
-	m.devDeclared = slices.Sorted(maps.Keys(rp.DevDependencies))
+	m.devDeclared = declaredNames(rp.DevDependencies)
 	if rp.Module != "" {
 		m.frontEntries = append(m.frontEntries, rp.Module)
 	}

@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -69,7 +70,12 @@ type modLimits struct {
 	// a version) a load the layout does not place may still reach.
 	loads   []*depEntry
 	mayLoad []string
+	// prefixes are the literal prefixes of its prefix loads.
+	prefixes []string
 }
+
+// prefixSite is one first-party prefix load.
+type prefixSite struct{ module, prefix string }
 
 // loadRecord collects, while the dependency graph is built, what decides the closure.
 type loadRecord struct {
@@ -157,12 +163,10 @@ func (lr *loadRecord) incomplete(entries []*depEntry, why string) *loadClosure {
 // or run code no load specifier names: another process, a worker, a VM context, a loader hook.
 func loadCapableBuiltin(spec string) bool {
 	name, _ := splitBareSpecifier(strings.TrimPrefix(spec, "node:"))
-	switch name {
-	case "module", "child_process", "worker_threads", "vm", "cluster", "repl", "inspector", "test", "wasi", "sqlite":
-		return true
-	}
-	return false
+	return slices.Contains(loadCapableBuiltins, name)
 }
+
+var loadCapableBuiltins = []string{"module", "child_process", "worker_threads", "vm", "cluster", "repl", "inspector", "test", "wasi", "sqlite"}
 
 // close computes the closure from the first-party roots and the inferred script roots over the
 // first-party edges in g and the dependency edges in aug. kept are the first-party loads no
@@ -231,12 +235,30 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 			queue = append(queue, moduleInitSCIP(e.path+"/"+id))
 		}
 	}
-	project := projectDirectDeps(prog, lr)
-	if g.flags.dynImport || g.flags.computedReq {
-		computed["first-party code"] = true
+	var project []*depEntry
+	projectRead := false
+	admitProject := func() {
+		if !projectRead {
+			projectRead, project = true, projectDirectDeps(prog, lr)
+		}
 		for _, e := range project {
 			admit(e)
 		}
+	}
+	// A prefix load is a computed load whose literal prefix names more than the bound does.
+	prefixed := func(pkgPath, module, prefix string) {
+		named, ok := prefixTargets(d, entries, pkgPath, module, prefix)
+		lr.veto(!ok, "a computed load in "+module+" starts with "+strconv.Quote(prefix)+", which can name code outside its package")
+		for _, e := range named {
+			admit(e)
+		}
+	}
+	if g.flags.dynImport || g.flags.computedReq {
+		computed["first-party code"] = true
+		admitProject()
+	}
+	for _, ps := range g.prefixes {
+		prefixed("", ps.module, ps.prefix)
 	}
 	for len(queue) > 0 {
 		n := queue[0]
@@ -253,8 +275,9 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 				for _, e := range computedLoadBound(d, pkg) {
 					admit(e)
 				}
-				for _, e := range project {
-					admit(e)
+				admitProject()
+				for _, p := range ml.prefixes {
+					prefixed(pkg.entry.path, m, p)
 				}
 			}
 		}
@@ -286,6 +309,7 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 		f := ml.flags
 		lr.veto(f.unreadModule, "loaded module "+m+" loads a module that is not read")
 		lr.veto(f.evaluated, "loaded module "+m+" evaluates code")
+		lr.veto(f.loaderEscape, "loaded module "+m+" hands a module loader on")
 		lr.veto(f.toolFailure || f.unsupported, "loaded module "+m+" is not fully parsed")
 		lr.veto(ml.loadsCode, "loaded module "+m+" loads a built-in that can load or run other code")
 	}
@@ -294,6 +318,7 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 
 	lr.veto(g.flags.unreadModule, "first-party code loads a module that is not read")
 	lr.veto(g.flags.evaluated, "first-party code evaluates code")
+	lr.veto(g.flags.loaderEscape, "first-party code hands a module loader on")
 	lr.veto(prog.readFailed || prog.skipped || prog.unreadSource, "first-party code is not fully read")
 	for _, s := range kept {
 		lr.veto(!isNodeBuiltin(s.spec), "first-party load of "+s.spec+" is not covered by read code")
@@ -312,7 +337,57 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 // load: packages are the packages whose loaded code holds one.
 func computedLoadAssumption(packages []string) string {
 	return "computed module loads in " + strings.Join(packages, ", ") +
-		" are assumed to resolve only to those packages' declared dependencies and the project's direct dependencies"
+		" are assumed to resolve only to that code's own modules, its declared dependencies, the project's direct dependencies and any package a literal prefix names"
+}
+
+// prefixTargets returns what the literal prefix of a computed load in module adds to the load's
+// bound: the installed packages the prefix names, in whole (`idle/locale/`) or by the start of
+// a name (`eslint-plugin-`). pkgPath is the loading package's directory, empty for first-party
+// code. It reports false when the prefix can name code no bound describes: a directory outside
+// the loading package or inside a node_modules, an absolute path, a URL, a package alias, or a
+// built-in that loads or runs other code.
+func prefixTargets(d *depGraph, entries []*depEntry, pkgPath, module, prefix string) ([]*depEntry, bool) {
+	if strings.HasPrefix(prefix, ".") {
+		slash := strings.LastIndexByte(prefix, '/')
+		if slash < 0 || prefix[slash+1:] == "." || prefix[slash+1:] == ".." {
+			return nil, false // the runtime part may complete a `..` segment
+		}
+		dir := path.Join(moduleDir(module), prefix[:slash])
+		rel, inside := dir, dir != ".." && !strings.HasPrefix(dir, "../")
+		if pkgPath != "" {
+			rel, inside = strings.CutPrefix(dir+"/", pkgPath+"/")
+		}
+		return nil, inside && !strings.Contains("/"+rel+"/", "/node_modules/")
+	}
+	p := strings.TrimPrefix(prefix, "node:")
+	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "#") || strings.ContainsAny(p, `\:`) || strings.Contains("/"+p+"/", "/../") {
+		return nil, false
+	}
+	parts, n := strings.Split(p, "/"), 1
+	if strings.HasPrefix(p, "@") {
+		n = 2
+	}
+	if len(parts) > n {
+		name := strings.Join(parts[:n], "/")
+		if slices.Contains(loadCapableBuiltins, name) {
+			return nil, false
+		}
+		e, candidates := d.layout.walk(moduleDir(module), name)
+		if e != nil {
+			candidates = []*depEntry{e}
+		}
+		return candidates, true
+	}
+	if slices.ContainsFunc(loadCapableBuiltins, func(b string) bool { return strings.HasPrefix(b, p) }) {
+		return nil, false
+	}
+	var named []*depEntry
+	for _, e := range entries {
+		if strings.HasPrefix(e.name, p) {
+			named = append(named, e)
+		}
+	}
+	return named, true
 }
 
 // computedLoadBound returns the installed packages a computed load in pkg is taken to reach

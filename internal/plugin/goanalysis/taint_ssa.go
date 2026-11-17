@@ -33,7 +33,8 @@ type taintAnalysis struct {
 	// hits maps a sink SCIP id to the ingress SCIP id that reached it.
 	hits map[string]string
 	// graph is the VTA call graph, built on the first call through an interface.
-	graph *callgraph.Graph
+	graph       *callgraph.Graph
+	graphFailed bool
 	// impls caches implementations by call site.
 	impls map[ssa.CallInstruction][]*ssa.Function
 }
@@ -431,21 +432,16 @@ func (ta *taintAnalysis) implementations(in ssa.CallInstruction) []*ssa.Function
 	var impls []*ssa.Function
 	prog := ta.sp.prog
 	if built(prog.Package(in.Common().Method.Pkg())) {
-		if ta.graph == nil {
-			ta.graph, _ = ta.sp.buildGraph("vta")
+		if ta.graph == nil && !ta.graphFailed {
+			g, err := ta.sp.buildGraph("vta")
+			ta.graph, ta.graphFailed = g, err != nil
 		}
-		if node := ta.graph.Nodes[in.Parent()]; node != nil {
-			for _, e := range node.Out {
-				if e.Site != in {
-					continue
-				}
-				fn := e.Callee.Func
-				// A wrapper stands for the method it wraps.
-				if obj, ok := fn.Object().(*types.Func); ok && fn.Synthetic != "" {
-					fn = prog.FuncValue(obj)
-				}
-				if fn != nil && fn.Blocks != nil && built(fn.Pkg) {
-					impls = append(impls, fn)
+		if ta.graph != nil {
+			if node := ta.graph.Nodes[in.Parent()]; node != nil {
+				for _, e := range node.Out {
+					if e.Site == in {
+						impls = ta.wrapped(impls, e.Callee, map[*callgraph.Node]bool{})
+					}
 				}
 			}
 		}
@@ -453,6 +449,30 @@ func (ta *taintAnalysis) implementations(in ssa.CallInstruction) []*ssa.Function
 		impls = slices.Compact(impls)
 	}
 	ta.impls[in] = impls
+	return impls
+}
+
+// wrapped appends the declared methods node stands for: node's own function, the method
+// a synthetic wrapper wraps, or, for a wrapper around an embedded interface, what the
+// call inside it reaches. A wrapper passes its arguments on in order, so the parameters
+// of what it reaches line up with the call's.
+func (ta *taintAnalysis) wrapped(impls []*ssa.Function, node *callgraph.Node, seen map[*callgraph.Node]bool) []*ssa.Function {
+	if seen[node] {
+		return impls
+	}
+	seen[node] = true
+	fn := node.Func
+	if obj, ok := fn.Object().(*types.Func); ok && fn.Synthetic != "" {
+		if fn = ta.sp.prog.FuncValue(obj); fn == nil && types.IsInterface(obj.Signature().Recv().Type()) {
+			for _, e := range node.Out {
+				impls = ta.wrapped(impls, e.Callee, seen)
+			}
+			return impls
+		}
+	}
+	if fn != nil && fn.Blocks != nil && built(fn.Pkg) {
+		impls = append(impls, fn)
+	}
 	return impls
 }
 

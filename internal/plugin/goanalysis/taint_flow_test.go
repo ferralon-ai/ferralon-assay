@@ -177,7 +177,8 @@ func TestRunTaint_InterfaceCallHitsImplementations(t *testing.T) {
 		{"pointerVerifier", "Verify", true, true},
 		{"neverVerifier", "Verify", false, false},
 		{"wideConn", "Close", false, true},
-		{"narrowConn", "Close", false, false},
+		{"narrowConn", "Close", false, true},
+		{"wrappedConn", "Close", false, true},
 		{"reqEcho", "Echo", false, false},
 		{"capture", "Write", false, false},
 	} {

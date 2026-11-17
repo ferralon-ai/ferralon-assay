@@ -83,6 +83,7 @@ func sinkIfaceRecv(v string)     { sunk = append(sunk, v) }
 func sinkIfaceNever(v string)    { sunk = append(sunk, v) }
 func sinkIfaceEmbedded(v string) { sunk = append(sunk, v) }
 func sinkIfaceNarrow(v string)   { sunk = append(sunk, v) }
+func sinkIfaceWrapped(v string)  { sunk = append(sunk, v) }
 func sinkIfaceDep(v []byte)      { sunk = append(sunk, v) }
 
 // greeting is never derived from the request.
@@ -141,8 +142,8 @@ func (p *pointerVerifier) Verify(token, secret string) bool {
 	return p.n > 0
 }
 
-// neverVerifier has verifier's method but is never held in a verifier, so no call
-// through one reaches it.
+// neverVerifier is held only in a verifier no tainted call goes through, so the tainted
+// call does not reach it.
 type neverVerifier struct{}
 
 func (neverVerifier) Verify(token, secret string) bool {
@@ -151,7 +152,8 @@ func (neverVerifier) Verify(token, secret string) bool {
 }
 
 // closer and wideCloser share the method Close: wideCloser embeds closer. A call through
-// either reaches only the types that call's value holds.
+// either reaches only the types that call's value holds. loggedCloser embeds the
+// interface, so a call to its Close reaches the method of the value it wraps.
 type closer interface{ Close(reason string) }
 
 type wideCloser interface {
@@ -167,6 +169,12 @@ func (wideConn) Flush()              {}
 type narrowConn struct{}
 
 func (narrowConn) Close(reason string) { sinkIfaceNarrow(reason) }
+
+type loggedCloser struct{ closer }
+
+type wrappedConn struct{}
+
+func (wrappedConn) Close(reason string) { sinkIfaceWrapped(reason) }
 
 // echoer is called on a receiver that holds request data, with no argument.
 type echoer interface{ Echo() string }
@@ -280,13 +288,17 @@ func flows(w http.ResponseWriter, r *http.Request) {
 
 	// An argument of a call through an interface declared here reaches the matching
 	// parameter of every implementation.
-	for _, v := range []verifier{valueVerifier{}, &pointerVerifier{}} {
+	for _, v := range []verifier{&valueVerifier{}, &pointerVerifier{}} {
 		v.Verify(r.Method, "const")
 	}
+	var untainted verifier = neverVerifier{}
+	untainted.Verify("const", "const")
 	var wide wideCloser = wideConn{}
 	wide.Close(r.Method)
 	var narrow closer = narrowConn{}
-	narrow.Close("const")
+	narrow.Close(r.Method)
+	var logged closer = loggedCloser{wrappedConn{}}
+	logged.Close(r.Method)
 	var e echoer = reqEcho{s: r.Method}
 	e.Echo()
 	var out http.ResponseWriter = capture{}

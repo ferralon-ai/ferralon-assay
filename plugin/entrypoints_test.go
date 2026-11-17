@@ -36,7 +36,7 @@ func TestParseEntryOverrides(t *testing.T) {
 		{name: "lane auto", in: "go:auto", want: map[string]EntryOverride{"go": {Lane: "go", Input: "go:auto", KindOverride: ko("auto", nil, nil)}}},
 		{name: "lane deny keeps auto", in: "!js:npm:nodemon", want: map[string]EntryOverride{"js": {Lane: "js", Input: "!js:npm:nodemon", KindOverride: ko("auto", nil, []string{"npm:nodemon"})}}},
 		{name: "kind none", in: "go:library=none", want: map[string]EntryOverride{"go": {Lane: "go", Input: "go:library=none", KindOverride: ko("auto", nil, nil), Kinds: map[string]KindOverride{"library": ko("none", nil, nil)}}}},
-		{name: "kind deny of bin name", in: "!js:bin=bin:storybook", want: map[string]EntryOverride{"js": {Lane: "js", Input: "!js:bin=bin:storybook", KindOverride: ko("auto", nil, nil), Kinds: map[string]KindOverride{"bin": ko("auto", nil, []string{"bin:storybook"})}}}},
+		{name: "kind deny of bin name", in: "!js:bin=bin:storybook", want: map[string]EntryOverride{"js": {Lane: "js", Input: "!js:bin=bin:storybook", KindOverride: ko("auto", nil, nil), Kinds: map[string]KindOverride{"bin": ko("", nil, []string{"bin:storybook"})}}}},
 		{
 			name: "two kinds",
 			in:   "go:main=cmd/traefik, go:library=none",
@@ -45,6 +45,9 @@ func TestParseEntryOverrides(t *testing.T) {
 			}}},
 		},
 		{name: "class selector", in: "java:main=class:com.acme.Main", want: map[string]EntryOverride{"java": {Lane: "java", Input: "java:main=class:com.acme.Main", KindOverride: ko("auto", nil, nil), Kinds: map[string]KindOverride{"main": ko("paths", []string{"class:com.acme.Main"}, nil)}}}},
+		{name: "npm selector cleans repeated slashes", in: "!js:npm:nodemon//", want: map[string]EntryOverride{"js": {Lane: "js", Input: "!js:npm:nodemon//", KindOverride: ko("auto", nil, []string{"npm:nodemon"})}}},
+		{name: "npm selector cleans dot segments", in: "!js:npm:nodemon/./bin", want: map[string]EntryOverride{"js": {Lane: "js", Input: "!js:npm:nodemon/./bin", KindOverride: ko("auto", nil, []string{"npm:nodemon/bin"})}}},
+		{name: "bin selector cleans repeated slashes", in: "!js:bin:a//b", want: map[string]EntryOverride{"js": {Lane: "js", Input: "!js:bin:a//b", KindOverride: ko("auto", nil, []string{"bin:a/b"})}}},
 		{name: "npm selector trims slash", in: "js:npm:nodemon/", want: map[string]EntryOverride{"js": {Lane: "js", Input: "js:npm:nodemon/", KindOverride: ko("paths", []string{"npm:nodemon"}, nil)}}},
 		{name: "lane none beside kind clause", in: "js:none js:bin=bin:x", want: map[string]EntryOverride{"js": {Lane: "js", Input: "js:none,js:bin=bin:x", KindOverride: ko("none", nil, nil), Kinds: map[string]KindOverride{"bin": ko("paths", []string{"bin:x"}, nil)}}}},
 		{
@@ -99,8 +102,16 @@ func TestParseEntryOverrides(t *testing.T) {
 		{name: "absolute", in: "go:/abs", wantErr: "relative to the repository root"},
 		{name: "absolute in kind", in: "go:library=/abs", wantErr: "relative to the repository root"},
 		{name: "backslash", in: `go:pkg\x`, wantErr: "use /"},
+		{name: "class selector leaving by dotdot", in: "java:main=class:a/../b", wantErr: "leaves the package"},
 		{name: "npm escape", in: "js:npm:pkg/../x", wantErr: "leaves the package"},
 		{name: "empty npm", in: "js:npm:", wantErr: "needs a name"},
+		{name: "colon after a kind", in: "go:library:none", wantErr: "write go:library=none"},
+		{name: "deny, colon after a kind", in: "!go:library:pkg/api", wantErr: "write go:library=pkg/api"},
+		{name: "colon after a kind the lane lacks", in: "js:library:none", wantErr: `does not infer kind "library"`},
+		{name: "unknown selector prefix", in: "js:C:/x", wantErr: "unknown selector form"},
+		{name: "none in upper case", in: "go:NONE", wantErr: "write none in lower case"},
+		{name: "auto in mixed case", in: "go:library=Auto", wantErr: "write auto in lower case"},
+		{name: "bare none in upper case", in: "NONE", wantErr: "write none in lower case"},
 		{name: "empty bin", in: "!js:bin:", wantErr: "needs a name"},
 	}
 	for _, tc := range cases {
@@ -286,14 +297,12 @@ func TestApplyEntryOverride(t *testing.T) {
 			name: "declared root takes the override's lane", in: "js:auto js:scripts/run.js", inferred: jsRoots,
 			effective: append(append([]EntryRoot{}, jsRoots...), declared("js", "scripts/run.js")),
 			added:     []EntryRoot{declared("js", "scripts/run.js")},
-			unmatched: []string{"scripts/run.js"},
 		},
 		{
 			name: "list with no inferred match replaces auto with the declared root", in: "js:scripts/run.js", inferred: jsRoots,
 			effective: []EntryRoot{declared("js", "scripts/run.js")},
 			denied:    jsRoots,
 			added:     []EntryRoot{declared("js", "scripts/run.js")},
-			unmatched: []string{"scripts/run.js"},
 		},
 		{
 			name: "deny matching no root is unmatched", in: "!js:src/gone.js", inferred: jsRoots,
@@ -347,7 +356,6 @@ func TestApplyEntryOverride(t *testing.T) {
 			name: "no inferred roots, allow declares", in: "js:cli", inferred: nil,
 			effective: []EntryRoot{declared("js", "cli")},
 			added:     []EntryRoot{declared("js", "cli")},
-			unmatched: []string{"cli"},
 		},
 	}
 	for _, tc := range cases {
@@ -454,8 +462,8 @@ func TestApplyEntryOverrideOrderAndInputs(t *testing.T) {
 	if got, want := wantSel(add), []string{"scripts/a.js|entrypoints", "scripts/b.js|entrypoints"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("added order = %q, want %q", got, want)
 	}
-	if want := []string{"scripts/a.js", "scripts/b.js"}; !reflect.DeepEqual(unm, want) {
-		t.Errorf("unmatched = %q, want %q", unm, want)
+	if len(unm) != 0 {
+		t.Errorf("unmatched = %q, want none: an allow that created a declared root is reported in added", unm)
 	}
 
 	// Input order does not change the result.
@@ -513,6 +521,156 @@ func TestApplyEntryOverrideUnmatchedIsPerLane(t *testing.T) {
 		_, _, _, unmatched := ApplyEntryOverride(inferred, m[lane])
 		if !reflect.DeepEqual(unmatched, want) {
 			t.Errorf("%s unmatched = %q, want %q", lane, unmatched, want)
+		}
+	}
+}
+
+// An error names the same clause on every parse: no map order decides which of several faults is
+// reported.
+func TestParseEntryOverridesErrorIsDeterministic(t *testing.T) {
+	in := "go:pkg,!go:pkg js:x,!js:x java:none java:auto"
+	_, first := ParseEntryOverrides(in)
+	if first == nil {
+		t.Fatal("want an error")
+	}
+	for i := 0; i < 200; i++ {
+		if _, err := ParseEntryOverrides(in); err == nil || err.Error() != first.Error() {
+			t.Fatalf("parse %d: err = %v, want %v", i, err, first)
+		}
+	}
+}
+
+// Unqualified lane clauses and kind= clauses combine under one rule: a deny always applies, none is
+// reported unmatched while it takes effect, and a kind scope that only denies leaves its roots' base to
+// the lane scope.
+func TestApplyEntryOverrideLaneAndKindClauses(t *testing.T) {
+	goMains := []EntryRoot{
+		{Lane: "go", Kind: "main", Selector: "cmd/app/main.go"},
+		{Lane: "go", Kind: "main", Selector: "cmd/debugtool/main.go"},
+	}
+	goLib := EntryRoot{Lane: "go", Kind: "library", Selector: "pkg/api/api.go"}
+	bins := []EntryRoot{
+		{Lane: "js", Kind: "bin", Selector: "npm:nodemon/bin/nodemon.js", Name: "nodemon"},
+		{Lane: "js", Kind: "bin", Selector: "npm:storybook/bin.js", Name: "storybook"},
+	}
+	mod := EntryRoot{Lane: "js", Kind: "module", Selector: "src/a.js"}
+	cases := []struct {
+		name, in, lane    string
+		inferred          []EntryRoot
+		effective, denied []EntryRoot
+		unmatched         []string
+	}{
+		{
+			// review r01 S1, input 1: the lane deny is applied to the mains and is not unmatched.
+			name: "lane deny beside a kind list", in: "go:main=cmd/app, !go:cmd/debugtool", lane: "go",
+			inferred:  append(append([]EntryRoot{}, goMains...), goLib),
+			effective: []EntryRoot{goMains[0], goLib},
+			denied:    []EntryRoot{goMains[1]},
+		},
+		{
+			// input 2: the lane deny reaches the bins under an explicit kind auto.
+			name: "lane deny beside kind auto", in: "js:bin=auto, !js:npm:storybook", lane: "js",
+			inferred:  append(append([]EntryRoot{}, bins...), mod),
+			effective: []EntryRoot{bins[0], mod},
+			denied:    []EntryRoot{bins[1]},
+		},
+		{
+			// input 3: a kind scope that only denies keeps the lane's none, so no bin comes back.
+			name: "kind deny beside lane none", in: "js:none, !js:bin=bin:storybook", lane: "js",
+			inferred: append(append([]EntryRoot{}, bins...), mod),
+			denied:   append(append([]EntryRoot{}, bins...), mod),
+		},
+		{
+			name: "kind deny keeps a lane list", in: "js:src, !js:bin=bin:storybook", lane: "js",
+			inferred:  append(append([]EntryRoot{}, bins...), mod),
+			effective: []EntryRoot{mod},
+			denied:    bins,
+		},
+		{
+			name: "lane allow reaches every kind", in: "js:module=none, js:npm:nodemon", lane: "js",
+			inferred:  append(append([]EntryRoot{}, bins...), mod),
+			effective: []EntryRoot{bins[0]},
+			denied:    []EntryRoot{bins[1], mod},
+		},
+		{
+			name: "a deny matching no root of its kind is unmatched", in: "js:bin=auto, !js:bin=bin:gone, !js:npm:storybook", lane: "js",
+			inferred:  append(append([]EntryRoot{}, bins...), mod),
+			effective: []EntryRoot{bins[0], mod},
+			denied:    []EntryRoot{bins[1]},
+			unmatched: []string{"!bin:gone"},
+		},
+		{
+			name: "a lane deny matching nothing in the lane is unmatched", in: "js:module=none, !js:src/gone.js", lane: "js",
+			inferred:  append(append([]EntryRoot{}, bins...), mod),
+			effective: bins,
+			denied:    []EntryRoot{mod},
+			unmatched: []string{"!src/gone.js"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := parseLane(t, tc.in, tc.lane)
+			eff, den, add, unm := ApplyEntryOverride(tc.inferred, o)
+			norm := func(rs []EntryRoot) []EntryRoot {
+				out := append([]EntryRoot{}, rs...)
+				sortEntryRoots(out)
+				return out
+			}
+			if !reflect.DeepEqual(norm(eff), norm(tc.effective)) && (len(eff) != 0 || len(tc.effective) != 0) {
+				t.Errorf("effective = %+v, want %+v", eff, norm(tc.effective))
+			}
+			if !reflect.DeepEqual(norm(den), norm(tc.denied)) && (len(den) != 0 || len(tc.denied) != 0) {
+				t.Errorf("denied = %+v, want %+v", den, norm(tc.denied))
+			}
+			if len(add) != 0 {
+				t.Errorf("added = %+v, want none", add)
+			}
+			if !reflect.DeepEqual(unm, tc.unmatched) && (len(unm) != 0 || len(tc.unmatched) != 0) {
+				t.Errorf("unmatched = %q, want %q", unm, tc.unmatched)
+			}
+		})
+	}
+}
+
+// An allow that selects no inferred root creates a declared root and is not unmatched; the declared
+// root keeps the kind the caller declared it for. A deny that covers the declared root leaves the allow
+// unmatched.
+func TestApplyEntryOverrideDeclaredRoots(t *testing.T) {
+	o := parseLane(t, "java:main=class:com.acme.Main, java:handler=class:com.acme.Main, java:class:com.acme.Other", "java")
+	eff, _, added, unmatched := ApplyEntryOverride(nil, o)
+	want := []EntryRoot{
+		{Lane: "java", Kind: "declared", Selector: "class:com.acme.Main", Origin: "entrypoints:handler"},
+		{Lane: "java", Kind: "declared", Selector: "class:com.acme.Main", Origin: "entrypoints:main"},
+		{Lane: "java", Kind: "declared", Selector: "class:com.acme.Other", Origin: "entrypoints"},
+	}
+	if !reflect.DeepEqual(added, want) || !reflect.DeepEqual(eff, want) {
+		t.Errorf("added = %+v, effective = %+v, want both %+v", added, eff, want)
+	}
+	if len(unmatched) != 0 {
+		t.Errorf("unmatched = %q, want none", unmatched)
+	}
+
+	o = parseLane(t, "js:auto, js:scripts/run.js, !js:scripts", "js")
+	_, _, added, unmatched = ApplyEntryOverride(nil, o)
+	if len(added) != 0 || !reflect.DeepEqual(unmatched, []string{"!scripts", "scripts/run.js"}) {
+		t.Errorf("added = %+v, unmatched = %q, want none and [!scripts scripts/run.js]", added, unmatched)
+	}
+}
+
+// The alias renders the clauses it stands for.
+func TestEntryOverrideForLibraryEntrypointsInput(t *testing.T) {
+	for in, want := range map[string]string{
+		"":               "go:library=auto",
+		"none":           "go:library=none",
+		"pkg/api,!cmd/x": "go:library=pkg/api,!go:library=cmd/x",
+		"!cmd/x":         "!go:library=cmd/x",
+	} {
+		lib, err := ParseLibraryEntrypoints(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := EntryOverrideForLibraryEntrypoints(lib).Input; got != want {
+			t.Errorf("Input(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

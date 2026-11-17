@@ -3,6 +3,7 @@ package plugin
 import (
 	"cmp"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 )
@@ -31,7 +32,8 @@ const (
 	EntryKindDeclared = "declared"
 )
 
-// EntryOriginDeclared is the Origin of a root added by an override.
+// EntryOriginDeclared is the Origin of a root added by an override's lane scope; a root added by a
+// kind scope has the Origin "entrypoints:<kind>", which keeps the kind the caller declared it for.
 const EntryOriginDeclared = "entrypoints"
 
 // entryLaneKinds lists the kinds each lane infers, and so the kinds an override clause may qualify.
@@ -65,10 +67,11 @@ type EntryRoot struct {
 	Origin string `json:"origin,omitempty"`
 }
 
-// KindOverride is the override for the roots of one kind.
+// KindOverride is one scope of an override: the whole lane, or the roots of one kind.
 type KindOverride struct {
-	// Mode is LibraryEntrypointsAuto, LibraryEntrypointsNone or LibraryEntrypointsPaths; empty
-	// reads as auto.
+	// Mode is LibraryEntrypointsAuto, LibraryEntrypointsNone or LibraryEntrypointsPaths. Empty reads
+	// as auto in the lane scope and, in a Kinds entry, as the lane scope's mode: a kind scope that
+	// only denies leaves the base of its roots as the lane scope sets it.
 	Mode string `json:"mode,omitempty"`
 	// Include allows selectors; Exclude denies them. Both hold normalised selectors.
 	Include []string `json:"include,omitempty"`
@@ -79,9 +82,12 @@ type KindOverride struct {
 // configuration handed to the lane, never read from the tree. The zero value is auto: every
 // inferred root stands.
 //
-// The embedded KindOverride scopes the whole lane. Kinds holds a scope for each kind the caller
-// qualified with "kind="; a root of such a kind is governed by its own scope alone, and every other
-// root by the lane scope.
+// The embedded KindOverride is the lane scope, addressing every root of the lane. Kinds holds a scope
+// for each kind the caller qualified with "kind=", addressing the roots of that kind. A root is
+// governed by both: its base is its kind scope's Mode when that scope names one and the lane scope's
+// Mode otherwise, its allows are the selectors of both scopes, and its denies are the selectors of
+// both scopes. So a deny always applies, whichever scope holds it, and a kind scope that only denies
+// never turns auto back on.
 type EntryOverride struct {
 	// Lane is the lane the override addresses; ApplyEntryOverride leaves the roots of other lanes
 	// untouched. Empty addresses every lane.
@@ -123,6 +129,9 @@ func ParseEntryOverrides(s string) (map[string]EntryOverride, error) {
 		lane, kind, target, err := splitEntryClause(body)
 		if err != nil {
 			return nil, fmt.Errorf("entrypoints: %q: %w", t, err)
+		}
+		if low := strings.ToLower(target); low != target && (low == LibraryEntrypointsAuto || low == LibraryEntrypointsNone) {
+			return nil, fmt.Errorf("entrypoints: %q: write %s in lower case", t, low)
 		}
 		if lane == "" {
 			switch {
@@ -173,19 +182,21 @@ func ParseEntryOverrides(s string) (map[string]EntryOverride, error) {
 
 	out := map[string]EntryOverride{}
 	if global != "" {
-		for lane := range entryLaneKinds {
+		for _, lane := range sortedKeys(entryLaneKinds) {
 			out[lane] = EntryOverride{Lane: lane, KindOverride: KindOverride{Mode: global}, Input: global}
 		}
 		return out, nil
 	}
-	for lane, st := range lanes {
+	for _, lane := range sortedKeys(lanes) {
+		st := lanes[lane]
 		o := EntryOverride{Lane: lane, Input: strings.Join(st.input, ","), KindOverride: KindOverride{Mode: LibraryEntrypointsAuto}}
-		for kind, sc := range st.scopes {
+		for _, kind := range sortedKeys(st.scopes) {
+			sc := st.scopes[kind]
 			name := lane
 			if kind != "" {
 				name = lane + ":" + kind
 			}
-			ko, err := sc.resolve(name)
+			ko, err := sc.resolve(name, kind != "")
 			if err != nil {
 				return nil, fmt.Errorf("entrypoints: %w", err)
 			}
@@ -209,8 +220,12 @@ func ParseEntryOverrides(s string) (map[string]EntryOverride, error) {
 // parsed statement.
 func EntryOverrideForLibraryEntrypoints(le LibraryEntrypoints) EntryOverride {
 	ko := KindOverride{Mode: le.Mode, Include: slices.Clone(le.Include), Exclude: slices.Clone(le.Exclude)}
-	if ko.Mode == "" {
+	switch {
+	case ko.Mode == "":
 		ko.Mode = LibraryEntrypointsAuto
+	case ko.Mode == LibraryEntrypointsAuto && len(ko.Include) == 0 && len(ko.Exclude) > 0:
+		// Denies alone leave the base to the lane scope, which is auto.
+		ko.Mode = ""
 	}
 	var clauses []string
 	for _, t := range strings.Split(le.String(), ",") {
@@ -235,7 +250,7 @@ type entryScope struct {
 	include, exclude []string
 }
 
-func (sc *entryScope) resolve(name string) (KindOverride, error) {
+func (sc *entryScope) resolve(name string, kindScope bool) (KindOverride, error) {
 	slices.Sort(sc.include)
 	sc.include = slices.Compact(sc.include)
 	slices.Sort(sc.exclude)
@@ -249,8 +264,12 @@ func (sc *entryScope) resolve(name string) (KindOverride, error) {
 		return KindOverride{}, fmt.Errorf("%s: none stands alone", name)
 	case sc.none:
 		ko.Mode = LibraryEntrypointsNone
-	case sc.auto || len(sc.include) == 0:
+	case sc.auto:
 		ko.Mode = LibraryEntrypointsAuto
+	case len(sc.include) == 0:
+		if !kindScope {
+			ko.Mode = LibraryEntrypointsAuto
+		}
 	default:
 		ko.Mode = LibraryEntrypointsPaths
 	}
@@ -293,6 +312,11 @@ func splitEntryClause(body string) (lane, kind, target string, err error) {
 			return "", "", "", fmt.Errorf("unknown kind %q", k)
 		}
 		kind, target = k, t
+	} else if k, t, ok := strings.Cut(rest, ":"); ok && isEntryKind(k) && !slices.Contains(entrySelectorPrefixes, k+":") {
+		if slices.Contains(kinds, k) {
+			return "", "", "", fmt.Errorf("a kind is followed by =, not :; write %s:%s=%s", lane, k, t)
+		}
+		return "", "", "", fmt.Errorf("lane %s does not infer kind %q", lane, k)
 	}
 	if target == "" {
 		return "", "", "", fmt.Errorf("empty target")
@@ -319,18 +343,18 @@ func cleanEntrySelector(sel string) (string, error) {
 		if name == "" || strings.Contains(name, `\`) {
 			return "", fmt.Errorf("%s needs a name without backslashes", p)
 		}
-		if p == "npm:" || p == "bin:" {
-			// Both name something inside the tree or a package: no escaping it.
-			for _, seg := range strings.Split(name, "/") {
-				if seg == ".." {
-					return "", fmt.Errorf("selector leaves the package")
-				}
+		for _, seg := range strings.Split(name, "/") {
+			if seg == ".." {
+				return "", fmt.Errorf("selector leaves the package")
 			}
 		}
-		if p == "npm:" {
-			name = strings.TrimSuffix(name, "/")
+		if name = path.Clean(name); name == "." {
+			return "", fmt.Errorf("%s needs a name", p)
 		}
 		return p + name, nil
+	}
+	if first, _, _ := strings.Cut(sel, "/"); strings.Contains(first, ":") {
+		return "", fmt.Errorf("unknown selector form %q; a selector is a repository path, npm:<package>[/<path>], bin:<Name>, class:<FQN>, type:<FQN> or asm:<Assembly>", first)
 	}
 	return cleanEntrypointPath(sel)
 }
@@ -358,75 +382,84 @@ func matchesEntryRoot(sel string, r EntryRoot) bool {
 	return Under(r.Selector, sel)
 }
 
-// ApplyEntryOverride applies o to the roots a lane inferred. Within each scope the effective set is
-// (base ∪ allows) \ denies: base is the inferred roots of the scope under auto and empty under none or
-// a nominated list, an allow brings in the roots it selects, and a deny removes the roots it
-// selects, winning over an allow that selects the same root. A selector selects a root when it
-// equals the root's Selector, is a directory prefix of it ("pkg/api" selects "pkg/api/x.go" and not
-// "pkg/apiv2/x.go"), is "npm:<package>" as a prefix of "npm:<package>/...", or is "bin:<Name>".
-// Roots of lanes other than o.Lane stand untouched.
+// ApplyEntryOverride applies o to the roots a lane inferred. A root's effective status follows
+// EntryOverride's scope rule: it stands when (base ∪ allows) \ denies selects it, where base is the
+// inferred set under auto and empty under none or a nominated list, an allow brings in the roots it
+// selects, and a deny removes the roots it selects and wins over an allow selecting the same root. A
+// selector selects a root when it equals the root's Selector, is a directory prefix of it ("pkg/api"
+// selects "pkg/api/x.go" and not "pkg/apiv2/x.go"), is "npm:<package>" as a prefix of
+// "npm:<package>/...", or is "bin:<Name>". Roots of lanes other than o.Lane stand untouched.
 //
-// effective holds the roots the analysis starts from, denied every inferred root dropped from it,
-// whatever the reason, and added the roots of Kind "declared" an allow created because it selected
-// no inferred root; those also stand in effective unless a deny selects them. unmatched names each
-// allow that selected no inferred root and each deny, written with its "!", that selected none; it
-// is a report, never an error. Unmatched belongs to o.Lane alone: a non-empty result means that lane
-// withholds the clears that rest on its override, and no other lane's clears are affected. All
+// effective holds the roots the analysis starts from. denied holds every inferred root dropped from
+// it, whatever the reason. added holds the roots of Kind "declared" created for an allow that selected
+// no inferred root: the caller declares them, so they stand in effective and the lane checks they
+// exist. A declared root is not created when a deny selects it.
+//
+// unmatched holds the selectors that selected nothing and created nothing: a deny, written with its
+// "!", that selected no root it addresses, and an allow whose declared root a deny selects. A
+// lane-scope selector addresses every root of the lane and a kind-scope selector the roots of its
+// kind. It is a report, never an error, and belongs to o.Lane alone: a non-empty result means that
+// lane withholds the clears that rest on its override, and no other lane's clears are affected. All
 // results are sorted by Selector, then Origin. inferred is not modified.
 func ApplyEntryOverride(inferred []EntryRoot, o EntryOverride) (effective, denied, added []EntryRoot, unmatched []string) {
-	type scoped struct {
-		ko    KindOverride
-		roots []EntryRoot
-	}
-	lane := scoped{ko: o.KindOverride}
-	kinds := map[string]*scoped{}
-	for k, ko := range o.Kinds {
-		kinds[k] = &scoped{ko: ko}
-	}
+	var laneRoots []EntryRoot
 	for _, r := range inferred {
 		if o.Lane != "" && r.Lane != o.Lane {
 			effective = append(effective, r)
 			continue
 		}
-		if s, ok := kinds[r.Kind]; ok {
-			s.roots = append(s.roots, r)
+		laneRoots = append(laneRoots, r)
+	}
+	matches := func(sels []string, r EntryRoot) bool {
+		return slices.ContainsFunc(sels, func(sel string) bool { return matchesEntryRoot(sel, r) })
+	}
+	selects := func(sel, kind string) bool {
+		return slices.ContainsFunc(laneRoots, func(r EntryRoot) bool {
+			return (kind == "" || r.Kind == kind) && matchesEntryRoot(sel, r)
+		})
+	}
+
+	for _, r := range laneRoots {
+		ks := o.Kinds[r.Kind]
+		mode := o.Mode
+		if ks.Mode != "" {
+			mode = ks.Mode
+		}
+		allowed := mode == "" || mode == LibraryEntrypointsAuto || matches(o.Include, r) || matches(ks.Include, r)
+		if allowed && !matches(o.Exclude, r) && !matches(ks.Exclude, r) {
+			effective = append(effective, r)
 		} else {
-			lane.roots = append(lane.roots, r)
+			denied = append(denied, r)
 		}
 	}
 
-	apply := func(s *scoped) {
-		matches := func(sels []string, r EntryRoot) bool {
-			return slices.ContainsFunc(sels, func(sel string) bool { return matchesEntryRoot(sel, r) })
-		}
-		base := s.ko.Mode == "" || s.ko.Mode == LibraryEntrypointsAuto
-		for _, r := range s.roots {
-			if (base || matches(s.ko.Include, r)) && !matches(s.ko.Exclude, r) {
-				effective = append(effective, r)
-			} else {
-				denied = append(denied, r)
-			}
-		}
-		for _, sel := range s.ko.Include {
-			if slices.ContainsFunc(s.roots, func(r EntryRoot) bool { return matchesEntryRoot(sel, r) }) {
+	// scopes in a fixed order: the lane scope, then each kind.
+	type scope struct {
+		kind, origin string
+		ko           KindOverride
+	}
+	scopes := []scope{{"", EntryOriginDeclared, o.KindOverride}}
+	for _, k := range sortedKeys(o.Kinds) {
+		scopes = append(scopes, scope{k, EntryOriginDeclared + ":" + k, o.Kinds[k]})
+	}
+	for _, sc := range scopes {
+		for _, sel := range sc.ko.Include {
+			if selects(sel, sc.kind) {
 				continue
 			}
-			unmatched = append(unmatched, sel)
-			d := EntryRoot{Lane: o.Lane, Kind: EntryKindDeclared, Selector: sel, Origin: EntryOriginDeclared}
-			if !matches(s.ko.Exclude, d) {
-				added = append(added, d)
-				effective = append(effective, d)
+			d := EntryRoot{Lane: o.Lane, Kind: EntryKindDeclared, Selector: sel, Origin: sc.origin}
+			if matches(o.Exclude, d) || matches(sc.ko.Exclude, d) {
+				unmatched = append(unmatched, sel)
+				continue
 			}
+			added = append(added, d)
+			effective = append(effective, d)
 		}
-		for _, sel := range s.ko.Exclude {
-			if !slices.ContainsFunc(s.roots, func(r EntryRoot) bool { return matchesEntryRoot(sel, r) }) {
+		for _, sel := range sc.ko.Exclude {
+			if !selects(sel, sc.kind) {
 				unmatched = append(unmatched, "!"+sel)
 			}
 		}
-	}
-	apply(&lane)
-	for _, k := range sortedKeys(kinds) {
-		apply(kinds[k])
 	}
 
 	for _, set := range []*[]EntryRoot{&effective, &denied, &added} {

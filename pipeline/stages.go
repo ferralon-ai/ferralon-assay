@@ -54,7 +54,7 @@ type AssessConfig struct {
 	// WithSubjectGoWork.
 	SubjectGoWork string
 	// SubjectToolchainReachability opts reachability_ingress into running the Go analysis under the
-	// SUBJECT's toolchain when that toolchain resolved to an exact version. Off by default. See
+	// SUBJECT's toolchain when that toolchain resolved to an exact version. See
 	// WithSubjectToolchainReachability.
 	SubjectToolchainReachability bool
 	// SkipDisqualifiedAnalysis lets symbol_mapping and reachability_ingress return without calling
@@ -156,9 +156,10 @@ func WithSubjectGoWork(declared string) AssessOption {
 
 // WithSubjectToolchainReachability opts the Go reachability analysis into running under the
 // SUBJECT's Go toolchain instead of the analyzer's, when — and only when — the subject's toolchain
-// resolved to an EXACT bound. It is OFF by default and ships that way for one release
-// (ruling 3), because it is the step that makes findings appear on scans that are green today: a
-// subject on an older toolchain has stdlib symbols the analyzer's newer toolchain does not flag.
+// resolved to an EXACT bound. A caller of this package gets it only by asking; the CLI asks unless
+// its operator turns it off. It is the step that makes findings appear that a scan under the
+// analyzer's toolchain does not show: a subject on an older toolchain has stdlib symbols the
+// analyzer's newer toolchain does not flag.
 //
 // What the option buys when on is not a louder scan, it is a licensed one. With it off, an empty
 // path set for a stdlib advisory is evidence about the ANALYZER's Go, so no verdict may rest on it
@@ -2872,7 +2873,7 @@ func govulnMatchID(store artifact.Store, caseID, primary string) string {
 type reachabilityIngress struct {
 	plugin plugin.LanguagePlugin
 	// subjectToolchain opts this stage into asking the analyzer to run under the subject's Go
-	// toolchain when it resolved to an exact version (flag-gated, off by default). See
+	// toolchain when it resolved to an exact version. See
 	// WithSubjectToolchainReachability.
 	subjectToolchain bool
 	skipDisqualified bool
@@ -2933,8 +2934,8 @@ func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, 
 //
 // Four gates, and each is load-bearing rather than defensive:
 //
-//   - The flag. Running under the subject's toolchain changes the meaning of a green scan, so it
-//     ships off by default for one release.
+//   - The option. Running under the subject's toolchain changes the meaning of a green scan, so
+//     the caller can turn it off.
 //   - An inventory fact must exist. No fact means no run resolved one; nothing to request.
 //   - The bound must be EXACT. This is the asymmetry the whole design turns on: reachability's output
 //     is a refutation by ABSENCE, and absence is only evidence about the toolchain the analysis ran

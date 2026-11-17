@@ -200,29 +200,31 @@ absent, because the analysis did not run on your toolchain.
 
 ### `subject-toolchain-reachability`
 
-By default the reachability analysis runs under the scanner's toolchain, so its "the vulnerable
-symbol is not present" result is evidence about the scanner's Go, not yours. Standard-library
-advisories it cannot otherwise settle are reported `undetermined`, with `undetermined_reason` set to
-`go_toolchain_not_scanned` (or `go_toolchain_unresolved` when no toolchain fact resolved at all), and
-OpenVEX carries them as `under_investigation`.
+When your toolchain resolved **exactly**, the reachability analysis runs under that Go release,
+downloading it if the runner doesn't already have it. Its results are ordinary verdicts about your
+Go: an absent symbol can be reported `not_exploitable`, and a present one becomes a
+`reachable_candidate`.
 
-Set the Action input `subject-toolchain-reachability: "true"` (or `ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY`
-on the CLI) and, when your toolchain resolved **exactly**, the analysis runs under that Go release,
-downloading it if the runner doesn't already have it. Its results then become ordinary verdicts: an
-absent symbol can be reported `not_exploitable`, and a present one becomes a `reachable_candidate`.
-Before turning it on:
+When it did not resolve exactly, the analysis runs under the scanner's toolchain, so its "the
+vulnerable symbol is not present" result is evidence about the scanner's Go, not yours.
+Standard-library advisories it cannot otherwise settle are reported `undetermined`, with
+`undetermined_reason` set to `go_toolchain_not_scanned` (or `go_toolchain_unresolved` when no
+toolchain fact resolved at all), and OpenVEX carries them as `under_investigation`.
 
-- **Findings can appear on scans that are green today.** A repository on an older Go has
-  standard-library vulnerabilities a newer Go does not show. That is the point, and it changes what a
-  clean report means.
+This is on by default. Set the Action input `subject-toolchain-reachability: "false"` (or
+`ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY=false` on the CLI) to always run under the scanner's
+toolchain. What to know:
+
+- **Findings appear that a scan under the scanner's Go does not show.** A repository on an older Go
+  has standard-library vulnerabilities a newer Go does not have.
 - **It needs an exact toolchain.** `go.mod` floors are not enough. The Action has no input for the
   declaration, so set `ASSAY_SUBJECT_GO_VERSION` in the `env:` of the step that runs the Action.
-  Without an exact toolchain the input changes nothing, and that is not an error.
+  Without an exact toolchain the analysis runs under the scanner's, and that is not an error.
 - **It never fails the scan.** If the toolchain can't be downloaded or can't load your module, the
   analysis falls back to the scanner's toolchain and the advisory stays `undetermined`. The report
   never claims your toolchain was scanned when it was not.
 - **Go 1.20 is the floor.** The analyzer cannot drive an older `go` command; below 1.20 the advisory
-  stays `undetermined` whatever you set.
+  stays `undetermined`.
 - **The first run is slower.** It downloads a Go toolchain from the module proxy.
 
 ### Observed CI toolchain

@@ -1158,33 +1158,28 @@ func trustObservedGo() bool {
 	return err == nil && trusted
 }
 
-// envSubjectToolchainReach is the release gate on running the Go reachability analysis under the
-// SUBJECT's toolchain rather than the scanner's. It is env-only, no flag, because it is an operator's
-// rollout switch for one release, not a per-scan knob, and the Action input is its real surface —
+// envSubjectToolchainReach turns off running the Go reachability analysis under the SUBJECT's
+// toolchain rather than the scanner's. It is env-only, no flag: the Action input is its surface, and
 // action.yml exports it (see subject-toolchain-reachability).
 const envSubjectToolchainReach = brand.EnvPrefix + "_SUBJECT_TOOLCHAIN_REACHABILITY"
 
-// subjectToolchainReachOption resolves the M4 gate into an AssessOption, or nil when it is off —
-// which is the default, and leaves every scan byte-identical to the pre-M4 behavior.
-//
-// OFF is the safe direction and the reason it exists: with the gate off, a stdlib advisory the scan
-// could not adjudicate against the subject's toolchain is withheld and disclosed. Turning it on does
-// not weaken that; it lets a scan that genuinely ran under the subject's toolchain report a verdict.
-// The cost of turning it on is that findings appear on scans that are green today — which is the
-// point, and why it is a deliberate opt-in for one release.
+// subjectToolchainReachOption resolves the setting into an AssessOption, or nil when the caller
+// turned it off. It is on by default: a scan that knows the subject's exact toolchain analyzes
+// under it, so a stdlib advisory gets a verdict about the subject's Go. Off, the analysis runs
+// under the scanner's toolchain and a stdlib advisory it could not adjudicate is withheld and
+// disclosed.
 func subjectToolchainReachOption() pipeline.AssessOption {
-	if !envEnabled(os.Getenv(envSubjectToolchainReach)) {
+	if envDisabled(os.Getenv(envSubjectToolchainReach)) {
 		return nil
 	}
 	return pipeline.WithSubjectToolchainReachability(true)
 }
 
-// envEnabled reads a boolean env gate. Only the affirmative spellings enable it; anything else —
-// including empty, "0", "false", or junk — leaves the gate off, because a gate that guards a
-// verdict-behavior change must never be opened by a typo.
-func envEnabled(v string) bool {
+// envDisabled reads a boolean env setting that is on by default. Only the negative spellings turn
+// it off; anything else, including empty or junk, leaves the default.
+func envDisabled(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "yes", "on":
+	case "0", "false", "no", "off":
 		return true
 	default:
 		return false

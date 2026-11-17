@@ -1,0 +1,13 @@
+schema: ferralon.floor-expect.v1
+scan: complete
+findings:
+  - advisory: CVE-2026-84304
+    package: "google.golang.org/grpc@v1.79.3"
+    truth: reachable
+    floor: reachable_candidate
+    note: "Path halalcloud.AuthService.Close -> grpc.ClientConn.Close -> addrConn.tearDown -> transport.http2Client.Close, symbol_confidence high. Pin go.mod:322 v1.79.3"
+  - advisory: CVE-2026-84445
+    package: "google.golang.org/grpc@v1.79.3"
+    truth: unreachable
+    floor: undetermined
+    note: "No grpc.NewServer or xds in the repo."

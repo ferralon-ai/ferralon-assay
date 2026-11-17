@@ -1,0 +1,69 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 11,
+  "records": [
+    {
+      "identifier": "CVE-2025-41249",
+      "path": "2025/09/CVE-2025-41249.json",
+      "output_digest": "sha256:b59fbc1adf32dcc3c8efcf6cb8e56e5bbaa35a150e7800aafafbd77678d19806"
+    },
+    {
+      "identifier": "CVE-2026-19032",
+      "path": "2026/09/CVE-2026-19032.json",
+      "output_digest": "sha256:adee036d9b8780b70d10dcd10acbde46d986ec905389366edca2bcfb0cb879d0"
+    },
+    {
+      "identifier": "CVE-2026-41848",
+      "path": "2026/06/CVE-2026-41848.json",
+      "output_digest": "sha256:e73dfd8d03587a50b505e14e0690e51f64c6b3961d7272ec3cc30a8cb81606c9"
+    },
+    {
+      "identifier": "CVE-2026-54512",
+      "path": "2026/06/CVE-2026-54512.json",
+      "output_digest": "sha256:275a82b67511c1ba5f92fec39aa23c2422f678cedc68a0901d78281bf1ef663e"
+    },
+    {
+      "identifier": "CVE-2026-59889",
+      "path": "2026/07/CVE-2026-59889.json",
+      "output_digest": "sha256:8496a3bcb6c91b23752b691ba5fea453e2731f126349cf98305c186ce8ef0ec7"
+    },
+    {
+      "identifier": "CVE-2026-68497",
+      "path": "2026/09/CVE-2026-68497.json",
+      "output_digest": "sha256:5430d38fd7ec8689d83867119da1d0688662806c330bdcefaff224c289f40ad9"
+    },
+    {
+      "identifier": "CVE-2026-83557",
+      "path": "2026/09/CVE-2026-83557.json",
+      "output_digest": "sha256:61511e68486641287e5341febf20c12926757c062ecd68eeca4af4ef683bca6b"
+    },
+    {
+      "identifier": "CVE-2026-89425",
+      "path": "2026/09/CVE-2026-89425.json",
+      "output_digest": "sha256:cecfda14d31f57ee875efd5296d46b4059651a3d750dd58e442d885b0b40d4bc"
+    },
+    {
+      "identifier": "CVE-2026-91776",
+      "path": "2026/09/CVE-2026-91776.json",
+      "output_digest": "sha256:0d3794afd83ccecd955edc6ccce62b94b25b495ff0ab9cf9174b724cbad8364e"
+    },
+    {
+      "identifier": "CVE-2026-91777",
+      "path": "2026/09/CVE-2026-91777.json",
+      "output_digest": "sha256:031790ca85efb2976bbd7fd99cf6cc2badbacc989369403a1f9cf02bc33d343b"
+    },
+    {
+      "identifier": "GHSA-673j-qm5f-xpv8",
+      "path": "2022/02/GHSA-673j-qm5f-xpv8.json",
+      "output_digest": "sha256:196026690333a0e4513eded50a78bf8c4bf674fc3d4388e2ce527186c6ef9bbe"
+    }
+  ],
+  "corpus_digest": "sha256:b22ec2074f1f91cc573662dd5b5f70a2e27e9cae4eea2781e925193e4fdf5b2a",
+  "provenance": {
+    "generator": "floor fixture extraction",
+    "policy_id": "floor-fixture",
+    "policy_query": "the records this fixture's adjudicated expectations name",
+    "source_corpus_digest": "sha256:2233ff305c007bbfdd0e88d8e121f26a7699927ce277d87092ed08caab987af0"
+  }
+}

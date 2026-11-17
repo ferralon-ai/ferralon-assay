@@ -1,0 +1,14 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/alist-org/alist
+commit: 92e745360766cce32564f94a468cb576f577d27e
+lang: go
+build:
+  go: 1.25.0
+  goos: linux
+  goarch: amd64
+  cgo: true
+  apt: [libfuse-dev]
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "a221dc4cbfc93266783215b7fb7613d37e14808bfeeb672036e341763f05b1ce" }
+  provenance: corpus-92d72057330c

@@ -17,11 +17,12 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
-// Fixture formats. A fixture is a directory floor/fixtures/<owner>__<repo>@<sha12>/ holding a
+// Fixture formats. A fixture is a directory cmd/floorcheck/fixtures/<owner>__<repo>@<sha12>/ holding a
 // scenario.yaml (the pinned inputs) and an expect.yaml (the adjudicated truth for a few findings).
 const (
 	ScenarioSchema = "ferralon.floor-scenario.v1"
@@ -47,15 +48,17 @@ type Scenario struct {
 
 // ScenarioBuild pins the subject's build. Go is the exact toolchain version without its "go" prefix;
 // the go fields belong to the go lane only. JDK, Node and Python are the runtime majors (Python
-// major.minor) the CI matrix installs, each for its own lane only.
+// major.minor) the CI matrix installs, each for its own lane only. Apt names the Debian packages
+// (typically C headers a cgo build reads) the CI runner installs before the scan, in any lane.
 type ScenarioBuild struct {
-	Go     string `yaml:"go,omitempty"`
-	GOOS   string `yaml:"goos,omitempty"`
-	GOARCH string `yaml:"goarch,omitempty"`
-	CGO    *bool  `yaml:"cgo,omitempty"`
-	JDK    string `yaml:"jdk,omitempty"`
-	Node   string `yaml:"node,omitempty"`
-	Python string `yaml:"python,omitempty"`
+	Go     string   `yaml:"go,omitempty"`
+	GOOS   string   `yaml:"goos,omitempty"`
+	GOARCH string   `yaml:"goarch,omitempty"`
+	CGO    *bool    `yaml:"cgo,omitempty"`
+	JDK    string   `yaml:"jdk,omitempty"`
+	Node   string   `yaml:"node,omitempty"`
+	Python string   `yaml:"python,omitempty"`
+	Apt    []string `yaml:"apt,omitempty"`
 }
 
 // ScenarioIntel names the intelligence the scan reads. Corpus and Signals are relative to the floor
@@ -132,6 +135,7 @@ var (
 	majorOnly  = regexp.MustCompile(`^[1-9][0-9]*$`)
 	pyVersion  = regexp.MustCompile(`^3\.[0-9]+$`)
 	ghName     = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_.-]*$`)
+	debName    = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
 )
 
 // runtimeLane is the lang each non-go build field belongs to.
@@ -157,6 +161,9 @@ type Fixture struct {
 	// none). Both are absolute and verified against their pins.
 	CorpusPath  string
 	SignalsPath string
+	// AdvisoryIDs are the identifiers an advisories directory holds: the advisories the scan must
+	// assess. Empty for a corpus bundle.
+	AdvisoryIDs []string
 }
 
 // loadError is a fixture that cannot be compared: the kind is the incomplete kind it reports.
@@ -290,6 +297,11 @@ func (b ScenarioBuild) validate(lang string) error {
 	for field, v := range map[string]string{"jdk": b.JDK, "node": b.Node, "python": b.Python} {
 		if v != "" && !slices.Contains(runtimeLane[field], lang) {
 			return fmt.Errorf("build.%s belongs to the %s lane, not %s", field, strings.Join(runtimeLane[field], "/"), lang)
+		}
+	}
+	for _, p := range b.Apt {
+		if !debName.MatchString(p) {
+			return fmt.Errorf("build.apt %q is not a Debian package name", p)
 		}
 	}
 	return nil
@@ -428,11 +440,11 @@ func (fx *Fixture) verifyIntel(floorRoot string) error {
 		}
 		fx.CorpusPath = p
 	} else {
-		dir, err := verifyAdvisories(fx.Dir, *in.Advisories, in.Signals != nil)
+		dir, ids, err := verifyAdvisories(fx.Dir, *in.Advisories, in.Signals != nil)
 		if err != nil {
 			return unverified("intel.advisories: %w", err)
 		}
-		fx.CorpusPath = dir
+		fx.CorpusPath, fx.AdvisoryIDs = dir, ids
 	}
 	if in.Signals != nil {
 		p, err := verifyPinned(floorRoot, *in.Signals)
@@ -447,29 +459,30 @@ func (fx *Fixture) verifyIntel(floorRoot string) error {
 // verifyAdvisories verifies a fixture-local directory corpus: its manifest.json against the pin, then
 // every record against the manifest. The scanner reads <dir>/signals.json when no signals are passed,
 // so one there is refused unless intel.signals pins the signals the scan uses instead.
-func verifyAdvisories(fixtureDir string, pf PinnedFile, signalsPinned bool) (string, error) {
+func verifyAdvisories(fixtureDir string, pf PinnedFile, signalsPinned bool) (string, []string, error) {
 	if filepath.Base(filepath.FromSlash(pf.Path)) != "manifest.json" {
-		return "", fmt.Errorf("%q: pin the corpus directory's manifest.json", pf.Path)
+		return "", nil, fmt.Errorf("%q: pin the corpus directory's manifest.json", pf.Path)
 	}
 	manifest, err := containedPath(fixtureDir, pf.Path)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	got, err := fileSHA256(manifest)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if got != pf.SHA256 {
-		return "", fmt.Errorf("%s: sha256 %s, scenario pins %s", pf.Path, got, pf.SHA256)
+		return "", nil, fmt.Errorf("%s: sha256 %s, scenario pins %s", pf.Path, got, pf.SHA256)
 	}
 	dir := filepath.Dir(manifest)
 	if _, err := os.Lstat(filepath.Join(dir, "signals.json")); err == nil && !signalsPinned {
-		return "", errors.New("the directory holds a signals.json the scanner would read unpinned; pin it as intel.signals")
+		return "", nil, errors.New("the directory holds a signals.json the scanner would read unpinned; pin it as intel.signals")
 	}
-	if err := verifyAdvisoryDir(dir); err != nil {
-		return "", err
+	ids, err := verifyAdvisoryDir(dir)
+	if err != nil {
+		return "", nil, err
 	}
-	return dir, nil
+	return dir, ids, nil
 }
 
 // verifyPinned resolves a shared intel file relative to the floor root, refuses it unless it lands under
@@ -525,41 +538,55 @@ type dirManifest struct {
 }
 
 // verifyAdvisoryDir checks a directory corpus the way the scanner will read it, and verifies every
-// record against its pinned digest now rather than per lookup.
-func verifyAdvisoryDir(dir string) error {
+// record against its pinned digest now rather than per lookup. Each record must then resolve through
+// the scanner's own reader and name an affected package: a record the scanner drops, or one it cannot
+// match to a dependency, would leave the fixture with nothing to assess. It returns the identifiers.
+func verifyAdvisoryDir(dir string) ([]string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var m dirManifest
 	if err := json.Unmarshal(data, &m); err != nil {
-		return fmt.Errorf("manifest.json: %w", err)
+		return nil, fmt.Errorf("manifest.json: %w", err)
 	}
 	switch {
 	case len(m.Records) == 0 && len(m.Advisories) > 0:
-		return errors.New("manifest.json indexes advisories in the test-fixture shape (advisories{}), which the scanner does not read; it needs records[]")
+		return nil, errors.New("manifest.json indexes advisories in the test-fixture shape (advisories{}), which the scanner does not read; it needs records[]")
 	case len(m.Records) == 0:
-		return errors.New("manifest.json holds no records")
+		return nil, errors.New("manifest.json holds no records")
 	case m.RecordCount != len(m.Records):
-		return fmt.Errorf("manifest.json: record_count %d, %d records", m.RecordCount, len(m.Records))
+		return nil, fmt.Errorf("manifest.json: record_count %d, %d records", m.RecordCount, len(m.Records))
 	}
 	seen := map[string]bool{}
+	ids := make([]string, 0, len(m.Records))
 	for _, r := range m.Records {
 		if seen[r.Identifier] {
-			return fmt.Errorf("manifest.json: duplicate identifier %q", r.Identifier)
+			return nil, fmt.Errorf("manifest.json: duplicate identifier %q", r.Identifier)
 		}
 		seen[r.Identifier] = true
+		ids = append(ids, r.Identifier)
 		p, err := containedPath(dir, r.Path)
 		if err != nil {
-			return fmt.Errorf("%s: %w", r.Identifier, err)
+			return nil, fmt.Errorf("%s: %w", r.Identifier, err)
 		}
 		got, err := fileSHA256(p)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if "sha256:"+got != r.OutputDigest {
-			return fmt.Errorf("%s: digest sha256:%s, manifest pins %s", r.Path, got, r.OutputDigest)
+			return nil, fmt.Errorf("%s: digest sha256:%s, manifest pins %s", r.Path, got, r.OutputDigest)
 		}
 	}
-	return nil
+	src := pipeline.NewArtifactSource(dir)
+	for _, id := range ids {
+		facts, ok := src.Lookup(id)
+		if !ok {
+			return nil, fmt.Errorf("%s: the scanner does not read this record", id)
+		}
+		if len(pipeline.AffectedPackageKeys(facts)) == 0 {
+			return nil, fmt.Errorf("%s: the record names no affected package, so no scan can assess it", id)
+		}
+	}
+	return ids, nil
 }

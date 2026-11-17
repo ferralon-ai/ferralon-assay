@@ -1,0 +1,43 @@
+schema: ferralon.floor-expect.v1
+scan: complete
+findings:
+  - advisory: CVE-2025-15284
+    package: "qs"
+    truth: reachable
+    floor: reachable_candidate
+    note: "Both installed copies (6.7.0 backend, 6.5.2 frontend) are in range"
+  - advisory: CVE-2026-113872
+    package: "multer@1.4.2"
+    truth: not_affected
+    floor: disqualified
+    note: "Ruled out (version_not_in_affected_range)"
+  - advisory: CVE-2026-2391
+    package: "qs"
+    truth: reachable
+    floor: reachable_candidate
+    note: "Reached copy 6.7.0 (backend lock) is in range"
+  - advisory: CVE-2026-5038
+    package: "multer@1.4.2"
+    truth: not_affected
+    floor: disqualified
+    note: "Ruled out (version_not_in_affected_range)"
+  - advisory: CVE-2026-5079
+    package: "multer@1.4.2"
+    truth: reachable
+    floor: reachable_candidate
+    note: "multer 1.4.2, range 1.0.0..2.2.0, in range"
+  - advisory: CVE-2026-77037
+    package: "multer@1.4.2"
+    truth: not_affected
+    floor: disqualified
+    note: "Ruled out (version_not_in_affected_range)"
+  - advisory: CVE-2026-77078
+    package: "multer@1.4.2"
+    truth: reachable
+    floor: reachable_candidate
+    note: "multer 1.4.2, range <2.3.0, in range"
+  - advisory: CVE-2026-88932
+    package: "multer@1.4.2"
+    truth: not_affected
+    floor: disqualified
+    note: "Ruled out (version_not_in_affected_range)"

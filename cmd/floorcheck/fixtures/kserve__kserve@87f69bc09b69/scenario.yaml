@@ -1,0 +1,13 @@
+schema: ferralon.floor-scenario.v1
+repo: https://github.com/kserve/kserve
+commit: 87f69bc09b6981b25e8461c5bc76d2508117d421
+lang: go
+build:
+  go: 1.26.8
+  goos: linux
+  goarch: amd64
+  cgo: false
+intel:
+  policy: floor-fixture
+  advisories: { path: intel/advisories/manifest.json, sha256: "ee19b794d93090945572ff7287902fedeb89d0ca4ea339116823cdba0c5a6151" }
+  provenance: corpus-92d72057330c

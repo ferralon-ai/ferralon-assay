@@ -1,0 +1,29 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 3,
+  "records": [
+    {
+      "identifier": "CVE-2020-15250",
+      "path": "2020/10/CVE-2020-15250.json",
+      "output_digest": "sha256:ab641a2a76a74fc91587822d5eee0eaaa67fed3ace0a59e685a54be3225debca"
+    },
+    {
+      "identifier": "CVE-2026-8149",
+      "path": "2026/05/CVE-2026-8149.json",
+      "output_digest": "sha256:ad95a79f4704a76d9cfd2f150d91023d14312d5390a8798f1948b34677425b19"
+    },
+    {
+      "identifier": "GHSA-4h8f-2wvx-gg5w",
+      "path": "2024/05/GHSA-4h8f-2wvx-gg5w.json",
+      "output_digest": "sha256:2ac12c5a58d188ddcf15075da8a198cf56ad2046da8ef383f73f533d39c70198"
+    }
+  ],
+  "corpus_digest": "sha256:c98b484a7b84e3171fb4cb3fa64b410ffcadbdc0fa672d4e548566eee305d69f",
+  "provenance": {
+    "generator": "floor fixture extraction",
+    "policy_id": "floor-fixture",
+    "policy_query": "the records this fixture's adjudicated expectations name",
+    "source_corpus_digest": "sha256:2233ff305c007bbfdd0e88d8e121f26a7699927ce277d87092ed08caab987af0"
+  }
+}

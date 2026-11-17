@@ -101,6 +101,9 @@ type RepoResult struct {
 	Unverifiable []string  `json:"unverifiable,omitempty"`
 	Pass         bool      `json:"pass"`
 	Failures     []Failure `json:"failures,omitempty"`
+	// Caveats are the capability-matrix caveats the report fired (caveats.go). Informational:
+	// they never fail the repository. Nil when there is no readable report.
+	Caveats []CaveatHit `json:"caveats"`
 	// Lane is the showcase lane kind for a showcase scan; empty on the other lanes.
 	Lane          string `json:"lane,omitempty"`
 	CorpusRelease string `json:"corpus_release,omitempty"`

@@ -76,6 +76,9 @@ type LoadResult struct {
 	// run-wide reason.
 	cgo        []plugin.ScopedReason
 	cgoBounded bool
+	// cgoHanded are the types of the values the build hands a cgo package that calls back
+	// (handedType): C can call their exported methods, so the call graph roots at them.
+	cgoHanded []*types.Named
 	// cgoUnresolved: `go env CGO_ENABLED` failed, so which variant of the build was loaded is unknown.
 	cgoUnresolved bool
 	// goVersion is the Go release the load ran under; buildGoVersion is the subject's toolchain when
@@ -163,7 +166,7 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 	if len(loadErrs) > 0 {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
-	cgo, dropped, bounded := cgoLimits(pkgs, cfg.Env)
+	cgo, cgoHanded, dropped, bounded := cgoLimits(pkgs, cfg.Env)
 	if dropped && !bounded {
 		reasons = append(reasons, plugin.PartialReasonCgo)
 	}
@@ -174,7 +177,7 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		part = plugin.Partial(reasons...)
 	}
 	if !bounded {
-		cgo = nil
+		cgo, cgoHanded = nil, nil
 	}
 	if dropped && bounded {
 		part.Complete = false
@@ -182,7 +185,7 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 	}
 
 	return &LoadResult{
-		Packages: pkgs, Partiality: part, members: members, cgo: cgo, cgoBounded: bounded,
+		Packages: pkgs, Partiality: part, members: members, cgo: cgo, cgoHanded: cgoHanded, cgoBounded: bounded,
 		cgoUnresolved: cgoErr != nil, goVersion: goVersion,
 	}, nil
 }
@@ -291,7 +294,10 @@ func cgoPinned(ctx context.Context, dir string, env []string) ([]string, error) 
 //     anything. The targets are every module in the build plus first-party code, plus the modules
 //     of the dropped files' imports. A module outside the build has no code in the binary, so it is
 //     the only thing such a limit can exclude. A dropped file importing a package the build did not
-//     load leaves its module unknown, and no bound holds.
+//     load leaves its module unknown, and no bound holds. Where the build can be shown to hand the
+//     package nothing but values the search starts from (cgoCallbackTargets), the targets are the
+//     modules of the package's own import closure, the limit's Path says so, and handed holds the
+//     types of those values.
 //
 // The standard library's own cgo (the net resolver, os/user lookups, plugin's dlopen) that C cannot
 // call back from holds no cgo module: its C calls only the C library, its Go side is in the graph,
@@ -300,7 +306,7 @@ func cgoPinned(ctx context.Context, dir string, env []string) ([]string, error) 
 // directly or reflectively.
 //
 // runtime/cgo itself is not a cgo package here: every cgo package imports it.
-func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedReason, dropped, bounded bool) {
+func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedReason, handed []*types.Named, dropped, bounded bool) {
 	tags := goflagsTags(env)
 	cgoMods := map[string]string{} // module PURL -> one cgo package path in it
 	every := map[string]bool{"": true}
@@ -340,16 +346,17 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 		callbacks = callbacks || callsBack
 	})
 	if len(cgoMods) == 0 {
-		return nil, false, true
+		return nil, nil, false, true
 	}
 	if unreadable {
-		return nil, dropped, false
+		return nil, nil, dropped, false
 	}
 
 	targets := map[string]bool{}
 	for mod := range cgoMods {
 		targets[mod] = true
 	}
+	narrowed := false
 	if callbacks {
 		loaded := map[string]*packages.Package{}
 		packages.Visit(pkgs, nil, func(p *packages.Package) { loaded[p.PkgPath] = p })
@@ -362,10 +369,11 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 			case isStdlibPath(imp, nil):
 				targets[stdlibPURL] = true
 			default:
-				return nil, dropped, false
+				return nil, nil, dropped, false
 			}
 		}
-		if mods, ok := cgoCallbackTargets(pkgs, cbPkgs, closure, droppedFiles, tags); ok {
+		var mods map[string]bool
+		if mods, handed, narrowed = cgoCallbackTargets(pkgs, cbPkgs, closure, droppedFiles, tags); narrowed {
 			for mod := range mods {
 				targets[mod] = true
 			}
@@ -379,14 +387,32 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 	}
 	list := sortedKeys(targets)
 	for _, mod := range sortedKeys(mapKeys(cgoMods)) {
+		path := cgoMods[mod]
+		if narrowed {
+			path = cgoNarrowing(path, len(list), handed)
+		}
 		scoped = append(scoped, plugin.ScopedReason{
 			Reason:  plugin.PartialReasonCgo,
 			Package: mod,
-			Path:    cgoMods[mod],
+			Path:    path,
 			Targets: list,
 		})
 	}
-	return scoped, dropped, true
+	return scoped, handed, dropped, true
+}
+
+// cgoNarrowing is the Path of a cgo limit whose targets are narrowed to the cgo packages' import
+// closure: it states the ground the narrowing rests on.
+func cgoNarrowing(pkg string, modules int, handed []*types.Named) string {
+	if len(handed) == 0 {
+		return fmt.Sprintf("no call in this build hands %s a Go function or interface value, so its C code can reach only %d modules", pkg, modules)
+	}
+	names := make([]string, len(handed))
+	for i, t := range handed {
+		names[i] = handedName(t)
+	}
+	list := strings.Join(names, ", ")
+	return fmt.Sprintf("no call in this build hands %s a Go function or interface value other than %s, so its C code can reach only %d modules and the methods of %s", pkg, list, modules, list)
 }
 
 const stdlibPURL = "pkg:golang/stdlib"

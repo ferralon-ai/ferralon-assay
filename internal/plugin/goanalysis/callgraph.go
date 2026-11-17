@@ -29,6 +29,8 @@ type ssaProgram struct {
 	prog    *ssa.Program
 	pkgs    []*ssa.Package
 	typePkg map[*types.Package]*packages.Package
+	// handed are the load's cgoHanded types.
+	handed []*types.Named
 }
 
 // loadSSA loads the module at buildDir and builds its SSA program in one step,
@@ -70,7 +72,7 @@ func buildSSAWith(res *LoadResult, create func([]*packages.Package, ssa.BuilderM
 			typePkg[p.Types] = p
 		}
 	}
-	return &ssaProgram{prog: prog, pkgs: pkgs, typePkg: typePkg}, nil
+	return &ssaProgram{prog: prog, pkgs: pkgs, typePkg: typePkg, handed: res.cgoHanded}, nil
 }
 
 // scipFunc emits the SCIP id for an SSA function, using the precise
@@ -184,7 +186,8 @@ func (s *ssaProgram) buildGraph(algo string) (*callgraph.Graph, error) {
 }
 
 // entryFunctions returns the program's main + init functions across all built
-// packages — the call-graph roots.
+// packages, and the exported methods of the values handed to a cgo package that
+// calls back (C calls them) — the call-graph roots.
 func (s *ssaProgram) entryFunctions() []*ssa.Function {
 	var roots []*ssa.Function
 	for _, p := range s.pkgs {
@@ -196,6 +199,13 @@ func (s *ssaProgram) entryFunctions() []*ssa.Function {
 		}
 		if fn := p.Func("init"); fn != nil {
 			roots = append(roots, fn)
+		}
+	}
+	for _, t := range s.handed {
+		for _, sel := range typeutil.IntuitiveMethodSet(t, &s.prog.MethodSets) {
+			if fn := s.prog.MethodValue(sel); fn != nil && sel.Obj().Exported() {
+				roots = append(roots, fn)
+			}
 		}
 	}
 	return roots

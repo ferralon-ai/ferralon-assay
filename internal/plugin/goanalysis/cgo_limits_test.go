@@ -75,7 +75,7 @@ func TestCgoLimits(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			scoped, _, bounded := cgoLimits(tc.pkgs, nil)
+			scoped, _, _, bounded := cgoLimits(tc.pkgs, nil)
 			if bounded != tc.wantBounded {
 				t.Fatalf("bounded = %v, want %v (scoped %+v)", bounded, tc.wantBounded, scoped)
 			}

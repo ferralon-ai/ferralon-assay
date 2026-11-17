@@ -114,8 +114,13 @@ func (s *ssaProgram) beegoRoutes(name string, args []ssa.Value) []route {
 		if len(fns) == 0 {
 			return
 		}
-		for _, fn := range append(fns, s.declaredMethods(ctrl, beegoPkgPaths, beegoLifecycleMethods)...) {
+		for _, fn := range fns {
 			routes = append(routes, route{selector: selector, symbol: s.scipFunc(fn)})
+		}
+		// Prepare and Finish run on every route of the controller, so they carry no
+		// one route's pattern.
+		for _, fn := range s.declaredMethods(ctrl, beegoPkgPaths, beegoLifecycleMethods) {
+			routes = append(routes, route{symbol: s.scipFunc(fn)})
 		}
 	}
 	switch {
@@ -144,7 +149,7 @@ func (s *ssaProgram) beegoRoutes(name string, args []ssa.Value) []route {
 		if ctrl == nil {
 			return nil
 		}
-		if noVariadic(args[2:]) {
+		if noVariadic(args[2:]) || onlySessionOptions(args[2:]) {
 			emit(ctrl, s.declaredMethods(ctrl, beegoPkgPaths, beegoRESTMethods))
 		} else {
 			emit(ctrl, handlerShaped(s.declaredMethods(ctrl, beegoPkgPaths, nil)))
@@ -159,7 +164,7 @@ func (s *ssaProgram) beegoRoutes(name string, args []ssa.Value) []route {
 			if beegoAnnotatedRegistrars[name] {
 				methods = routerAnnotated(methods)
 			} else {
-				methods = handlerShaped(methods)
+				methods = notNamed(handlerShaped(methods), s.frameworkMethodNames(ctrl, beegoPkgPaths))
 			}
 			emit(ctrl, methods)
 		}
@@ -206,6 +211,72 @@ func handlerShaped(fns []*ssa.Function) []*ssa.Function {
 		}
 	}
 	return out
+}
+
+// notNamed drops the methods whose name is in names. An auto router skips every
+// method name the base controller has, so a controller's override of one is not
+// routed by it.
+func notNamed(fns []*ssa.Function, names map[string]bool) []*ssa.Function {
+	var out []*ssa.Function
+	for _, fn := range fns {
+		if !names[fn.Name()] {
+			out = append(out, fn)
+		}
+	}
+	return out
+}
+
+// frameworkMethodNames returns the names of the methods t takes from the framework
+// types it embeds, directly or through its own embedded types.
+func (s *ssaProgram) frameworkMethodNames(t types.Type, framework map[string]bool) map[string]bool {
+	names := map[string]bool{}
+	seen := map[types.Type]bool{}
+	var walk func(types.Type)
+	walk = func(t types.Type) {
+		if p, ok := t.Underlying().(*types.Pointer); ok {
+			t = p.Elem()
+		}
+		if seen[t] {
+			return
+		}
+		seen[t] = true
+		if named, ok := t.(*types.Named); ok && named.Obj().Pkg() != nil && framework[named.Obj().Pkg().Path()] {
+			mset := s.prog.MethodSets.MethodSet(types.NewPointer(named))
+			for i := 0; i < mset.Len(); i++ {
+				names[mset.At(i).Obj().Name()] = true
+			}
+			return
+		}
+		st, ok := t.Underlying().(*types.Struct)
+		if !ok {
+			return
+		}
+		for i := 0; i < st.NumFields(); i++ {
+			if f := st.Field(i); f.Embedded() {
+				walk(f.Type())
+			}
+		}
+	}
+	walk(t)
+	return names
+}
+
+// onlySessionOptions reports whether every option a call passed is the result of
+// beego's WithRouterSessionOn, which leaves the routed methods at the REST verbs.
+func onlySessionOptions(args []ssa.Value) bool {
+	vals := flattenVariadic(args)
+	for _, v := range vals {
+		call, ok := v.(*ssa.Call)
+		if !ok {
+			return false
+		}
+		callee := call.Call.StaticCallee()
+		if callee == nil || callee.Pkg == nil || callee.Pkg.Pkg == nil ||
+			!beegoPkgPaths[callee.Pkg.Pkg.Path()] || callee.Name() != "WithRouterSessionOn" {
+			return false
+		}
+	}
+	return len(vals) > 0
 }
 
 // beegoMappedMethods reads the controller method names out of a Router call's

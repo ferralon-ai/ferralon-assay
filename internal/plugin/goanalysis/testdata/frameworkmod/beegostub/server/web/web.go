@@ -84,6 +84,8 @@ func (p *ControllerRegister) AddMethod(method, pattern string, f HandleFunc)    
 // ControllerOption mirrors beego's route option.
 type ControllerOption func()
 
+func WithRouterSessionOn(sessionOn bool) ControllerOption { return func() {} }
+
 // Namespace mirrors beego's Namespace.
 type Namespace struct{}
 

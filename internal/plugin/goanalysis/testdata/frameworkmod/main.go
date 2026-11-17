@@ -40,6 +40,7 @@ func sinkBeegoInclude(v string)    { sunk = append(sunk, v) }
 func sinkBeegoAuto(v string)       { sunk = append(sunk, v) }
 func sinkBeegoAdd(v string)        { sunk = append(sunk, v) }
 func sinkBeegoOpts(v string)       { sunk = append(sunk, v) }
+func sinkBeegoSess(v string)       { sunk = append(sunk, v) }
 func sinkBeegoPrepare(v string)    { sunk = append(sunk, v) }
 func sinkBeegoNSRouter(v string)   { sunk = append(sunk, v) }
 func sinkBeegoNSInclude(v string)  { sunk = append(sunk, v) }
@@ -112,6 +113,9 @@ func (c *AutoController) Auto() { sinkBeegoAuto(c.Ctx.Input.Query("u")) }
 // Helper takes an argument, so the auto router cannot call it.
 func (c *AutoController) Helper(v string) { sinkNeverRegistered(v) }
 
+// Get has a name the base controller has, which the auto router skips.
+func (c *AutoController) Get() { sinkNeverRegistered(c.Ctx.Input.Query("u")) }
+
 type AddController struct{ web.Controller }
 
 // AddController is added with no option, so only its REST verbs are routed.
@@ -128,6 +132,12 @@ func (c *OptController) Opted() error {
 }
 
 func (c *OptController) Helper(v string) { sinkNeverRegistered(v) }
+
+// SessController is added with a session option only, which leaves its REST verbs routed.
+type SessController struct{ web.Controller }
+
+func (c *SessController) Get()   { sinkBeegoSess(c.Ctx.Input.Query("u")) }
+func (c *SessController) Other() { sinkNeverRegistered(c.Ctx.Input.Query("u")) }
 
 type NSController struct{ web.Controller }
 
@@ -279,6 +289,7 @@ func main() {
 	web.AutoRouter(&AutoController{})
 	web.BeeApp.Handlers.Add("/api/add", &AddController{})
 	web.BeeApp.Handlers.Add("/api/opt", &OptController{}, routeOption())
+	web.BeeApp.Handlers.Add("/api/sess", &SessController{}, web.WithRouterSessionOn(true))
 	web.BeeApp.Router("/api/server", &ServerController{}, "get:Served")
 	ns := web.NewNamespace("/v1",
 		web.NSRouter("/ns", &NSController{}, "get:NSRouted"),

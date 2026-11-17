@@ -2,7 +2,10 @@ package goanalysis
 
 import (
 	"context"
+	"os/exec"
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -85,6 +88,50 @@ func TestCallGraph_RunTimeCalls(t *testing.T) {
 			}
 			if got, want := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoad), slices.Contains(tc.want, plugin.PartialReasonPluginLoad); got != want {
 				t.Errorf("%s declared = %v, want %v (partiality %+v)", plugin.PartialReasonPluginLoad, got, want, res.Partiality)
+			}
+		})
+	}
+}
+
+// TestCallGraph_PluginLoadNeedsALoadablePlugin: plugin.Open loads code only in a build that
+// compiles the real package plugin (cgo on, and a GOOS that has plugins). A build that compiles its
+// stub reaches a function that returns an error, so plugin_load is not declared.
+func TestCallGraph_PluginLoadNeedsALoadablePlugin(t *testing.T) {
+	const src = "package main\n\nimport \"plugin\"\n\nfunc main() { _, _ = plugin.Open(\"x.so\") }\n"
+	cases := []struct {
+		name string
+		goos string // "" is the host's
+		cgo  string
+		want bool
+	}{
+		{"cgo on", "", "1", true},
+		{"cgo off", "", "0", false},
+		{"a GOOS without plugins", "windows", "0", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.want {
+				if !slices.Contains([]string{"linux", "darwin", "freebsd"}, runtime.GOOS) {
+					t.Skip("the host's GOOS has no plugins")
+				}
+				cc, err := exec.Command("go", "env", "CC").Output()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := exec.LookPath(strings.Fields(string(cc) + " cc")[0]); err != nil {
+					t.Skip("no C compiler")
+				}
+			}
+			t.Setenv("CGO_ENABLED", tc.cgo)
+			if tc.goos != "" {
+				t.Setenv("GOOS", tc.goos)
+			}
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: writeModule(t, map[string]string{"main.go": src})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoad); got != tc.want {
+				t.Errorf("%s declared = %v, want %v (partiality %+v)", plugin.PartialReasonPluginLoad, got, tc.want, res.Partiality)
 			}
 		})
 	}

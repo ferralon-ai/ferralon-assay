@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/types"
 	"maps"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -29,6 +30,8 @@ type ssaProgram struct {
 	prog    *ssa.Program
 	pkgs    []*ssa.Package
 	typePkg map[*types.Package]*packages.Package
+	// pluginStub: the build compiled package plugin's stub, whose Open only returns an error.
+	pluginStub bool
 }
 
 // loadSSA loads the module at buildDir and builds its SSA program in one step,
@@ -70,7 +73,35 @@ func buildSSAWith(res *LoadResult, create func([]*packages.Package, ssa.BuilderM
 			typePkg[p.Types] = p
 		}
 	}
-	return &ssaProgram{prog: prog, pkgs: pkgs, typePkg: typePkg}, nil
+	return &ssaProgram{prog: prog, pkgs: pkgs, typePkg: typePkg, pluginStub: pluginIsStub(loaded)}, nil
+}
+
+// pluginIsStub reports whether the standard library's plugin package, as this build compiles it, is
+// the stub (plugin_stubs.go: cgo off, or a GOOS that has no plugins), read from the files the load
+// resolved for it. Its Open loads nothing. A build that does not import plugin, or whose files do not
+// say, is not a stub.
+func pluginIsStub(loaded []*packages.Package) bool {
+	stub := false
+	packages.Visit(loaded, nil, func(p *packages.Package) {
+		if p.PkgPath != "plugin" {
+			return
+		}
+		has := func(name string) bool {
+			return slices.ContainsFunc(p.GoFiles, func(f string) bool { return filepath.Base(f) == name })
+		}
+		stub = has("plugin_stubs.go") && !has("plugin_dlopen.go")
+	})
+	return stub
+}
+
+// runTimeReason returns the reason runTimeCallees declares for the function named name, and whether
+// it declares one. plugin.Open declares none when the build compiled the stub.
+func (s *ssaProgram) runTimeReason(name string) (string, bool) {
+	r, ok := runTimeCallees[name]
+	if ok && r == plugin.PartialReasonPluginLoad && s.pluginStub {
+		return "", false
+	}
+	return r, ok
 }
 
 // scipFunc emits the SCIP id for an SSA function, using the precise
@@ -320,7 +351,8 @@ func classifyCallee(fn *ssa.Function, reasons map[string]bool) {
 // runTimeCallees maps each function that calls code chosen at run time to the reason it declares.
 // reflect.Value's Call, CallSlice, Method and MethodByName call a function or method picked by a
 // value or a name, and a template's Execute calls the methods and functions its text names; the
-// call graph follows none of those calls. plugin.Open loads Go code the build never compiled.
+// call graph follows none of those calls. plugin.Open loads Go code the build never compiled; a
+// build that compiled its stub loads none (runTimeReason).
 var runTimeCallees = map[string]string{
 	"(reflect.Value).Call":                      plugin.PartialReasonReflectiveCall,
 	"(reflect.Value).CallSlice":                 plugin.PartialReasonReflectiveCall,
@@ -340,7 +372,7 @@ func (s *ssaProgram) runTimeCalls(graph *callgraph.Graph) []string {
 	reasons := map[string]bool{}
 	declare := func(fn *ssa.Function) {
 		if obj, ok := fn.Object().(*types.Func); ok {
-			if r, ok := runTimeCallees[obj.FullName()]; ok {
+			if r, ok := s.runTimeReason(obj.FullName()); ok {
 				reasons[r] = true
 			}
 		}

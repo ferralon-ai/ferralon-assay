@@ -1,0 +1,455 @@
+package plugin
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestParseEntryOverride(t *testing.T) {
+	ko := func(mode string, inc, exc []string) KindOverride {
+		return KindOverride{Mode: mode, Include: inc, Exclude: exc}
+	}
+	cases := []struct {
+		name    string
+		in      string
+		want    EntryOverride
+		wantErr string
+	}{
+		{name: "empty is auto", in: "", want: EntryOverride{KindOverride: ko("auto", nil, nil)}},
+		{name: "auto", in: "auto", want: EntryOverride{KindOverride: ko("auto", nil, nil)}},
+		{name: "none", in: " none ", want: EntryOverride{KindOverride: ko("none", nil, nil)}},
+		{name: "list replaces auto", in: "pkg/api, ./pkg/client/...", want: EntryOverride{KindOverride: ko("paths", []string{"pkg/api", "pkg/client"}, nil)}},
+		{name: "deny-only keeps auto", in: "!internal/tools\n!cmd", want: EntryOverride{KindOverride: ko("auto", nil, []string{"cmd", "internal/tools"})}},
+		{name: "auto plus allow", in: "auto,cmd/x", want: EntryOverride{KindOverride: ko("auto", []string{"cmd/x"}, nil)}},
+		{name: "duplicates compact", in: "pkg pkg !pkg/x !pkg/x", want: EntryOverride{KindOverride: ko("paths", []string{"pkg"}, []string{"pkg/x"})}},
+		{name: "lane none", in: "js:none", want: EntryOverride{Lane: "js", KindOverride: ko("none", nil, nil)}},
+		{name: "lane auto", in: "go:auto", want: EntryOverride{Lane: "go", KindOverride: ko("auto", nil, nil)}},
+		{name: "lane deny keeps auto", in: "!js:npm:nodemon", want: EntryOverride{Lane: "js", KindOverride: ko("auto", nil, []string{"npm:nodemon"})}},
+		{name: "kind none", in: "go:library=none", want: EntryOverride{Lane: "go", KindOverride: ko("auto", nil, nil), Kinds: map[string]KindOverride{"library": ko("none", nil, nil)}}},
+		{name: "kind deny of bin name", in: "!js:bin=bin:storybook", want: EntryOverride{Lane: "js", KindOverride: ko("auto", nil, nil), Kinds: map[string]KindOverride{"bin": ko("auto", nil, []string{"bin:storybook"})}}},
+		{
+			name: "two kinds",
+			in:   "go:main=cmd/traefik, go:library=none",
+			want: EntryOverride{Lane: "go", KindOverride: ko("auto", nil, nil), Kinds: map[string]KindOverride{
+				"main": ko("paths", []string{"cmd/traefik"}, nil), "library": ko("none", nil, nil),
+			}},
+		},
+		{name: "class selector", in: "java:main=class:com.acme.Main", want: EntryOverride{Lane: "java", KindOverride: ko("auto", nil, nil), Kinds: map[string]KindOverride{"main": ko("paths", []string{"class:com.acme.Main"}, nil)}}},
+		{name: "npm selector trims slash", in: "js:npm:nodemon/", want: EntryOverride{Lane: "js", KindOverride: ko("paths", []string{"npm:nodemon"}, nil)}},
+		{name: "bare selector beside lane clause", in: "js:module=none pkg/cli", want: EntryOverride{Lane: "js", KindOverride: ko("paths", []string{"pkg/cli"}, nil), Kinds: map[string]KindOverride{"module": ko("none", nil, nil)}}},
+		{name: "lane none beside kind clause", in: "js:none js:bin=bin:x", want: EntryOverride{Lane: "js", KindOverride: ko("none", nil, nil), Kinds: map[string]KindOverride{"bin": ko("paths", []string{"bin:x"}, nil)}}},
+
+		{name: "bare none beside selector", in: "none,pkg", wantErr: "none stands alone"},
+		{name: "bare none beside deny", in: "none,!pkg", wantErr: "none stands alone"},
+		{name: "bare none beside lane clause", in: "none js:module=pkg", wantErr: "none stands alone"},
+		{name: "auto and none in one scope", in: "auto,none", wantErr: "none stands alone"},
+		{name: "lane none beside allow", in: "js:none js:pkg", wantErr: "none stands alone"},
+		{name: "kind none beside deny", in: "go:library=none !go:library=pkg", wantErr: "none stands alone"},
+		{name: "deny on auto", in: "!auto", wantErr: "! applies to a selector"},
+		{name: "deny on lane none", in: "!js:none", wantErr: "! applies to a selector"},
+		{name: "deny on kind auto", in: "!js:bin=auto", wantErr: "! applies to a selector"},
+		{name: "allow and deny same selector", in: "pkg,!pkg", wantErr: "both allowed and denied"},
+		{name: "allow and deny same selector in kind", in: "js:bin=bin:x !js:bin=bin:x", wantErr: "both allowed and denied"},
+		{name: "unknown lane", in: "ruby:main=x", wantErr: `unknown lane "ruby"`},
+		{name: "unknown kind", in: "go:widget=x", wantErr: `unknown kind "widget"`},
+		{name: "kind the lane does not infer", in: "java:script=x", wantErr: `does not infer kind "script"`},
+		{name: "declared is not writable", in: "go:declared=x", wantErr: `unknown kind "declared"`},
+		{name: "two lanes", in: "js:none go:library=none", wantErr: "more than one lane"},
+		{name: "empty target", in: "js:", wantErr: "empty target"},
+		{name: "empty kind target", in: "js:bin=", wantErr: "empty target"},
+		{name: "lone bang", in: "!", wantErr: "empty clause"},
+		{name: "dotdot", in: "../x", wantErr: "leaves the repository root"},
+		{name: "dotdot inside", in: "pkg/../../x", wantErr: "leaves the repository root"},
+		{name: "absolute", in: "/abs", wantErr: "relative to the repository root"},
+		{name: "absolute in lane", in: "go:library=/abs", wantErr: "relative to the repository root"},
+		{name: "backslash", in: `pkg\x`, wantErr: "use /"},
+		{name: "npm escape", in: "js:npm:pkg/../x", wantErr: "leaves the package"},
+		{name: "empty npm", in: "js:npm:", wantErr: "needs a name"},
+		{name: "empty bin", in: "!bin:", wantErr: "needs a name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseEntryOverride(tc.in)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			tc.want.Input = tc.in
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("parse = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Without a lane or kind qualifier the grammar is library-entrypoints' own, vector for vector.
+func TestParseEntryOverrideAgreesWithLibraryEntrypoints(t *testing.T) {
+	for _, in := range []string{
+		"", "auto", " none ", "pkg/api, ./pkg/client/...", "!internal/tools\n!cmd", "auto,cmd/x",
+		"pkg,!pkg/x,pkg", "./...", "none,pkg", "none,!pkg", "auto,none", "../x", "pkg/../../x", "/abs", `pkg\x`, "!",
+	} {
+		t.Run(in, func(t *testing.T) {
+			lib, libErr := ParseLibraryEntrypoints(in)
+			got, err := ParseEntryOverride(in)
+			if (err != nil) != (libErr != nil) {
+				t.Fatalf("err = %v, library-entrypoints err = %v", err, libErr)
+			}
+			if err != nil {
+				return
+			}
+			want := KindOverride{Mode: lib.Mode, Include: lib.Include, Exclude: lib.Exclude}
+			if !reflect.DeepEqual(got.KindOverride, want) || got.Kinds != nil || got.Lane != "" {
+				t.Errorf("parse = %+v, want scope %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestMatchesEntryRoot(t *testing.T) {
+	jsFile := EntryRoot{Lane: "js", Kind: "module", Selector: "packages/cli/bin/run.js", Name: "mytool"}
+	npmRoot := EntryRoot{Lane: "js", Kind: "bin", Selector: "npm:nodemon/bin/nodemon.js", Name: "nodemon"}
+	cases := []struct {
+		name string
+		sel  string
+		root EntryRoot
+		want bool
+	}{
+		{"equal", "packages/cli/bin/run.js", jsFile, true},
+		{"directory prefix", "packages/cli", jsFile, true},
+		{"deeper directory", "packages/cli/bin", jsFile, true},
+		{"sibling with shared name prefix", "packages/cl", jsFile, false},
+		{"pkg/api is not pkg/apiv2", "pkg/api", EntryRoot{Selector: "pkg/apiv2/x.go"}, false},
+		{"pkg/api is pkg/api/x.go", "pkg/api", EntryRoot{Selector: "pkg/api/x.go"}, true},
+		{"pkg/api is pkg/api", "pkg/api", EntryRoot{Selector: "pkg/api"}, true},
+		{"longer selector than root", "packages/cli/bin/run.js/x", jsFile, false},
+		{"dot is every path", ".", jsFile, true},
+		{"dot is not an installed package", ".", npmRoot, false},
+		{"npm package prefix", "npm:nodemon", npmRoot, true},
+		{"npm package and path", "npm:nodemon/bin", npmRoot, true},
+		{"npm exact", "npm:nodemon/bin/nodemon.js", npmRoot, true},
+		{"npm package is not a name prefix", "npm:node", npmRoot, false},
+		{"npm other package", "npm:nodemon2", npmRoot, false},
+		{"path never selects an npm root", "nodemon", npmRoot, false},
+		{"bin by name", "bin:nodemon", npmRoot, true},
+		{"bin by name on a file root", "bin:mytool", jsFile, true},
+		{"bin other name", "bin:mytool2", jsFile, false},
+		{"bin is not a name prefix", "bin:my", jsFile, false},
+		{"class exact", "class:com.acme.Main", EntryRoot{Selector: "class:com.acme.Main"}, true},
+		{"class is not a prefix", "class:com.acme", EntryRoot{Selector: "class:com.acme.Main"}, false},
+		{"asm exact", "asm:Acme.Telemetry", EntryRoot{Selector: "asm:Acme.Telemetry"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := matchesEntryRoot(tc.sel, tc.root); got != tc.want {
+				t.Errorf("matchesEntryRoot(%q, %+v) = %v, want %v", tc.sel, tc.root, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyEntryOverride(t *testing.T) {
+	js := func(kind, sel, name, origin string) EntryRoot {
+		return EntryRoot{Lane: "js", Kind: kind, Selector: sel, Name: name, Origin: origin}
+	}
+	goRoot := func(kind, sel string) EntryRoot { return EntryRoot{Lane: "go", Kind: kind, Selector: sel} }
+	declared := func(lane, sel string) EntryRoot {
+		return EntryRoot{Lane: lane, Kind: "declared", Selector: sel, Origin: EntryOriginDeclared}
+	}
+
+	jsRoots := []EntryRoot{
+		js("module", "src/a.js", "", ""),
+		js("module", "src/b.js", "", ""),
+		js("bin", "npm:storybook/bin.js", "storybook", "package.json#scripts.storybook"),
+		js("script", "npm:dotenv/config.js", "", "package.json#scripts.start"),
+		js("bin", "npm:nodemon/bin/nodemon.js", "nodemon", "package.json#scripts.dev"),
+	}
+	goRoots := []EntryRoot{
+		goRoot("main", "cmd/app/main.go"),
+		goRoot("main", "cmd/debugtool/main.go"),
+		goRoot("library", "pkg/api/api.go"),
+		goRoot("library", "pkg/apiv2/api.go"),
+	}
+
+	cases := []struct {
+		name      string
+		in        string
+		inferred  []EntryRoot
+		effective []EntryRoot
+		denied    []EntryRoot
+		added     []EntryRoot
+		unmatched []string
+	}{
+		{
+			name: "zero override is auto", in: "", inferred: jsRoots,
+			effective: jsRoots,
+		},
+		{
+			name: "auto keeps everything", in: "auto", inferred: jsRoots,
+			effective: jsRoots,
+		},
+		{
+			name: "none drops everything and reports it denied", in: "none", inferred: jsRoots,
+			denied: jsRoots,
+		},
+		{
+			name: "list nominates a directory", in: "src", inferred: jsRoots,
+			effective: jsRoots[:2],
+			denied:    jsRoots[2:],
+		},
+		{
+			name: "deny by bin name keeps auto for the rest", in: "!js:bin:storybook", inferred: jsRoots,
+			effective: []EntryRoot{jsRoots[0], jsRoots[1], jsRoots[3], jsRoots[4]},
+			denied:    []EntryRoot{jsRoots[2]},
+		},
+		{
+			name: "deny an installed package", in: "!npm:nodemon", inferred: jsRoots,
+			effective: []EntryRoot{jsRoots[0], jsRoots[1], jsRoots[2], jsRoots[3]},
+			denied:    []EntryRoot{jsRoots[4]},
+		},
+		{
+			name: "two denies from the lane", in: "!js:bin=bin:storybook, !js:script=npm:dotenv", inferred: jsRoots,
+			effective: []EntryRoot{jsRoots[0], jsRoots[1], jsRoots[4]},
+			denied:    []EntryRoot{jsRoots[2], jsRoots[3]},
+		},
+		{
+			name: "kind none leaves the other kinds alone", in: "js:module=none", inferred: jsRoots,
+			effective: jsRoots[2:],
+			denied:    jsRoots[:2],
+		},
+		{
+			name: "kind scope overrides the lane scope for its kind", in: "js:module=none !js:npm:nodemon", inferred: jsRoots,
+			effective: []EntryRoot{jsRoots[2], jsRoots[3]},
+			denied:    []EntryRoot{jsRoots[0], jsRoots[1], jsRoots[4]},
+		},
+		{
+			name: "allow beside auto matching an inferred root adds nothing", in: "auto,npm:nodemon", inferred: jsRoots,
+			effective: jsRoots,
+		},
+		{
+			name: "allow matching no root adds a declared root", in: "auto,scripts/run.js", inferred: jsRoots,
+			effective: append([]EntryRoot{jsRoots[0], jsRoots[1], jsRoots[2], jsRoots[3], jsRoots[4]}, declared("", "scripts/run.js")),
+			added:     []EntryRoot{declared("", "scripts/run.js")},
+			unmatched: []string{"scripts/run.js"},
+		},
+		{
+			name: "declared root takes the override's lane", in: "js:auto js:scripts/run.js", inferred: jsRoots,
+			effective: append(append([]EntryRoot{}, jsRoots...), declared("js", "scripts/run.js")),
+			added:     []EntryRoot{declared("js", "scripts/run.js")},
+			unmatched: []string{"scripts/run.js"},
+		},
+		{
+			name: "list with no inferred match replaces auto with the declared root", in: "js:scripts/run.js", inferred: jsRoots,
+			effective: []EntryRoot{declared("js", "scripts/run.js")},
+			denied:    jsRoots,
+			added:     []EntryRoot{declared("js", "scripts/run.js")},
+			unmatched: []string{"scripts/run.js"},
+		},
+		{
+			name: "deny matching no root is unmatched", in: "!js:src/gone.js", inferred: jsRoots,
+			effective: jsRoots,
+			unmatched: []string{"!src/gone.js"},
+		},
+		{
+			name: "deny beats an allow that selects the same root", in: "js:src, !js:src/a.js", inferred: jsRoots,
+			effective: []EntryRoot{jsRoots[1]},
+			denied:    []EntryRoot{jsRoots[0], jsRoots[2], jsRoots[3], jsRoots[4]},
+		},
+		{
+			name: "deny covering an allow wins over a declared root", in: "js:auto js:scripts/run.js !js:scripts", inferred: jsRoots,
+			effective: jsRoots,
+			unmatched: []string{"!scripts", "scripts/run.js"},
+		},
+		{
+			name: "other lanes stand untouched", in: "js:none", inferred: append(append([]EntryRoot{}, goRoots...), jsRoots...),
+			effective: goRoots,
+			denied:    jsRoots,
+		},
+		{
+			name: "go library none leaves mains", in: "go:library=none", inferred: goRoots,
+			effective: goRoots[:2],
+			denied:    goRoots[2:],
+		},
+		{
+			name: "pkg/api does not select pkg/apiv2", in: "go:library=pkg/api", inferred: goRoots,
+			effective: []EntryRoot{goRoots[0], goRoots[1], goRoots[2]},
+			denied:    []EntryRoot{goRoots[3]},
+		},
+		{
+			name: "deny pkg/api keeps pkg/apiv2", in: "!go:library=pkg/api", inferred: goRoots,
+			effective: []EntryRoot{goRoots[0], goRoots[1], goRoots[3]},
+			denied:    []EntryRoot{goRoots[2]},
+		},
+		{
+			name: "main list names a subtree", in: "go:main=cmd/app", inferred: goRoots,
+			effective: []EntryRoot{goRoots[0], goRoots[2], goRoots[3]},
+			denied:    []EntryRoot{goRoots[1]},
+		},
+		{
+			name: "dot allows the whole tree", in: "js:.", inferred: jsRoots,
+			effective: []EntryRoot{jsRoots[0], jsRoots[1]},
+			denied:    jsRoots[2:],
+		},
+		{
+			name: "no inferred roots", in: "js:none", inferred: nil,
+		},
+		{
+			name: "no inferred roots, allow declares", in: "js:cli", inferred: nil,
+			effective: []EntryRoot{declared("js", "cli")},
+			added:     []EntryRoot{declared("js", "cli")},
+			unmatched: []string{"cli"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o, err := ParseEntryOverride(tc.in)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			eff, den, add, unm := ApplyEntryOverride(tc.inferred, o)
+			check := func(what string, got, want []EntryRoot) {
+				t.Helper()
+				sorted := append([]EntryRoot{}, want...)
+				sortEntryRoots(sorted)
+				if len(got) == 0 && len(sorted) == 0 {
+					return
+				}
+				if !reflect.DeepEqual(got, sorted) {
+					t.Errorf("%s = %+v, want %+v", what, got, sorted)
+				}
+			}
+			check("effective", eff, tc.effective)
+			check("denied", den, tc.denied)
+			check("added", add, tc.added)
+			if len(unm) != 0 || len(tc.unmatched) != 0 {
+				if !reflect.DeepEqual(unm, tc.unmatched) {
+					t.Errorf("unmatched = %q, want %q", unm, tc.unmatched)
+				}
+			}
+		})
+	}
+}
+
+// Every inferred root is either effective or denied, and no root is both.
+func TestApplyEntryOverridePartitionsInferred(t *testing.T) {
+	inferred := []EntryRoot{
+		{Lane: "go", Kind: "main", Selector: "cmd/a/main.go"},
+		{Lane: "go", Kind: "library", Selector: "pkg/a/a.go"},
+		{Lane: "go", Kind: "library", Selector: "pkg/b/b.go"},
+		{Lane: "go", Kind: "handler", Selector: "pkg/h/h.go"},
+	}
+	for _, in := range []string{"", "none", "go:library=none", "!go:main=cmd", "go:library=pkg/a", "go:library=pkg/a !go:library=pkg/a/x go:main=none"} {
+		t.Run(in, func(t *testing.T) {
+			o, err := ParseEntryOverride(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			eff, den, _, _ := ApplyEntryOverride(inferred, o)
+			seen := map[string]int{}
+			for _, r := range eff {
+				if r.Kind != "declared" {
+					seen[r.Selector]++
+				}
+			}
+			for _, r := range den {
+				seen[r.Selector]++
+			}
+			for _, r := range inferred {
+				if seen[r.Selector] != 1 {
+					t.Errorf("%s in effective+denied %d times, want 1", r.Selector, seen[r.Selector])
+				}
+			}
+		})
+	}
+}
+
+func TestApplyEntryOverrideOrderAndInputs(t *testing.T) {
+	inferred := []EntryRoot{
+		{Lane: "js", Kind: "bin", Selector: "npm:b/x.js", Origin: "z/package.json#scripts.b"},
+		{Lane: "js", Kind: "bin", Selector: "npm:b/x.js", Origin: "a/package.json#scripts.b"},
+		{Lane: "js", Kind: "module", Selector: "src/z.js"},
+		{Lane: "js", Kind: "module", Selector: "src/a.js"},
+	}
+	snapshot := append([]EntryRoot{}, inferred...)
+	o, err := ParseEntryOverride("js:module=none js:auto js:scripts/b.js js:scripts/a.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oSnap := o
+	oSnap.Kinds = map[string]KindOverride{}
+	for k, v := range o.Kinds {
+		oSnap.Kinds[k] = v
+	}
+
+	eff, den, add, unm := ApplyEntryOverride(inferred, o)
+	if !reflect.DeepEqual(inferred, snapshot) {
+		t.Errorf("inferred modified: %+v", inferred)
+	}
+	if !reflect.DeepEqual(o, oSnap) {
+		t.Errorf("override modified: %+v", o)
+	}
+	wantSel := func(rs []EntryRoot) []string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.Selector+"|"+r.Origin)
+		}
+		return out
+	}
+	if got, want := wantSel(eff), []string{"npm:b/x.js|a/package.json#scripts.b", "npm:b/x.js|z/package.json#scripts.b", "scripts/a.js|entrypoints", "scripts/b.js|entrypoints"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("effective order = %q, want %q", got, want)
+	}
+	if got, want := wantSel(den), []string{"src/a.js|", "src/z.js|"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("denied order = %q, want %q", got, want)
+	}
+	if got, want := wantSel(add), []string{"scripts/a.js|entrypoints", "scripts/b.js|entrypoints"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("added order = %q, want %q", got, want)
+	}
+	if want := []string{"scripts/a.js", "scripts/b.js"}; !reflect.DeepEqual(unm, want) {
+		t.Errorf("unmatched = %q, want %q", unm, want)
+	}
+
+	// Input order does not change the result.
+	rev := []EntryRoot{inferred[3], inferred[2], inferred[1], inferred[0]}
+	eff2, den2, add2, unm2 := ApplyEntryOverride(rev, o)
+	if !reflect.DeepEqual(eff, eff2) || !reflect.DeepEqual(den, den2) || !reflect.DeepEqual(add, add2) || !reflect.DeepEqual(unm, unm2) {
+		t.Errorf("result depends on input order")
+	}
+}
+
+func TestSummarizeEntryRoots(t *testing.T) {
+	inferred := []EntryRoot{
+		{Lane: "js", Kind: "module", Selector: "src/a.js"},
+		{Lane: "js", Kind: "module", Selector: "src/b.js"},
+		{Lane: "js", Kind: "module", Selector: "src/c.js"},
+		{Lane: "js", Kind: "script", Selector: "npm:dotenv/config.js", Origin: "package.json#scripts.start"},
+		{Lane: "js", Kind: "bin", Selector: "npm:nodemon/bin/nodemon.js", Name: "nodemon"},
+	}
+	denied := []EntryRoot{inferred[2], inferred[3]}
+	added := []EntryRoot{{Lane: "js", Kind: "declared", Selector: "scripts/run.js", Origin: EntryOriginDeclared}}
+	snapshot := append([]EntryRoot{}, inferred...)
+
+	got := SummarizeEntryRoots(inferred, denied, added, []string{"!gone", "a"})
+	want := EntryRootSummary{
+		Counts:    map[string]int{"module": 3, "script": 1, "bin": 1},
+		Inferred:  []EntryRoot{inferred[3], inferred[4]},
+		Denied:    []EntryRoot{inferred[3], inferred[2]}, // a denied module root is listed
+		Added:     added,
+		Unmatched: []string{"!gone", "a"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("summary = %+v, want %+v", got, want)
+	}
+	if !reflect.DeepEqual(inferred, snapshot) {
+		t.Errorf("inferred modified")
+	}
+
+	empty := SummarizeEntryRoots(nil, nil, nil, nil)
+	if len(empty.Counts) != 0 || empty.Inferred != nil || empty.Denied != nil || empty.Added != nil || empty.Unmatched != nil {
+		t.Errorf("empty summary = %+v", empty)
+	}
+}

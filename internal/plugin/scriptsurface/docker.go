@@ -72,6 +72,29 @@ func (st *dockerStage) lookup(v *Veto, f string) ([]string, int) {
 	return nil, pathAbsent
 }
 
+// config is lookup for a settings file a tool reads at the container path f, with a command's
+// taint of everything left to the mentions that bind reads, as clear leaves it: the host files
+// last copied there, and false when anything else may have written it.
+func (st *dockerStage) config(v *Veto, f string) ([]string, bool) {
+	for i := len(st.events) - 1; i >= 0; i-- {
+		e := st.events[i]
+		switch {
+		case !e.covers(f) || e.all && e.cmd:
+		case e.all || e.taint:
+			return nil, false
+		case !e.dir:
+			return e.hosts, true
+		default:
+			if hs, state := (&dockerStage{events: []dockerEvent{e}}).lookup(v, f); state == pathTainted {
+				return nil, false
+			} else if len(hs) > 0 {
+				return hs, true
+			}
+		}
+	}
+	return nil, true
+}
+
 // clear reports whether no event may have put anything at or under the container path f: no
 // COPY or taint at or under it, and no directory copied over it from a host directory that
 // holds f's place or may. A command's taint of everything is left to the mentions that bind
@@ -320,6 +343,63 @@ func (c *dockerCursor) Bind(names ...string) {
 	for _, n := range names {
 		c.v.bind(n)
 	}
+}
+
+func (c *dockerCursor) Configs(name string) ([]string, bool) {
+	if !c.known || !c.mountsKnown {
+		return nil, false
+	}
+	var found []string
+	for d := c.dir; ; d = path.Dir(d) {
+		f := path.Join(d, name)
+		for _, m := range c.mounts {
+			if m == "/" || m == f || strings.HasPrefix(f, m+"/") {
+				return nil, false
+			}
+		}
+		hosts, ok := c.st.config(c.v, f)
+		if !ok {
+			return nil, false
+		}
+		found = append(found, hosts...)
+		if d == "/" {
+			break
+		}
+	}
+	// A file of that name anywhere else in the image may sit in a home directory.
+	for _, m := range c.mounts {
+		if path.Base(m) == name {
+			return nil, false
+		}
+	}
+	for _, e := range c.st.events {
+		switch {
+		case e.all:
+			if !e.cmd {
+				return nil, false
+			}
+		case e.dir && !e.taint && (e.dst == "/" || e.dst == "/home"):
+			return nil, false // may hold a home directory, with a file of that name in it
+		case !e.dir && path.Base(e.dst) == name:
+			if e.taint {
+				return nil, false
+			}
+			found = append(found, e.hosts...)
+		case e.dir && !e.taint:
+			for _, h := range e.hosts {
+				f := filepath.Join(h, name)
+				regular, there, known := c.v.stat(f)
+				if !known || there && !regular {
+					return nil, false
+				}
+				if regular {
+					found = append(found, f)
+				}
+			}
+		}
+	}
+	c.v.bind(name)
+	return found, true
 }
 
 // other taints the whole stage: a command that is not an allowed install may write anywhere.

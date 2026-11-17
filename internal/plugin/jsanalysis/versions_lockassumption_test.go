@@ -22,6 +22,7 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		yarnLock = "# yarn lockfile v1\n\n\nexpress@^4.19.0:\n  version \"4.19.2\"\n"
 		pnpmLock = "lockfileVersion: '9.0'\n\nimporters:\n  .:\n    dependencies:\n      express:\n        specifier: ^4.19.0\n        version: 4.19.2\n\npackages:\n  express@4.19.2:\n    resolution: {integrity: sha512-x}\n"
 		whole    = "FROM node:20\nWORKDIR /app\nCOPY . /app\nRUN "
+		copied   = "FROM node:20\nWORKDIR /app\nCOPY package.json package-lock.json ./\n"
 		api      = `{"name":"api","version":"1.0.0","dependencies":{"express":"^4.19.0"}}`
 	)
 	pkg := func(extra string) string {
@@ -53,6 +54,12 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"npm install with an override beside the lock", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "npm install\n"}), assumed},
 		{"npm install --legacy-peer-deps", npm(map[string]string{"install.sh": "npm install --legacy-peer-deps\n"}), assumed},
 		{"npm install under an .npmrc that sets legacy-peer-deps", npm(map[string]string{".npmrc": "legacy-peer-deps=true\n", "install.sh": "npm install\n"}), assumed},
+		{"Dockerfile copies an .npmrc that names a registry", npm(map[string]string{"ci/npmrc": "registry=https://registry.example.test/\n", "Dockerfile": copied + "COPY ci/npmrc ./.npmrc\nRUN npm install\n"}), assumed},
+		{"Dockerfile copies the yarn lock, then yarn install", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json yarn.lock ./\nRUN yarn install\n"}, assumed},
+		{"Dockerfile copies an .npmrc that names a registry, then pnpm install", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, "ci/npmrc": "registry=https://registry.example.test/\n", "ci/ws.yaml": "packages:\n  - .\n", "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json pnpm-lock.yaml ./\nCOPY ci/npmrc .npmrc\nCOPY ci/ws.yaml pnpm-workspace.yaml\nRUN pnpm install\n"}, assumed},
+		{"Dockerfile copies an .npmrc that names a registry to the home directory", npm(map[string]string{"ci/npmrc": "registry=https://registry.example.test/\n", "Dockerfile": copied + "COPY ci/npmrc /root/.npmrc\nRUN npm install\n"}), assumed},
+		{"Dockerfile runs another command before it copies the lock", npm(map[string]string{"Dockerfile": "FROM node:20\nRUN apt-get update\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm install\n"}), assumed},
+		{"npm install with an override the lock holds to", npm(map[string]string{"package.json": pkg(`,"overrides":{"express":"4.19.2"}`), "install.sh": "npm install\n"}), assumed},
 		{"yarn install", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install")}, assumed},
 		{"yarn --frozen-lockfile", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn --frozen-lockfile")}, assumed},
 		{"pnpm install", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, ".github/workflows/ci.yml": ci("pnpm install")}, assumed},
@@ -101,8 +108,18 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"pnpm install under a pnpm-workspace.yaml that turns the lock off", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, "pnpm-workspace.yaml": "lockfile: false\n", ".github/workflows/ci.yml": ci("pnpm install")}, withheld},
 		{"yarn install under a .yarnrc", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".yarnrc": "--install.no-lockfile true\n", ".github/workflows/ci.yml": ci("yarn install")}, withheld},
 		{"yarn install under a .yarnrc.yml", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".yarnrc.yml": "lockfileFilename: other.lock\n", ".github/workflows/ci.yml": ci("yarn install")}, withheld},
-		{"npm install after a line is added to .npmrc", npm(map[string]string{"Dockerfile": whole + "echo package-lock=false >> .npmrc && npm install\n"}), withheld},
-		{"npm install after a file is copied to the home .npmrc", npm(map[string]string{"ci/npmrc": "package-lock=false\n", "Dockerfile": whole + "cp ci/npmrc ~/.npmrc && npm install\n"}), withheld},
+		{"npm install after a line is added to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), ".github/workflows/ci.yml": ci("echo package-lock=false >> .npmrc && npm install")}), withheld},
+		{"npm install after a file is copied to the home .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "ci/npmrc": "package-lock=false\n", ".github/workflows/ci.yml": ci("cp ci/npmrc ~/.npmrc && npm install")}), withheld},
+		{"Dockerfile copies an .npmrc that turns the lock off", npm(map[string]string{"ci/npmrc": "package-lock=false\n", "Dockerfile": copied + "COPY ci/npmrc ./.npmrc\nRUN npm install\n"}), withheld},
+		{"Dockerfile copies a directory holding an .npmrc that turns the lock off", npm(map[string]string{"ci/.npmrc": "package-lock=false\n", "Dockerfile": copied + "COPY ci/ ./\nRUN npm install\n"}), withheld},
+		{"Dockerfile copies an .npmrc that turns the lock off to the home directory", npm(map[string]string{"ci/npmrc": "package-lock=false\n", "Dockerfile": copied + "COPY ci/npmrc /root/.npmrc\nRUN npm install\n"}), withheld},
+		{"Dockerfile copies a .yarnrc.yml", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, "ci/yarnrc.yml": "lockfileFilename: other.lock\n", "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json yarn.lock ./\nCOPY ci/yarnrc.yml .yarnrc.yml\nRUN yarn install\n"}, withheld},
+		{"Dockerfile copies a pnpm-workspace.yaml that turns the lock off", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, "ci/ws.yaml": "lockfile: false\n", "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json pnpm-lock.yaml ./\nCOPY ci/ws.yaml pnpm-workspace.yaml\nRUN pnpm install\n"}, withheld},
+		{"Dockerfile copies an .npmrc that turns the pnpm lock off", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, "ci/npmrc": "lockfile=false\n", "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json pnpm-lock.yaml ./\nCOPY ci/npmrc .npmrc\nRUN pnpm install\n"}, withheld},
+		{"pnpm install under an indented pnpm-workspace.yaml that turns the lock off", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, "pnpm-workspace.yaml": "  lockfile: false\n", ".github/workflows/ci.yml": ci("pnpm install")}, withheld},
+		{"npm install, an override pins a version the lock does not hold", npm(map[string]string{"package.json": pkg(`,"overrides":{"express":"4.19.0"}`), "install.sh": "npm install\n"}), withheld},
+		{"yarn install, a resolution pins a version the lock does not hold", map[string]string{"package.json": pkg(`,"resolutions":{"express":"4.19.0"}`), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install")}, withheld},
+		{"pnpm install, an override pins a version the lock does not hold", map[string]string{"package.json": pkg(`,"pnpm":{"overrides":{"express":"4.17.0"}}`), "pnpm-lock.yaml": pnpmLock, ".github/workflows/ci.yml": ci("pnpm install")}, withheld},
 		{"wrapper handed the lock, then npm start", npm(map[string]string{"Dockerfile": whole + "cp other.json package-lock.json -- npm start\n"}), withheld},
 		{"wrapper then npm install of a package", npm(map[string]string{"Dockerfile": whole + "/usr/local/wait-for-it.sh db:27017 -- npm install left-pad\n"}), withheld},
 		{"nx migrate", npm(map[string]string{"package.json": pkg(`,"scripts":{"up":"nx migrate latest"}`)}), withheld},

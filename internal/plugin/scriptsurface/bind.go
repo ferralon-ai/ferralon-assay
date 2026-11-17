@@ -46,6 +46,11 @@ type Binder interface {
 	// Nearest(name) is nil, any of that does not hold, or one may be there that is not read
 	// here.
 	Enclosing(name string) (found []string, ok bool)
+	// Configs returns the build-tree files named name that a tool run here may read as its
+	// settings: one in the directory the command runs in or any above it and, under a
+	// Dockerfile, one copied anywhere else in the image, where a home directory may be. ok is
+	// false when one may be there that this cannot place. It binds name.
+	Configs(name string) (found []string, ok bool)
 	// Bind records that the command reads a file of each name somewhere this cannot place, so
 	// that a command naming one withholds (Rebound).
 	Bind(names ...string)
@@ -134,6 +139,30 @@ func (c *hostCursor) Bind(names ...string) {
 	for _, n := range names {
 		c.v.bind(n)
 	}
+}
+
+func (c *hostCursor) Configs(name string) ([]string, bool) {
+	if c.unknown || len(c.dirs) == 0 {
+		return nil, false
+	}
+	var found []string
+	for _, d := range c.dirs {
+		for dir := d; c.v.inRoot(dir); dir = filepath.Dir(dir) {
+			f := filepath.Join(dir, name)
+			regular, there, known := c.v.stat(f)
+			if !known || there && !regular {
+				return nil, false
+			}
+			if regular {
+				found = append(found, f)
+			}
+			if dir == c.v.root {
+				break
+			}
+		}
+	}
+	c.v.bind(name)
+	return found, true
 }
 
 func (c *hostCursor) other() {}

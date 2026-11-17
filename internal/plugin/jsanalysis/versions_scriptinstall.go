@@ -363,9 +363,11 @@ var lockSettingFiles = []string{".npmrc", ".yarnrc", ".yarnrc.yml", "pnpm-worksp
 // runs (Beside: under a Dockerfile, a lock copied there), never one above it, which an
 // installer reads only from a workspace root, and never one the build tree holds that the
 // command's place does not. Every lock beside it must be of kind and cover what the manifest
-// declares, install rewrite or not. No .npmrc there or above inside root sets a key outside
-// npmrcAssumedKeys (npm) or npmrcLockSafeKeys (pnpm); no .yarnrc or .yarnrc.yml is there or
-// above (yarn); a pnpm-workspace.yaml there or above sets nothing but packages. Under a
+// declares, install rewrite or not, and hold a version inside every range the manifest
+// overrides a package to (overridesHold). No .npmrc the command may read (Configs: there or
+// above and, under a Dockerfile, as copied into the image) sets a key outside npmrcAssumedKeys
+// (npm) or npmrcLockSafeKeys (pnpm); no .yarnrc or .yarnrc.yml is among them (yarn); a
+// pnpm-workspace.yaml among them sets nothing but packages (settingFileHolds). Under a
 // workspace root every member is covered (membersCovered). What it leaves to the assumption:
 // an installer that re-resolves a range the lock already satisfies.
 func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]lockInfo, assumed *bool, kind string) bool {
@@ -390,6 +392,19 @@ func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]
 		return false
 	}
 	b.Bind(lockSettingFiles...)
+	if dir == "" {
+		for _, n := range lockSettingFiles {
+			files, ok := b.Configs(n)
+			if !ok {
+				return false
+			}
+			for _, f := range files {
+				if !settingFileHolds(root, f, n, kind) {
+					return false
+				}
+			}
+		}
+	}
 	byDir := map[string][]lockInfo{}
 	for path, l := range locks {
 		byDir[filepath.Dir(path)] = append(byDir[filepath.Dir(path)], l)
@@ -411,7 +426,11 @@ func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]
 				return false
 			}
 		}
-		if !lockSettingsHold(root, d, kind) {
+		var held []lockInfo
+		for _, f := range beside {
+			held = append(held, locks[f])
+		}
+		if !overridesHold(p, held) || dir != "" && !lockSettingsHold(root, d, kind) {
 			return false
 		}
 		if workspaceAt(root, d) && !membersCovered(root, d, byDir) {
@@ -420,6 +439,67 @@ func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]
 	}
 	if assumed != nil {
 		*assumed = true
+	}
+	return true
+}
+
+// settingFileHolds reports whether the setting file f, named name, leaves the lock of kind in
+// force: an .npmrc that sets only npmrcAssumedKeys (npm) or npmrcLockSafeKeys (pnpm), no
+// .yarnrc or .yarnrc.yml at all (yarn), a pnpm-workspace.yaml that sets only packages (pnpm).
+// A file another package manager reads holds.
+func settingFileHolds(root, f, name, kind string) bool {
+	switch {
+	case name == ".npmrc" && kind == lockNPM:
+		return npmrcSetsOnly(root, f, npmrcAssumedKeys)
+	case name == ".npmrc" && kind == lockPnpm:
+		return npmrcSetsOnly(root, f, npmrcLockSafeKeys)
+	case (name == ".yarnrc" || name == ".yarnrc.yml") && kind == lockYarn:
+		return false
+	case name == "pnpm-workspace.yaml" && kind == lockPnpm:
+		return pnpmWorkspaceOnlyPackages(f)
+	}
+	return true
+}
+
+// overridesHold reports whether no override the package.json at manifest states (overrides,
+// resolutions, pnpm.overrides) pins a package to a range that a version held for it, in a lock
+// beside the manifest, falls outside: an install would then replace that version. Only an
+// override of a bare package name with a version range is checked. One this cannot compare (a
+// nested or selector key, a git, file or alias value) is left to lockAssumption.
+func overridesHold(manifest string, held []lockInfo) bool {
+	data, err := readRegular(manifest)
+	if err != nil {
+		return false
+	}
+	var m struct {
+		Overrides   map[string]json.RawMessage `json:"overrides"`
+		Resolutions map[string]json.RawMessage `json:"resolutions"`
+		Pnpm        struct {
+			Overrides map[string]json.RawMessage `json:"overrides"`
+		} `json:"pnpm"`
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return false
+	}
+	for _, set := range []map[string]json.RawMessage{m.Overrides, m.Resolutions, m.Pnpm.Overrides} {
+		for key, raw := range set {
+			var spec string
+			if json.Unmarshal(raw, &spec) != nil {
+				continue
+			}
+			name := strings.TrimPrefix(key, "**/")
+			if _, ok := parseRange(spec); !ok || !validNPMName(name) {
+				continue
+			}
+			name = normalizeNPMCoordinate(name)
+			for _, l := range held {
+				for _, dep := range l.deps {
+					if dep.Version != "" && normalizeNPMCoordinate(dep.Coordinate) == name && !rangeSatisfied(dep.Version, spec) {
+						return false
+					}
+				}
+			}
+		}
 	}
 	return true
 }
@@ -468,9 +548,17 @@ func pnpmWorkspaceOnlyPackages(f string) bool {
 	if err != nil {
 		return absent(err)
 	}
+	top := -1 // indent of the root mapping's keys, which YAML lets a file indent
 	for _, line := range strings.Split(string(data), "\n") {
-		t := strings.TrimRight(line, " \t\r")
-		if t == "" || strings.HasPrefix(t, "#") || t[0] == ' ' || t[0] == '\t' || t[0] == '-' || t == "---" {
+		t := strings.TrimLeft(strings.TrimRight(line, " \t\r"), " ")
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if t == "" || strings.HasPrefix(t, "#") || t == "---" {
+			continue
+		}
+		if top < 0 {
+			top = indent
+		}
+		if indent > top || t[0] == '-' {
 			continue
 		}
 		if key, _, ok := strings.Cut(t, ":"); !ok || strings.Trim(key, `"'`) != "packages" {

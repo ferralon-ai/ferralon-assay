@@ -75,11 +75,8 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 		for _, p := range fn.Params {
 			seed(p, o)
 		}
-		// Method ingresses also expose free vars / the receiver is generally not
-		// attacker-controlled, so only parameters are seeded.
-		// The receiver is not seeded directly, but a store of tainted data into
-		// one of its fields taints it anyway (see the ssa.Store case in
-		// propagate), so this choice is only partly honoured.
+		// fn.Params lists a method's receiver first, so the receiver is seeded with
+		// the parameters: a controller-style handler reads the request through it.
 		for len(work) > 0 {
 			v := work[len(work)-1]
 			work = work[:len(work)-1]

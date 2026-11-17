@@ -244,7 +244,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"sample hook run by an ES module postinstall", sample(`"postinstall":"node tools/init.mjs"`, "tools/init.mjs", "import { execSync } from 'node:child_process'\nexecSync('sh .git/hooks/pre-commit.sample')\n"), false, ""},
 		{"sample hook run by an extensionless node script", sample(`"prepare":"./bin/setup"`, "bin/setup", "#!/usr/bin/env node\nrequire('child_process').execSync('sh .git/hooks/pre-commit.sample')\n"), false, ""},
 		{"node build script and React hooks beside a sample hook", sample(`"build":"node scripts/build.js"`, "scripts/build.js", "require('fs').copyFileSync('src/index.html', 'dist/index.html')\n", "src/hooks/useThing.ts", "export function useThing() { return 1 }\n", "src/index.ts", "import { useThing } from './hooks/useThing'\n"), true, ""},
-		{"live git hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n"}), false, ""},
+		{"live git hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n"}), true, ""},
+		{"live git hook sourcing a git-sh-setup in the tree", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n", ".git/hooks/git-sh-setup": "npm install left-pad\n"}), false, ""},
+		{"live git hook sourcing another file", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-other\n"}), false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -68,11 +68,17 @@ func scriptSpec(root string, locks map[string]lockInfo, assumed *bool) scriptsur
 			return laneAllowed(words, b, root, locks, assumed)
 		},
 		ReadOnly:    laneReadOnly,
+		Library:     gitShellLibrary,
 		Concurrent:  laneConcurrent,
 		ReadRegular: readRegular,
 		Absent:      absent,
 	}
 }
+
+// gitShellLibrary reports whether a word sourced alone is git-sh-setup, the shell library git
+// ships beside its own commands and every stock sample hook sources: it defines functions and
+// installs nothing.
+func gitShellLibrary(word string) bool { return word == "git-sh-setup" }
 
 // laneEnvRE matches an npm_config_* or pnpm_config_* (any case), YARN_*, or
 // NPM_FLAGS/PNPM_FLAGS/BUN_FLAGS (which Netlify passes to its own install) name that is not a $,
@@ -189,6 +195,9 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 	head, ok := scriptsurface.CommandName(words[0])
 	if !ok || len(words) < 2 {
 		return false
+	}
+	if lanePlaywrightBrowsers(words, b) {
+		return true
 	}
 	if !laneToken(head) {
 		return laneWrapsScriptRun(words, b)
@@ -660,6 +669,39 @@ func laneNpxRunsDependency(words []string, b scriptsurface.Binder) bool {
 		}
 	}
 	return true
+}
+
+// playwrightPackages provide the playwright command; playwrightBrowsers are what its install
+// subcommand takes besides playwrightInstallFlags.
+var (
+	playwrightPackages     = []string{"@playwright/test", "playwright", "playwright-core"}
+	playwrightBrowsers     = map[string]bool{"chromium": true, "chromium-headless-shell": true, "chrome": true, "msedge": true, "firefox": true, "webkit": true}
+	playwrightInstallFlags = map[string]bool{"--with-deps": true, "--force": true, "--only-shell": true, "--no-shell": true}
+)
+
+// lanePlaywrightBrowsers reports whether words is "[npx] playwright install [browser|flag]…"
+// and every package.json it binds to declares a package that provides the command. It fetches
+// browser builds into Playwright's own cache and installs no package.
+func lanePlaywrightBrowsers(words []string, b scriptsurface.Binder) bool {
+	if head, ok := scriptsurface.CommandName(words[0]); ok && head == "npx" {
+		words = words[1:]
+	}
+	if len(words) < 2 || words[0] != "playwright" || words[1] != "install" {
+		return false
+	}
+	for _, w := range words[2:] {
+		if !playwrightBrowsers[w] && !playwrightInstallFlags[w] {
+			return false
+		}
+	}
+	pkgs := b.Nearest("package.json")
+	for _, p := range pkgs {
+		m, ok := readPackageJSON(p)
+		if !ok || !slices.ContainsFunc(playwrightPackages, func(n string) bool { return declaresDependency(m, n) }) {
+			return false
+		}
+	}
+	return pkgs != nil
 }
 
 // declaresDependency reports whether m names dep in any of its dependency fields.

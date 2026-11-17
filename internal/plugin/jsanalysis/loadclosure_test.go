@@ -66,6 +66,7 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		"read package's lock-recorded command with no manifest target": "names no file in its package.json",
 		"read package with an unreadable bin":                          "declares binaries the lane cannot read",
 		"unparsed .mdx source":                                         "docs/intro.mdx is not parsed",
+		"build installs a package no lockfile records":                 "do not enumerate every installed package",
 	}
 	for _, tc := range []struct {
 		name   string

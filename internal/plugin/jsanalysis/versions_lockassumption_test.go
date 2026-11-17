@@ -1,0 +1,166 @@
+package jsanalysis
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+)
+
+// A build command that installs with no package named, beside a lock that covers every
+// package.json it installs for, keeps the pins under one stated assumption. A command that can
+// move the installed tree off the lock, or one the lock does not cover, withholds; a command
+// that installs nothing, or holds to the lock by its own flags, needs no assumption.
+func TestResolveVersions_LockAssumption(t *testing.T) {
+	const (
+		lock = `{"name":"app","lockfileVersion":3,"packages":{` +
+			`"":{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"}},` +
+			`"node_modules/express":{"version":"4.19.2"}}}`
+		yarnLock = "# yarn lockfile v1\n\n\nexpress@^4.19.0:\n  version \"4.19.2\"\n"
+		pnpmLock = "lockfileVersion: '9.0'\n\nimporters:\n  .:\n    dependencies:\n      express:\n        specifier: ^4.19.0\n        version: 4.19.2\n\npackages:\n  express@4.19.2:\n    resolution: {integrity: sha512-x}\n"
+		whole    = "FROM node:20\nWORKDIR /app\nCOPY . /app\nRUN "
+		api      = `{"name":"api","version":"1.0.0","dependencies":{"express":"^4.19.0"}}`
+	)
+	pkg := func(extra string) string {
+		return `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"}` + extra + `}`
+	}
+	npm := func(extra map[string]string) map[string]string {
+		files := map[string]string{"package.json": pkg(""), "package-lock.json": lock}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	ci := func(run string) string {
+		return "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: " + run + "\n"
+	}
+	type outcome int
+	const (
+		withheld outcome = iota
+		assumed
+		plain
+	)
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  outcome
+	}{
+		// Installs that rest on the lock.
+		{"Dockerfile copies the tree, then npm install", npm(map[string]string{"Dockerfile": whole + "npm install\n"}), assumed},
+		{"npm install with an override beside the lock", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "npm install\n"}), assumed},
+		{"npm install --legacy-peer-deps", npm(map[string]string{"install.sh": "npm install --legacy-peer-deps\n"}), assumed},
+		{"npm install under an .npmrc that sets legacy-peer-deps", npm(map[string]string{".npmrc": "legacy-peer-deps=true\n", "install.sh": "npm install\n"}), assumed},
+		{"yarn install", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install")}, assumed},
+		{"yarn --frozen-lockfile", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn --frozen-lockfile")}, assumed},
+		{"pnpm install", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, ".github/workflows/ci.yml": ci("pnpm install")}, assumed},
+
+		// Commands that install nothing, or hold to the lock by their own flags.
+		{"npm install the lock covers, placed", npm(map[string]string{"install.sh": "npm install\n"}), plain},
+		{"Dockerfile copies the tree, then npm ci", npm(map[string]string{"Dockerfile": whole + "npm ci\n"}), plain},
+		{"npm ci in a workflow", npm(map[string]string{".github/workflows/ci.yml": ci("npm ci")}), plain},
+		{"Dockerfile copies the tree, then npm start", npm(map[string]string{"Dockerfile": whole + "npm start\n"}), plain},
+		{"Dockerfile copies the tree, then npm run build", npm(map[string]string{"Dockerfile": whole + "npm run build\n"}), plain},
+		{"npm run with arguments", npm(map[string]string{"package.json": pkg(`,"scripts":{"e2e":"mocha"}`), ".github/workflows/ci.yml": ci("npm run e2e -- --grep smoke")}), plain},
+		{"wrapper then npm start", npm(map[string]string{"Dockerfile": whole + "/usr/local/wait-for-it.sh db:27017 -- npm start\n"}), plain},
+		{"nx build", npm(map[string]string{"package.json": pkg(`,"scripts":{"build":"nx build"}`)}), plain},
+		{"jq reads package.json", npm(map[string]string{".github/workflows/ci.yml": ci("npm ci\n      - run: jq -r .version package.json")}), plain},
+		{"playwright browser install", npm(map[string]string{"package.json": `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"},"devDependencies":{"@playwright/test":"^1.40.0"},"scripts":{"pretest":"npx playwright install chromium"}}`,
+			"package-lock.json": `{"name":"app","lockfileVersion":3,"packages":{"":{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"},"devDependencies":{"@playwright/test":"^1.40.0"}},"node_modules/express":{"version":"4.19.2"},"node_modules/@playwright/test":{"version":"1.40.0","dev":true}}}`}), plain},
+
+		// Installs that can leave the lock.
+		{"npm install names a package", npm(map[string]string{"Dockerfile": whole + "npm install left-pad\n"}), withheld},
+		{"npm update", npm(map[string]string{"Dockerfile": whole + "npm update\n"}), withheld},
+		{"npm install --no-package-lock", npm(map[string]string{"Dockerfile": whole + "npm install --no-package-lock\n"}), withheld},
+		{"npm install with no lock", map[string]string{"package.json": pkg(""), "other/package.json": pkg(""), "other/package-lock.json": lock, "Dockerfile": whole + "npm install\n"}, withheld},
+		{"npm install in a directory the lock above does not cover", npm(map[string]string{"api/package.json": api, "install.sh": "cd api && npm install\n"}), withheld},
+		{"npm install beside a second package.json it does not install", npm(map[string]string{"api/package.json": api, "Dockerfile": whole + "npm install\n"}), assumed},
+		{"npm install, the lock does not cover the manifest", npm(map[string]string{"package.json": `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0","left-pad":"^1.3.0"}}`, "Dockerfile": whole + "npm install\n"}), withheld},
+		{"npm install under an .npmrc that turns the lock off", npm(map[string]string{".npmrc": "package-lock=false\n", "Dockerfile": whole + "npm install\n"}), withheld},
+		{"npm install at a prefix that is not read", npm(map[string]string{"Dockerfile": whole + "npm --prefix api install\n"}), withheld},
+		{"npm install after the lock is removed", npm(map[string]string{"Dockerfile": whole + "rm package-lock.json && npm install\n"}), withheld},
+		{"npm install after package.json is rewritten", npm(map[string]string{"Dockerfile": whole + "sed -i s/4.19/4.18/ package.json && npm install\n"}), withheld},
+		{"yarn install beside an npm lock", npm(map[string]string{".github/workflows/ci.yml": ci("yarn install")}), withheld},
+		{"yarn add", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn add left-pad")}, withheld},
+		{"pnpm install --no-lockfile", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, ".github/workflows/ci.yml": ci("pnpm install --no-lockfile")}, withheld},
+		{"wrapper then npm install of a package", npm(map[string]string{"Dockerfile": whole + "/usr/local/wait-for-it.sh db:27017 -- npm install left-pad\n"}), withheld},
+		{"nx migrate", npm(map[string]string{"package.json": pkg(`,"scripts":{"up":"nx migrate latest"}`)}), withheld},
+		{"read-only command with a command substitution", npm(map[string]string{".github/workflows/ci.yml": ci("npm ci\n      - run: cat $(npm install left-pad) package.json")}), withheld},
+		{"read-only command redirected onto the lock", npm(map[string]string{".github/workflows/ci.yml": ci("npm ci\n      - run: echo '{}' > package-lock.json")}), withheld},
+		{"playwright install of something else", npm(map[string]string{"package.json": pkg(`,"devDependencies":{"@playwright/test":"^1.40.0"},"scripts":{"pretest":"npx playwright install left-pad"}`)}), withheld},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveJS(t, writeLockTree(t, tt.files), "express")
+			if !r.Found {
+				t.Fatalf("express not found: %+v", r.All)
+			}
+			if got := r.Match.Resolved; got != (tt.want != withheld) {
+				t.Fatalf("Resolved = %v, want %v (partiality %+v)", got, tt.want != withheld, r.Partiality)
+			}
+			var notes []plugin.Annotation
+			for _, a := range r.Annotations {
+				if a.Reason == AnnotationInstallHonoursLock {
+					notes = append(notes, a)
+				}
+			}
+			switch {
+			case tt.want != assumed && len(notes) > 0:
+				t.Fatalf("annotations = %+v; want no lock assumption", notes)
+			case tt.want == assumed && (len(notes) != 1 || notes[0].Detail != lockAssumption || notes[0].Path != ""):
+				t.Fatalf("annotations = %+v; want one %s saying %q, with none of the tree's words", r.Annotations, AnnotationInstallHonoursLock, lockAssumption)
+			}
+		})
+	}
+}
+
+// A package cleared as not loaded in a build whose install rests on the lock carries the
+// assumption on its refutation.
+func TestLoadClosure_LockAssumption(t *testing.T) {
+	sink, pkg := "npm:idle@1.0.0#bad", "pkg:npm/idle@1.0.0"
+	for _, tc := range []struct {
+		name, run string
+		want      []string
+	}{
+		{"npm ci from the copied lock", "COPY package.json package-lock.json ./\nRUN npm ci\n", nil},
+		{"npm install over the whole tree", "COPY . /app\nRUN npm install\n", []string{lockAssumption}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDepFixture(t, map[string]string{"index.js": "const used = require('used');\nused.run();\n"},
+				closurePkg("used", nil),
+				closurePkg("idle", map[string]string{"index.js": "exports.bad = function bad() {};\n"}),
+			)
+			// The fixture's lock records no root dependencies; an install is held to a lock only
+			// when it covers what package.json declares.
+			deps := map[string]string{"used": "1.0.0", "idle": "1.0.0"}
+			var lock map[string]any
+			raw, err := os.ReadFile(filepath.Join(f.dir, "package-lock.json"))
+			if err != nil || json.Unmarshal(raw, &lock) != nil {
+				t.Fatalf("read the fixture lock: %v", err)
+			}
+			lock["packages"].(map[string]any)[""].(map[string]any)["dependencies"] = deps
+			manifest, _ := json.Marshal(map[string]any{"name": "app", "version": "1.0.0", "dependencies": deps})
+			raw, _ = json.Marshal(lock)
+			for name, data := range map[string][]byte{"package-lock.json": raw, "package.json": manifest} {
+				if err := os.WriteFile(filepath.Join(f.dir, name), data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(f.dir, "Dockerfile"), []byte("FROM node:20\nWORKDIR /app\n"+tc.run), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: f.dir, Symbols: []string{sink}, Package: pkg, DependencyCache: f.diskCache(t)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Refutation == nil || res.Refutation.Basis != plugin.RefutationPackageNotLoaded {
+				t.Fatalf("want a package_not_loaded refutation; got %+v (partiality %+v)", res.Refutation, res.Partiality)
+			}
+			if got := res.Refutation.Assumptions; len(got) != len(tc.want) || len(got) == 1 && got[0] != tc.want[0] {
+				t.Fatalf("assumptions = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -49,6 +49,10 @@ var platformEnv = map[string]struct {
 		dirs: []string{"internal/plugin/goanalysis"},
 		why:  "the go command's environment file, which can set GOFLAGS; the run cache keys load results on its contents",
 	},
+	"GOMODCACHE": {
+		dirs: []string{"internal/plugin/goanalysis"},
+		why:  "the go command's module cache override; a failure's text names a dependency's file relative to it, and the error carries no environment",
+	},
 	"PATH": {
 		dirs: []string{"artifactcache/artifactcachetest"},
 		why:  "the conformance kit swaps PATH for a spawn-detecting shim and restores it",

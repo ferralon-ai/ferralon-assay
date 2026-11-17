@@ -29,16 +29,16 @@ type sinkSymbol struct {
 // input. It does NOT trigger the vuln — it is a structural skeleton, declared as
 // such (Skeleton=true, Partial).
 //
-// The skeleton compiles as emitted. The request names no build directory, so the
-// sink's signature is not resolved here: the skeleton names the sink and skips
-// (see generateHarness for the form a resolved signature gives).
+// The skeleton compiles as emitted. With the request's BuildDir the sink's
+// signature is resolved and the skeleton calls the sink; without one it names the
+// sink and skips (see generateHarness).
 //
 // Partiality is declared, never overclaimed (inv.5): an unparseable sink SCIP, an
 // unknown input shape, and the fact that this is a skeleton rather than a working
 // exploit are all carried as Partial with a reason — never the retired
 // unsupported_phase1 code, and never a confident "exploit" claim.
 func GenerateHarness(ctx context.Context, req plugin.GenerateHarnessRequest) (plugin.HarnessResult, error) {
-	return generateHarness(ctx, req, "")
+	return generateHarness(ctx, req, req.BuildDir)
 }
 
 // generateHarness is GenerateHarness for a sink whose package loads from buildDir.

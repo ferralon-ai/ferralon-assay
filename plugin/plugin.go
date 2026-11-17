@@ -859,6 +859,9 @@ type GenerateHarnessRequest struct {
 	Sink    string `json:"sink"`
 	Ingress string `json:"ingress,omitempty"`
 	Kind    string `json:"kind"` // "fuzz" | "unit" | "integration"
+	// BuildDir is the build the sink was resolved in. A lane that reads the sink's
+	// signature from it writes a harness that calls the sink; empty, the harness names it.
+	BuildDir string `json:"build_dir,omitempty"`
 }
 
 // HarnessResult is GenerateHarness's response: the generated reproducer skeleton.

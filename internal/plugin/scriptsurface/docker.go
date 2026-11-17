@@ -315,13 +315,14 @@ func (c *dockerCursor) cd(words []string) {
 	}
 }
 
-// other taints the whole stage: a command that is not an allowed install may write anywhere.
+// Bind binds each name for the whole build, as a host command does.
 func (c *dockerCursor) Bind(names ...string) {
 	for _, n := range names {
 		c.v.bind(n)
 	}
 }
 
+// other taints the whole stage: a command that is not an allowed install may write anywhere.
 func (c *dockerCursor) other() { c.st.taintCmd() }
 
 // wrote taints only what is under the container path key. A venv created into a mount is

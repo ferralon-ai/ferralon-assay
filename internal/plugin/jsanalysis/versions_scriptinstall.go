@@ -18,8 +18,10 @@ import (
 // a CI or platform file or a package.json script, at a version no manifest or lock read here
 // records. Version resolution therefore withholds every pin (the whole build, since a named
 // install also pulls its own dependencies) when a script surface runs a JavaScript package
-// manager in any form other than the few that install exactly what a lock read here says, or
-// install nothing:
+// manager in any form other than the few that install exactly what a lock read here says,
+// install nothing, or install with no package named for a project whose own lock is there
+// where the command runs (laneAssumesLock: the pins then rest on lockAssumption, disclosed
+// on the result):
 //
 //	npm ci                               refuses a lock package.json has moved past
 //	npm install|i                        with no package argument, when the npm lock beside
@@ -44,9 +46,9 @@ import (
 // itself. A bare install binds only to the package.json in its package root and the npm locks
 // beside it, never one above (laneLockPreserving). Any npm form may follow assignments to
 // laneSubsetConfigs variables. concurrently may carry only concurrentlyFlags. Anything else
-// that names a package manager withholds: a package argument, another flag, a bare npm
-// install its lock does not cover, pnpm install without --frozen-lockfile (it re-locks),
-// every yarn install, --frozen-lockfile included (see laneAllowed), npm exec, any other npx,
+// that names a package manager withholds: a package argument, a flag that turns the lock
+// off, a bare install with no lock of its own kind beside its package.json where it runs, or
+// one that lock does not cover, npm exec, any other npx,
 // pnpx, bunx, yarn dlx, pnpm run (pnpm installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
 // names. An npm_config_* or yarn_* variable (any case) set in any script surface withholds, since every
 // npm or yarn the build runs reads it, unless it is one of laneSubsetConfigs. How a surface is
@@ -347,34 +349,47 @@ var lockFilesOf = map[string][]string{
 	lockPnpm: {"pnpm-lock.yaml"},
 }
 
+// lockSettingFiles are the files whose settings can turn an installer's lock off. An install
+// under lockAssumption binds them, so a build command that names one withholds.
+var lockSettingFiles = []string{".npmrc", ".yarnrc", ".yarnrc.yml", "pnpm-workspace.yaml"}
+
 // laneAssumesLock reports whether a bare install (no package named, no flag that turns the lock
-// off) run with package root dir ("" when it has no --prefix) installs for projects a lock of
-// kind governs, with nothing read here saying it will not hold to that lock, and sets assumed.
+// off) run with package root dir ("" when it has no --prefix) installs for a project whose own
+// lock of kind is there where the command runs, with nothing read here saying it will not hold
+// to that lock, and sets assumed.
 //
-// The projects are the package.json files the command binds to (Prefixed with a --prefix,
-// else Nearest); when the rule cannot place the command (a Dockerfile that copies the whole
-// context), every package.json in the tree, and the names are bound so that a command naming
-// one withholds. Each must be read here, and the nearest lockfiles at or above it must all be
-// of kind and, unless the manifest declares an install rewrite, which the lock answers and
-// lockCovers cannot check, cover what it declares. For npm, every .npmrc there or above
-// inside root sets only npmrcAssumedKeys. What it leaves to the assumption: an override or
-// workspace the lock was written under, a setting or flag that changes resolution, and an
-// installer that re-resolves a range the lock already satisfies.
+// The project is the package.json the command binds to (Prefixed with a --prefix, else
+// Nearest), which must be read here. The lock is the one beside it at the place the command
+// runs (Beside: under a Dockerfile, a lock copied there), never one above it, which an
+// installer reads only from a workspace root, and never one the build tree holds that the
+// command's place does not. Every lock beside it must be of kind and cover what the manifest
+// declares, install rewrite or not. No .npmrc there or above inside root sets a key outside
+// npmrcAssumedKeys (npm) or npmrcLockSafeKeys (pnpm); no .yarnrc or .yarnrc.yml is there or
+// above (yarn); a pnpm-workspace.yaml there or above sets nothing but packages. Under a
+// workspace root every member is covered (membersCovered). What it leaves to the assumption:
+// an installer that re-resolves a range the lock already satisfies.
 func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]lockInfo, assumed *bool, kind string) bool {
 	names := lockFilesOf[kind]
-	var pkgs []string
-	switch {
-	case dir != "":
+	var pkgs, beside []string
+	if dir != "" {
 		pkgs = b.Prefixed(dir, "package.json", names...)
-	default:
-		if pkgs = b.Nearest("package.json", names...); pkgs == nil {
-			b.Bind(append([]string{"package.json"}, names...)...)
-			pkgs = packageManifests(root)
+		for _, p := range pkgs {
+			for _, n := range names {
+				if f := filepath.Join(filepath.Dir(p), n); hasLock(locks, f) {
+					beside = append(beside, f)
+				}
+			}
+		}
+	} else {
+		pkgs = b.Nearest("package.json")
+		for _, n := range names {
+			beside = append(beside, b.Beside("package.json", n)...)
 		}
 	}
-	if len(pkgs) == 0 {
+	if len(pkgs) == 0 || len(beside) == 0 {
 		return false
 	}
+	b.Bind(lockSettingFiles...)
 	byDir := map[string][]lockInfo{}
 	for path, l := range locks {
 		byDir[filepath.Dir(path)] = append(byDir[filepath.Dir(path)], l)
@@ -385,20 +400,18 @@ func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]
 			return false
 		}
 		d := filepath.Dir(p)
-		lockDir, governing := governingLocks(d, byDir)
-		rel, err := filepath.Rel(lockDir, d)
-		if len(governing) == 0 || err != nil || !inTree(root, lockDir) {
-			return false
-		}
-		for _, l := range governing {
+		for _, l := range byDir[d] {
 			if l.kind != kind && !(kind == lockNPM && l.kind == lockNPMv1) {
-				return false
+				return false // a second package manager's lock beside it
 			}
-			if !m.rewrites && !lockCovers(l, lockDir, filepath.ToSlash(rel), m.declared) {
+		}
+		for _, f := range beside {
+			l, ok := locks[f]
+			if !ok || l.kind != kind && !(kind == lockNPM && l.kind == lockNPMv1) || !lockCovers(l, filepath.Dir(f), ".", m.declared) {
 				return false
 			}
 		}
-		if kind == lockNPM && !npmrcSets(root, d, npmrcAssumedKeys) {
+		if !lockSettingsHold(root, d, kind) {
 			return false
 		}
 		if workspaceAt(root, d) && !membersCovered(root, d, byDir) {
@@ -407,6 +420,62 @@ func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]
 	}
 	if assumed != nil {
 		*assumed = true
+	}
+	return true
+}
+
+func hasLock(locks map[string]lockInfo, f string) bool {
+	_, ok := locks[f]
+	return ok
+}
+
+// lockSettingsHold reports whether no setting file in dir or above it inside root can turn
+// the lock of kind off, and each one there can be read.
+func lockSettingsHold(root, dir, kind string) bool {
+	switch kind {
+	case lockNPM:
+		return npmrcSets(root, dir, npmrcAssumedKeys)
+	case lockPnpm:
+		if !npmrcSets(root, dir, npmrcLockSafeKeys) {
+			return false
+		}
+	}
+	for d := dir; inTree(root, d); d = filepath.Dir(d) {
+		switch kind {
+		case lockYarn:
+			for _, n := range []string{".yarnrc", ".yarnrc.yml"} {
+				if _, err := os.Lstat(filepath.Join(d, n)); err == nil || !absent(err) {
+					return false
+				}
+			}
+		case lockPnpm:
+			if !pnpmWorkspaceOnlyPackages(filepath.Join(d, "pnpm-workspace.yaml")) {
+				return false
+			}
+		}
+		if d == root {
+			break
+		}
+	}
+	return true
+}
+
+// pnpmWorkspaceOnlyPackages reports whether the pnpm-workspace.yaml at f is absent, or is read
+// and its only top-level key is packages: pnpm reads its settings (lockfile, overrides,
+// catalogs) from the other keys.
+func pnpmWorkspaceOnlyPackages(f string) bool {
+	data, err := os.ReadFile(f)
+	if err != nil {
+		return absent(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimRight(line, " \t\r")
+		if t == "" || strings.HasPrefix(t, "#") || t[0] == ' ' || t[0] == '\t' || t[0] == '-' || t == "---" {
+			continue
+		}
+		if key, _, ok := strings.Cut(t, ":"); !ok || strings.Trim(key, `"'`) != "packages" {
+			return false
+		}
 	}
 	return true
 }
@@ -523,8 +592,8 @@ func laneWrapsScriptRun(words []string, b scriptsurface.Binder) bool {
 	if at < 1 || at+2 >= len(words) {
 		return false
 	}
-	for _, w := range words[:at] {
-		if laneNamesToken(w) {
+	for i, w := range words[:at] {
+		if laneNamesToken(w) || i > 0 && laneNamesBuildFile(w) {
 			return false
 		}
 	}
@@ -539,6 +608,25 @@ func laneWrapsScriptRun(words []string, b scriptsurface.Binder) bool {
 	case "run", "run-script":
 		return (tail[1] == "run" || head == "npm") && len(tail) == 3 && tail[2] != "" &&
 			!strings.HasPrefix(tail[2], "-") && laneRunsInTree(b, "")
+	}
+	return false
+}
+
+// laneNamesBuildFile reports whether a word names, by any path element, a file an install
+// reads: package.json, a lockfile or a setting file. A wrapper handed one may change it.
+func laneNamesBuildFile(w string) bool {
+	if i := strings.LastIndexByte(w, '='); i >= 0 {
+		w = w[i+1:]
+	}
+	for _, part := range strings.Split(strings.ToLower(filepath.ToSlash(strings.Trim(w, "\"'"))), "/") {
+		if part == "package.json" || slices.Contains(lockSettingFiles, part) {
+			return true
+		}
+		for _, names := range lockFilesOf {
+			if slices.Contains(names, part) {
+				return true
+			}
+		}
 	}
 	return false
 }

@@ -54,7 +54,10 @@ assumptions:
 ### `undetermined` reasons
 
 An `undetermined` row is an open question, never a clean bill. Its `undetermined_reason` names what
-the scan did not establish:
+the scan did not establish. A `refutation_withheld` or `analysis_did_not_run` row also lists, in
+`withheld_by`, the limits that withheld the verdict: each one's reason code and, when the limit is
+scoped to part of the build, the package and file holding the code the analysis could not see and the
+packages that code could reach. The row's detail names the same limits.
 
 | Reason | What was missing |
 |---|---|

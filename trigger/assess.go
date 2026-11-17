@@ -227,12 +227,14 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			}
 		}
 		if undetermined {
+			limits := withheldBy(store, assessmentID, pkg, reason)
 			f = report.AdvisoryFinding{
 				Advisory:           adv,
 				Package:            pkg,
 				Verdict:            report.VerdictUndetermined,
 				UndeterminedReason: reason,
-				Evidence:           report.EvidenceSummary{Detail: report.UndeterminedDetail(reason)},
+				WithheldBy:         limits,
+				Evidence:           report.EvidenceSummary{Detail: report.WithheldDetail(reason, limits)},
 			}
 			break
 		}
@@ -1317,14 +1319,7 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	if emptyGraphUncalledComplete(store, assessmentID) {
 		return report.ReasonAnalysisDidNotRun, true
 	}
-	reasons := didNotRunReasons(store, assessmentID, pkg)
-	versionHeld := false
-	if _, _, admitted := admittedPackage(store, assessmentID, pkg); !admitted {
-		kept := withoutVersionLimits(store, assessmentID, reasons)
-		versionHeld = len(kept) < len(reasons)
-		reasons = kept
-	}
-	reasons = withoutBuildConstraintLimit(store, assessmentID, pkg, reasons)
+	reasons, versionHeld := keptDidNotRunReasons(store, assessmentID, pkg)
 	switch {
 	case len(reasons) == 0:
 		return "", false
@@ -1339,6 +1334,19 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 		return report.ReasonRefutationWithheld, true
 	}
 	return report.ReasonAnalysisDidNotRun, true
+}
+
+// keptDidNotRunReasons returns the did-not-run limits that hold against this advisory once the ones
+// another statement covers are dropped (withoutVersionLimits, withoutBuildConstraintLimit).
+// versionHeld reports that a version limit was among those dropped.
+func keptDidNotRunReasons(store artifact.Store, assessmentID string, pkg *report.Package) (reasons []string, versionHeld bool) {
+	reasons = didNotRunReasons(store, assessmentID, pkg)
+	if _, _, admitted := admittedPackage(store, assessmentID, pkg); !admitted {
+		kept := withoutVersionLimits(store, assessmentID, reasons)
+		versionHeld = len(kept) < len(reasons)
+		reasons = kept
+	}
+	return withoutBuildConstraintLimit(store, assessmentID, pkg, reasons), versionHeld
 }
 
 // withoutBuildConstraintLimit drops, from the limits a refutation would be withheld by, the one the

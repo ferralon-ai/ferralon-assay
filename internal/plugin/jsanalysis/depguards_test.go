@@ -350,18 +350,20 @@ func TestDepGuards_ExportsConditions(t *testing.T) {
 }
 
 // TestDepGuards_BindingGypImpliesInstall (N8, M4c): a binding.gyp with no install or preinstall
-// script makes npm run `node-gyp rebuild`, an install script, so it withholds run-wide.
+// script makes npm run `node-gyp rebuild`, an install script, so the package runs whether or
+// not anything loads it and its limit is declared.
 func TestDepGuards_BindingGypImpliesInstall(t *testing.T) {
+	const purl = "pkg:npm/dep@1.0.0"
 	f := newDepFixture(t, map[string]string{"index.js": guardIdle}, guardPkg(map[string]string{"binding.gyp": "{}\n"}))
-	if cg := withDeps(t, f.dir, f.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUninspectablePackage) {
-		t.Errorf("binding.gyp without an install script must withhold run-wide; got %+v", cg.Partiality)
+	if cg := withDeps(t, f.dir, f.memStore()); !hasBounded(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
+		t.Errorf("binding.gyp without an install script must declare the package's limit; got %+v", cg.Partiality)
 	}
 	scripted := newDepFixture(t, map[string]string{"index.js": guardIdle}, guardPkg(map[string]string{
 		"binding.gyp":  "{}\n",
 		"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","scripts":{"install":"prebuild-install"}}`,
 	}))
-	if cg := withDeps(t, scripted.dir, scripted.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUninspectablePackage) {
-		t.Errorf("an explicit install script withholds run-wide too; got %+v", cg.Partiality)
+	if cg := withDeps(t, scripted.dir, scripted.memStore()); !hasBounded(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
+		t.Errorf("an explicit install script declares it too; got %+v", cg.Partiality)
 	}
 }
 

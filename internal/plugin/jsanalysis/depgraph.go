@@ -627,7 +627,8 @@ func callGraphWithClosure(ctx context.Context, buildDir string, store artifactca
 	}
 	// A package whose code is hidden (unread, rewritten by a patch, or compiled) can load any
 	// package Node's walk finds from it, declared or not: npm, yarn classic and pnpm's default
-	// hoisting put every installed package within reach, so its limit is unbounded.
+	// hoisting put every installed package within reach, so its limit is unbounded until the
+	// load closure bounds it (hiddenBound).
 	addScoped := func(reason, pkg string) {
 		dflags.scoped = append(dflags.scoped, plugin.ScopedReason{Reason: reason, Package: pkg})
 	}
@@ -637,7 +638,7 @@ func callGraphWithClosure(ctx context.Context, buildDir string, store artifactca
 	// script runs at install whether or not anything loads the package.
 	unread := func(reason string, e *depEntry) {
 		addScoped(reason, e.purl)
-		lr.hidden = append(lr.hidden, e)
+		lr.hide(e, reason, e.declared, e.declaredKnown, false)
 		if e.lockInstallScript || e.scriptsUnknown {
 			dflags.uninspectable = true
 			lr.veto(true, "unread package "+e.name+" may run an install script")
@@ -661,13 +662,15 @@ func callGraphWithClosure(ctx context.Context, buildDir string, store artifactca
 			}
 			continue
 		}
-		switch {
-		case p.pkg.installScript:
+		if p.pkg.installScript {
+			// The script runs at install whether or not anything loads the package: the
+			// closure roots what it starts (inferScriptRoots).
 			dflags.uninspectable = true
-			lr.veto(true, "package "+e.name+" runs an install script")
-		case p.pkg.native:
+			lr.scripted = append(lr.scripted, scriptedPackage{e, p.pkg})
+		}
+		if p.pkg.native || e.patched {
 			addScoped(plugin.PartialReasonUninspectablePackage, e.purl)
-			lr.hidden = append(lr.hidden, e)
+			lr.hide(e, plugin.PartialReasonUninspectablePackage, p.pkg.manifest.declared, !p.pkg.manifest.declaredOpen, !e.patched)
 		}
 		if e.deps != nil {
 			// A pnpm or yarn classic package: a copy bundled in its tarball is not in the lock,
@@ -680,8 +683,6 @@ func callGraphWithClosure(ctx context.Context, buildDir string, store artifactca
 		}
 		if e.patched {
 			// The install rewrites this package's code; only its verified manifest facts hold.
-			addScoped(plugin.PartialReasonUninspectablePackage, e.purl)
-			lr.hidden = append(lr.hidden, e)
 			continue
 		}
 		d.pkgs[e.path] = p.pkg

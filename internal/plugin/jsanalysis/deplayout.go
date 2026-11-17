@@ -47,6 +47,11 @@ type depEntry struct {
 	// records them (npm v2/v3), so an unread entry's commands are still known.
 	bins      []string
 	binsKnown bool
+	// declared are the names the lock says the entry depends on, peer and optional ones
+	// included; declaredKnown is set when the lock records them (npm v2/v3), so an unread
+	// entry's dependencies are still known.
+	declared      []string
+	declaredKnown bool
 }
 
 // depLayout is the install tree the selected lockfiles describe, keyed by install path. Node's
@@ -486,7 +491,16 @@ func (l *depLayout) addNpmV2(prefix string, pkgs map[string]npmLockPkg) {
 			lockInstallScript: pkg.HasInstallScript,
 			bins:              slices.Sorted(maps.Keys(pkg.Bin)),
 			binsKnown:         true,
+			declaredKnown:     !pkg.Link,
 		}
+		for _, deps := range []map[string]string{pkg.Dependencies, pkg.OptionalDependencies, pkg.PeerDependencies} {
+			for dep := range deps {
+				if !slices.Contains(e.declared, dep) {
+					e.declared = append(e.declared, dep)
+				}
+			}
+		}
+		slices.Sort(e.declared)
 		e.unreadable = pkg.Link || e.digest == "" || isGitResolved(pkg.Resolved) ||
 			strings.HasPrefix(pkg.Resolved, "file:") || strings.HasPrefix(pkg.Version, "file:") ||
 			(pkg.Name != "" && pkg.Name != name)
@@ -628,6 +642,8 @@ type depPackage struct {
 	nested        map[string]*pkgManifest
 	installScript bool
 	native        bool
+	// installTexts are the commands npm runs when it installs the package, by script name.
+	installTexts map[string]string
 }
 
 type depFile struct {
@@ -760,6 +776,7 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 		return nil, errPackageUnread
 	}
 	pkg.installScript, pkg.native = manifestFacts(manifest, pkg.files)
+	pkg.installTexts = installScriptTexts(manifest, pkg.files)
 	for _, stem := range slices.Sorted(maps.Keys(byStem)) {
 		pkg.sources = append(pkg.sources, stemSources(stem, byStem[stem])...)
 	}
@@ -897,4 +914,27 @@ func manifestFacts(manifest []byte, files map[string]bool) (installScript, nativ
 		}
 	}
 	return installScript, native
+}
+
+// installScriptTexts returns the commands manifestFacts counts as install scripts, by script
+// name: the manifest's own, and the `node-gyp rebuild` npm runs for a binding.gyp.
+func installScriptTexts(manifest []byte, files map[string]bool) map[string]string {
+	var m struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	_ = json.Unmarshal(manifest, &m)
+	out := map[string]string{}
+	for _, s := range []string{"preinstall", "install", "postinstall"} {
+		if strings.TrimSpace(m.Scripts[s]) != "" {
+			out[s] = m.Scripts[s]
+		}
+	}
+	if out["install"] == "" && out["preinstall"] == "" {
+		for f := range files {
+			if strings.EqualFold(f, "binding.gyp") {
+				out["install"] = "node-gyp rebuild"
+			}
+		}
+	}
+	return out
 }

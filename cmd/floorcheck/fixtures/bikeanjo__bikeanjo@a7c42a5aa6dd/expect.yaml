@@ -1,8 +1,0 @@
-schema: ferralon.floor-expect.v1
-scan: complete
-findings:
-  - advisory: CVE-2016-2512
-    package: "django@1.8.2"
-    truth: reachable
-    floor: reachable_candidate
-    note: "Django 1.8.2 (requirements.txt:22, fix < 1.8.10)"

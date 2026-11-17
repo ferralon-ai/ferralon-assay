@@ -412,9 +412,9 @@ untrusted input can enter the program. A graded candidate reports its symbol, it
 [reachability grade](#reachability-grade), [library entry points](#library-entrypoints).
 
 <a id="entrypoints"></a>**`entrypoints`** — The input that states which entry points a lane's analysis
-starts from, one clause per lane: `go:library=none`, `!go:library=cmd/x`, `js:module=none`. A bare
+starts from, as clauses naming their lane: `go:library=none`, `!go:library=cmd/x`, `js:module=none`. A bare
 `auto` infers every lane's. Today the Go library entry points are the only clause a lane reads; any
-other clause stops the run before it analyses anything. The value is handed to Assay and never
+other clause that asks for something stops the run before it analyses anything. The value is handed to Assay and never
 fetched. *Source:* `docs/operator-guide.md:25`. *See also:*
 [library entry points](#library-entrypoints).
 

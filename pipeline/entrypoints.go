@@ -54,9 +54,9 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 			}
 			return nil, laneRefusal(lane, "", o.Input)
 		}
-		le, ok := libraryStatement(o)
-		if !ok {
-			return nil, laneRefusal(lane, "only go:library clauses are accepted", o.Input)
+		le, why := libraryStatement(o)
+		if why != "" {
+			return nil, laneRefusal(lane, why, o.Input)
 		}
 		routed = le
 	}
@@ -88,28 +88,36 @@ func laneRefusal(lane, why, input string) error {
 	return fmt.Errorf("%s (%q)", msg, input)
 }
 
-// libraryStatement reads a go-lane override as a library-entrypoints statement. It reports false
-// when the override says anything the statement cannot: a lane-wide selector or mode, or a kind
-// other than library. The statement is nil for an override that holds no clause for the library
-// scope, which reads as auto.
-func libraryStatement(o plugin.EntryOverride) (*plugin.LibraryEntrypoints, bool) {
+// libraryStatement reads a go-lane override as a library-entrypoints statement. The reason is
+// non-empty when the override says anything the statement cannot: a lane-wide selector or mode, a
+// kind other than library that asks for something, or a library selector that is not a package
+// path. A scope that states the default (plain auto) asks for nothing and is skipped, as it is for
+// every other lane. The statement is nil for an override that holds no clause for the library scope,
+// which reads as auto.
+func libraryStatement(o plugin.EntryOverride) (le *plugin.LibraryEntrypoints, why string) {
+	const onlyLibrary = "only go:library clauses are accepted"
 	if o.Mode != plugin.LibraryEntrypointsAuto || len(o.Include) > 0 || len(o.Exclude) > 0 {
-		return nil, false
+		return nil, onlyLibrary
 	}
-	for kind := range o.Kinds {
-		if kind != plugin.EntryKindLibrary {
-			return nil, false
+	for kind, ko := range o.Kinds {
+		if kind != plugin.EntryKindLibrary && !statesDefault(plugin.EntryOverride{KindOverride: ko}) {
+			return nil, onlyLibrary
 		}
 	}
 	ko, ok := o.Kinds[plugin.EntryKindLibrary]
 	if !ok {
-		return nil, true
+		return nil, ""
 	}
-	le := plugin.LibraryEntrypoints{Mode: ko.Mode, Include: ko.Include, Exclude: ko.Exclude}
-	if le.Mode == "" {
-		le.Mode = plugin.LibraryEntrypointsAuto
+	for _, sel := range slices.Concat(ko.Include, ko.Exclude) {
+		if strings.Contains(sel, ":") {
+			return nil, fmt.Sprintf("go:library takes package paths relative to the repository root, not %q", sel)
+		}
 	}
-	return &le, true
+	st := plugin.LibraryEntrypoints{Mode: ko.Mode, Include: ko.Include, Exclude: ko.Exclude}
+	if st.Mode == "" {
+		st.Mode = plugin.LibraryEntrypointsAuto
+	}
+	return &st, ""
 }
 
 // SameLibraryStatement reports whether two library-entrypoints statements say the same thing: the

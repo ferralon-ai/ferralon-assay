@@ -47,6 +47,14 @@ func TestRouteEntrypoints(t *testing.T) {
 		{name: "go handler deny", in: "!go:handler=internal/x", scanLane: "go", wantErr: "lane go " + refusal},
 		{name: "go lane-wide selector", in: "go:pkg/api", scanLane: "go", wantErr: "lane go " + refusal},
 		{name: "go lane-wide none", in: "go:none", scanLane: "go", wantErr: "lane go " + refusal},
+		{name: "go main auto", in: "go:main=auto", scanLane: "go"},
+		{name: "go handler auto", in: "go:handler=auto", scanLane: "go"},
+		{name: "go main auto beside a library clause", in: "go:main=auto go:library=none", scanLane: "go", want: &plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsNone}},
+		{name: "go main auto beside a main deny", in: "go:main=auto !go:main=cmd/x", scanLane: "go", wantErr: "lane go " + refusal},
+		{name: "go library npm selector", in: "go:library=npm:x", scanLane: "go", wantErr: "package paths"},
+		{name: "go library class selector", in: "go:library=class:Foo", scanLane: "go", wantErr: "package paths"},
+		{name: "go library bin selector", in: "go:library=bin:x", scanLane: "go", wantErr: "package paths"},
+		{name: "go library deny of a bin selector", in: "!go:library=bin:x", scanLane: "go", wantErr: "package paths"},
 		{name: "go library beside go main", in: "go:library=none go:main=cmd/x", scanLane: "go", wantErr: "lane go " + refusal},
 		{name: "java", in: "java:main=class:com.acme.Main", scanLane: "java", wantErr: "lane java " + refusal},
 		{name: "kotlin", in: "!kotlin:handler=src/A.kt", scanLane: "kotlin", wantErr: "lane kotlin " + refusal},
@@ -91,6 +99,48 @@ func TestRouteEntrypoints(t *testing.T) {
 				t.Errorf("routed = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRouteEntrypoints_KindAutoEveryLane: "<lane>:<kind>=auto" on its own states the default and is
+// accepted the same way for every lane and every kind the lane infers, on a scan of that lane and of
+// any other; a clause that asks for something beside it is refused for every one of them (the go
+// library kind is the only one a lane reads).
+func TestRouteEntrypoints_KindAutoEveryLane(t *testing.T) {
+	kinds := map[string][]string{
+		"go":     {"main", "library", "handler"},
+		"java":   {"main", "handler"},
+		"kotlin": {"main", "handler"},
+		"js":     {"module", "bin", "script"},
+		"python": {"handler", "main"},
+		"dotnet": {"main", "runtime", "handler"},
+	}
+	for lane, ks := range kinds {
+		for _, kind := range ks {
+			for _, scan := range []string{lane, "go", ""} {
+				auto := lane + ":" + kind + "=auto"
+				m, err := plugin.ParseEntryOverrides(auto)
+				if err != nil {
+					t.Fatalf("parse %q: %v", auto, err)
+				}
+				got, err := RouteEntrypoints(m, scan)
+				if err != nil || (got != nil && lane != "go") {
+					t.Errorf("%q on a %q scan: routed %+v, err %v; want accepted", auto, scan, got, err)
+				}
+
+				deny := auto + " !" + lane + ":" + kind + "=x/y"
+				if lane == "go" && kind == "library" {
+					continue // the one clause a lane reads
+				}
+				m, err = plugin.ParseEntryOverrides(deny)
+				if err != nil {
+					t.Fatalf("parse %q: %v", deny, err)
+				}
+				if _, err := RouteEntrypoints(m, scan); err == nil {
+					t.Errorf("%q on a %q scan: accepted, want refused", deny, scan)
+				}
+			}
+		}
 	}
 }
 

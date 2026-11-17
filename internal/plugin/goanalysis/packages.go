@@ -306,6 +306,8 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 	every := map[string]bool{"": true}
 	callbacks, unreadable := false, false
 	var droppedImports []string
+	var cbPkgs []*packages.Package // cgo packages C can call back into
+	droppedFiles := map[string][]string{}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		every[modulePURL(p)] = true
 		if p.PkgPath == "runtime/cgo" {
@@ -323,8 +325,12 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 		if mod := modulePURL(p); cgoMods[mod] == "" || p.PkgPath < cgoMods[mod] {
 			cgoMods[mod] = p.PkgPath
 		}
+		if callsBack || len(files) > 0 {
+			cbPkgs = append(cbPkgs, p)
+		}
 		if len(files) > 0 {
 			dropped, callbacks = true, true
+			droppedFiles[p.PkgPath] = files
 			for _, f := range files {
 				_, imps, _, err := fileImports(f)
 				unreadable = unreadable || err != nil
@@ -345,20 +351,30 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 		targets[mod] = true
 	}
 	if callbacks {
-		loaded := map[string]bool{}
-		packages.Visit(pkgs, nil, func(p *packages.Package) { loaded[p.PkgPath] = true })
-		for mod := range every {
-			targets[mod] = true
-		}
-		targets[stdlibPURL] = true
+		loaded := map[string]*packages.Package{}
+		packages.Visit(pkgs, nil, func(p *packages.Package) { loaded[p.PkgPath] = p })
+		closure := append([]*packages.Package(nil), cbPkgs...)
 		for _, imp := range droppedImports {
 			switch {
-			case imp == "C" || loaded[imp]:
+			case imp == "C":
+			case loaded[imp] != nil:
+				closure = append(closure, loaded[imp])
 			case isStdlibPath(imp, nil):
 				targets[stdlibPURL] = true
 			default:
 				return nil, dropped, false
 			}
+		}
+		if mods, ok := cgoCallbackTargets(pkgs, cbPkgs, closure, droppedFiles, tags); ok {
+			for mod := range mods {
+				targets[mod] = true
+			}
+			targets[stdlibPURL] = true
+		} else {
+			for mod := range every {
+				targets[mod] = true
+			}
+			targets[stdlibPURL] = true
 		}
 	}
 	list := sortedKeys(targets)

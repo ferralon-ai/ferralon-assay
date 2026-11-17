@@ -384,9 +384,13 @@ func readLaunchText(root, rel string, lr *loadRecord) (string, bool) {
 }
 
 // setsNodeOptions reports whether the file at p names NODE_OPTIONS, the variable every node
-// process reads its preloads from: a file of any kind that sets it starts a module. A file it
-// cannot read is taken not to.
+// process reads its preloads from: a file of any kind but prose that sets it starts a module.
+// A file it cannot read is taken not to.
 func setsNodeOptions(p string) bool {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".md", ".markdown", ".txt", ".rst", ".adoc":
+		return false
+	}
 	fi, err := os.Stat(p)
 	if err != nil || fi.Size() > maxLaunchText {
 		return false
@@ -545,23 +549,24 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 	for _, lt := range texts {
 		scanned[lt.rel] = true
 	}
-	// named returns the first-party file with no extension that w names and that is not yet a
-	// launch text: `node ./server` runs it, and the lane parses no such file, so its words are
-	// scanned as a launch text's are.
-	named := func(from, w string) (string, bool) {
+	// named returns each first-party file with no extension that w may name and that is not
+	// yet a launch text: `node ./server` runs it, and the lane parses no such file, so its
+	// words are scanned as a launch text's are.
+	named := func(from, w string) []string {
+		var files []string
 		if w == "" || strings.HasPrefix(w, "-") || path.Ext(w) != "" {
-			return "", false
+			return nil
 		}
 		for _, base := range []string{path.Dir(from), "."} {
 			rel := path.Join(base, w)
-			if strings.HasPrefix(rel, "..") || strings.Contains(rel, "node_modules/") || scanned[rel] {
+			if strings.HasPrefix(rel, "..") || strings.Contains(rel, "node_modules/") || scanned[rel] || slices.Contains(files, rel) {
 				continue
 			}
 			if fi, err := os.Stat(filepath.Join(prog.root, filepath.FromSlash(rel))); err == nil && fi.Mode().IsRegular() {
-				return rel, true
+				files = append(files, rel)
 			}
 		}
-		return "", false
+		return files
 	}
 
 	rs := prog.resolver()
@@ -598,7 +603,7 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 				fetches = manager
 			}
 			manager = w == "npm" || w == "pnpm" || w == "yarn" || w == "bun"
-			if f, ok := named(rel, w); ok {
+			for _, f := range named(rel, w) {
 				scanned[f] = true
 				if text, ok := readLaunchText(prog.root, f, lr); ok {
 					texts = append(texts, launchText{rel: f, origin: f, text: text})

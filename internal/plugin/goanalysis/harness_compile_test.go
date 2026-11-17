@@ -53,6 +53,10 @@ func (G[X]) M(s string) {}
 
 type Alias = T
 
+type PtrAlias = *T
+
+type GenInst = G[int]
+
 func Hidden(h hidden) {}
 
 func unexported(s string) {}
@@ -99,6 +103,10 @@ func TestGenerateHarness_SkeletonsCompile(t *testing.T) {
 		{"aliasrecv", "sinks/Alias#Val().", "recv.Val(in)"},
 		{"missing", "sinks/Missing().", "t.Skip("},
 		{"missingrecv", "sinks/Nope#M().", "t.Skip("},
+		{"ptraliasrecv", "sinks/PtrAlias#Val().", "not a named type"},
+		{"instrecv", "sinks/GenInst#M().", "recv.M(in)"},
+		{"nulname", "sinks/Odd\x00Name().", "t.Skip("},
+		{"badutf8name", "sinks/Bad\xffName().", "t.Skip("},
 		{"hiddenparam", "sinks/Hidden().", "t.Skip("},
 		{"unexported", "sinks/unexported().", "t.Skip("},
 		{"aliasclash", "v2/Read().", "sink.Read(a0, a1)"},
@@ -162,5 +170,24 @@ func TestGenerateHarness_SkeletonsCompile(t *testing.T) {
 	goCmd("test", "-count=1", "./zzharness/...")
 	if out := goCmd("test", "-run=^$", "-fuzz=FuzzSink", "-fuzztime=1s", "./zzharness/one_fuzz_resolved"); !strings.Contains(out, "fuzz: elapsed") {
 		t.Errorf("the fuzz skeleton did not start fuzzing:\n%s", out)
+	}
+}
+
+func TestImportableFrom(t *testing.T) {
+	for _, tc := range []struct {
+		pkg, module string
+		want        bool
+	}{
+		{"example.com/h/sinks", "example.com/h", true},
+		{"example.com/h/internal/deep", "example.com/h", true},
+		{"example.com/h/a/internal/b", "example.com/h", false},
+		{"example.com/other/internal/x", "example.com/h", false},
+		{"example.com/h/internal/deep", "", false},
+		{"example.com/h/vendor/example.com/dep", "example.com/h", false},
+		{"vendor/golang.org/x/net/idna", "example.com/h", false},
+	} {
+		if got := importableFrom(tc.pkg, tc.module); got != tc.want {
+			t.Errorf("importableFrom(%q, %q) = %v, want %v", tc.pkg, tc.module, got, tc.want)
+		}
 	}
 }

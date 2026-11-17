@@ -88,6 +88,12 @@ type KindOverride struct {
 // Mode otherwise, its allows are the selectors of both scopes, and its denies are the selectors of
 // both scopes. So a deny always applies, whichever scope holds it, and a kind scope that only denies
 // never turns auto back on.
+//
+// An allow that matches no inferred root becomes a declared root (see ApplyEntryOverride). The
+// matcher cannot tell a root the caller declared from a typo, so the lane owns that check: it MUST
+// resolve every added root against the scanned tree and treat one it cannot resolve as an unmatched
+// selector, reported and withholding that lane's clears. Under a nominated list a typo also denies
+// the inferred roots it was meant to keep, which is why an unresolved added root cannot stand.
 type EntryOverride struct {
 	// Lane is the lane the override addresses; ApplyEntryOverride leaves the roots of other lanes
 	// untouched. Empty addresses every lane.
@@ -114,8 +120,8 @@ type EntryOverride struct {
 // A bare "auto" or "none", with no lane, addresses every lane and must be the only token. Empty
 // input is auto and returns an empty map. The input is rejected when a selector names no lane, a lane
 // or kind is unknown, a lane does not infer the kind, "none" stands beside another clause of its
-// scope, "!" is applied to auto or none, a selector is both allowed and denied in one scope, or a
-// path is absolute, leaves the repository root, or contains a backslash.
+// scope, "!" is applied to auto or none, a selector is both allowed and denied, within one scope or
+// between the lane scope and a kind scope, or a path is absolute, leaves the repository root, or contains a backslash.
 func ParseEntryOverrides(s string) (map[string]EntryOverride, error) {
 	tokens := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r' })
 	type laneState struct {
@@ -208,6 +214,9 @@ func ParseEntryOverrides(s string) (map[string]EntryOverride, error) {
 				o.Kinds = map[string]KindOverride{}
 			}
 			o.Kinds[kind] = ko
+			if both := append(intersectSorted(o.Include, ko.Exclude), intersectSorted(o.Exclude, ko.Include)...); len(both) > 0 {
+				return nil, fmt.Errorf("entrypoints: %s: %q is both allowed and denied", name, both[0])
+			}
 		}
 		out[lane] = o
 	}
@@ -215,8 +224,12 @@ func ParseEntryOverrides(s string) (map[string]EntryOverride, error) {
 }
 
 // EntryOverrideForLibraryEntrypoints is the override the library-entrypoints input stands for: its
-// parsed statement applied to the library roots of the go lane, exactly as the clauses
-// "go:library=<token>" for each token of the input. Input holds those clauses rendered from the
+// parsed statement applied to the library roots of the go lane, as the clauses
+// "go:library=<token>" for each token of the input, for every token ParseEntryOverrides accepts.
+// The legacy parser also accepts tokens the new grammar rejects: "NONE" and "Auto" (case) and
+// tokens whose first path segment holds a colon ("a:b", "library:x"). The override applies them as
+// the legacy parser does; only Input does not re-parse, so a caller that re-parses Input must treat
+// a parse error there as the legacy token being invalid. Input holds the clauses rendered from the
 // parsed statement.
 func EntryOverrideForLibraryEntrypoints(le LibraryEntrypoints) EntryOverride {
 	ko := KindOverride{Mode: le.Mode, Include: slices.Clone(le.Include), Exclude: slices.Clone(le.Exclude)}
@@ -393,12 +406,16 @@ func matchesEntryRoot(sel string, r EntryRoot) bool {
 // effective holds the roots the analysis starts from. denied holds every inferred root dropped from
 // it, whatever the reason. added holds the roots of Kind "declared" created for an allow that selected
 // no inferred root: the caller declares them, so they stand in effective and the lane checks they
-// exist. A declared root is not created when a deny selects it.
+// exist. A declared root is not created when a deny selects it. The lane MUST resolve every added
+// root against the scanned tree and treat one it cannot resolve as an unmatched selector: the
+// matcher cannot tell a declared root from a typo, and a clear must not rest on an unresolved one.
+// Resolving is the lane's check alone; this function never reports an added root as unmatched.
 //
 // unmatched holds the selectors that selected nothing and created nothing: a deny, written with its
 // "!", that selected no root it addresses, and an allow whose declared root a deny selects. A
 // lane-scope selector addresses every root of the lane and a kind-scope selector the roots of its
-// kind. It is a report, never an error, and belongs to o.Lane alone: a non-empty result means that
+// kind. A deny that only covers the declared root of an allow counts as selecting nothing and is
+// reported with that allow; both are listed so the lane withholds. It is a report, never an error, and belongs to o.Lane alone: a non-empty result means that
 // lane withholds the clears that rest on its override, and no other lane's clears are affected. All
 // results are sorted by Selector, then Origin. inferred is not modified.
 func ApplyEntryOverride(inferred []EntryRoot, o EntryOverride) (effective, denied, added []EntryRoot, unmatched []string) {

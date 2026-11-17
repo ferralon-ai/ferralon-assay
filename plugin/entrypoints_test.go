@@ -89,6 +89,8 @@ func TestParseEntryOverrides(t *testing.T) {
 		{name: "deny on lane none", in: "!js:none", wantErr: "! applies to a selector"},
 		{name: "deny on kind auto", in: "!js:bin=auto", wantErr: "! applies to a selector"},
 		{name: "allow and deny same selector", in: "go:pkg,!go:pkg", wantErr: "both allowed and denied"},
+		{name: "allow in lane scope, deny in kind scope", in: "js:src/a.js, !js:module=src/a.js", wantErr: "both allowed and denied"},
+		{name: "deny in lane scope, allow in kind scope", in: "!js:src/a.js js:module=src/a.js", wantErr: "both allowed and denied"},
 		{name: "allow and deny same selector in kind", in: "js:bin=bin:x !js:bin=bin:x", wantErr: "both allowed and denied"},
 		{name: "unknown lane", in: "ruby:main=x", wantErr: `unknown lane "ruby"`},
 		{name: "unknown kind", in: "go:widget=x", wantErr: `unknown kind "widget"`},
@@ -654,6 +656,20 @@ func TestApplyEntryOverrideDeclaredRoots(t *testing.T) {
 	_, _, added, unmatched = ApplyEntryOverride(nil, o)
 	if len(added) != 0 || !reflect.DeepEqual(unmatched, []string{"!scripts", "scripts/run.js"}) {
 		t.Errorf("added = %+v, unmatched = %q, want none and [!scripts scripts/run.js]", added, unmatched)
+	}
+}
+
+// The alias applies the legacy tokens the new grammar rejects; only their Input fails to re-parse.
+func TestEntryOverrideForLibraryEntrypointsLegacyTokens(t *testing.T) {
+	for _, tok := range []string{"NONE", "Auto", "a:b", "library:x"} {
+		lib, err := ParseLibraryEntrypoints(tok)
+		if err != nil {
+			t.Fatalf("legacy parser rejects %q: %v", tok, err)
+		}
+		o := EntryOverrideForLibraryEntrypoints(lib)
+		if _, err := ParseEntryOverrides(o.Input); err == nil {
+			t.Errorf("Input %q of legacy token %q re-parses; the alias doc says it does not", o.Input, tok)
+		}
 	}
 }
 

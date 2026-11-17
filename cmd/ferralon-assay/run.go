@@ -1085,7 +1085,7 @@ func (f *runFlags) subjectMavenProfiles() string {
 func (f *runFlags) entrypointsOptions(language string) ([]pipeline.AssessOption, error) {
 	var opts []pipeline.AssessOption
 	var routed *plugin.LibraryEntrypoints
-	raw := stated(*f.entrypoints, envEntrypoints)
+	raw := stated(*f.entrypoints, os.Getenv(envEntrypoints))
 	if v := raw; v != "" {
 		overrides, err := plugin.ParseEntryOverrides(v)
 		if err != nil {
@@ -1098,7 +1098,7 @@ func (f *runFlags) entrypointsOptions(language string) ([]pipeline.AssessOption,
 			opts = append(opts, pipeline.WithEntrypoints(overrides))
 		}
 	}
-	if v := stated(*f.libEntrypoints, envLibraryEntrypoints); v != "" {
+	if v := stated(*f.libEntrypoints, os.Getenv(envLibraryEntrypoints)); v != "" {
 		alias, err := plugin.ParseLibraryEntrypoints(v)
 		if err != nil {
 			return nil, err
@@ -1126,12 +1126,12 @@ func (f *runFlags) checkEntrypoints() error {
 	return err
 }
 
-// stated is the trimmed flag value, else the trimmed value of env.
-func stated(flagValue, env string) string {
+// stated is the trimmed flag value, else the trimmed environment value.
+func stated(flagValue, envValue string) string {
 	if v := strings.TrimSpace(flagValue); v != "" {
 		return v
 	}
-	return strings.TrimSpace(os.Getenv(env))
+	return strings.TrimSpace(envValue)
 }
 
 // baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory

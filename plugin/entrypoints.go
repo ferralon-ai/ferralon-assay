@@ -75,7 +75,7 @@ type KindOverride struct {
 	Exclude []string `json:"exclude,omitempty"`
 }
 
-// EntryOverride is the caller's statement of which entry points a lane analyses. It is
+// EntryOverride is the caller's statement of which entry points one lane analyses. It is
 // configuration handed to the lane, never read from the tree. The zero value is auto: every
 // inferred root stands.
 //
@@ -83,68 +83,86 @@ type KindOverride struct {
 // qualified with "kind="; a root of such a kind is governed by its own scope alone, and every other
 // root by the lane scope.
 type EntryOverride struct {
-	// Lane is the lane the clauses name, empty when none does. A set Lane leaves the roots of
-	// other lanes untouched.
+	// Lane is the lane the override addresses; ApplyEntryOverride leaves the roots of other lanes
+	// untouched. Empty addresses every lane.
 	Lane string `json:"lane,omitempty"`
 	KindOverride
 	Kinds map[string]KindOverride `json:"kinds,omitempty"`
-	// Input is the statement the override was parsed from, verbatim.
+	// Input is the lane's clauses as the caller wrote them, joined by commas.
 	Input string `json:"input,omitempty"`
 }
 
-// ParseEntryOverride reads the entrypoints input: the library-entrypoints grammar (ParseLibraryEntrypoints
-// has the base rules) with two optional qualifiers per clause. "lane:" routes a clause to one lane
-// ("js:none", "!go:cmd/debugtool") and "kind=" after it scopes the clause to one kind of that
-// lane's roots ("js:module=none", "go:main=cmd/traefik"). Tokens are separated by commas or
-// whitespace.
+// ParseEntryOverrides reads the entrypoints input and returns one override per lane it addresses. A
+// lane the input does not mention is absent from the result and reads as auto.
 //
-// Within one scope, "auto" keeps the inferred roots, "none" drops them, a selector allows a root, and
-// "!selector" denies one. Naming a selector without "auto" nominates the roots outright, and denies
-// alone keep auto. Empty is auto. A selector is a repository-relative path ("./pkg/..." reads as
-// "pkg"), "npm:<package>[/<path>]", "bin:<Name>", "class:<FQN>", "type:<FQN>" or "asm:<Assembly>".
+// The grammar is library-entrypoints' own (ParseLibraryEntrypoints has the base rules) with a
+// required "lane:" on every selector and an optional "kind=" after it: "js:none", "!go:cmd/debugtool",
+// "js:module=none", "go:main=cmd/traefik". Tokens are separated by commas or whitespace.
 //
-// A bare "none" must be the only token. The input is rejected when it names an unknown lane or kind,
-// a kind the lane does not infer, more than one lane, "none" beside another clause of its scope, "!"
-// on auto or none, a selector both allowed and denied in one scope, or a path that is absolute,
-// leaves the repository root, or contains a backslash.
-func ParseEntryOverride(s string) (EntryOverride, error) {
+// Within one scope (a lane, or one kind of it), "auto" keeps the inferred roots, "none" drops them, a
+// selector allows a root, and "!selector" denies one. Naming a selector without "auto" nominates the
+// roots outright, and denies alone keep auto. A selector is a repository-relative path ("./pkg/..."
+// reads as "pkg"), "npm:<package>[/<path>]", "bin:<Name>", "class:<FQN>", "type:<FQN>" or
+// "asm:<Assembly>".
+//
+// A bare "auto" or "none", with no lane, addresses every lane and must be the only token. Empty
+// input is auto and returns an empty map. The input is rejected when a selector names no lane, a lane
+// or kind is unknown, a lane does not infer the kind, "none" stands beside another clause of its
+// scope, "!" is applied to auto or none, a selector is both allowed and denied in one scope, or a
+// path is absolute, leaves the repository root, or contains a backslash.
+func ParseEntryOverrides(s string) (map[string]EntryOverride, error) {
 	tokens := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r' })
-	o := EntryOverride{Input: s}
-	scopes := map[string]*entryScope{}
-	bareNone := false
+	type laneState struct {
+		scopes map[string]*entryScope
+		input  []string
+	}
+	lanes := map[string]*laneState{}
+	global := ""
 	for _, t := range tokens {
 		body, denied := strings.CutPrefix(t, "!")
 		lane, kind, target, err := splitEntryClause(body)
 		if err != nil {
-			return EntryOverride{}, fmt.Errorf("entrypoints: %q: %w", t, err)
+			return nil, fmt.Errorf("entrypoints: %q: %w", t, err)
 		}
-		if lane != "" {
-			if o.Lane != "" && o.Lane != lane {
-				return EntryOverride{}, fmt.Errorf("entrypoints: %q: input names more than one lane (%s and %s)", t, o.Lane, lane)
+		if lane == "" {
+			switch {
+			case target != LibraryEntrypointsAuto && target != LibraryEntrypointsNone:
+				return nil, fmt.Errorf("entrypoints: %q: a selector must name its lane; write it as <lane>:%s, for example js:%s (lanes: %s)",
+					t, strings.TrimPrefix(body, "!"), strings.TrimPrefix(body, "!"), strings.Join(sortedKeys(entryLaneKinds), ", "))
+			case denied:
+				return nil, fmt.Errorf("entrypoints: %q: ! applies to a selector, not %s", t, target)
+			case len(tokens) > 1:
+				return nil, fmt.Errorf("entrypoints: %q: bare %s addresses every lane and stands alone; write <lane>:%s to address one lane", t, target, target)
 			}
-			o.Lane = lane
+			global = target
+			continue
 		}
-		sc := scopes[kind]
+		st := lanes[lane]
+		if st == nil {
+			st = &laneState{scopes: map[string]*entryScope{}}
+			lanes[lane] = st
+		}
+		st.input = append(st.input, t)
+		sc := st.scopes[kind]
 		if sc == nil {
 			sc = &entryScope{}
-			scopes[kind] = sc
+			st.scopes[kind] = sc
 		}
 		switch target {
 		case LibraryEntrypointsAuto, LibraryEntrypointsNone:
 			if denied {
-				return EntryOverride{}, fmt.Errorf("entrypoints: %q: ! applies to a selector, not %s", t, target)
+				return nil, fmt.Errorf("entrypoints: %q: ! applies to a selector, not %s", t, target)
 			}
 			if target == LibraryEntrypointsAuto {
 				sc.auto = true
 			} else {
 				sc.none = true
-				bareNone = bareNone || (lane == "" && kind == "")
 			}
 			continue
 		}
 		sel, err := cleanEntrySelector(target)
 		if err != nil {
-			return EntryOverride{}, fmt.Errorf("entrypoints: %q: %w", t, err)
+			return nil, fmt.Errorf("entrypoints: %q: %w", t, err)
 		}
 		if denied {
 			sc.exclude = append(sc.exclude, sel)
@@ -152,25 +170,63 @@ func ParseEntryOverride(s string) (EntryOverride, error) {
 			sc.include = append(sc.include, sel)
 		}
 	}
-	if bareNone && len(tokens) > 1 {
-		return EntryOverride{}, fmt.Errorf("entrypoints: none stands alone, got %q", s)
+
+	out := map[string]EntryOverride{}
+	if global != "" {
+		for lane := range entryLaneKinds {
+			out[lane] = EntryOverride{Lane: lane, KindOverride: KindOverride{Mode: global}, Input: global}
+		}
+		return out, nil
 	}
-	o.Mode = LibraryEntrypointsAuto
-	for kind, sc := range scopes {
-		ko, err := sc.resolve(kind)
-		if err != nil {
-			return EntryOverride{}, fmt.Errorf("entrypoints: %w", err)
+	for lane, st := range lanes {
+		o := EntryOverride{Lane: lane, Input: strings.Join(st.input, ","), KindOverride: KindOverride{Mode: LibraryEntrypointsAuto}}
+		for kind, sc := range st.scopes {
+			name := lane
+			if kind != "" {
+				name = lane + ":" + kind
+			}
+			ko, err := sc.resolve(name)
+			if err != nil {
+				return nil, fmt.Errorf("entrypoints: %w", err)
+			}
+			if kind == "" {
+				o.KindOverride = ko
+				continue
+			}
+			if o.Kinds == nil {
+				o.Kinds = map[string]KindOverride{}
+			}
+			o.Kinds[kind] = ko
 		}
-		if kind == "" {
-			o.KindOverride = ko
-			continue
-		}
-		if o.Kinds == nil {
-			o.Kinds = map[string]KindOverride{}
-		}
-		o.Kinds[kind] = ko
+		out[lane] = o
 	}
-	return o, nil
+	return out, nil
+}
+
+// EntryOverrideForLibraryEntrypoints is the override the library-entrypoints input stands for: its
+// parsed statement applied to the library roots of the go lane, exactly as the clauses
+// "go:library=<token>" for each token of the input. Input holds those clauses rendered from the
+// parsed statement.
+func EntryOverrideForLibraryEntrypoints(le LibraryEntrypoints) EntryOverride {
+	ko := KindOverride{Mode: le.Mode, Include: slices.Clone(le.Include), Exclude: slices.Clone(le.Exclude)}
+	if ko.Mode == "" {
+		ko.Mode = LibraryEntrypointsAuto
+	}
+	var clauses []string
+	for _, t := range strings.Split(le.String(), ",") {
+		sel, denied := strings.CutPrefix(t, "!")
+		c := EntryLaneGo + ":" + EntryKindLibrary + "=" + sel
+		if denied {
+			c = "!" + c
+		}
+		clauses = append(clauses, c)
+	}
+	return EntryOverride{
+		Lane:         EntryLaneGo,
+		KindOverride: KindOverride{Mode: LibraryEntrypointsAuto},
+		Kinds:        map[string]KindOverride{EntryKindLibrary: ko},
+		Input:        strings.Join(clauses, ","),
+	}
 }
 
 // entryScope accumulates the tokens of one scope while parsing.
@@ -179,11 +235,7 @@ type entryScope struct {
 	include, exclude []string
 }
 
-func (sc *entryScope) resolve(kind string) (KindOverride, error) {
-	name := "input"
-	if kind != "" {
-		name = kind
-	}
+func (sc *entryScope) resolve(name string) (KindOverride, error) {
 	slices.Sort(sc.include)
 	sc.include = slices.Compact(sc.include)
 	slices.Sort(sc.exclude)
@@ -283,7 +335,7 @@ func cleanEntrySelector(sel string) (string, error) {
 	return cleanEntrypointPath(sel)
 }
 
-// matchesEntryRoot reports whether selector sel, as ParseEntryOverride normalises it, selects r: it
+// matchesEntryRoot reports whether selector sel, as ParseEntryOverrides normalises it, selects r: it
 // equals the root's Selector, is a directory prefix of it, is "npm:<package>" naming a prefix of
 // "npm:<package>/...", or is "bin:<Name>" naming the root. "." selects every repository path.
 func matchesEntryRoot(sel string, r EntryRoot) bool {
@@ -318,7 +370,8 @@ func matchesEntryRoot(sel string, r EntryRoot) bool {
 // whatever the reason, and added the roots of Kind "declared" an allow created because it selected
 // no inferred root; those also stand in effective unless a deny selects them. unmatched names each
 // allow that selected no inferred root and each deny, written with its "!", that selected none; it
-// is a report, never an error, and a caller withholds what rests on an unmatched selector. All
+// is a report, never an error. Unmatched belongs to o.Lane alone: a non-empty result means that lane
+// withholds the clears that rest on its override, and no other lane's clears are affected. All
 // results are sorted by Selector, then Origin. inferred is not modified.
 func ApplyEntryOverride(inferred []EntryRoot, o EntryOverride) (effective, denied, added []EntryRoot, unmatched []string) {
 	type scoped struct {

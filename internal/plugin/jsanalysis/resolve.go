@@ -1047,12 +1047,14 @@ type pkgManifest struct {
 	// devDeclared those under devDependencies, which only the project's own install places.
 	declared    []string
 	devDeclared []string
-	name        string
-	typ         string
-	main        string
-	workspaces  []string
-	exports     interface{}
-	imports     interface{}
+	// declaredOpen marks a dependency field in a form the lane does not read names from.
+	declaredOpen bool
+	name         string
+	typ          string
+	main         string
+	workspaces   []string
+	exports      interface{}
+	imports      interface{}
 	// frontEntries are the module and browser field targets a bundler building for the
 	// browser may load in place of main: the module field, a string browser field, and every
 	// path an object browser field maps to.
@@ -1092,12 +1094,16 @@ type rawPkg struct {
 	OptionalDependencies json.RawMessage `json:"optionalDependencies"`
 }
 
-// declaredNames returns the names a package.json dependency field lists. A field that is not
-// an object lists none, as npm reads it.
-func declaredNames(field json.RawMessage) []string {
+// declaredNames returns the names a package.json dependency field lists. It reports false for
+// a field that is not an object: package managers read some of those forms as names, and the
+// lane does not.
+func declaredNames(field json.RawMessage) ([]string, bool) {
+	if len(field) == 0 {
+		return nil, true
+	}
 	var deps map[string]json.RawMessage
-	_ = json.Unmarshal(field, &deps)
-	return slices.Sorted(maps.Keys(deps))
+	err := json.Unmarshal(field, &deps)
+	return slices.Sorted(maps.Keys(deps)), err == nil
 }
 
 func parsePkgManifest(data []byte) *pkgManifest {
@@ -1107,9 +1113,11 @@ func parsePkgManifest(data []byte) *pkgManifest {
 	}
 	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: rp.Main, module: rp.Module}
 	for _, deps := range []json.RawMessage{rp.Dependencies, rp.PeerDependencies, rp.OptionalDependencies} {
-		m.declared = append(m.declared, declaredNames(deps)...)
+		names, ok := declaredNames(deps)
+		m.declared, m.declaredOpen = append(m.declared, names...), m.declaredOpen || !ok
 	}
-	m.devDeclared = declaredNames(rp.DevDependencies)
+	devNames, ok := declaredNames(rp.DevDependencies)
+	m.devDeclared, m.declaredOpen = devNames, m.declaredOpen || !ok
 	if rp.Module != "" {
 		m.frontEntries = append(m.frontEntries, rp.Module)
 	}

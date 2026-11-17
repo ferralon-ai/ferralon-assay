@@ -271,6 +271,7 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 			ml, pkg := lr.mods[m], d.pkgOf(m)
 			if ml != nil && pkg != nil && (ml.flags.dynImport || ml.flags.computedReq) {
 				computed[pkg.entry.name] = true
+				lr.veto(pkg.manifest == nil || pkg.manifest.declaredOpen, "a computed load in "+m+" is in a package whose declared dependencies are not read")
 				admit(pkg.entry)
 				for _, e := range computedLoadBound(d, pkg) {
 					admit(e)
@@ -347,10 +348,13 @@ func computedLoadAssumption(packages []string) string {
 // the loading package or inside a node_modules, an absolute path, a URL, a package alias, or a
 // built-in that loads or runs other code.
 func prefixTargets(d *depGraph, entries []*depEntry, pkgPath, module, prefix string) ([]*depEntry, bool) {
-	if strings.HasPrefix(prefix, ".") {
+	if strings.ContainsRune(prefix, '\\') {
+		return nil, false // a path separator where the scanned code runs on Windows
+	}
+	if prefix == "." || prefix == ".." || strings.HasPrefix(prefix, "./") || strings.HasPrefix(prefix, "../") {
 		slash := strings.LastIndexByte(prefix, '/')
-		if slash < 0 || prefix[slash+1:] == "." || prefix[slash+1:] == ".." {
-			return nil, false // the runtime part may complete a `..` segment
+		if slash < 0 || opensSegment(prefix[slash+1:], "..", "node_modules") {
+			return nil, false // the runtime part may complete the last segment
 		}
 		dir := path.Join(moduleDir(module), prefix[:slash])
 		rel, inside := dir, dir != ".." && !strings.HasPrefix(dir, "../")
@@ -360,8 +364,8 @@ func prefixTargets(d *depGraph, entries []*depEntry, pkgPath, module, prefix str
 		return nil, inside && !strings.Contains("/"+rel+"/", "/node_modules/")
 	}
 	p := strings.TrimPrefix(prefix, "node:")
-	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "#") || strings.ContainsAny(p, `\:`) || strings.Contains("/"+p+"/", "/../") {
-		return nil, false
+	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "#") || strings.HasPrefix(p, ".") || strings.Contains(p, ":") || strings.Contains("/"+p+"/", "/../") {
+		return nil, false // a dot-leading name is a directory of node_modules itself (.bin, .pnpm)
 	}
 	parts, n := strings.Split(p, "/"), 1
 	if strings.HasPrefix(p, "@") {
@@ -378,7 +382,7 @@ func prefixTargets(d *depGraph, entries []*depEntry, pkgPath, module, prefix str
 		}
 		return candidates, true
 	}
-	if slices.ContainsFunc(loadCapableBuiltins, func(b string) bool { return strings.HasPrefix(b, p) }) {
+	if slices.ContainsFunc(loadCapableBuiltins, func(b string) bool { return strings.HasPrefix(b, p) }) || opensSegment(p, loadSchemes...) {
 		return nil, false
 	}
 	var named []*depEntry
@@ -388,6 +392,15 @@ func prefixTargets(d *depGraph, entries []*depEntry, pkgPath, module, prefix str
 		}
 	}
 	return named, true
+}
+
+// loadSchemes are the specifier schemes a load can name code through without naming a package.
+var loadSchemes = []string{"node:", "data:", "file:", "http:", "https:"}
+
+// opensSegment reports whether part, the literal text a computed load's runtime part continues,
+// can be completed to one of names.
+func opensSegment(part string, names ...string) bool {
+	return part != "" && slices.ContainsFunc(names, func(n string) bool { return strings.HasPrefix(n, part) })
 }
 
 // computedLoadBound returns the installed packages a computed load in pkg is taken to reach
@@ -421,7 +434,7 @@ func projectDirectDeps(prog *program, lr *loadRecord) []*depEntry {
 		data, err := os.ReadFile(mp)
 		rel, rerr := filepath.Rel(prog.root, filepath.Dir(mp))
 		m := parsePkgManifest(data)
-		if err != nil || rerr != nil || m == nil {
+		if err != nil || rerr != nil || m == nil || m.declaredOpen {
 			lr.veto(true, "a first-party package.json could not be read for its dependencies")
 			continue
 		}

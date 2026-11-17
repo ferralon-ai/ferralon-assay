@@ -82,6 +82,7 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		"first-party prefix load whose literal part steps out of a package":            "which can name code outside its package",
 		"loaded package's prefix load leaves its directory":                            "which can name code outside its package",
 		"loaded package's prefix load with an open parent segment":                     "which can name code outside its package",
+		"first-party prefix load whose letters change length in lowercase":             "which can name code outside its package",
 		"first-party prefix load into node_modules in capitals":                        "which can name code outside its package",
 		"first-party import whose prefix holds a tab":                                  "which can name code outside its package",
 		"first-party prefix load whose runtime part may step out of the named package": "which can name code outside its package",
@@ -198,6 +199,7 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		{name: "first-party prefix load inside a capitalised directory", first: map[string]string{"index.js": app + "module.exports = l => require('./Components/' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true, assumed: "first-party code"},
 		{name: "first-party prefix load into node_modules in capitals", first: map[string]string{"index.js": app + "module.exports = l => require('./NODE_MODULES/' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "first-party import whose prefix holds a tab", first: map[string]string{"index.js": app + "module.exports = l => import('./.\\t' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "first-party prefix load whose letters change length in lowercase", first: map[string]string{"index.js": app + "module.exports = l => require('./\u212a/../../\u023a\u023a' + l);\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "prefix load in an unloaded package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"index.js": "exports.run = function run(n) { return require('../' + n); };\n"})}, want: true},
 		// A loader handed on loads what its receiver names, which no bound describes.
 		{name: "first-party code hands require on", first: map[string]string{"index.js": "const used = require('used');\nused.run(require);\n"}, pkgs: []*depPkg{used("exports.run = function run(r) { if (r) return r('idle'); };\n"), idle()}},

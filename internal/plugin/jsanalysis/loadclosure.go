@@ -352,11 +352,17 @@ func prefixTargets(d *depGraph, entries []*depEntry, pkgPath, module, prefix str
 	// must not be able to complete its last segment into `..` or `node_modules`. A backslash
 	// separates paths where the scanned code runs on Windows; import() decodes a percent sign
 	// and drops a tab or line break. Names are compared without case, as a file system that
-	// folds case resolves them.
+	// folds case resolves them; a prefix whose letters outside ASCII change under that fold
+	// is not bounded, so the folded text lines up with the written text byte for byte.
 	written := prefix
-	prefix = strings.ToLower(prefix)
+	prefix = strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + 'a' - 'A'
+		}
+		return r
+	}, written)
 	segs := strings.Split(prefix, "/")
-	if len(prefix) != len(written) || strings.ContainsAny(prefix, "\\%\t\n\r") || slices.Contains(segs, "node_modules") || opensSegment(segs[len(segs)-1], "..", "node_modules") {
+	if prefix != strings.ToLower(written) || strings.ContainsAny(prefix, "\\%\t\n\r") || slices.Contains(segs, "node_modules") || opensSegment(segs[len(segs)-1], "..", "node_modules") {
 		return nil, false
 	}
 	if strings.HasPrefix(prefix, "./") || strings.HasPrefix(prefix, "../") {

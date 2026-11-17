@@ -50,6 +50,22 @@ func TestLoadClosure_Refutes(t *testing.T) {
 	scripts := func(line string) string {
 		return `{"name":"app","version":"1.0.0","scripts":{"start":"` + line + `"}}`
 	}
+	// withheldBy names the veto a row must be withheld by; a row absent from it is withheld by
+	// the package being loaded.
+	withheldBy := map[string]string{
+		"script runs a command no installed package provides":          "through a package runner",
+		"unparsed .mts source":                                         "server.mts is not parsed",
+		"unparsed .cts source":                                         "server.cts is not parsed",
+		"unparsed .svelte source":                                      "App.svelte is not parsed",
+		"unparsed .astro source":                                       "page.astro is not parsed",
+		"source in a build output directory":                           "dist/server.js is not parsed",
+		"source in a hidden directory":                                 ".config/hooks.js is not parsed",
+		"node:test in loaded code":                                     "loads node:test, which can load or run other code",
+		"wasi in loaded code":                                          "loads a built-in that can load or run other code",
+		"sqlite in loaded code":                                        "loads a built-in that can load or run other code",
+		"read package's lock-recorded command with no manifest target": "names no file in its package.json",
+		"read package with an unreadable bin":                          "declares binaries the lane cannot read",
+	}
 	for _, tc := range []struct {
 		name   string
 		first  map[string]string
@@ -106,6 +122,46 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		{name: "script runs a fetched command", first: map[string]string{"index.js": app, "package.json": scripts("npx --yes fetched@2 index.js")}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "script runs an installed command through npx", first: map[string]string{"index.js": app, "package.json": `{"name":"app","version":"1.0.0","dependencies":{"tool":"1.0.0"},"scripts":{"start":"npx tool"}}`}, pkgs: []*depPkg{used(usedPlain), idle(),
 			closurePkg("tool", map[string]string{"package.json": `{"name":"tool","version":"1.0.0","bin":{"tool":"bin/tool.js"}}`, "bin/tool.js": "require('used');\n"})}, want: true},
+		{name: "script runs a command no installed package provides", first: map[string]string{"index.js": app, "package.json": scripts("pnpm exec absent")}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "a shell's own exec is not a package runner", first: map[string]string{"index.js": app, "start.sh": "#!/bin/sh\nexec node index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true},
+
+		// First-party sources the lane does not parse are roots it cannot follow.
+		{name: "unparsed .mts source", first: map[string]string{"index.js": app, "server.mts": "import 'idle';\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "unparsed .cts source", first: map[string]string{"index.js": app, "server.cts": "require('idle');\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "unparsed .svelte source", first: map[string]string{"index.js": app, "App.svelte": "<script>import 'idle'</script>\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "unparsed .astro source", first: map[string]string{"index.js": app, "page.astro": "---\nimport 'idle';\n---\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "source in a build output directory", first: map[string]string{"index.js": app, "dist/server.js": "require('idle');\n", "package.json": scripts("node dist/server.js")}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "source in a hidden directory", first: map[string]string{"index.js": app, ".config/hooks.js": "require('idle');\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "declaration file is no source", first: map[string]string{"index.js": app, "types.d.mts": "export {};\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true},
+
+		// Files other than package.json scripts start the project too.
+		{name: "shell script a package.json script runs", first: map[string]string{"index.js": app, "start.sh": "exec node -r idle index.js\n", "package.json": scripts("sh ./start.sh")}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "interpreter-line file with no extension", first: map[string]string{"index.js": app, "bin/start": "#!/bin/sh\nnode -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "Procfile preloads it", first: map[string]string{"index.js": app, "Procfile": "web: node -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "Procfile that names nothing installed", first: map[string]string{"index.js": app, "Procfile": "web: node index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true},
+		{name: ".npmrc node-options preloads it", first: map[string]string{"index.js": app, ".npmrc": "node-options=--require idle\n", "package.json": scripts("node index.js")}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: ".env NODE_OPTIONS preloads it", first: map[string]string{"index.js": app, ".env.production": "NODE_OPTIONS=--require=idle\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "Dockerfile CMD preloads it", first: map[string]string{"index.js": app, "Dockerfile": "FROM node:22\nCMD [\"node\",\"-r\",\"idle/register\",\"index.js\"]\n"}, pkgs: []*depPkg{used(usedPlain),
+			closurePkg("idle", map[string]string{"register.js": "module.exports = 1;\n"})}},
+		{name: "compose command preloads it", first: map[string]string{"index.js": app, "deploy/docker-compose.prod.yml": "services:\n  web:\n    command: node -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "process-manager config preloads it", first: map[string]string{"index.js": app, "ecosystem.config.js": "module.exports = { apps: [{ script: 'index.js', node_args: '-r idle' }] };\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "CI workflow runs its binary", first: map[string]string{"index.js": app, ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: node -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "git hook runs its binary", first: map[string]string{"index.js": app, ".husky/pre-commit": "node -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "package.json tool key names it", first: map[string]string{"index.js": app, "package.json": `{"name":"app","version":"1.0.0","nodemonConfig":{"exec":"node -r idle index.js"}}`}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "package.json dependency name is not a command", first: map[string]string{"index.js": app, "package.json": `{"name":"app","version":"1.0.0","dependencies":{"idle":"1.0.0","used":"1.0.0"}}`}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true},
+
+		// Built-ins that run a file no specifier names.
+		{name: "node:test in loaded code", first: map[string]string{"index.js": app + "require('node:test').run({ files: ['node_modules/idle/index.js'] });\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "wasi in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("const { WASI } = require('wasi');\n" + usedPlain), idle()}},
+		{name: "sqlite in loaded code", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("const sqlite = require('node:sqlite');\n" + usedPlain), idle()}},
+
+		// A read package's commands come from bin, directories.bin and the lock's record.
+		{name: "read package's directories.bin command", first: map[string]string{"index.js": app, "package.json": scripts("runner.js")}, pkgs: []*depPkg{used(usedPlain),
+			closurePkg("idle", map[string]string{"package.json": `{"name":"idle","version":"1.0.0","main":"index.js","directories":{"bin":"bin"}}`, "bin/runner.js": "module.exports = 1;\n"})}},
+		{name: "read package's lock-recorded command with no manifest target", first: map[string]string{"index.js": app, "package.json": scripts("runner")}, pkgs: []*depPkg{used(usedPlain),
+			{path: "node_modules/idle", name: "idle", version: "1.0.0", lockBin: map[string]string{"runner": "bin/runner.js"}, files: map[string]string{"package.json": `{"name":"idle","version":"1.0.0","main":"index.js","directories":{"bin":"bin"}}`, "index.js": usedPlain, "bin/runner": "#!/usr/bin/env node\n"}}}},
+		{name: "read package with an unreadable bin", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain),
+			closurePkg("idle", map[string]string{"package.json": `{"name":"idle","version":"1.0.0","main":"index.js","bin":["cli.js"]}`})}},
 		{name: "unread package's binary named by a script", first: map[string]string{"index.js": app, "package.json": scripts("runner")}, pkgs: []*depPkg{used(usedPlain),
 			{path: "node_modules/idle", name: "idle", version: "1.0.0", lockBin: map[string]string{"runner": "cli.js"}, files: map[string]string{"package.json": `{"name":"idle","version":"1.0.0"}`}}}, unread: []string{"idle"}},
 	} {
@@ -114,6 +170,9 @@ func TestLoadClosure_Refutes(t *testing.T) {
 			_, lc := closureOf(t, f, tc.unread...)
 			if got := lc.refutes(purl); got != tc.want {
 				t.Errorf("refutes(%s) = %v, want %v; closure %+v", purl, got, tc.want, lc)
+			}
+			if want, ok := withheldBy[tc.name]; ok && !slices.ContainsFunc(lc.Vetoes, func(v string) bool { return strings.Contains(v, want) }) {
+				t.Errorf("vetoes = %q, want one containing %q (loaded %q)", lc.Vetoes, want, lc.Loaded)
 			}
 			if lc.refutes("pkg:npm/used@1.0.0") {
 				t.Errorf("a package first-party code loads is refuted; closure %+v", lc)

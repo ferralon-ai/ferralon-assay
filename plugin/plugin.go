@@ -862,6 +862,7 @@ type GenerateHarnessRequest struct {
 	// BuildDir is the build the sink was resolved in. A lane that reads the sink's
 	// signature from it writes a harness that calls the sink; empty, the harness names it.
 	BuildDir string `json:"build_dir,omitempty"`
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 }
 
 // HarnessResult is GenerateHarness's response: the generated reproducer skeleton.

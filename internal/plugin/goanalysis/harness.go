@@ -38,6 +38,10 @@ type sinkSymbol struct {
 // exploit are all carried as Partial with a reason — never the retired
 // unsupported_phase1 code, and never a confident "exploit" claim.
 func GenerateHarness(ctx context.Context, req plugin.GenerateHarnessRequest) (plugin.HarnessResult, error) {
+	ctx, err := withGoWork(ctx, req.GoWork)
+	if err != nil {
+		return plugin.HarnessResult{}, err
+	}
 	return generateHarness(ctx, req, req.BuildDir)
 }
 

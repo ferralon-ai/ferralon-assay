@@ -3264,7 +3264,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 			return err
 		}
 
-		harness, err := s.plugin.GenerateHarness(ctx, plugin.GenerateHarnessRequest{Sink: sink, Kind: "unit", BuildDir: buildDir})
+		harness, err := s.plugin.GenerateHarness(ctx, plugin.GenerateHarnessRequest{Sink: sink, Kind: "unit", BuildDir: buildDir, GoWork: goWork.File})
 		if err != nil {
 			return err
 		}

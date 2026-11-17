@@ -151,8 +151,8 @@ func (m *multiPlugin) CapabilityManifest(ctx context.Context, req CapabilityMani
 	return capability.Manifest{Supported: false}, nil
 }
 
-// GenerateHarnessRequest carries no BuildDir to route on (it names a sink/ingress/kind), so
-// the multiplexer serves it from the primary plugin. Go and JavaScript implement it; the other
+// GenerateHarness is served from the primary plugin: a harness is written for the sink of the
+// scan's own lane. Go and JavaScript implement it; the other
 // lanes return Unsupported.
 func (m *multiPlugin) GenerateHarness(ctx context.Context, req GenerateHarnessRequest) (HarnessResult, error) {
 	if m.primary != nil {

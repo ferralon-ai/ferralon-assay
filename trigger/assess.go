@@ -1354,10 +1354,16 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
 	admitted, _, ok := admittedPackage(store, assessmentID, pkg)
-	if r := reach.Refutation; !ok || r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
+	if r := reach.Refutation; !ok || r == nil || !analyzerRefutation(r.Basis) || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
 		return reasons
 	}
 	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return r == plugin.PartialReasonExcludedFilesBuildConstraint })
+}
+
+// analyzerRefutation reports whether basis is one the Go lane states from a completed govulncheck
+// search of the module.
+func analyzerRefutation(basis string) bool {
+	return basis == plugin.RefutationAnalyzerSymbolNotReached || basis == plugin.RefutationAnalyzerPackageNotImported
 }
 
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a

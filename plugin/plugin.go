@@ -729,6 +729,9 @@ const (
 	// RefutationAnalyzerSymbolNotReached: govulncheck reported the advisory against a module or
 	// package in the build and found no call path to any of its vulnerable symbols.
 	RefutationAnalyzerSymbolNotReached = "analyzer_symbol_not_reached"
+	// RefutationAnalyzerPackageNotImported: govulncheck reported the advisory against a module in
+	// the build, and the build imports none of the advisory's vulnerable packages of that module.
+	RefutationAnalyzerPackageNotImported = "analyzer_package_not_imported"
 	// RefutationPackageNotLoaded: the package is installed at the admitted version and no
 	// runtime-loaded module imports it.
 	RefutationPackageNotLoaded = "package_not_loaded"

@@ -237,12 +237,46 @@ func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 		} else {
 			entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir)
 			res = withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env, entrypoints)
+			res = restateNotImported(res, scanned, loaded.Packages)
 			res.LibraryEntrypoints = entrypoints.record()
 		}
 	}
 	// Every result passes here: the call graph this lane searches omits reflection's calls, so no
 	// refutation and no Searched sink stands that those calls may contradict.
 	return withholdForReflectReach(res, scanned, g.ReflectReach), nil
+}
+
+// restateNotImported restates a module refutation the withholds kept as
+// analyzer_package_not_imported when the build imports none of the advisory's vulnerable packages
+// of that module: govulncheck matched the module alone, the advisory's entries list the module's
+// vulnerable packages, the load is complete, and it holds none of them. With no listed package, a
+// package-level finding, or an incomplete load, the refutation keeps its basis.
+func restateNotImported(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || slices.ContainsFunc(scanned.findings, func(f vulnFinding) bool { return len(f.Trace) > 0 && f.Trace[0].Package != "" }) {
+		return res
+	}
+	vulnerable := scanned.countingPackages(module)
+	if len(vulnerable) == 0 || incompleteLoad(pkgs, scanned.partial.readImports()) {
+		return res
+	}
+	loaded := newModuleReach(pkgs, module, vulnerable).loaded
+	if slices.ContainsFunc(vulnerable, func(p string) bool { return loaded[p] != nil }) {
+		return res
+	}
+	names := vulnerable
+	if len(names) > 5 {
+		names = append(slices.Clone(names[:5]), fmt.Sprintf("%d more", len(vulnerable)-5))
+	}
+	restated := *r
+	restated.Basis = plugin.RefutationAnalyzerPackageNotImported
+	restated.Detail = fmt.Sprintf("%s; the build imports none of the advisory's vulnerable packages of %s: %s", r.Detail, module, strings.Join(names, ", "))
+	res.Refutation = &restated
+	return res
 }
 
 // withholdForReflectReach drops a refutation, and every Searched sink, that a call reflection makes

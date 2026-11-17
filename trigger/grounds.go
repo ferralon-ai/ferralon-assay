@@ -74,6 +74,9 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 		!root && pipeline.AdvisoryListsAffectedPackages(store, assessmentID)) {
 		if r.Package != "" && inAdmitted(r.Package, admitted, root) {
 			basis := verdict.BasisSymbolUnreachable
+			if r.Basis == plugin.RefutationAnalyzerPackageNotImported {
+				basis = verdict.BasisSymbolAbsent
+			}
 			if r.Detail == "" {
 				return fmt.Sprintf("%s: %s", label, r.Basis), "", basis, r.Assumptions, true
 			}

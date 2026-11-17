@@ -1,6 +1,7 @@
 package jsanalysis
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"io"
@@ -323,7 +324,7 @@ type launchText struct {
 }
 
 // maxLaunchText bounds one launch file; a larger one is not read and vetoes.
-const maxLaunchText = 1 << 20
+const maxLaunchText = 16 << 20
 
 // unparsedSourceExt are source extensions Node or a bundler runs and the lane does not parse.
 var unparsedSourceExt = map[string]bool{".mts": true, ".cts": true, ".svelte": true, ".astro": true, ".mdx": true}
@@ -355,7 +356,7 @@ func launchFile(rel string) bool {
 		base == "procfile", strings.HasPrefix(base, "procfile."),
 		strings.HasPrefix(base, "dockerfile"), strings.HasPrefix(base, "containerfile"), ext == ".dockerfile",
 		strings.HasPrefix(base, "ecosystem."), strings.HasPrefix(base, "pm2."),
-		base == ".npmrc", base == ".yarnrc", base == ".env", strings.HasPrefix(base, ".env."), base == ".envrc",
+		base == ".npmrc", base == ".yarnrc", strings.HasPrefix(base, ".env"),
 		ext == ".sh", ext == ".bash", ext == ".zsh", ext == ".cmd", ext == ".bat", ext == ".ps1",
 		base == "makefile", base == "justfile", base == "jenkinsfile",
 		base == "nodemon.json", base == "app.json":
@@ -369,6 +370,31 @@ func launchFile(rel string) bool {
 	return false
 }
 
+// readLaunchText reads the first-party file rel, vetoing on lr when it cannot be read whole.
+func readLaunchText(root, rel string, lr *loadRecord) (string, bool) {
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	fi, err := os.Stat(p)
+	if err == nil && fi.Size() <= maxLaunchText {
+		if data, rerr := os.ReadFile(p); rerr == nil {
+			return string(data), true
+		}
+	}
+	lr.veto(true, rel+" could not be read for the commands it starts")
+	return "", false
+}
+
+// setsNodeOptions reports whether the file at p names NODE_OPTIONS, the variable every node
+// process reads its preloads from: a file of any kind that sets it starts a module. A file it
+// cannot read is taken not to.
+func setsNodeOptions(p string) bool {
+	fi, err := os.Stat(p)
+	if err != nil || fi.Size() > maxLaunchText {
+		return false
+	}
+	data, err := os.ReadFile(p)
+	return err == nil && bytes.Contains(data, []byte("NODE_OPTIONS"))
+}
+
 // launchTexts returns every text of the first-party tree that can start the project: each
 // package.json script, every other package.json value outside manifestProse, every launchFile,
 // and every file that opens with an interpreter line. It walks the whole tree but installed
@@ -376,14 +402,7 @@ func launchFile(rel string) bool {
 // the closure cannot follow.
 func launchTexts(prog *program, lr *loadRecord) []launchText {
 	var out []launchText
-	read := func(p, rel string) (string, bool) {
-		data, err := os.ReadFile(p)
-		if err != nil || len(data) > maxLaunchText {
-			lr.veto(true, rel+" could not be read for the commands it starts")
-			return "", false
-		}
-		return string(data), true
-	}
+	read := func(_, rel string) (string, bool) { return readLaunchText(prog.root, rel, lr) }
 	_ = filepath.WalkDir(prog.root, func(p string, de os.DirEntry, err error) error {
 		if err != nil {
 			lr.veto(true, "a first-party directory could not be read")
@@ -415,7 +434,7 @@ func launchTexts(prog *program, lr *loadRecord) []launchText {
 				parsed = parsed && (dir == "." || !skipDir(dir))
 			}
 			lr.veto(!parsed, "first-party source "+rel+" is not parsed")
-			if launchFile(rel) {
+			if launchFile(rel) || setsNodeOptions(p) {
 				if text, ok := read(p, rel); ok {
 					out = append(out, launchText{rel: rel, origin: rel, text: text})
 				}
@@ -449,7 +468,7 @@ func launchTexts(prog *program, lr *loadRecord) []launchText {
 			var head [2]byte
 			n, _ := io.ReadFull(f, head[:])
 			_ = f.Close()
-			if n == 2 && string(head[:]) == "#!" {
+			if n == 2 && string(head[:]) == "#!" || setsNodeOptions(p) {
 				if text, ok := read(p, rel); ok {
 					out = append(out, launchText{rel: rel, origin: rel, text: text})
 				}
@@ -526,22 +545,23 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 	for _, lt := range texts {
 		scanned[lt.rel] = true
 	}
-	// runsUnread reports whether w names a first-party file with no extension that is no launch
-	// text: `node ./server` runs it as a module, and the lane parses no such file.
-	runsUnread := func(from, w string) bool {
+	// named returns the first-party file with no extension that w names and that is not yet a
+	// launch text: `node ./server` runs it, and the lane parses no such file, so its words are
+	// scanned as a launch text's are.
+	named := func(from, w string) (string, bool) {
 		if w == "" || strings.HasPrefix(w, "-") || path.Ext(w) != "" {
-			return false
+			return "", false
 		}
 		for _, base := range []string{path.Dir(from), "."} {
 			rel := path.Join(base, w)
 			if strings.HasPrefix(rel, "..") || strings.Contains(rel, "node_modules/") || scanned[rel] {
 				continue
 			}
-			if fi, err := os.Lstat(filepath.Join(prog.root, filepath.FromSlash(rel))); err == nil && fi.Mode().IsRegular() {
-				return true
+			if fi, err := os.Stat(filepath.Join(prog.root, filepath.FromSlash(rel))); err == nil && fi.Mode().IsRegular() {
+				return rel, true
 			}
 		}
-		return false
+		return "", false
 	}
 
 	rs := prog.resolver()
@@ -555,7 +575,8 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 			roots = append(roots, r)
 		}
 	}
-	for _, lt := range texts {
+	for i := 0; i < len(texts); i++ {
+		lt := texts[i]
 		rel, origin := lt.rel, lt.origin
 		fetches, manager := false, false
 		for _, w := range scriptLoadWords(lt.text) {
@@ -577,7 +598,12 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 				fetches = manager
 			}
 			manager = w == "npm" || w == "pnpm" || w == "yarn" || w == "bun"
-			lr.veto(runsUnread(rel, w), origin+" names "+w+", a file the lane does not read")
+			if f, ok := named(rel, w); ok {
+				scanned[f] = true
+				if text, ok := readLaunchText(prog.root, f, lr); ok {
+					texts = append(texts, launchText{rel: f, origin: f, text: text})
+				}
+			}
 			if i := strings.LastIndex(w, "node_modules/"); i >= 0 {
 				w = w[i+len("node_modules/"):]
 			}

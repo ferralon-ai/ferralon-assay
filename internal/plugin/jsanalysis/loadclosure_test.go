@@ -66,7 +66,6 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		"read package's lock-recorded command with no manifest target": "names no file in its package.json",
 		"read package with an unreadable bin":                          "declares binaries the lane cannot read",
 		"unparsed .mdx source":                                         "docs/intro.mdx is not parsed",
-		"script runs a file with no extension":                         "names ./server, a file the lane does not read",
 	}
 	for _, tc := range []struct {
 		name   string
@@ -155,6 +154,11 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		{name: "YAML that names nothing installed", first: map[string]string{"index.js": app, "k8s/deployment.yaml": "spec:\n  containers:\n  - command: [node, index.js]\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true},
 		{name: "unparsed .mdx source", first: map[string]string{"index.js": app, "docs/intro.mdx": "import Idle from 'idle'\n\n# Intro\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "script runs a file with no extension", first: map[string]string{"index.js": app, "server": "require('idle');\n", "package.json": scripts("node ./server")}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "launch text names a prose file with no extension", first: map[string]string{"index.js": app, "LICENSE": "MIT\n", "VERSION": "1.0.0\n", "Dockerfile": "FROM node:22\nCOPY package.json LICENSE ./\nRUN cat VERSION\nCMD [\"node\",\"index.js\"]\n"}, pkgs: []*depPkg{used(usedPlain), idle()}, want: true},
+		{name: "JSON task definition sets NODE_OPTIONS", first: map[string]string{"index.js": app, "deploy/task-definition.json": "{\"environment\":[{\"name\":\"NODE_OPTIONS\",\"value\":\"--require idle\"}]}\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "Terraform sets NODE_OPTIONS", first: map[string]string{"index.js": app, "infra/main.tf": "environment = { NODE_OPTIONS = \"--require idle\" }\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: "parsed source sets NODE_OPTIONS in a string", first: map[string]string{"index.js": app, "infra/stack.ts": "export const env = { NODE_OPTIONS: '--require idle' };\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
+		{name: ".env-local preloads it", first: map[string]string{"index.js": app, ".env-local": "NODE_OPTIONS=--require=idle\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "process-manager config preloads it", first: map[string]string{"index.js": app, "ecosystem.config.js": "module.exports = { apps: [{ script: 'index.js', node_args: '-r idle' }] };\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "CI workflow runs its binary", first: map[string]string{"index.js": app, ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: node -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
 		{name: "git hook runs its binary", first: map[string]string{"index.js": app, ".husky/pre-commit": "node -r idle index.js\n"}, pkgs: []*depPkg{used(usedPlain), idle()}},
@@ -347,6 +351,7 @@ func TestLaunchFile(t *testing.T) {
 		"fly.toml":                       true,
 		".github/actions/run/action.yml": true,
 		".envrc":                         true,
+		".env-local":                     true,
 		"README.md":                      false,
 	} {
 		if got := launchFile(rel); got != want {

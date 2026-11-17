@@ -164,9 +164,6 @@ jobs:
           "$bin/floorcheck" run "$FIXTURE" --out "$RUNNER_TEMP/floor-obs" --fixtures-root cmd/floorcheck/fixtures \
             --scanner "$bin/ferralon-assay" --work "$RUNNER_TEMP/floor-work" --scan-timeout "$SCAN_TIMEOUT" || rc=$?
           echo "exit=$rc" >> "$GITHUB_OUTPUT"
-          if [ -f "$RUNNER_TEMP/floor-obs/summary.md" ]; then
-            cat "$RUNNER_TEMP/floor-obs/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          fi
           exit "$rc"
 
       # The disk this fixture needed (checkout, module and build caches), for sizing the runners. Its
@@ -195,8 +192,9 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
+  # The run's only job summary, so it heads the run page instead of trailing one summary per fixture.
   summary:
-    name: Floor summary
+    name: Floor run
     needs: [plan, fixture]
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
@@ -228,19 +226,39 @@ jobs:
           jq -r '.include[].name' <<< "$MATRIX" | sort > planned.txt
           jq -r '.[].fixture' all.json | sort > judged.txt
           missing="$(comm -23 planned.txt judged.txt)"
+          planned=$(wc -l < planned.txt | tr -d ' ')
+          passed=$(jq '[.[] | select(.outcome == "pass")] | length' all.json)
+          verdict=pass
+          if jq -e 'any(.[]; .outcome == "regressed")' all.json > /dev/null; then
+            verdict=regressed
+          elif [ -n "$missing" ] || jq -e 'any(.[]; .outcome != "pass")' all.json > /dev/null; then
+            verdict=incomplete
+          fi
+          headline="$(jq -r --arg v "$verdict" --arg p "$planned" --arg n "$passed" '
+            {pass: "✅", regressed: "❌", incomplete: "⚠️"}[$v] + " Floor run " + $v + ": " + $n + " of " + $p + " fixtures pass · "
+            + ([.[].counts.regressed] | add // 0 | tostring) + " regressed · "
+            + ([.[].counts.met] | add // 0 | tostring) + " met · "
+            + ([.[].counts.improved] | add // 0 | tostring) + " improved · "
+            + ([.[].counts.incomplete] | add // 0 | tostring) + " incomplete"' all.json)"
           {
-            echo "## Floor run"
+            echo "## $headline"
             echo
             echo "| Fixture | Outcome | Regressed | Met | Improved | Incomplete | Unexpected | Drift |"
             echo "|---|---|---|---|---|---|---|---|"
             jq -r 'sort_by(.fixture)[] | "| \(.fixture) | \(.outcome) | \(.counts.regressed) | \(.counts.met) | \(.counts.improved) | \(.counts.incomplete) | \(.unexpected) | \(.drift) |"' all.json
             for m in $missing; do echo "| $m | no observation | | | | | | |"; done
+            jq -r '
+              def section(t; k): [sort_by(.fixture)[] | .fixture as $f | (.[k] // [])[] | "- \($f): \(.)"]
+                | if length > 0 then "\n### \(t)\n\n" + join("\n") else empty end;
+              section("Regressed"; "regressed"), section("Incomplete"; "incomplete"),
+              section("Improved (tighten the floor by hand)"; "improved"), section("Stale reviews"; "stale_review")' all.json
           } >> "$GITHUB_STEP_SUMMARY"
-          if jq -e 'any(.[]; .outcome == "regressed")' all.json > /dev/null; then
-            echo "::error::A fixture regressed."
-            exit 1
-          fi
-          if [ -n "$missing" ] || jq -e 'any(.[]; .outcome != "pass")' all.json > /dev/null; then
-            echo "::warning::Some fixtures could not be judged; they are incomplete, not passed."
-            exit 2
-          fi
+          case "$verdict" in
+            regressed)
+              echo "::error title=Floor run::$headline"
+              exit 1 ;;
+            incomplete)
+              echo "::warning title=Floor run::$headline. Fixtures that could not be judged are incomplete, not passed."
+              exit 2 ;;
+            *) echo "::notice title=Floor run::$headline" ;;
+          esac

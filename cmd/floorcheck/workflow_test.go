@@ -134,6 +134,11 @@ func TestFloorWorkflow(t *testing.T) {
 		}
 	}
 
+	// The summary job's is the run's only job summary, so it heads the run page.
+	if strings.Contains(steps("fixture"), "GITHUB_STEP_SUMMARY") {
+		t.Error("the fixture job writes a job summary; the run's summary would trail one per fixture")
+	}
+
 	fx := w.Jobs["fixture"]
 	if fx.Strategy.Matrix != "${{ fromJSON(needs.plan.outputs.matrix) }}" {
 		t.Errorf("fixture matrix = %q, want the plan job's matrix", fx.Strategy.Matrix)
@@ -227,7 +232,11 @@ func TestFloorWorkflowSummary(t *testing.T) {
 				data := []byte("{\"fixtures\": [")
 				if outcome != "damaged" {
 					var err error
-					data, err = json.Marshal(RunSummary{Schema: "x", Fixtures: []FixtureSummary{{Fixture: name, Outcome: outcome, Unexpected: 7, Drift: 4}}})
+					fs := FixtureSummary{Fixture: name, Outcome: outcome, Counts: Counts{Met: 3}, Unexpected: 7, Drift: 4}
+					if outcome == OutcomeRegressed {
+						fs.Counts.Regressed, fs.Regressed = 1, []string{"CVE-1 lost"}
+					}
+					data, err = json.Marshal(RunSummary{Schema: "x", Fixtures: []FixtureSummary{fs}})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -248,9 +257,16 @@ func TestFloorWorkflowSummary(t *testing.T) {
 			if code != tc.want {
 				t.Errorf("exit %d, want %d\n%s", code, tc.want, out)
 			}
-			if md, _ := os.ReadFile(filepath.Join(dir, "step.md")); tc.outcomes["c"] == OutcomePass &&
-				!strings.Contains(string(md), "| c | pass | 0 | 0 | 0 | 0 | 7 | 4 |") {
+			md, _ := os.ReadFile(filepath.Join(dir, "step.md"))
+			if tc.outcomes["c"] == OutcomePass && !strings.Contains(string(md), "| c | pass | 0 | 3 | 0 | 0 | 7 | 4 |") {
 				t.Errorf("the table does not show fixture c's unexpected and drift counts:\n%s", md)
+			}
+			verdict := map[int]string{0: "pass", 1: "regressed", 2: "incomplete"}[tc.want]
+			if !strings.HasPrefix(string(md), "## ") || !strings.Contains(strings.SplitN(string(md), "\n", 2)[0], "Floor run "+verdict+": ") {
+				t.Errorf("the summary does not open on the %s headline:\n%s", verdict, md)
+			}
+			if tc.want == 1 && !strings.Contains(string(md), "### Regressed\n\n- b: CVE-1 lost") {
+				t.Errorf("the summary does not list the regression:\n%s", md)
 			}
 		})
 	}

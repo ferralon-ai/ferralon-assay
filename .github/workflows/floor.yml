@@ -8,10 +8,13 @@ name: Floor run
 # scan failed, the scan was cut short). The run never changes an expectation: those change by hand, in
 # the PR that moves them.
 #
-# Run it by hand (Actions → Floor run → Run workflow), naming fixtures or leaving the selector empty for
-# all of them. Locally: `go run ./cmd/floorcheck run <fixture…> --out DIR --scanner <ferralon-assay>`.
+# It runs every fixture nightly on main. Run it by hand (Actions → Floor run → Run workflow), naming
+# fixtures or leaving the selector empty for all of them. Locally:
+# `go run ./cmd/floorcheck run <fixture…> --out DIR --scanner <ferralon-assay>`.
 
 on:
+  schedule:
+    - cron: "43 8 * * *" # nightly, off the hour (08:43 UTC)
   workflow_dispatch:
     inputs:
       fixtures:
@@ -62,7 +65,7 @@ jobs:
         id: plan
         env:
           SELECTED: ${{ inputs.fixtures }}
-          SCAN_TIMEOUT: ${{ inputs.scan-timeout }}
+          SCAN_TIMEOUT: ${{ inputs.scan-timeout || '40m' }}
         run: |
           set -euo pipefail
           # The scan budget must end inside the fixture job's timeout, or a slow scan is killed with
@@ -115,6 +118,18 @@ jobs:
           name: floor-bin
           path: ${{ runner.temp }}/floor-bin
 
+      # The system packages the fixture pins (C headers its cgo build reads). floorcheck validated each
+      # name as a Debian package name, so the unquoted expansion only splits the list.
+      - name: Install system packages
+        if: matrix.apt != ''
+        env:
+          APT_PACKAGES: ${{ matrix.apt }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          # shellcheck disable=SC2086
+          sudo apt-get install -y -q --no-install-recommends $APT_PACKAGES
+
       # The runtimes the fixture pins. The harness also sets GOTOOLCHAIN to the pinned Go release, so a
       # mismatched local toolchain would be replaced rather than used.
       - uses: actions/setup-go@v5
@@ -140,7 +155,7 @@ jobs:
         id: run
         env:
           FIXTURE: ${{ matrix.name }}
-          SCAN_TIMEOUT: ${{ inputs.scan-timeout }}
+          SCAN_TIMEOUT: ${{ inputs.scan-timeout || '40m' }}
         run: |
           set -uo pipefail
           bin="$RUNNER_TEMP/floor-bin"

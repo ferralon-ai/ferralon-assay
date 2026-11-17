@@ -195,6 +195,7 @@ type ListEntry struct {
 	JDK    string `json:"jdk"`
 	Node   string `json:"node"`
 	Python string `json:"python"`
+	Apt    string `json:"apt"` // build.apt, space-separated
 }
 
 // runList implements `floorcheck list`: every fixture's name, lang and toolchain pins as a JSON array,
@@ -223,7 +224,8 @@ func runList(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		b := sc.Build
-		entries = append(entries, ListEntry{Name: n, Lang: sc.Lang, Go: b.Go, JDK: b.JDK, Node: b.Node, Python: b.Python})
+		entries = append(entries, ListEntry{Name: n, Lang: sc.Lang, Go: b.Go, JDK: b.JDK, Node: b.Node, Python: b.Python,
+			Apt: strings.Join(b.Apt, " ")})
 	}
 	js, _ := json.Marshal(entries)
 	fmt.Fprintln(stdout, string(js))

@@ -6,7 +6,8 @@ build:
   go: 1.25.0
   goos: linux
   goarch: amd64
-  cgo: false
+  cgo: true
+  apt: [libfuse-dev]
 intel:
   policy: floor-fixture
   advisories: { path: intel/advisories/manifest.json, sha256: "a221dc4cbfc93266783215b7fb7613d37e14808bfeeb672036e341763f05b1ce" }

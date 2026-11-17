@@ -48,15 +48,17 @@ type Scenario struct {
 
 // ScenarioBuild pins the subject's build. Go is the exact toolchain version without its "go" prefix;
 // the go fields belong to the go lane only. JDK, Node and Python are the runtime majors (Python
-// major.minor) the CI matrix installs, each for its own lane only.
+// major.minor) the CI matrix installs, each for its own lane only. Apt names the Debian packages
+// (typically C headers a cgo build reads) the CI runner installs before the scan, in any lane.
 type ScenarioBuild struct {
-	Go     string `yaml:"go,omitempty"`
-	GOOS   string `yaml:"goos,omitempty"`
-	GOARCH string `yaml:"goarch,omitempty"`
-	CGO    *bool  `yaml:"cgo,omitempty"`
-	JDK    string `yaml:"jdk,omitempty"`
-	Node   string `yaml:"node,omitempty"`
-	Python string `yaml:"python,omitempty"`
+	Go     string   `yaml:"go,omitempty"`
+	GOOS   string   `yaml:"goos,omitempty"`
+	GOARCH string   `yaml:"goarch,omitempty"`
+	CGO    *bool    `yaml:"cgo,omitempty"`
+	JDK    string   `yaml:"jdk,omitempty"`
+	Node   string   `yaml:"node,omitempty"`
+	Python string   `yaml:"python,omitempty"`
+	Apt    []string `yaml:"apt,omitempty"`
 }
 
 // ScenarioIntel names the intelligence the scan reads. Corpus and Signals are relative to the floor
@@ -133,6 +135,7 @@ var (
 	majorOnly  = regexp.MustCompile(`^[1-9][0-9]*$`)
 	pyVersion  = regexp.MustCompile(`^3\.[0-9]+$`)
 	ghName     = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_.-]*$`)
+	debName    = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
 )
 
 // runtimeLane is the lang each non-go build field belongs to.
@@ -294,6 +297,11 @@ func (b ScenarioBuild) validate(lang string) error {
 	for field, v := range map[string]string{"jdk": b.JDK, "node": b.Node, "python": b.Python} {
 		if v != "" && !slices.Contains(runtimeLane[field], lang) {
 			return fmt.Errorf("build.%s belongs to the %s lane, not %s", field, strings.Join(runtimeLane[field], "/"), lang)
+		}
+	}
+	for _, p := range b.Apt {
+		if !debName.MatchString(p) {
+			return fmt.Errorf("build.apt %q is not a Debian package name", p)
 		}
 	}
 	return nil

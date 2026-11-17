@@ -6,7 +6,7 @@ build:
   go: 1.25.14
   goos: linux
   goarch: amd64
-  cgo: false
+  cgo: true
 intel:
   policy: floor-fixture
   advisories: { path: intel/advisories/manifest.json, sha256: "5a3ba2c9d873639732a1be75a766284fec7d3a8ee63908dccbd1fbb023ea5e19" }

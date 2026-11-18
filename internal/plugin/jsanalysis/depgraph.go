@@ -737,6 +737,9 @@ func callGraphWithClosure(ctx context.Context, buildDir string, store artifactca
 		kept = coverReadPackages(prog, g, rewrite)
 	}
 	lc := lr.close(prog, g, aug, baseRoots, entries, kept)
+	if layout.lockAssumed {
+		lc.Assumptions = append(lc.Assumptions, lockAssumption)
+	}
 
 	// render folds the dependency limits dep into the first-party ones. Unresolved and Escaped
 	// list first-party code only: dependency code's declined sites, the dependency frames a

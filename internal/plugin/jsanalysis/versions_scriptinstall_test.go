@@ -178,9 +178,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		// yarn 1 --frozen-lockfile is not held to the lock: in a workspace, a member that adds a
 		// dependency or moves a range, or a new member, installs versions yarn.lock does not
 		// record, exits 0 and leaves the lock unchanged. Every yarn install withholds.
-		{"yarn not lock-strict: yarn --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile\n"}, false, ""},
-		{"yarn not lock-strict: yarn install --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn install --frozen-lockfile\n"}, false, ""},
-		{"yarn not lock-strict: yarn --frozen-lockfile --production", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile --production\n"}, false, ""},
+		{"yarn assumed to hold to yarn.lock: yarn --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile\n"}, true, ""},
+		{"yarn assumed to hold to yarn.lock: yarn install --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn install --frozen-lockfile\n"}, true, ""},
+		{"yarn assumed to hold to yarn.lock: yarn --frozen-lockfile --production", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile --production\n"}, true, ""},
 		{"yarn not lock-strict: workspace member adds a dependency missing from yarn.lock", map[string]string{
 			"package.json":             `{"name":"root","private":true,"workspaces":["packages/*"],"dependencies":{"express":"^4.18.0"}}`,
 			"packages/a/package.json":  `{"name":"a","version":"1.0.0","dependencies":{"express":"^4.18.0","absent-package":"^1.0.0"}}`,
@@ -244,7 +244,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"sample hook run by an ES module postinstall", sample(`"postinstall":"node tools/init.mjs"`, "tools/init.mjs", "import { execSync } from 'node:child_process'\nexecSync('sh .git/hooks/pre-commit.sample')\n"), false, ""},
 		{"sample hook run by an extensionless node script", sample(`"prepare":"./bin/setup"`, "bin/setup", "#!/usr/bin/env node\nrequire('child_process').execSync('sh .git/hooks/pre-commit.sample')\n"), false, ""},
 		{"node build script and React hooks beside a sample hook", sample(`"build":"node scripts/build.js"`, "scripts/build.js", "require('fs').copyFileSync('src/index.html', 'dist/index.html')\n", "src/hooks/useThing.ts", "export function useThing() { return 1 }\n", "src/index.ts", "import { useThing } from './hooks/useThing'\n"), true, ""},
-		{"live git hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n"}), false, ""},
+		{"live git hook sourcing git-sh-setup", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n"}), true, ""},
+		{"live git hook sourcing a git-sh-setup in the tree", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-setup\n", ".git/hooks/git-sh-setup": "npm install left-pad\n"}), false, ""},
+		{"live git hook sourcing another file", npm(map[string]string{".git/hooks/pre-rebase": "#!/bin/sh\n. git-sh-other\n"}), false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -457,7 +459,13 @@ func TestResolveVersions_BareInstall(t *testing.T) {
 		{"npm install --omit dev extra-pkg", tree(scripts(`"build":"npm install --omit dev extra-pkg"`), lockV1, nil), false},
 		{"npm install --include=dev left-pad", tree(scripts(`"build":"npm install --include=dev left-pad"`), lockV1, nil), false},
 		{"named package", tree(scripts(`"build":"npm install left-pad"`), lockV1, nil), false},
-		{"unknown flag", tree(scripts(`"build":"npm install --legacy-peer-deps"`), lockV1, nil), false},
+		{"resolution flag", tree(scripts(`"build":"npm install --legacy-peer-deps"`), lockV1, nil), true},
+		{"unknown flag", tree(scripts(`"build":"npm install --global-style"`), lockV1, nil), false},
+		{"flag that turns the lock off", tree(scripts(`"build":"npm install --no-package-lock"`), lockV1, nil), false},
+		{"flag that writes no lock", tree(scripts(`"build":"npm install --no-save"`), lockV1, nil), false},
+		{"package named", tree(scripts(`"build":"npm install left-pad"`), lockV1, nil), false},
+		{"update", tree(scripts(`"build":"npm update"`), lockV1, nil), false},
+		{"overrides beside a covering lock", tree(pkg(`"overrides":{"qs":"6.11.0"},"scripts":{"build":"npm install"}`), lockV1, nil), true},
 		{"workspaces root", tree(pkg(`"workspaces":["frontend"],"scripts":{"build":"npm install"}`), lockV1, nil), false},
 		{"workspace member under a workspaces root", tree(pkg(`"workspaces":["frontend"],"scripts":{"build":"npm install --prefix frontend"}`), lockV1, nil), false},
 	}

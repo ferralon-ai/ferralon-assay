@@ -27,13 +27,32 @@ vulnerable packages of it (`vulnerable_symbol_absent`; the detail names the pack
 the missing ground as its reason.
 
 In Go, a refutation also has to hold for code outside the build that imports your packages. The
-`library-entrypoints` input (`-library-entrypoints`, `ASSAY_LIBRARY_ENTRYPOINTS`) says which packages
-those are: `auto` (the default) takes every importable package outside a `cmd`, `example`, `examples`,
-`test`, `tests` or `testdata` path element, `none` says the build ships programs only, and a list of paths relative to the repository
-root names them, with `!path` taking a path out. When one of them reaches the advisory's vulnerable
-package, the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that holds only
-because of what you declared carries that declaration on the report as an assumption, and the Report
-lists the sets under `library_entrypoints`.
+`entrypoints` input (`-entrypoints`, `ASSAY_ENTRYPOINTS`) says which packages those are, with the
+clause `go:library=...`: `auto` (the default) takes every importable package outside a `cmd`,
+`example`, `examples`, `test`, `tests` or `testdata` path element, `go:library=none` says the build
+ships programs only, and a list of paths relative to the repository root names them, with
+`!go:library=path` taking a path out. `library-entrypoints` (`-library-entrypoints`,
+`ASSAY_LIBRARY_ENTRYPOINTS`) is the alias for those clauses and takes the same statement without the
+prefix: `library-entrypoints: none` is `entrypoints: go:library=none`. Give both only when they say the
+same thing, the same mode over the same paths; two different statements stop the run before it
+analyses anything, naming both. A value you pass is handed to Assay and read as given. Assay never
+fetches one and looks for no configuration file. When one of the packages reaches the advisory's
+vulnerable package, the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that
+holds only because of what you declared carries that declaration on the report as an assumption, and
+the Report lists the sets under `library_entrypoints`.
+
+`entrypoints` takes clauses of the form `<lane>:<selector>` or `<lane>:<kind>=<selector>`, over the
+lanes `go`, `java`, `kotlin`, `js`, `python` and `dotnet`. A bare `auto` changes nothing, and neither
+does `<lane>:auto` or `<lane>:<kind>=auto` on its own, for any lane and any kind. Today only the Go
+library entry points read a clause. Any other clause that asks for something, for another lane, for
+the Go lane as a whole or for its mains and handlers, stops the run before it analyses anything: `lane java does not
+accept entry-point overrides yet`. A bare `none` names every lane, so it binds the lane the scan runs
+and must be one that can drop all of its roots; on a Go scan it stops the run and asks for
+`go:library=none`, and on a scan of a language the lanes above do not cover it changes nothing, and a `go:library` clause
+on a scan of another language is read by no lane. The check of the value runs before the repository is
+cloned or its dependencies resolved, so a value that does not parse, or that no lane can honour, stops
+the run with the reason first, for a language with no analyzer in the release as well; only a bare
+`none` waits for the detected language.
 
 In Go, the call-graph search does not follow calls made through `reflect` or a template's `Execute`,
 so Assay bounds them per advisory. From the build's entry points it collects every type the program

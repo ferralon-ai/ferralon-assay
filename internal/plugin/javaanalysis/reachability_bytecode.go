@@ -110,6 +110,10 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 			var res depreach.Result
 			if absent {
 				res = rc.Engine.ReachNone(root.ref)
+			} else if path, ok := rc.Engine.ClosurePath(root.ref, sink); ok {
+				// The path a search for sink would stop on, without the search: only the
+				// verdict and the path are read below.
+				res = depreach.Result{Verdict: depreach.ReachableCandidate, Path: path, SinkPresent: true}
 			} else {
 				res = rc.Engine.Reach(root.ref, sink)
 			}

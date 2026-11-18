@@ -27,8 +27,6 @@ schema, `Validate`) and fails the repository for any of these reasons:
 
 | Kind | Meaning |
 |---|---|
-| `ungrounded_not_exploitable` | A `not_exploitable` finding whose `evidence.basis` is empty or isn't one of `version_not_in_affected_range`, `vulnerable_symbol_absent`, `vulnerable_symbol_unreachable` or `static_refutation`. |
-| `ungrounded_disqualified` | A `disqualified` finding whose basis is something other than a version, symbol or intake basis. |
 | `path_outside_module` | A Go `reachable_candidate` finding whose `call_path` has no frame under the finding's own module path, so the path belongs to another package instance (another major version of the module). Standard-library rows, rows with no package and rows with no recorded frames are exempt. One failure per row, naming it. |
 | `scan_truncated` | The scan hit its time limit (a `scan_cut_short` limit on the report), so some advisories weren't assessed. |
 | `ledger_mismatch` | A showcase target's pinned scan differs from its ledger (`floor/expect/<name>.yaml`) by a missing, extra or changed row, by a reviewed row whose `bound_to` inputs are not the scan's, or the ledger's header is not the pinned scope, or the ledger breaks its own rules (a featured row that is not fully reviewed). See [The showcase lane](#the-showcase-lane). |
@@ -40,15 +38,21 @@ schema, `Validate`) and fails the repository for any of these reasons:
 
 **The grounds field is `evidence.basis`** (`report.EvidenceSummary.Basis`). It is the only grounds
 field in `report.json`. `non_exploitable_basis` and `reasoned_grounds` belong to the service-tier
-verdict (`verdict.Verdict`), which a report never contains, so floorcheck doesn't treat them as
-grounds. `evidence.detail` is human-readable text, not grounds.
+verdict (`verdict.Verdict`), which a report never contains, so they are not grounds.
+`evidence.detail` is human-readable text, not grounds.
+
+**Ungrounded refutations are malformed reports.** `report.Validate` refuses a `not_exploitable` or
+`disqualified` finding without a basis from its verdict's set, so such a report fails as
+`malformed_report`. A `not_exploitable` needs `version_not_in_affected_range`,
+`vulnerable_symbol_absent`, `vulnerable_symbol_unreachable` or `static_refutation`; a
+`disqualified` needs a version, symbol or intake basis. Upgrading an older report backfills the
+intake basis its disqualifications name in their detail, before `Validate` runs.
 
 **`disqualified` findings.** On the version or symbol axis, the report carries that axis's basis
-(`trigger/assess.go`, `disqualBasis`), and floorcheck checks it. An intake disqualification
-carries its own basis, `advisory_ecosystem_mismatch` or `no_manifest_entry`, which says why the
-row is disqualified. No comparison was made, so there is nothing to check. (Reports written before
-this change carry no basis on these rows, which floorcheck treats the same way.) These findings are counted as unverifiable in the summary but
-don't fail the repository.
+(`trigger/assess.go`, `disqualBasis`). An intake disqualification carries its own basis,
+`advisory_ecosystem_mismatch` or `no_manifest_entry`, which says why the row is disqualified. No
+comparison was made, so there is nothing to check. These findings are counted as unverifiable in
+the summary but don't fail the repository.
 
 `undetermined` never fails a repository. It is the honest result when nothing was established, and
 the summary counts it and lists its most common `undetermined_reason` codes.

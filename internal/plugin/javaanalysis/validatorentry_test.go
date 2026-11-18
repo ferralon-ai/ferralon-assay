@@ -728,3 +728,24 @@ class After {
 		})
 	}
 }
+
+func TestInTypeBodyFrame_AnnotationBodyIsNotATypeBody(t *testing.T) {
+	tests := []struct {
+		name  string
+		stack []bodyFrame
+		want  bool
+	}{
+		{"empty", nil, false},
+		{"class body", []bodyFrame{{typeName: "C"}}, true},
+		{"annotation body", []bodyFrame{{typeName: "Ann", annotation: true}}, false},
+		{"class nested in annotation body", []bodyFrame{{typeName: "Ann", annotation: true}, {typeName: "V"}}, true},
+		{"method body", []bodyFrame{{typeName: "C"}, {methodName: "m"}}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := inTypeBodyFrame(tc.stack); got != tc.want {
+				t.Errorf("inTypeBodyFrame = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

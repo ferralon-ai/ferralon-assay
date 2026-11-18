@@ -314,6 +314,13 @@ func (b *Builder) Build() Report {
 	entrypoints := slices.Clone(b.entrypoints)
 	slices.SortFunc(entrypoints, func(a, c plugin.ResolvedLibraryEntrypoints) int { return strings.Compare(a.Ecosystem, c.Ecosystem) })
 
+	var records []plugin.EntryRootRecord
+	for _, e := range entrypoints {
+		if rec, ok := plugin.EntryRootRecordOf(e); ok {
+			records = append(records, rec)
+		}
+	}
+
 	sbom := SBOM{
 		Packages:           pkgs,
 		Relationships:      sortedUniqueRelationships(b.relationships),
@@ -330,6 +337,7 @@ func (b *Builder) Build() Report {
 		Provenance:         prov,
 		Baseline:           b.baseline,
 		LibraryEntrypoints: entrypoints,
+		Entrypoints:        records,
 	}
 }
 

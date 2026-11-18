@@ -32,28 +32,35 @@ func TestPluginBuildOf(t *testing.T) {
 		return []*packages.Package{{PkgPath: "plugin", GoFiles: files}}
 	}
 	env := func(kv ...string) []string { return append(os.Environ(), kv...) }
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
 	cases := []struct {
 		name string
 		pkgs []*packages.Package
 		env  []string
+		ctx  context.Context
 		want pluginBuild
 	}{
-		{"the stub on a GOOS with plugins, nothing ignored", std(real, stub), env("GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0"), pluginCgoOff},
+		{"the stub on a GOOS with plugins, nothing ignored", std(real, stub), env("GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0"), nil, pluginCgoOff},
 		{"the stub on a GOOS with plugins, the loader under another name", func() []*packages.Package {
 			p := std(real, stub)
 			p[0].IgnoredFiles = []string{filepath.Join(src, "plugin_unix.go")}
 			return p
-		}(), env("GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0"), pluginCgoOff},
-		{"the stub on a GOOS without plugins", std(real, stub), env("GOOS=windows", "GOARCH=amd64", "CGO_ENABLED=0"), pluginNoPlatform},
-		{"the stub, the target unresolved", std(real, stub), []string{"PATH=" + t.TempDir()}, pluginCgoOff},
-		{"the stub, its file unreadable", std(real, filepath.Join(t.TempDir(), "plugin_stubs.go")), env("GOOS=windows", "GOARCH=amd64"), pluginCgoOff},
-		{"the loader compiled", std(real, filepath.Join(src, "plugin_dlopen.go")), env("GOOS=linux", "GOARCH=amd64"), pluginLoads},
-		{"no package plugin", []*packages.Package{{PkgPath: "os"}}, env(), pluginLoads},
-		{"a module's own package named plugin", []*packages.Package{{PkgPath: "plugin", GoFiles: []string{stub}, Module: &packages.Module{Path: "plugin"}}}, env("GOOS=windows"), pluginLoads},
+		}(), env("GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0"), nil, pluginCgoOff},
+		{"the stub on a GOOS without plugins", std(real, stub), env("GOOS=windows", "GOARCH=amd64", "CGO_ENABLED=0"), nil, pluginNoPlatform},
+		{"the stub, the go command not answering", std(real, stub), env("GOOS=windows", "GOARCH=amd64"), stopped, pluginCgoOff},
+		{"the stub, its file unreadable", std(real, filepath.Join(t.TempDir(), "plugin_stubs.go")), env("GOOS=windows", "GOARCH=amd64"), nil, pluginCgoOff},
+		{"the loader compiled", std(real, filepath.Join(src, "plugin_dlopen.go")), env("GOOS=linux", "GOARCH=amd64"), nil, pluginLoads},
+		{"no package plugin", []*packages.Package{{PkgPath: "os"}}, env(), nil, pluginLoads},
+		{"a module's own package named plugin", []*packages.Package{{PkgPath: "plugin", GoFiles: []string{stub}, Module: &packages.Module{Path: "plugin"}}}, env("GOOS=windows"), nil, pluginLoads},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := pluginBuildOf(context.Background(), t.TempDir(), tc.pkgs, tc.env); got != tc.want {
+			ctx := tc.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			if got := pluginBuildOf(ctx, t.TempDir(), tc.pkgs, tc.env); got != tc.want {
 				t.Errorf("pluginBuildOf = %d, want %d", got, tc.want)
 			}
 		})

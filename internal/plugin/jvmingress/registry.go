@@ -27,6 +27,9 @@ const (
 	KindLifecycle       = "lifecycle"
 	KindMessageListener = "message_listener"
 	KindServlet         = "servlet"
+	// KindConstraintValidator is a Bean Validation ConstraintValidator's isValid and
+	// initialize: the validation provider calls them when a constrained value is validated.
+	KindConstraintValidator = "constraint_validator"
 )
 
 // IngressFamily declares one ingress family. Declared once; every adapter reads
@@ -52,6 +55,13 @@ type MatchSpec struct {
 	Annotation  string   // simple name, e.g. "GetMapping"; "" for non-annotation families (servlet)
 	SuperSuffix string   // direct-superclass name-suffix, e.g. "HttpServlet"; "" unless supertype-based
 	Methods     []string // method-name set for supertype-method families (servlet); nil otherwise
+
+	// Supertype is the transitive-supertype root of a supertype family, as a package-relative
+	// internal name without the javax/ or jakarta/ root: "validation/ConstraintValidator".
+	// A class is a member when this type is among its direct or inherited supertypes, however
+	// deep the chain. "" unless the family is matched by supertype closure (SuperSuffix is the
+	// direct-superclass form).
+	Supertype string
 }
 
 // families is the behavior-preserving census. Declared in any order; Families()
@@ -80,6 +90,8 @@ var families = []IngressFamily{
 	{Name: "msg.rabbit", Kind: KindMessageListener, Match: MatchSpec{Annotation: "RabbitListener"}, SCIPNeedle: "RabbitListener#"},
 
 	{Name: "servlet", Kind: KindServlet, Match: MatchSpec{SuperSuffix: "HttpServlet", Methods: []string{"doGet", "doPost", "doPut", "doDelete", "service"}}, SCIPNeedle: ""},
+
+	{Name: "validator.constraint", Kind: KindConstraintValidator, Match: MatchSpec{Supertype: "validation/ConstraintValidator", Methods: []string{"isValid", "initialize"}}, SCIPNeedle: "validation/ConstraintValidator#"},
 }
 
 // sortedFamilies is the census sorted by Name once at package init, so every

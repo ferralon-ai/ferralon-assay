@@ -218,6 +218,11 @@ func readSCIPIndex(data []byte) (scipGraph, error) {
 		}
 	}
 
+	for _, m := range scipValidatorMethods(idx, docMethodDefs) {
+		cid := canonical(m)
+		ingressSet[cid+"\x00"+jvmingress.KindConstraintValidator] = plugin.Ingress{Kind: jvmingress.KindConstraintValidator, Symbol: sym(cid)}
+	}
+
 	rootSet := map[string]bool{}
 	var ingresses []plugin.Ingress
 	for _, in := range ingressSet {
@@ -319,9 +324,19 @@ var mappingSelectorRegistry []struct{ needle, selector string }
 // now registry-fed).
 var containerEntrypointRegistry []struct{ needle, kind string }
 
+// validatorSupertypeNeedle is the constraint-validator family's scip-java supertype
+// descriptor needle. It is kept out of containerEntrypointRegistry: that registry matches
+// annotation-type occurrences, and a reference to the ConstraintValidator type is not an
+// annotation. Consumed by scipValidatorIngresses.
+var validatorSupertypeNeedle string
+
 func init() {
 	for _, f := range jvmingress.Families() {
 		if f.SCIPNeedle == "" {
+			continue
+		}
+		if f.Kind == jvmingress.KindConstraintValidator {
+			validatorSupertypeNeedle = f.SCIPNeedle
 			continue
 		}
 		if f.Kind == jvmingress.KindHTTPRoute {

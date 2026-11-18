@@ -74,7 +74,7 @@ A sink is Searched, and so eligible for `not_exploitable`, only when a hazard-fr
 
 ## 6. Framework & dynamic-dispatch modeling
 
-Ingress is recognized from bytecode annotations through the shared registry: Spring MVC mappings (with class-level prefix), JAX-RS, `@Scheduled`, `@EventListener`, lifecycle callbacks, Kafka/JMS/Rabbit listeners and servlets. Spring DI is overlaid on first-party classes. The engine resolves lambda and string-concatenation `invokedynamic` sites to their real targets.
+Ingress is recognized from bytecode annotations through the shared registry: Spring MVC mappings (with class-level prefix), JAX-RS, `@Scheduled`, `@EventListener`, lifecycle callbacks, Kafka/JMS/Rabbit listeners, servlets, and `isValid`/`initialize` of any `javax`/`jakarta` `ConstraintValidator` (direct or inherited; an ancestor the build output lacks counts as a possible validator). Spring DI is overlaid on first-party classes. The engine resolves lambda and string-concatenation `invokedynamic` sites to their real targets.
 
 | Feature | Status | Caveats |
 |---|---|---|

@@ -131,6 +131,7 @@ func loadProgram(buildDir string) (*program, error) {
 		// never touching the declaration/call index above.
 		srcClasses = append(srcClasses, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
 	}
+	rootConstraintValidators(prog.files, srcClasses)
 	prog.beanData = buildSourceBeanData(srcClasses)
 	// #6: legacy XML <bean> definitions under the build tree are an additive bean source
 	// (beanconfig.go). Their Satisfies is enriched with the first-party supertype map so

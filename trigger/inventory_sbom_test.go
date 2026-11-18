@@ -1,9 +1,15 @@
 package trigger
 
 import (
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
+	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
 // A Maven PURL spells its coordinate group/artifact, but OSV addresses Maven packages as
@@ -118,5 +124,54 @@ func TestSBOMFromInventory_NotInstalled(t *testing.T) {
 		if w, ok := want[p.Name]; !ok || p.NotInstalled != w {
 			t.Errorf("%s NotInstalled = %v, want %v", p.Name, p.NotInstalled, w)
 		}
+	}
+}
+
+// TestWithInventoryLimits_PackageLessAbsentRow: a package-less row absent from the manifest, beside a
+// nested-module limit bounded to modules that do not hold the advisory's package, stays disqualified
+// with its own evidence. Beside a bound that holds it, or one it cannot be compared with because the
+// advisory's packages are unknown, it is demoted to analysis_did_not_run: the inventory step that
+// would show the package did not run for it, which is what that reason says. package_version_unresolved
+// says no version of a package was resolved, and there is no package here to resolve.
+func TestWithInventoryLimits_PackageLessAbsentRow(t *testing.T) {
+	absent := report.AdvisoryFinding{
+		Verdict:  report.VerdictDisqualified,
+		Evidence: report.EvidenceSummary{Basis: disqualBasis(pipeline.ReasonNoManifestEntry), Detail: disqualDetail(pipeline.ReasonNoManifestEntry)},
+	}
+	bound := func(dir, purl string) []report.PartialityNote {
+		return inventoryPartialityNotes(withNestedModule(plugin.Partiality{}, dir, purl), "Go")
+	}
+	text, net, crypto := bound("plugins/c", "pkg:golang/golang.org/x/text"), bound("x", "pkg:golang/golang.org/x/net"), bound("receiver/a", "pkg:golang/golang.org/x/crypto")
+	unbounded := inventoryPartialityNotes(withNestedModules(plugin.Partial(goanalysis.PartialReasonNestedModule), "receiver/a"), "Go")
+	advisory := []string{"pkg:golang/golang.org/x/crypto"}
+	cases := []struct {
+		name   string
+		limits []report.PartialityNote
+		purls  []string
+		want   report.Verdict
+	}{
+		{"a bound that does not hold the package", text, advisory, report.VerdictDisqualified},
+		{"two bounds, neither holds the package", slices.Concat(text, net), advisory, report.VerdictDisqualified},
+		{"a bound that holds the package", crypto, advisory, report.VerdictUndetermined},
+		{"one bound of two holds the package", slices.Concat(text, crypto), advisory, report.VerdictUndetermined},
+		{"no bound", unbounded, advisory, report.VerdictUndetermined},
+		{"a bound and the advisory's packages unknown", text, nil, report.VerdictUndetermined},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := withInventoryLimits(absent, tc.limits, tc.purls)
+			if got.Verdict != tc.want {
+				t.Fatalf("verdict = %s/%q, want %s", got.Verdict, got.UndeterminedReason, tc.want)
+			}
+			if tc.want == report.VerdictDisqualified {
+				if !reflect.DeepEqual(got, absent) {
+					t.Fatalf("row changed: %+v, want %+v", got, absent)
+				}
+				return
+			}
+			if got.UndeterminedReason != report.ReasonAnalysisDidNotRun || got.Evidence.Basis != "" || !strings.HasPrefix(got.Evidence.Detail, report.UndeterminedDetail(report.ReasonAnalysisDidNotRun)) || len(got.WithheldBy) == 0 {
+				t.Fatalf("got reason %q, evidence %+v; want %s with its own detail, the limit that held it and no basis", got.UndeterminedReason, got.Evidence, report.ReasonAnalysisDidNotRun)
+			}
+		})
 	}
 }

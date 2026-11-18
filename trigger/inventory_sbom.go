@@ -160,9 +160,11 @@ func withInventoryLimits(f report.AdvisoryFinding, limits []report.PartialityNot
 		if report.ClassifyPartialityReason(n.Reason) != report.PartialityDidNotRun || !limitCovers(n, keys, known) {
 			continue
 		}
+		by := []report.Limit{{Reason: n.Reason, Package: n.Package, Path: n.Path, Targets: slices.Clone(n.Targets)}}
 		f.Verdict = report.VerdictUndetermined
 		f.UndeterminedReason = report.ReasonAnalysisDidNotRun
-		f.Evidence = report.EvidenceSummary{Detail: report.UndeterminedDetail(report.ReasonAnalysisDidNotRun)}
+		f.WithheldBy = by
+		f.Evidence = report.EvidenceSummary{Detail: report.WithheldDetail(report.ReasonAnalysisDidNotRun, by)}
 		return f
 	}
 	return f

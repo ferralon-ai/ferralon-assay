@@ -72,6 +72,7 @@ func TestCgoLimits(t *testing.T) {
 		{"a cgo file that does not parse may export", nil, graph(depPkg([]string{broken}, nil, nil, true)), true, limit(dep, "example.com/dep/c", every...)},
 		{"a dropped file's limit names the standard library", []string{"CGO_ENABLED=1", "CGO_ENABLED=0"}, graph(depPkg(nil, nil, []string{plain}, false)), true, droppedLimit(dep, "example.com/dep/c", "", dep, stdlibPURL)},
 		{"a dropped file with cgo on stays cgo", []string{"CGO_ENABLED=0", "CGO_ENABLED=1"}, graph(depPkg(nil, nil, []string{plain}, false)), true, limit(dep, "example.com/dep/c", "", dep, stdlibPURL)},
+		{"a dropped file with cgo set to no value stays cgo", []string{"CGO_ENABLED="}, graph(depPkg(nil, nil, []string{plain}, false)), true, limit(dep, "example.com/dep/c", "", dep, stdlibPURL)},
 		{"a dropped file with cgo unset stays cgo", nil, graph(depPkg(nil, nil, []string{plain}, false)), true, limit(dep, "example.com/dep/c", "", dep, stdlibPURL)},
 		{"a dropped file beside compiled cgo stays cgo", []string{"CGO_ENABLED=1", "CGO_ENABLED=0"}, graph(depPkg([]string{plain}, nil, []string{exported}, true)), true, limit(dep, "example.com/dep/c", every...)},
 		{"a dropped file that cannot be read bounds nothing", []string{"CGO_ENABLED=1", "CGO_ENABLED=0"}, graph(depPkg(nil, nil, []string{missing}, false)), false, nil},

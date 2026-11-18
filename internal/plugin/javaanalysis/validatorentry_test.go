@@ -689,6 +689,16 @@ public @interface Ann {
 }`,
 		},
 		{
+			name: "route meta-annotation on a member annotation type stays off the next method",
+			src: `package com.acme;
+public class Api {
+    @RequestMapping("/api") @interface ApiRoute {}
+    void helper() { exec(x); }
+}`,
+			wantCalls: []string{"[Api]#helper -> exec"},
+			wantDecls: []string{"Api@[]", "helper@[Api]"},
+		},
+		{
 			name: "class after the annotation type keeps its chain",
 			src: `package com.acme;
 public @interface Ann {
@@ -721,6 +731,9 @@ class After {
 			}
 			if !slices.Equal(decls, tc.wantDecls) {
 				t.Errorf("decls = %q, want %q", decls, tc.wantDecls)
+			}
+			if len(res.ingresses) != 0 {
+				t.Errorf("ingresses = %+v, want none", res.ingresses)
 			}
 			if !res.skipped {
 				t.Error("skipped must stay set for an @interface file")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -764,8 +766,9 @@ func versionlessPURL(purlType, name string) string {
 // not the version built. When the build's workspace cannot be resolved (a declared go.work that is
 // missing, does not parse or does not use the module), nothing says what the build holds or which
 // go lines bind its toolchain, so go.mod's requires and the standard library are all unresolved.
-// Without a go.work, go.mod's requires are read; a tree with no go.mod within that search gets a
-// no_manifest note.
+// Without a go.work, go.mod's requires are read, each at the version the build holds: a same-module
+// replace names it, and a fork or directory replace leaves the module unresolved. A tree with no
+// go.mod within that search gets a no_manifest note.
 func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
 	dir := manifestDir(acq)
 	ws, wsOK := goWorkspace(ctx, acq, dir)
@@ -831,7 +834,18 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 		if r == nil {
 			continue
 		}
-		add(r.Mod.Path, r.Mod.Version)
+		t, replaced := gomod.Replacement(mf, r.Mod.Path, r.Mod.Version)
+		if !replaced {
+			add(r.Mod.Path, r.Mod.Version)
+			continue
+		}
+		// The build holds the replacement's version, not the require's; a fork or a directory
+		// holds no release's source, so it is admitted by name and never queried by version.
+		if v, ok := t.Pinned(r.Mod.Path); ok {
+			add(r.Mod.Path, v)
+		} else if !slices.ContainsFunc(unresolved, func(p report.Package) bool { return p.Name == r.Mod.Path }) {
+			unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: r.Mod.Path})
+		}
 	}
 	if v := stdlibVersion(ctx, acq, dir, ws); v != "" {
 		add(goStdlibPackage, v)
@@ -840,6 +854,7 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 	}
 
 	sortPackages(resolved)
+	sortPackages(unresolved)
 	return resolved, unresolved, nil
 }
 

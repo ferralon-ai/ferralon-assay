@@ -23,7 +23,8 @@ const taintPrecisionNote = "variable-level SSA value-flow: source (ingress param
 // (assignment, phi, field/element access, map lookup, type assertion, extract,
 // conversions, tainted-operand binops, a store through a field or element
 // address to every base under it, the append and copy builtins),
-// inter-procedurally from actual arg to callee formal param, and from a tainted
+// inter-procedurally from actual arg to callee formal param (at a call through an
+// interface the build declares, to the methods the call graph resolves it to), and from a tainted
 // argument to the result of a library call with no built body. A
 // modeled sanitizer (sanitizers.go) clears taint on its result, so a value that
 // reaches a sink only through a sanitizer is a true negative and is NOT reported.

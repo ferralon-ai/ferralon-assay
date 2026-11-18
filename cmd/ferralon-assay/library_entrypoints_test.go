@@ -22,10 +22,10 @@ func TestLibraryEntrypointsOption(t *testing.T) {
 		build func(*runFlags) ([]pipeline.AssessOption, error)
 	}{
 		{"baseline", func(f *runFlags) ([]pipeline.AssessOption, error) {
-			return f.baselineAssessOptions(func(*pipeline.AssessConfig) {})
+			return f.baselineAssessOptions(func(*pipeline.AssessConfig) {}, "go")
 		}},
 		{"run", func(f *runFlags) ([]pipeline.AssessOption, error) {
-			return f.runAssessOptions(func(*pipeline.AssessConfig) {})
+			return f.runAssessOptions(func(*pipeline.AssessConfig) {}, "go")
 		}},
 	}
 	cases := []struct {

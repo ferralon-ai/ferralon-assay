@@ -737,6 +737,9 @@ func callGraphWithClosure(ctx context.Context, buildDir string, store artifactca
 		kept = coverReadPackages(prog, g, rewrite)
 	}
 	lc := lr.close(prog, g, aug, baseRoots, entries, kept)
+	if layout.lockAssumed {
+		lc.Assumptions = append(lc.Assumptions, lockAssumption)
+	}
 
 	// render folds the dependency limits dep into the first-party ones. Unresolved and Escaped
 	// list first-party code only: dependency code's declined sites, the dependency frames a
@@ -1033,6 +1036,8 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 		flags := &ml.flags
 		flags.dynImport = flags.dynImport || b.dynImport
 		flags.computedReq = flags.computedReq || b.computedReq
+		flags.loaderEscape = flags.loaderEscape || b.loaderEscape
+		ml.prefixes = append(ml.prefixes, b.prefixes...)
 		flags.unreadModule = flags.unreadModule || b.nativeLoad
 		flags.evaluated = flags.evaluated || b.evaluated
 		ml.exempt = b.literalExempt
@@ -1336,6 +1341,7 @@ func mergeFlags(a, b partialFlags) partialFlags {
 		uninspectable: a.uninspectable || b.uninspectable,
 		dynImport:     a.dynImport || b.dynImport,
 		computedReq:   a.computedReq || b.computedReq,
+		loaderEscape:  a.loaderEscape || b.loaderEscape,
 		unreadModule:  a.unreadModule || b.unreadModule,
 		evaluated:     a.evaluated || b.evaluated,
 		stylesheet:    a.stylesheet || b.stylesheet,

@@ -113,6 +113,10 @@ type Spec struct {
 	// each shell text checked as sh -c would run it, and whether words is one. A runner with no
 	// commands withholds, as does one this cannot read. nil means the lane has none.
 	Concurrent func(words []string) (cmds []string, ok bool)
+	// ReadOnly reports whether a command holding no token only reads the files its arguments
+	// name, so naming a file an allowed command binds to does not rewrite it. It is asked only
+	// about a command with no redirect and no command substitution. nil means no command is.
+	ReadOnly func(words []string) bool
 	// ReadRegular reads a whole regular file, and Absent reports whether a filesystem error
 	// means a path is not there: the lane's own, so every file this reads is read the lane's way.
 	ReadRegular func(path string) ([]byte, error)
@@ -1251,7 +1255,9 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
 	if !v.segmentHasToken(words) {
-		v.mention(words) // a leading NAME=VALUE, or a command run by its path, names one too
+		if !v.readsOnly(words) {
+			v.mention(words) // a leading NAME=VALUE, or a command run by its path, names one too
+		}
 		switch dir, ok := venvWrites(seg, cur); {
 		case ok:
 			cur.wrote(dir, mark.made == dir)
@@ -1286,6 +1292,21 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install command: " + strings.Join(words, " ")
 	}
 	return ""
+}
+
+// readsOnly reports whether the lane says a command only reads the files it names
+// (Spec.ReadOnly), and nothing in it writes or runs anything else: no redirect, and no command
+// substitution, whose command may name the same files.
+func (v *Veto) readsOnly(words []string) bool {
+	if v.spec.ReadOnly == nil || hasRedirect(words) {
+		return false
+	}
+	for _, w := range words {
+		if strings.Contains(w, "$(") || strings.Contains(w, "`") {
+			return false
+		}
+	}
+	return v.spec.ReadOnly(words)
 }
 
 // concurrent applies the rule to the commands a concurrent runner starts, each in a shell of

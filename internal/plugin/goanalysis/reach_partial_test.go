@@ -660,6 +660,194 @@ func TestListBuildPackages(t *testing.T) {
 	}
 }
 
+// TestUnversionedOnPartialRun: only a result read off a partial run, for an advisory the request
+// named no versioned package of, declares partial_run_unversioned. A run over the whole build never
+// does, so nothing downstream of the reason can touch a row such a run reports.
+func TestUnversionedOnPartialRun(t *testing.T) {
+	partial := &partialRun{Unloadable: []string{"example.com/app/ui"}}
+	cases := []struct {
+		name    string
+		partial *partialRun
+		pkg     string
+		want    bool
+	}{
+		{name: "partial run, no versioned package", partial: partial, want: true},
+		{name: "partial run, versioned package", partial: partial, pkg: "pkg:golang/example.com/dep@v1.2.3"},
+		{name: "whole build, no versioned package"},
+		{name: "whole build, versioned package", pkg: "pkg:golang/example.com/dep@v1.2.3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonReflectiveCall)}
+			res := unversionedOnPartialRun(in, vulnScan{partial: tc.partial}, tc.pkg)
+			if got := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPartialRunUnversioned); got != tc.want {
+				t.Fatalf("declared = %v, want %v (reasons %v)", got, tc.want, res.Partiality.Reasons)
+			}
+			if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonReflectiveCall) || res.Partiality.Complete {
+				t.Fatalf("the result's own limits must stand: %+v", res.Partiality)
+			}
+		})
+	}
+}
+
+// TestReachability_PartialRunDeclaresUnversioned pins that the declaration reaches the lane's answer:
+// Reachability over a seeded partial run declares partial_run_unversioned for a request that names
+// no package, and the same request over the same stream as a full run does not.
+func TestReachability_PartialRunDeclaresUnversioned(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
+	})
+	stream := []byte(`{"finding":{"osv":"GO-1","trace":[{"module":"example.com/vulnmod","version":"v0.0.0","package":"example.com/vulnmod"}]}}` + "\n")
+	for _, tc := range []struct {
+		name    string
+		partial bool
+		pkg     string
+		want    bool
+	}{
+		{name: "partial run, no package", partial: true, want: true},
+		{name: "partial run, versioned package", partial: true, pkg: "pkg:golang/example.com/vulnmod@v0.0.0"},
+		{name: "whole build, no package"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := t.TempDir()
+			ctx := WithRunCacheDir(context.Background(), cache)
+			key := append([]string{dir}, reachBaseEnv(ctx)...)
+			seed := func(kind string, v any) {
+				t.Helper()
+				b, ok := v.([]byte)
+				if !ok {
+					var err error
+					if b, err = json.Marshal(v); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.WriteFile(runCachePath(cache, kind, key), b, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.partial {
+				seed(govulncheckFailureKind, govulncheckFailureRecord{Marker: govulncheckFailureMarker, Cause: "exit status 1", Stderr: "could not import C", PackageErrors: []recordedPackageError{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}})
+				seed(govulncheckPartialKind, partialRun{Marker: govulncheckPartialMarker, Unloadable: []string{"example.com/m/c"}, Excluded: []string{"example.com/m/cmd/a"}, Stream: stream})
+			} else {
+				seed("govulncheck", stream)
+			}
+			res, err := Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: "GO-1", Package: tc.pkg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPartialRunUnversioned); got != tc.want {
+				t.Fatalf("declared = %v, want %v (reasons %v)", got, tc.want, res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
+// TestOnlyEmbedPatternMisses pins which `go list` package errors leave a load failure settled: only
+// a //go:embed pattern that names no file to embed. A module the go command may not fetch, a
+// command-line pattern it could not match, and an error that merely mentions an embed miss do not.
+func TestOnlyEmbedPatternMisses(t *testing.T) {
+	const miss = "pattern all:frontend/dist: no matching files found"
+	tests := []struct {
+		name string
+		errs string
+		want bool
+	}{
+		{name: "no errors", errs: "", want: true},
+		{name: "blank lines only", errs: "\n\n", want: true},
+		{name: "a pattern that matches no file", errs: miss + "\n", want: true},
+		{name: "a directory with nothing embeddable", errs: "pattern dist: cannot embed directory dist: contains no embeddable files\n", want: true},
+		{name: "two packages, each an embed miss", errs: miss + "\n\npattern web/*.html: no matching files found\n", want: true},
+		{name: "a pattern holding a space", errs: "pattern all:frontend dist: no matching files found\n", want: false},
+		{name: "a module fetch", errs: "module lookup disabled by GOPROXY=off\n", want: false},
+		{name: "an embed miss beside a module fetch", errs: miss + "\nno required module provides package example.com/absent; to add it:\n\tgo get example.com/absent\n", want: false},
+		{name: "a module fetch beside an embed miss", errs: "cannot find module providing package example.com/absent: module lookup disabled by GOPROXY=off\n" + miss + "\n", want: false},
+		{name: "a command-line pattern outside the module", errs: "pattern ./...: directory prefix . does not contain main module or its selected dependencies\n", want: false},
+		{name: "an invalid embed pattern", errs: "pattern ../x: invalid pattern syntax\n", want: false},
+		{name: "an embed of an irregular file", errs: "pattern sock: cannot embed irregular file sock\n", want: false},
+		{name: "an error that quotes an embed miss", errs: "example.com/absent: " + miss + "\n", want: false},
+		{name: "an embed miss with a tail", errs: miss + ": module lookup disabled by GOPROXY=off\n", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := onlyEmbedPatternMisses([]byte(tt.errs)); got != tt.want {
+				t.Errorf("onlyEmbedPatternMisses(%q) = %v, want %v", tt.errs, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPartialRunPastEmbedPatternMiss runs the path a scan takes over a tree shaped like a checkout
+// whose front end is not built: one root embeds a directory the tree does not hold, another fails
+// to type-check. The failure settles, its package errors name only the ill-typed package, and the
+// build listing a partial run plans from reads the embedding root without an error, so the partial
+// run leaves out the ill-typed root alone and knows what it hides.
+func TestPartialRunPastEmbedPatternMiss(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":          "module example.com/m\n\ngo 1.22\n",
+		"cmd/ui/main.go":  "package main\n\nimport \"embed\"\n\n//go:embed all:frontend/dist\nvar assets embed.FS\n\nfunc main() { _ = assets }\n",
+		"cmd/bad/main.go": "package main\n\nfunc main() { var x int = \"s\"; _ = x }\n",
+	})
+	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local", "GOPROXY=off")
+	_, err := govulncheckStream(context.Background(), dir, env, []string{"./..."})
+	var failed *govulncheckError
+	if !errors.As(err, &failed) || !failed.settled {
+		t.Fatalf("govulncheckStream: %v, want a settled failure", err)
+	}
+	graph, err := listBuildPackages(context.Background(), dir, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unloadable, err := unloadablePackages(dir, failurePackageErrors(failed), graph)
+	if err != nil || !slices.Equal(unloadable, []string{"example.com/m/cmd/bad"}) {
+		t.Fatalf("unloadable = %q, %v; want only the ill-typed root", unloadable, err)
+	}
+	excluded, kept := excludedRoots(graph, unloadable)
+	if !slices.Equal(excluded, []string{"example.com/m/cmd/bad"}) || !slices.Equal(kept, []string{"example.com/m/cmd/ui"}) {
+		t.Errorf("excluded %q, kept %q; want the embedding root kept", excluded, kept)
+	}
+	if hidden := hiddenModules(graph, excluded); hidden == nil {
+		t.Error("hidden modules unknown; want the closure of the ill-typed root")
+	}
+}
+
+// TestLoadFailureBesideEmbedMissSettlesOnlyOffline pins the gate a partial run starts behind: a
+// load failure in a build with an unmatched //go:embed pattern is settled, and the same failure
+// beside an import whose module is not on disk is not, since a later run might fetch it.
+func TestLoadFailureBesideEmbedMissSettlesOnlyOffline(t *testing.T) {
+	base := map[string]string{
+		"go.mod":          "module example.com/m\n\ngo 1.22\n",
+		"cmd/ui/main.go":  "package main\n\nimport \"embed\"\n\n//go:embed all:frontend/dist\nvar assets embed.FS\n\nfunc main() { _ = assets }\n",
+		"cmd/bad/main.go": "package main\n\nfunc main() { var x int = \"s\"; _ = x }\n",
+	}
+	tests := []struct {
+		name  string
+		extra map[string]string
+		want  bool
+	}{
+		{name: "every package on disk", want: true},
+		{name: "an import whose module is not on disk", extra: map[string]string{"cmd/net/main.go": "package main\n\nimport _ \"example.com/absent/pkg\"\n\nfunc main() {}\n"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := maps.Clone(base)
+			maps.Copy(files, tt.extra)
+			dir := writeTree(t, files)
+			env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local", "GOPROXY=off")
+			_, err := govulncheckStream(context.Background(), dir, env, []string{"./..."})
+			var failed *govulncheckError
+			if !errors.As(err, &failed) {
+				t.Fatalf("govulncheckStream: %v, want a govulncheck failure", err)
+			}
+			if failed.settled != tt.want {
+				t.Errorf("settled = %v, want %v (%v)", failed.settled, tt.want, err)
+			}
+		})
+	}
+}
+
 // TestUnloadablePackagesResolvesSymlinks pins that an error position and a listed directory that
 // spell one directory two ways (macOS's /var and /private/var) name the same package.
 func TestUnloadablePackagesResolvesSymlinks(t *testing.T) {

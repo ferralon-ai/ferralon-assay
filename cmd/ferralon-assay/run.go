@@ -599,7 +599,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to choose the advisory work set, unless -advisory-corpus-policy defines it; an id is admitted only when -advisory-corpus (or an included house canary) holds its facts (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
 		// subjectGoWork is the GOWORK the build runs under; a caller statement, never the scanner's own.
 		subjectGoWork: fs.String("subject-gowork", "", "the GOWORK the SCANNED repository's Go build runs under: off, auto (find the go.work as when unset), or the path of its go.work relative to the scanned directory (-target). A go.work that does not exist, does not parse or does not use the scanned module withholds every verdict. Overrides "+envSubjectGoWork+" (default: the go.work the go command finds from the module, searched no higher than the repository; one that does not use the module is not the build's)"),
-		subjectGo:     fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
+		subjectGo:     fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true)"),
 
 		// subjectJava is the JDK the build graph must be resolved on; a caller statement, never looked up.
 		subjectJava: fs.String("subject-java-version", "", "the java.version of the JDK the SCANNED repository's program runs on, which must be the major version its build runs on (what `mvn -v` or `gradle -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target). Leave it unstated when the program runs on another JDK than the build. A toolchain the build graph records on another major version withholds the JDK's own method table from bytecode reachability. With -build-graph auto, a build tool running on another major version fails the run; with a graph file, the file must record the same statement; with off it is unused. Overrides "+envSubjectJavaVersion+" (default: unstated, and the graph records the JVM the tool ran on)"),
@@ -1135,8 +1135,7 @@ func stated(flagValue, envValue string) string {
 }
 
 // baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
-// corpus. The subject Go toolchain and its reachability gate
-// stay out of baseline, deliberately: changing what baseline measures for Go is its own change.
+// corpus, the subject Go toolchain, and the subject-toolchain reachability gate.
 func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption, language string) ([]pipeline.AssessOption, error) {
 	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
 	opt, err := f.advisoryCorpusOption()
@@ -1144,6 +1143,12 @@ func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption, langu
 		return nil, err
 	}
 	if opt != nil {
+		opts = append(opts, opt)
+	}
+	if opt := f.subjectToolchainOption(); opt != nil {
+		opts = append(opts, opt)
+	}
+	if opt := subjectToolchainReachOption(); opt != nil {
 		opts = append(opts, opt)
 	}
 	depOpt, err := f.dependencyCodeOption()

@@ -3290,6 +3290,12 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	if len(counted) == 0 {
 		reachOut.Paths = paths
 	}
+	// The lane declares the unversioned marker for every request that named no versioned package;
+	// only the row ownAdvisoryOnPartialRun holds acts on it. Stored, it would also reach the
+	// footprint's did-not-run flags and withhold a row whose package resolved.
+	if !ownAdvisoryOnPartialRun(store, c.ID, reach.Partiality) {
+		reachOut.Partiality = withoutPartialRunUnversioned(reachOut.Partiality)
+	}
 	reachRef, err := putReachability(store, c, s.Name(), reachOut, cg, toolchainScan)
 	if err != nil {
 		return err

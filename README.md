@@ -169,9 +169,10 @@ dependencies publishes its `Report` and says so. See [Advisory corpus](#advisory
 Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-corpus` to scan
 against a filesystem corpus, and `-subject-java-version` /
 `-subject-maven-profiles` to state the JVM and Maven profile selection your build uses (env
-`ASSAY_SUBJECT_JAVA_VERSION`, `ASSAY_SUBJECT_MAVEN_PROFILES`). For `pr-inherit` and `cve-watch`,
-`-subject-go-version` states the target's Go toolchain explicitly; `baseline` resolves it from
-`go.mod` alone.
+`ASSAY_SUBJECT_JAVA_VERSION`, `ASSAY_SUBJECT_MAVEN_PROFILES`). `-subject-go-version` (env
+`ASSAY_SUBJECT_GO_VERSION`) states the target's exact Go toolchain; without it the scan reads the
+target's `go.mod`, and takes a release CI observed only when `ASSAY_TRUST_OBSERVED_GO=true`
+([operator guide](docs/operator-guide.md)).
 
 `./ferralon-assay resolve-graph -dir /path/to/repo -out "$RUNNER_TEMP/graph"` runs the repository's own Maven or
 Gradle and writes its resolved dependency graph as `assay.buildgraph/v2` JSON (`buildgraph.json`) into

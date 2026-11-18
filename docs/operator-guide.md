@@ -280,8 +280,7 @@ or later), ranked after the observation; without the assertion that toolchain is
 is unresolved. That resolved toolchain settles which advisory versions apply, but it is never the
 release `subject-toolchain-reachability` runs under: that needs your declaration or the trusted
 observation. The Action sets neither variable; set them in the `env:` of the step that runs it. These,
-like `ASSAY_SUBJECT_GO_VERSION`, take effect in `pr-inherit` and `cve-watch`; `baseline` resolves the Go
-toolchain from `go.mod` alone.
+like `ASSAY_SUBJECT_GO_VERSION`, take effect in every scan mode, `baseline` included.
 
 ## Subject build conditions for Java and Maven
 

@@ -220,14 +220,15 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	res, err := resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
+	res, err := resultPerModule(ctx, scanned, g, buildDir, env, load, entry)
 	if err != nil {
 		return res, err
 	}
 	return statePluginScope(res), nil
 }
 
-// resultFromGraph is reconciledResult over the reconcile graph g.
+// resultFromGraph is reconciledResult over the reconcile graph g, for the first module the findings
+// name (resultPerModule judges the others).
 func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
 	res := withholdForPartialRun(evidenceResult(scanned.findings, g.CallGraph, env), scanned)
 	if res.Refutation != nil {
@@ -301,9 +302,11 @@ func restateNotImported(ctx context.Context, res plugin.ReachabilityResult, scan
 // withholdForReflectReach drops a refutation, and every Searched sink, that a call reflection makes
 // may contradict. govulncheck follows no such call, so when what those calls can reach (reflectReach)
 // holds one of the advisory's vulnerable symbols, or that reach is unknown, the search that found no
-// path never covered it. The result then declares reflection:call instead.
+// path never covered it. The result then declares reflection:call instead. A refutation that rests on
+// the build importing none of the vulnerable packages (restateNotImported) stands whatever the reach:
+// reflection calls only code the build compiles in.
 func withholdForReflectReach(res plugin.ReachabilityResult, scanned vulnScan, reach map[string][]string) plugin.ReachabilityResult {
-	if r := res.Refutation; r != nil {
+	if r := res.Refutation; r != nil && r.Basis != plugin.RefutationAnalyzerPackageNotImported {
 		module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
 		if !ok || reflectMayReach(reach, scanned, module) {
 			res.Refutation = nil
@@ -741,11 +744,10 @@ func evidenceResult(findings []vulnFinding, cg plugin.CallGraphResult, env []str
 }
 
 // moduleRefutation states govulncheck's module-level evidence as a refutation of the module it
-// matched. An advisory spanning several modules refutes the first in path order; the gate
-// matches it against the admitted package and ignores a refutation of any other.
+// matched. An advisory spanning several modules refutes the first in path order; resultPerModule
+// refutes the others, and the gate matches each against the packages the advisory names.
 func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 	var module, version string
-	imported := false
 	for _, f := range findings {
 		if len(f.Trace) == 0 {
 			continue
@@ -757,13 +759,13 @@ func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 		if module == "" || fr.Module < module {
 			module, version = fr.Module, fr.Version
 		}
-		if fr.Package != "" {
-			imported = true
-		}
 	}
 	if module == "" {
 		return nil
 	}
+	imported := slices.ContainsFunc(findings, func(f vulnFinding) bool {
+		return len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Package != ""
+	})
 	use := "a vulnerable package is not imported"
 	if imported {
 		use = "a vulnerable package is imported"

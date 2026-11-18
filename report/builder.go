@@ -330,6 +330,7 @@ func (b *Builder) Build() Report {
 		Provenance:         prov,
 		Baseline:           b.baseline,
 		LibraryEntrypoints: entrypoints,
+		Entrypoints:        entrypointRecords(entrypoints),
 	}
 }
 
@@ -454,4 +455,21 @@ func (b *Builder) BuildValidated() (Report, error) {
 		return Report{}, err
 	}
 	return r, nil
+}
+
+// entrypointRecords renders resolved library sets as the report's entrypoints[], one record per
+// lane that reports a set, sorted by lane. Build and Upgrade both derive the field here.
+func entrypointRecords(sets []plugin.ResolvedLibraryEntrypoints) []plugin.EntryRootRecord {
+	var records []plugin.EntryRootRecord
+	for _, e := range sets {
+		if rec, ok := plugin.EntryRootRecordOf(e); ok {
+			records = append(records, rec)
+		}
+	}
+	sortRecordsByLane(records)
+	return records
+}
+
+func sortRecordsByLane(records []plugin.EntryRootRecord) {
+	slices.SortStableFunc(records, func(a, c plugin.EntryRootRecord) int { return strings.Compare(a.Lane, c.Lane) })
 }

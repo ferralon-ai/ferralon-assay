@@ -32,3 +32,15 @@ func OwnAdvisoryHeldForPartialRun(store artifact.Store, caseID string) bool {
 	res, err := rec.Result()
 	return err == nil && ownAdvisoryOnPartialRun(store, caseID, res.Partiality)
 }
+
+// withoutPartialRunUnversioned is part without the partial_run_unversioned reason, leaving the rest
+// of the declaration as it was.
+func withoutPartialRunUnversioned(part plugin.Partiality) plugin.Partiality {
+	if !slices.Contains(part.Reasons, plugin.PartialReasonPartialRunUnversioned) {
+		return part
+	}
+	part.Reasons = slices.DeleteFunc(slices.Clone(part.Reasons), func(r string) bool {
+		return r == plugin.PartialReasonPartialRunUnversioned
+	})
+	return part
+}

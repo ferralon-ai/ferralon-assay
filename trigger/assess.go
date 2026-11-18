@@ -1369,10 +1369,21 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
 	admitted, _, ok := admittedPackage(store, assessmentID, pkg)
-	if r := reach.Refutation; !ok || r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
+	r := reach.Refutation
+	if !ok || r == nil || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
 		return reasons
 	}
-	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return scopeStatedLimits[r] })
+	drops := scopeStatedLimits
+	switch r.Basis {
+	case plugin.RefutationAnalyzerSymbolNotReached:
+	case plugin.RefutationAnalyzerPackageNotImported:
+		// "No build file imports the package" is a claim about every platform, so it does not stand
+		// beside a file another platform builds that may call into the module.
+		drops = map[string]bool{plugin.PartialReasonPluginLoadCgoOff: true}
+	default:
+		return reasons
+	}
+	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return drops[r] })
 }
 
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a

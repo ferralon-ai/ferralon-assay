@@ -33,6 +33,23 @@ func TestFinding_GoPluginLoadCgoOff(t *testing.T) {
 			wantVerdict: report.VerdictNotExploitable,
 		},
 		{
+			name: "beside a refutation restated as not imported it clears",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation.Basis = plugin.RefutationAnalyzerPackageNotImported
+				fx.footprint = []string{plugin.PartialReasonPluginLoadCgoOff}
+			},
+			wantVerdict: report.VerdictNotExploitable,
+		},
+		{
+			name: "the build-constraint limit withholds a refutation restated as not imported",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation.Basis = plugin.RefutationAnalyzerPackageNotImported
+				fx.footprint = []string{plugin.PartialReasonPluginLoadCgoOff, plugin.PartialReasonExcludedFilesBuildConstraint}
+			},
+			wantVerdict: report.VerdictUndetermined,
+			wantReason:  report.ReasonRefutationWithheld,
+		},
+		{
 			name: "without a refutation it stays undetermined",
 			mutate: func(fx *groundsFixture) {
 				fx.reach.Refutation = nil

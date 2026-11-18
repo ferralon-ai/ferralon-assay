@@ -24,7 +24,7 @@ Every advisory lands as one of five values:
 |---|---|
 | `reachable_candidate` | A path from an entry point reaches the advisory's symbols. A candidate, not a proof of exploitability. |
 | `not_exploitable` | The vulnerable code is provably absent from what your build compiles, or provably unreachable from its entry points. The row names its grounds in `evidence.basis`. |
-| `disqualified` | Your resolved version is provably outside the advisory's affected range, or the advisory's package is not in your dependency manifest or ecosystem at all. `evidence.detail` says which. |
+| `disqualified` | Your resolved version is provably outside the advisory's affected range, or the advisory's package is not in your dependency manifest or ecosystem at all, or the advisory is against your own project, which carries no version tag, and the commit the advisory names as its fix is in the scanned commit's history. That last route needs the full history in the checkout (`fetch-depth: 0` in GitHub Actions); in a shallow checkout the row stays `undetermined`. `evidence.detail` says which. |
 | `malicious_package_present` | A known-malicious package resolved to a version the advisory lists as affected. |
 | `undetermined` | The scan established nothing about the advisory. `undetermined_reason` says why. Treat it as unassessed, never as safe. |
 

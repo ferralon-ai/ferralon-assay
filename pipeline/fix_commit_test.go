@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -129,6 +131,23 @@ func TestHeadContainsCommit(t *testing.T) {
 		{"a replacement object grafts the fix under HEAD", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, nil)
 			fixtureGit(t, h.dir, "replace", "--graft", h.later, h.side)
+			if out := fixtureGit(t, h.dir, "rev-list", "HEAD"); !strings.Contains(out, h.side) {
+				t.Fatalf("the replacement did not take effect:\n%s", out)
+			}
+			return h.dir, h.side
+		}, false},
+		{"the grafts file puts the fix under HEAD", func(t *testing.T) (string, string) {
+			h := newFixHistory(t, nil)
+			grafts := filepath.Join(h.dir, ".git", "info", "grafts")
+			if err := os.MkdirAll(filepath.Dir(grafts), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(grafts, []byte(h.later+" "+h.side+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if out := fixtureGit(t, h.dir, "rev-list", "HEAD"); !strings.Contains(out, h.side) {
+				t.Fatalf("the grafts file did not take effect:\n%s", out)
+			}
 			return h.dir, h.side
 		}, false},
 		{"an abbreviated id", func(t *testing.T) (string, string) {
@@ -181,9 +200,95 @@ func TestHeadContainsCommit_NeverFetches(t *testing.T) {
 	}
 }
 
+// TestRangeEnteredBeforeFix: with HEAD at later and the fix at fix, a range is settled only when
+// the tag for its first version resolves and is either outside HEAD's history or already in the
+// fix's.
+func TestRangeEnteredBeforeFix(t *testing.T) {
+	const app = "example.com/app"
+	bogus := strings.Repeat("0123456789", 4)
+	nested := map[string]string{"sub/go.mod": "module example.com/app/sub\n"}
+	type at = func(h fixHistory) string
+	base := func(h fixHistory) string { return h.base }
+	fix := func(h fixHistory) string { return h.fix }
+	later := func(h fixHistory) string { return h.later }
+	side := func(h fixHistory) string { return h.side }
+	cases := []struct {
+		name       string
+		files      map[string]string
+		sub        string
+		mod, lower string
+		tag        string
+		tagAt      at
+		annotated  bool
+		commit     at
+		want       bool
+	}{
+		{name: "tagged before the fix", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: base, want: true},
+		{name: "tagged at the fix", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: fix, want: true},
+		{name: "tagged after the fix", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: later},
+		{name: "tagged after the named commit and before HEAD", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: fix, commit: base},
+		{name: "annotated tag after the fix", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: later, annotated: true},
+		{name: "annotated tag before the fix", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: base, annotated: true, want: true},
+		{name: "tagged on a branch HEAD does not contain", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: side, want: true},
+		{name: "no tag for the version", mod: app, lower: "1.3.0"},
+		{name: "a tag without the v", mod: app, lower: "1.3.0", tag: "1.3.0", tagAt: base},
+		{name: "a version written with its v", mod: app, lower: "v1.3.0", tag: "v1.3.0", tagAt: base, want: true},
+		{name: "a version that is not canonical", mod: app, lower: "1.3", tag: "v1.3", tagAt: base},
+		{name: "a pseudo-version", mod: app, lower: "0.0.0-20240101000000-abcdefabcdef", tag: "v0.0.0-20240101000000-abcdefabcdef", tagAt: base},
+		{name: "an incompatible version", mod: app, lower: "2.0.0+incompatible", tag: "v2.0.0", tagAt: base, want: true},
+		{name: "an incompatible version tagged after the fix", mod: app, lower: "2.0.0+incompatible", tag: "v2.0.0", tagAt: later},
+		{name: "an incompatible version below v2", mod: app, lower: "1.3.0+incompatible", tag: "v1.3.0", tagAt: base},
+		{name: "an incompatible version of a v2 module", mod: app + "/v2", lower: "2.1.0+incompatible", tag: "v2.1.0", tagAt: base},
+		{name: "a major the module path does not allow", mod: app, lower: "2.0.0", tag: "v2.0.0", tagAt: base},
+		{name: "a v2 module's own major", mod: app + "/v2", lower: "2.1.0", tag: "v2.1.0", tagAt: base, want: true},
+		{name: "a v2 module and a v1 version", mod: app + "/v2", lower: "1.3.0", tag: "v1.3.0", tagAt: base},
+		{name: "a nested module's prefixed tag before the fix", files: nested, sub: "sub", mod: app + "/sub", lower: "1.3.0", tag: "sub/v1.3.0", tagAt: base, want: true},
+		{name: "a nested module's prefixed tag after the fix", files: nested, sub: "sub", mod: app + "/sub", lower: "1.3.0", tag: "sub/v1.3.0", tagAt: later},
+		{name: "a nested module and the root module's tag", files: nested, sub: "sub", mod: app + "/sub", lower: "1.3.0", tag: "v1.3.0", tagAt: base},
+		{name: "not a Go project", lower: "1.3.0", tag: "v1.3.0", tagAt: base},
+		{name: "the fix is not an object the checkout holds", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: base, commit: func(fixHistory) string { return bogus }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFixHistory(t, tc.files)
+			if tc.tag != "" {
+				args := []string{"-c", "tag.gpgsign=false", "tag"}
+				if tc.annotated {
+					args = append(args, "-a", "-m", tc.tag)
+				}
+				fixtureGit(t, h.dir, append(args, tc.tag, tc.tagAt(h))...)
+			}
+			commit := h.fix
+			if tc.commit != nil {
+				commit = tc.commit(h)
+			}
+			if got := rangeEnteredBeforeFix(context.Background(), filepath.Join(h.dir, tc.sub), tc.mod, commit, tc.lower); got != tc.want {
+				t.Fatalf("rangeEnteredBeforeFix = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	t.Run("HEAD names no commit", func(t *testing.T) {
+		h := newFixHistory(t, nil)
+		fixtureGit(t, h.dir, "-c", "tag.gpgsign=false", "tag", "v1.3.0", h.side)
+		fixtureGit(t, h.dir, "symbolic-ref", "HEAD", "refs/heads/unborn")
+		if rangeEnteredBeforeFix(context.Background(), h.dir, app, h.fix, "1.3.0") {
+			t.Fatal("settled when the ancestry question had no answer")
+		}
+	})
+	t.Run("not a repository", func(t *testing.T) {
+		if rangeEnteredBeforeFix(context.Background(), t.TempDir(), app, bogus, "1.3.0") {
+			t.Fatal("settled without a repository")
+		}
+	})
+}
+
 func TestFixCommitClears(t *testing.T) {
 	fixed := affectedRange{UpperExclusive: "1.2.0"}
 	yes := func() bool { return true }
+	later := affectedRange{LowerInclusive: "1.3.0", UpperExclusive: "1.3.4"}
+	entered := func(lowers ...string) func(string) bool {
+		return func(lower string) bool { return slices.Contains(lowers, lower) }
+	}
 	outside := presentRanges{presentPackage: presentPackage{Versions: []string{"v2.0.0"}, Complete: true}, Ranges: []affectedRange{{UpperExclusive: "1.0.0"}}, RangeKnown: true}
 	inside := presentRanges{presentPackage: presentPackage{Versions: []string{"v0.9.0"}, Complete: true}, Ranges: []affectedRange{{UpperExclusive: "1.0.0"}}, RangeKnown: true}
 	cases := []struct {
@@ -193,23 +298,28 @@ func TestFixCommitClears(t *testing.T) {
 		versions   []string
 		others     []presentRanges
 		inHistory  func() bool
+		entered    func(string) bool
 		want       bool
 	}{
-		{"every range fixed and the fix in history", []affectedRange{fixed}, true, nil, nil, yes, true},
-		{"several fixed branch lines", []affectedRange{fixed, {LowerInclusive: "1.3.0", UpperExclusive: "1.3.4"}}, true, nil, nil, yes, true},
-		{"the fix is not in history", []affectedRange{fixed}, true, nil, nil, func() bool { return false }, false},
-		{"an open-ended last_affected", []affectedRange{{LastAffected: "1.1000.0"}}, true, nil, nil, yes, false},
-		{"an open-ended last_affected beside a fixed range", []affectedRange{fixed, {LowerInclusive: "1.3.0", LastAffected: "1.1000.0"}}, true, nil, nil, yes, false},
-		{"a range with no upper end", []affectedRange{{LowerInclusive: "1.0.0"}}, true, nil, nil, yes, false},
-		{"ranges the advisory does not state", []affectedRange{fixed}, false, nil, nil, yes, false},
-		{"no ranges", nil, true, nil, nil, yes, false},
-		{"the project has a version the axis did not clear", []affectedRange{fixed}, true, []string{"1.1.0"}, nil, yes, false},
-		{"another affected package outside its ranges", []affectedRange{fixed}, true, nil, []presentRanges{outside}, yes, true},
-		{"another affected package inside its ranges", []affectedRange{fixed}, true, nil, []presentRanges{outside, inside}, yes, false},
+		{"every range fixed and the fix in history", []affectedRange{fixed}, true, nil, nil, yes, entered(), true},
+		{"a later range entered after the fix", []affectedRange{fixed, later}, true, nil, nil, yes, entered(), false},
+		{"a later range entered before the fix", []affectedRange{fixed, later}, true, nil, nil, yes, entered("1.3.0"), true},
+		{"one of two later ranges entered after the fix", []affectedRange{fixed, later, {LowerInclusive: "1.5.0", UpperExclusive: "1.5.2"}}, true, nil, nil, yes, entered("1.3.0"), false},
+		{"several ranges that all start at zero", []affectedRange{fixed, {LowerInclusive: "0", UpperExclusive: "2.1.0"}}, true, nil, nil, yes, entered(), true},
+		{"a single range that starts above zero", []affectedRange{later}, true, nil, nil, yes, entered(), true},
+		{"the fix is not in history", []affectedRange{fixed}, true, nil, nil, func() bool { return false }, entered(), false},
+		{"an open-ended last_affected", []affectedRange{{LastAffected: "1.1000.0"}}, true, nil, nil, yes, entered(), false},
+		{"an open-ended last_affected beside a fixed range", []affectedRange{fixed, {LowerInclusive: "1.3.0", LastAffected: "1.1000.0"}}, true, nil, nil, yes, entered(), false},
+		{"a range with no upper end", []affectedRange{{LowerInclusive: "1.0.0"}}, true, nil, nil, yes, entered(), false},
+		{"ranges the advisory does not state", []affectedRange{fixed}, false, nil, nil, yes, entered(), false},
+		{"no ranges", nil, true, nil, nil, yes, entered(), false},
+		{"the project has a version the axis did not clear", []affectedRange{fixed}, true, []string{"1.1.0"}, nil, yes, entered(), false},
+		{"another affected package outside its ranges", []affectedRange{fixed}, true, nil, []presentRanges{outside}, yes, entered(), true},
+		{"another affected package inside its ranges", []affectedRange{fixed}, true, nil, []presentRanges{outside, inside}, yes, entered(), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := fixCommitClears(tc.rngs, tc.rangeKnown, tc.versions, tc.others, tc.inHistory); got != tc.want {
+			if got := fixCommitClears(tc.rngs, tc.rangeKnown, tc.versions, tc.others, tc.inHistory, tc.entered); got != tc.want {
 				t.Fatalf("fixCommitClears = %v, want %v", got, tc.want)
 			}
 		})
@@ -217,6 +327,12 @@ func TestFixCommitClears(t *testing.T) {
 	t.Run("history is not asked when the ranges already refuse", func(t *testing.T) {
 		fixCommitClears([]affectedRange{{LastAffected: "1.1000.0"}}, true, nil, nil, func() bool {
 			t.Fatal("asked for history")
+			return true
+		}, entered())
+	})
+	t.Run("range entry is not asked when the fix is not in history", func(t *testing.T) {
+		fixCommitClears([]affectedRange{fixed, later}, true, nil, nil, func() bool { return false }, func(string) bool {
+			t.Fatal("asked for range entry")
 			return true
 		})
 	})
@@ -228,6 +344,7 @@ func TestDisqualification_FixCommitInHistory(t *testing.T) {
 	const gomod = "module example.com/app\n\ngo 1.22\n"
 	own := map[string]string{"go.mod": gomod, "main.go": "package main\n"}
 	fixedRange := []Range{{Introduced: "0", Fixed: "1.2.0"}}
+	twoRanges := []Range{{Introduced: "0", Fixed: "1.2.0"}, {Introduced: "1.3.0", Fixed: "1.3.4"}}
 	facts := func(module string, rngs []Range) AdvisoryFacts {
 		return AdvisoryFacts{Module: module, PURL: "pkg:golang/" + module, AffectedRanges: rngs}
 	}
@@ -238,6 +355,7 @@ func TestDisqualification_FixCommitInHistory(t *testing.T) {
 		head   func(h fixHistory) string
 		commit func(h fixHistory) string
 		tag    string
+		tags   func(h fixHistory) map[string]string
 		want   bool
 	}{
 		{name: "the fix is HEAD", files: own, facts: facts("example.com/app", fixedRange),
@@ -260,6 +378,21 @@ func TestDisqualification_FixCommitInHistory(t *testing.T) {
 			head:  func(h fixHistory) string { return h.later }, commit: func(h fixHistory) string { return h.fix }},
 		{name: "HEAD tagged at an affected version", files: own, facts: facts("example.com/app", fixedRange), tag: "v1.1.0",
 			head: func(h fixHistory) string { return h.later }, commit: func(h fixHistory) string { return h.fix }},
+		{name: "a later range tagged after the named fix", files: own, facts: facts("example.com/app", twoRanges),
+			head: func(h fixHistory) string { return h.later }, commit: func(h fixHistory) string { return h.base },
+			tags: func(h fixHistory) map[string]string { return map[string]string{"v1.3.0": h.fix} }},
+		{name: "a later range tagged before the named fix", files: own, facts: facts("example.com/app", twoRanges),
+			head: func(h fixHistory) string { return h.later }, commit: func(h fixHistory) string { return h.fix },
+			tags: func(h fixHistory) map[string]string { return map[string]string{"v1.3.0": h.base} }, want: true},
+		{name: "a later range tagged on a branch HEAD does not contain", files: own, facts: facts("example.com/app", twoRanges),
+			head: func(h fixHistory) string { return h.later }, commit: func(h fixHistory) string { return h.fix },
+			tags: func(h fixHistory) map[string]string { return map[string]string{"v1.3.0": h.side} }, want: true},
+		{name: "a later range with no tag", files: own, facts: facts("example.com/app", twoRanges),
+			head: func(h fixHistory) string { return h.later }, commit: func(h fixHistory) string { return h.fix }},
+		{name: "two ranges that start at zero", files: own, facts: facts("example.com/app", []Range{{Introduced: "0", Fixed: "1.2.0"}, {Introduced: "0", Fixed: "2.1.0"}}),
+			head: func(h fixHistory) string { return h.later }, commit: func(h fixHistory) string { return h.fix }, want: true},
+		{name: "a single range above zero with no tag", files: own, facts: facts("example.com/app", []Range{{Introduced: "1.3.0", Fixed: "1.3.4"}}),
+			head: func(h fixHistory) string { return h.later }, commit: func(h fixHistory) string { return h.fix }, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -267,6 +400,11 @@ func TestDisqualification_FixCommitInHistory(t *testing.T) {
 			h.at(t, tc.head(h))
 			if tc.tag != "" {
 				fixtureGit(t, h.dir, "-c", "tag.gpgsign=false", "tag", tc.tag)
+			}
+			if tc.tags != nil {
+				for name, at := range tc.tags(h) {
+					fixtureGit(t, h.dir, "-c", "tag.gpgsign=false", "tag", name, at)
+				}
 			}
 			commit := tc.commit(h)
 			tc.facts.Fix = FixHint{UpstreamCommit: "https://example.com/app/commit/" + commit}
@@ -292,6 +430,16 @@ func TestDisqualification_FixCommitInHistory(t *testing.T) {
 		f.Fix = FixHint{UpstreamCommit: h.fix}
 		if res := runRootDisqual(t, h.dir, f); res.Reason != ReasonFixCommitInHistory {
 			t.Fatalf("got %+v, want %s", res, ReasonFixCommitInHistory)
+		}
+	})
+	t.Run("an npm project's own package with a later range", func(t *testing.T) {
+		h := newFixHistory(t, map[string]string{"package.json": `{"name":"next","dependencies":{"left-pad":"^1.0.0"}}`, "index.js": "module.exports = 1\n"})
+		fixtureGit(t, h.dir, "-c", "tag.gpgsign=false", "tag", "v1.3.0", h.base)
+		f := npm("next")
+		f.AffectedRanges = twoRanges
+		f.Fix = FixHint{UpstreamCommit: h.fix}
+		if res := runRootDisqual(t, h.dir, f); res.Disqualified {
+			t.Fatalf("cleared on a tag convention npm does not define: %+v", res)
 		}
 	})
 	t.Run("an npm dependency with no resolved version", func(t *testing.T) {

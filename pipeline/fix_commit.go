@@ -3,12 +3,16 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+
+	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 )
@@ -29,14 +33,15 @@ func fixCommitID(ref string) (string, bool) {
 
 // fixCommitGit runs git against the repository containing dir with every route to another
 // repository closed: no transport is allowed and a promisor remote is never asked for a missing
-// object, so the answer comes from the objects the checkout already holds. Replacement objects are
-// ignored, since one can rewrite the parents the ancestry walk follows.
+// object, so the answer comes from the objects the checkout already holds. Replacement objects
+// and the grafts file are ignored, since either can rewrite the parents the ancestry walk follows.
 func fixCommitGit(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
 		return slices.Contains(gitRepositoryEnv, name)
-	}), "GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=", "GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1")
+	}), "GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=", "GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1",
+		"GIT_GRAFT_FILE="+os.DevNull)
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
 }
@@ -56,6 +61,75 @@ func headContainsCommit(ctx context.Context, dir, commit string) bool {
 	return err == nil
 }
 
+// isAncestor asks whether a is b or one of its ancestors. answered is false when git failed rather
+// than said no.
+func isAncestor(ctx context.Context, dir, a, b string) (yes, answered bool) {
+	_, err := fixCommitGit(ctx, dir, "merge-base", "--is-ancestor", a, b)
+	if err == nil {
+		return true, true
+	}
+	var exit *exec.ExitError
+	return false, errors.As(err, &exit) && exit.ExitCode() == 1
+}
+
+// goVersionTag returns the ref of the tag that publishes version of the Go module mod from the
+// repository containing dir: the canonical semver tag under the module directory's prefix, at a
+// major version the module path allows. ok is false for anything else, a pseudo-version included,
+// since no tag is then certain to mark that version.
+func goVersionTag(ctx context.Context, dir, mod, version string) (ref string, ok bool) {
+	_, pathMajor, split := module.SplitPathVersion(mod)
+	if mod == "" || !split {
+		return "", false
+	}
+	// A +incompatible version is the plain tag of a module whose path carries no major suffix.
+	v, incompatible := strings.CutSuffix("v"+strings.TrimPrefix(version, "v"), "+incompatible")
+	if !semver.IsValid(v) || semver.Canonical(v) != v || module.IsPseudoVersion(v) {
+		return "", false
+	}
+	if incompatible {
+		if pathMajor != "" || semver.Compare(semver.Major(v), "v2") < 0 {
+			return "", false
+		}
+	} else if module.CheckPathMajor(v, pathMajor) != nil {
+		return "", false
+	}
+	prefix, err := fixCommitGit(ctx, dir, "rev-parse", "--show-prefix")
+	if err != nil {
+		return "", false
+	}
+	return "refs/tags/" + prefix + v, true
+}
+
+// rangeEnteredBeforeFix reports whether the scanned history is known not to have entered the
+// affected range that starts at version lower after the fix commit. An advisory with several
+// ranges names one fix, and a HEAD that contains it may still sit inside a range opened later on
+// the same line. The range's first version is the module's tag for lower: when that tag is not in
+// HEAD's history the history never entered the range there, and when it is an ancestor of the fix
+// the fix came after it. A tag that is in HEAD's history and not in the fix's, a version with no
+// certain tag, a tag the repository lacks and any git failure all read as false. mod is the
+// project's Go module path; a project of another ecosystem has no tag convention to rely on.
+//
+// It assumes a complete history, which headContainsCommit establishes first.
+func rangeEnteredBeforeFix(ctx context.Context, dir, mod, commit, lower string) bool {
+	ref, ok := goVersionTag(ctx, dir, mod, lower)
+	if !ok {
+		return false
+	}
+	tag, err := fixCommitGit(ctx, dir, "rev-parse", "-q", "--verify", ref+"^{commit}")
+	if err != nil || !fullCommitID.MatchString(tag) {
+		return false
+	}
+	inHead, answered := isAncestor(ctx, dir, tag, "HEAD")
+	if !answered {
+		return false
+	}
+	if !inHead {
+		return true
+	}
+	beforeFix, _ := isAncestor(ctx, dir, tag, commit)
+	return beforeFix
+}
+
 // fixCommitClears reports whether an advisory against the scanned project's own package is cleared
 // by its fix commit being in the scanned history. It can only clear, and only when everything else
 // the clearance needs is settled:
@@ -65,10 +139,14 @@ func headContainsCommit(ctx context.Context, dir, commit string) bool {
 //   - every range of the package ends at a fixed version, so the advisory states that a fix closes
 //     each one. A range that is open, or ends at a last_affected, names no fix to find;
 //   - every other affected package the build carries is outside its own ranges, as the version
-//     axis requires: the project's fix says nothing about a dependency.
+//     axis requires: the project's fix says nothing about a dependency;
+//   - when the package has several ranges, every range that starts above zero is one the history
+//     did not enter after the fix (enteredBeforeFix, given the range's first version): the one
+//     commit the advisory names closes one range and says nothing about a later one.
 //
-// inHistory is asked last and only when the rest holds.
-func fixCommitClears(rngs []affectedRange, rangeKnown bool, versions []string, others []presentRanges, inHistory func() bool) bool {
+// inHistory is asked only when the ranges and the other packages allow a clearance, and
+// enteredBeforeFix only after inHistory said yes.
+func fixCommitClears(rngs []affectedRange, rangeKnown bool, versions []string, others []presentRanges, inHistory func() bool, enteredBeforeFix func(lower string) bool) bool {
 	if !rangeKnown || len(rngs) == 0 || len(versions) > 0 {
 		return false
 	}
@@ -82,7 +160,17 @@ func fixCommitClears(rngs []affectedRange, rangeKnown bool, versions []string, o
 			return false
 		}
 	}
-	return inHistory()
+	if !inHistory() {
+		return false
+	}
+	if len(rngs) > 1 {
+		for _, r := range rngs {
+			if r.LowerInclusive != "" && r.LowerInclusive != "0" && !enteredBeforeFix(r.LowerInclusive) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // rootOwnsAdvisoryPackage reports whether the package the advisory was adjudicated on is the
@@ -96,9 +184,17 @@ func rootOwnsAdvisoryPackage(store artifact.Store, caseID, buildDir string, ws G
 	if extractCodebaseEcosystem(store, caseID) != "golang" {
 		return true
 	}
-	mod := goModFileModule(filepath.Join(buildDir, "go.mod"))
+	mod := rootGoModule(store, caseID, buildDir)
 	advModule, ok := extractAdvisoryModule(store, caseID)
 	return ok && mod != "" && goPathOwner(buildDir, ws, mod, advModule) == goOwnedByRoot
+}
+
+// rootGoModule returns the scanned project's Go module path, "" when it is not a Go project.
+func rootGoModule(store artifact.Store, caseID, buildDir string) string {
+	if extractCodebaseEcosystem(store, caseID) != "golang" {
+		return ""
+	}
+	return goModFileModule(filepath.Join(buildDir, "go.mod"))
 }
 
 // extractFixCommit reads the advisory's fix commit off the normalized-advisory artifact.

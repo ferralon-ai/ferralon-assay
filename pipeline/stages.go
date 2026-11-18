@@ -2769,7 +2769,11 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	res := DisqualResult{Disqualified: disqualified, Reason: reason}
 	if !disqualified {
 		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) &&
-			fixCommitClears(rngs, rangeKnown, axis.Versions, others, func() bool { return headContainsCommit(ctx, buildDir, commit) }) {
+			fixCommitClears(rngs, rangeKnown, axis.Versions, others,
+				func() bool { return headContainsCommit(ctx, buildDir, commit) },
+				func(lower string) bool {
+					return rangeEnteredBeforeFix(ctx, buildDir, rootGoModule(store, c.ID, buildDir), commit, lower)
+				}) {
 			disqualified = true
 			res = DisqualResult{Disqualified: true, Reason: ReasonFixCommitInHistory, FixCommit: commit}
 		}

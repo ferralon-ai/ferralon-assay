@@ -1360,10 +1360,12 @@ func keptDidNotRunReasons(store artifact.Store, assessmentID string, pkg *report
 // the build left out that may call into the module was left out by its build constraints alone, and
 // the detail names the platform and tags. plugin_load:cgo_off: the program reaches plugin.Open in a
 // build with cgo off, where it loads nothing, and the detail says the refutation holds for
-// CGO_ENABLED=0.
+// CGO_ENABLED=0. cgo:files_dropped: the build has cgo off and left its cgo files out, and the detail
+// says the same.
 var scopeStatedLimits = map[string]bool{
 	plugin.PartialReasonExcludedFilesBuildConstraint: true,
 	plugin.PartialReasonPluginLoadCgoOff:             true,
+	plugin.PartialReasonCgoFilesDropped:              true,
 }
 
 // withoutBuildConstraintLimit drops, from the limits a refutation would be withheld by, the

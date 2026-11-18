@@ -1,0 +1,82 @@
+{
+  "affected": [
+    {
+      "coordinate": "golang.org/x/net",
+      "fixed_versions": [
+        "0.36.0"
+      ],
+      "purl": "pkg:golang/golang.org/x/net",
+      "ranges": [
+        {
+          "fixed": "0.36.0",
+          "upper_exclusive": "0.36.0"
+        }
+      ],
+      "version_scheme": "gomod"
+    },
+    {
+      "coordinate": "golang.org/x/net/http/httpproxy",
+      "purl": "pkg:golang/golang.org/x/net/http/httpproxy",
+      "version_scheme": "honest-absent"
+    },
+    {
+      "coordinate": "golang.org/x/net/proxy",
+      "purl": "pkg:golang/golang.org/x/net/proxy",
+      "version_scheme": "honest-absent"
+    },
+    {
+      "coordinate": "stdlib",
+      "fixed_versions": [
+        "1.23.7",
+        "1.24.1"
+      ],
+      "purl": "pkg:golang/stdlib",
+      "ranges": [
+        {
+          "fixed": "1.23.7",
+          "upper_exclusive": "1.23.7"
+        },
+        {
+          "fixed": "1.24.1",
+          "introduced": "1.24.0-0",
+          "upper_exclusive": "1.24.1"
+        }
+      ],
+      "version_scheme": "go-toolchain"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "0.36.0",
+      "fixed_version": "0.36.0"
+    }
+  ],
+  "aliases": [
+    "CVE-2025-22870",
+    "GO-2025-3503"
+  ],
+  "coordinate": "golang.org/x/net",
+  "purl": "pkg:golang/golang.org/x/net",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "Matching of hosts against proxy patterns can improperly treat an IPv6 zone ID as a hostname component. For example, when the NO_PROXY environment variable is set to \"*.example.com\", a request to \"[::1%25.example.com]:80` will incorrectly match and not be proxied.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "golang.org/x/net/http/httpproxy.config.useProxy",
+    "golang.org/x/net/http/httpproxy.domainMatch.match",
+    "golang.org/x/net/proxy.Dial",
+    "golang.org/x/net/proxy.FromEnvironment",
+    "golang.org/x/net/proxy.FromEnvironmentUsing",
+    "golang.org/x/net/proxy.PerHost.AddFromString",
+    "golang.org/x/net/proxy.PerHost.Dial",
+    "golang.org/x/net/proxy.PerHost.DialContext",
+    "golang.org/x/net/proxy.PerHost.dialerForRequest",
+    "net/http.ProxyFromEnvironment",
+    "net/http.envProxyFunc"
+  ],
+  "version_scheme": "gomod",
+  "vuln_id": "GHSA-qxp5-gwg8-xv66",
+  "withdrawn": false
+}

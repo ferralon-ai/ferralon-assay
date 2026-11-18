@@ -1,0 +1,28 @@
+{
+  "affected": [
+    {
+      "coordinate": "github.com/blakesmith/ar",
+      "purl": "pkg:golang/github.com/blakesmith/ar",
+      "ranges": [
+        {
+          "introduced": "0"
+        }
+      ],
+      "version_scheme": "gomod"
+    }
+  ],
+  "coordinate": "github.com/blakesmith/ar",
+  "purl": "pkg:golang/github.com/blakesmith/ar",
+  "rejection_status": {
+    "state": "undetermined"
+  },
+  "root_cause": "Panic on negative member size in Reader.Read in github.com/blakesmith/ar. Reader.Next parses the 10-byte decimal size field of an archive member header with strconv.ParseInt without rejecting negative values. A header with a negative size leaves the reader with a negative remaining byte count, causing the subsequent call to Reader.Read to panic with a slice bounds out of range error when slicing the caller's buffer.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "github.com/blakesmith/ar.Reader.Read"
+  ],
+  "version_scheme": "gomod",
+  "vuln_id": "GO-2026-6905",
+  "withdrawn": false
+}

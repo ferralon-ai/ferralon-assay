@@ -1,0 +1,61 @@
+{
+  "affected": [
+    {
+      "coordinate": "stdlib",
+      "fixed_versions": [
+        "1.19.6",
+        "1.20.1"
+      ],
+      "purl": "pkg:golang/stdlib",
+      "ranges": [
+        {
+          "fixed": "1.19.6",
+          "upper_exclusive": "1.19.6"
+        },
+        {
+          "fixed": "1.20.1",
+          "introduced": "1.20.0-0",
+          "upper_exclusive": "1.20.1"
+        }
+      ],
+      "version_scheme": "go-toolchain"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "1.19.6",
+      "fixed_version": "1.19.6"
+    },
+    {
+      "fixed": "1.20.1",
+      "fixed_version": "1.20.1"
+    }
+  ],
+  "aliases": [
+    "BIT-golang-2022-41722",
+    "CVE-2022-41722"
+  ],
+  "coordinate": "stdlib",
+  "purl": "pkg:golang/stdlib",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "A path traversal vulnerability exists in filepath.Clean on Windows. On Windows, the filepath.Clean function could transform an invalid path such as \"a/../c:/b\" into the valid path \"c:\\b\". This transformation of a relative (if invalid) path into an absolute path could enable a directory traversal attack. After fix, the filepath.Clean function transforms this path into the relative (but still invalid) path \".\\c:\\b\".",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "path/filepath.Abs",
+    "path/filepath.Clean",
+    "path/filepath.Dir",
+    "path/filepath.EvalSymlinks",
+    "path/filepath.Glob",
+    "path/filepath.IsLocal",
+    "path/filepath.Join",
+    "path/filepath.Rel",
+    "path/filepath.Walk",
+    "path/filepath.WalkDir"
+  ],
+  "version_scheme": "go-toolchain",
+  "vuln_id": "GO-2023-1568",
+  "withdrawn": false
+}

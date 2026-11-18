@@ -1,0 +1,48 @@
+{
+  "affected": [
+    {
+      "coordinate": "toolchain",
+      "fixed_versions": [
+        "1.19.10",
+        "1.20.5"
+      ],
+      "purl": "pkg:golang/toolchain",
+      "ranges": [
+        {
+          "fixed": "1.19.10",
+          "upper_exclusive": "1.19.10"
+        },
+        {
+          "fixed": "1.20.5",
+          "introduced": "1.20.0-0",
+          "upper_exclusive": "1.20.5"
+        }
+      ],
+      "version_scheme": "go-toolchain"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "1.19.10",
+      "fixed_version": "1.19.10"
+    },
+    {
+      "fixed": "1.20.5",
+      "fixed_version": "1.20.5"
+    }
+  ],
+  "aliases": [
+    "BIT-golang-2023-29402",
+    "CVE-2023-29402"
+  ],
+  "coordinate": "toolchain",
+  "purl": "pkg:golang/toolchain",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "The go command may generate unexpected code at build time when using cgo. This may result in unexpected behavior when running a go program which uses cgo. This may occur when running an untrusted module which contains directories with newline characters in their names. Modules which are retrieved using the go command, i.e. via \"go get\", are not affected (modules retrieved using GOPATH-mode, i.e. GO111MODULE=off, may be affected).",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "version_scheme": "go-toolchain",
+  "vuln_id": "GO-2023-1839",
+  "withdrawn": false
+}

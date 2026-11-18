@@ -1,0 +1,76 @@
+{
+  "affected": [
+    {
+      "coordinate": "github.com/blevesearch/bleve",
+      "purl": "pkg:golang/github.com/blevesearch/bleve",
+      "ranges": [
+        {
+          "last_affected": "1.10.14"
+        },
+        {
+          "introduced": "0"
+        }
+      ],
+      "version_scheme": "gomod"
+    },
+    {
+      "coordinate": "github.com/blevesearch/bleve/v2",
+      "fixed_versions": [
+        "2.5.0"
+      ],
+      "purl": "pkg:golang/github.com/blevesearch/bleve/v2",
+      "ranges": [
+        {
+          "fixed": "2.5.0",
+          "upper_exclusive": "2.5.0"
+        }
+      ],
+      "version_scheme": "gomod"
+    }
+  ],
+  "aliases": [
+    "CVE-2022-31022",
+    "GO-2022-0470"
+  ],
+  "coordinate": "github.com/blevesearch/bleve",
+  "cwes": [
+    "CWE-288"
+  ],
+  "fix": {
+    "upstream_commit": "https://github.com/blevesearch/bleve/commit/1c7509d6a17d36f265c90b4e8f4e3a3182fe79ff"
+  },
+  "purl": "pkg:golang/github.com/blevesearch/bleve",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "Authentication Bypass Using an Alternate Path or Channel (CWE-288): Bleve is a text indexing library for go. Bleve includes HTTP utilities under bleve/http package, that are used by its sample application. These HTTP methods pave way for exploitation of a node’s filesystem where the bleve index resides, if the user has used bleve’s own HTTP (bleve/http) handlers for exposing the access to the indexes. For instance, the CreateIndexHandler (`http/index_create.go`) and DeleteIndexHandler (`http/index_delete.go`) enable an attacker to create a bleve index (directory structure) anywhere where the user running the server has the write permissions and to delete recursively any directory owned by the same user account. Users who have used the bleve/http package for exposing access to bleve index without the explicit \nhandling for the Role Based Access Controls(RBAC) of the index assets would be impacted by this issue. Version 2.5.0 relocated the `http/` dir used _only_ by bleve-explorer to `blevesearch/bleve-explorer`, thereby addressing the issue. However, the http package is purely intended to be used for demonstration purposes. Bleve was never designed handle the RBACs, nor it was ever advertised to be used in that way. The collaborators of this project have decided to stay away from adding any authentication or authorization to bleve project at the moment. The bleve/http package is mainly for demonstration purposes and it lacks exhaustive validation of the user inputs as well as any authentication and authorization measures. It is recommended to not use bleve/http in production use cases.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "github.com/blevesearch/bleve/http.AliasHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/http.CreateIndexHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/http.DebugDocumentHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/http.DeleteIndexHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/http.DocCountHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/http.DocDeleteHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/http.DocGetHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/http.DocIndexHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/http.GetIndexHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/http.ListFieldsHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/http.SearchHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/v2/http.AliasHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/v2/http.CreateIndexHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/v2/http.DebugDocumentHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/v2/http.DeleteIndexHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/v2/http.DocCountHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/v2/http.DocDeleteHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/v2/http.DocGetHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/v2/http.DocIndexHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/v2/http.GetIndexHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/v2/http.ListFieldsHandler.ServeHTTP",
+    "github.com/blevesearch/bleve/v2/http.SearchHandler.ServeHTTP"
+  ],
+  "version_scheme": "gomod",
+  "vuln_id": "GHSA-9w9f-6mg8-jp7w",
+  "withdrawn": false
+}

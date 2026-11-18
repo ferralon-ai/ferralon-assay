@@ -201,11 +201,25 @@ inputs:
       itself never reads GOWORK; this step hands it over.
     required: false
     default: ""
+  entrypoints:
+    description: >-
+      Which entry points your build's analysis starts from, per language. Empty or 'auto' infers
+      them. A clause names its language: "go:library=none" says the build ships programs only,
+      "go:library=pkg/api, !go:library=pkg/api/internal" nominates the Go packages code outside the
+      build may import, and a '!' entry takes one out. Clauses are separated by commas or whitespace,
+      and any number may name one language. Today only the Go library entry points take a clause that
+      asks for something: any other clause that does stops the run before it analyses anything, with
+      the reason, and a clause that says 'auto' changes nothing. A scan of another language ignores
+      a go:library clause. A not_exploitable verdict that holds only because of what you declared
+      carries that on the report as an assumption. library-entrypoints is the alias for go:library=;
+      give both only when they say the same thing.
+    required: false
+    default: ""
   library-entrypoints:
     description: >-
-      Which of your packages code outside this build may import, and so call past your build's own
-      entry points. 'auto' infers them (today Go only; a package under cmd/, examples/ or a test
-      directory is not one), 'none' says the build ships programs only, and a list of paths relative
+      The alias for entrypoints "go:library=...". Which of your packages code outside this build may
+      import, and so call past your build's own entry points. 'auto' infers them (today Go only; a
+      package under cmd/, examples/ or a test directory is not one), 'none' says the build ships programs only, and a list of paths relative
       to the repository root nominates them, e.g. "pkg/api, !pkg/api/internal"; a '!path' entry takes a path
       out, and a list of '!path' entries alone keeps 'auto' for the rest. A not_exploitable verdict
       that holds only because of what you declared carries that on the report as an assumption.
@@ -802,6 +816,8 @@ runs:
         ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY: ${{ inputs.subject-toolchain-reachability != 'false' }}
         # Read by run.go (-subject-gowork falls back to it); data, never parsed by the shell.
         ASSAY_SUBJECT_GOWORK: ${{ inputs.subject-gowork }}
+        # Read by run.go (-entrypoints falls back to it); data, never parsed by the shell.
+        ASSAY_ENTRYPOINTS: ${{ inputs.entrypoints }}
         # Read by run.go (-library-entrypoints falls back to it); data, never parsed by the shell.
         ASSAY_LIBRARY_ENTRYPOINTS: ${{ inputs.library-entrypoints }}
         # JS dependency code. Empty inherits the scanner's default. The directories come from the

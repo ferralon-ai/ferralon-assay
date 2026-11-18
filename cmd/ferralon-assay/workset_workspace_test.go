@@ -160,9 +160,11 @@ func TestSubjectGoWorkOff_HandedInBesideACommittedGoWork(t *testing.T) {
 
 	for name, build := range map[string]func() ([]pipeline.AssessOption, error){
 		"baseline": func() ([]pipeline.AssessOption, error) {
-			return f.baselineAssessOptions(func(*pipeline.AssessConfig) {})
+			return f.baselineAssessOptions(func(*pipeline.AssessConfig) {}, "go")
 		},
-		"run": func() ([]pipeline.AssessOption, error) { return f.runAssessOptions(func(*pipeline.AssessConfig) {}) },
+		"run": func() ([]pipeline.AssessOption, error) {
+			return f.runAssessOptions(func(*pipeline.AssessConfig) {}, "go")
+		},
 	} {
 		opts, err := build()
 		if err != nil {

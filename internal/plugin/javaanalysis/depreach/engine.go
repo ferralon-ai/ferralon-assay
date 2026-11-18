@@ -2,6 +2,7 @@ package depreach
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ type Engine struct {
 	closures    map[classfile.MethodRef]*closure // Reach's whole search per ingress, under the current linked bit
 	methodIDs   map[classfile.MethodRef]int      // bit index of each method a closure enqueued
 	tableSize   int                              // methodIDs below it are the declared methods (numberMethods)
+	refs        []classfile.MethodRef            // methodIDs inverted (methodRefs)
 	dispatched  map[dispatchKey]dispatch         // virtual/interface resolveTargets answers, under the current linked bit
 	below       map[string][]string              // loaded subtypes of a type (closureFrom with no seeds)
 	closed      map[string][]string              // subtypeClosure cache, under the current linked bit
@@ -53,7 +55,11 @@ type closure struct {
 	// another engine over the same classes would not number alike.
 	beyond   bool
 	enqueued []uint64 // bit methodIDs[m] is set when the search enqueued m
-	miss     Result
+	// from[methodIDs[m]] is one more than the id of the method the search first enqueued m
+	// from, 0 for the start and for a method it never enqueued: the predecessors a search for
+	// a sink records up to the point it stops, so the path to any enqueued sink.
+	from []uint32
+	miss Result
 }
 
 // lambdaSite is a LambdaMetafactory call site in class from. The object it produces
@@ -1910,6 +1916,50 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 	return res
 }
 
+// ClosurePath is the path Reach(ingress, sink) returns, read from ingress's whole search
+// rather than searched for again: a search for sink stops at the first method that enqueues
+// it, and until then records the predecessors the whole search does. ok is false when Reach
+// would find no path, and when the whole search cannot say what Reach would return: it holds
+// no predecessors, or sink is where the search starts.
+func (e *Engine) ClosurePath(ingress, sink classfile.MethodRef) (path []classfile.MethodRef, ok bool) {
+	if e.declared[sink.String()] == nil {
+		return nil, false
+	}
+	c := e.closures[ingress]
+	if c == nil {
+		c = &closure{}
+		c.miss = e.search(ingress, classfile.MethodRef{}, c)
+		e.closures[ingress] = c
+	}
+	start, _ := e.resolveMethod(ingress.Owner, ingress.Name, ingress.Descriptor)
+	id, numbered := e.methodIDs[sink]
+	if start == nil || start.Ref == sink || !numbered || id >= len(c.from) || c.from[id] == 0 {
+		return nil, false
+	}
+	refs := e.methodRefs()
+	rev := []classfile.MethodRef{sink}
+	for cur := id; refs[cur] != ingress && cur < len(c.from) && c.from[cur] != 0; {
+		cur = int(c.from[cur] - 1)
+		if cur >= len(refs) || len(rev) > len(refs) {
+			return nil, false
+		}
+		rev = append(rev, refs[cur])
+	}
+	slices.Reverse(rev)
+	return rev, true
+}
+
+// methodRefs is methodIDs inverted: the method each id numbers.
+func (e *Engine) methodRefs() []classfile.MethodRef {
+	if len(e.refs) != len(e.methodIDs) {
+		e.refs = make([]classfile.MethodRef, len(e.methodIDs))
+		for ref, id := range e.methodIDs {
+			e.refs[id] = ref
+		}
+	}
+	return e.refs
+}
+
 // ReachNone is the verdict of the whole search from ingress with no sink to stop at:
 // NotExploitable only when nothing on the closure's frontier left it open, which is what
 // a sink no loaded class declares needs before its absence means the closure cannot run it.
@@ -1968,6 +2018,12 @@ func (e *Engine) search(ingress, sink classfile.MethodRef, c *closure) Result {
 				c.enqueued = append(c.enqueued, 0)
 			}
 			c.enqueued[id/64] |= 1 << (id % 64)
+			if fid, ok := e.methodIDs[from]; ok && !visited[t.Ref.String()] {
+				for len(c.from) <= id {
+					c.from = append(c.from, 0)
+				}
+				c.from[id] = uint32(fid) + 1
+			}
 		}
 		if t.Ref == sink {
 			prev[sink.String()] = from
@@ -2251,6 +2307,40 @@ func (e *Engine) SetClosure(ingress classfile.MethodRef, bits []uint64, miss Res
 	}
 	miss.HazardKinds = append([]string(nil), miss.HazardKinds...)
 	e.closures[ingress] = &closure{enqueued: append([]uint64(nil), bits...), miss: miss}
+	return true
+}
+
+// ClosureTree exports the predecessors of ingress's whole search (ClosurePath reads them):
+// one entry per loaded method, numbered as Closure's bits are. ok is false wherever Closure's
+// is.
+func (e *Engine) ClosureTree(ingress classfile.MethodRef) (from []uint32, ok bool) {
+	c := e.closures[ingress]
+	if c == nil || c.beyond {
+		return nil, false
+	}
+	from = make([]uint32, e.tableSize)
+	copy(from, c.from)
+	return from, true
+}
+
+// SetClosureTree installs the predecessors ClosureTree exported beside the search SetClosure
+// installed for ingress. It refuses, and changes nothing, when there is no such search, from
+// does not fit the loaded table, or an entry names a method outside the table or gives a
+// predecessor to a method the search never enqueued.
+func (e *Engine) SetClosureTree(ingress classfile.MethodRef, from []uint32) bool {
+	c := e.closures[ingress]
+	if c == nil || c.beyond || len(from) != e.tableSize {
+		return false
+	}
+	for id, f := range from {
+		if f == 0 {
+			continue
+		}
+		if int(f) > e.tableSize || id/64 >= len(c.enqueued) || c.enqueued[id/64]&(1<<(id%64)) == 0 {
+			return false
+		}
+	}
+	c.from = append([]uint32(nil), from...)
 	return true
 }
 

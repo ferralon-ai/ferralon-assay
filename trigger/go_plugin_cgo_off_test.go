@@ -50,6 +50,15 @@ func TestFinding_GoPluginLoadCgoOff(t *testing.T) {
 			wantReason:  report.ReasonRefutationWithheld,
 		},
 		{
+			name: "beside a refutation on another basis it stays undetermined",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation.Basis = plugin.RefutationPackageNotLoaded
+				fx.footprint = []string{plugin.PartialReasonPluginLoadCgoOff}
+			},
+			wantVerdict: report.VerdictUndetermined,
+			wantReason:  report.ReasonAnalysisDidNotRun,
+		},
+		{
 			name: "without a refutation it stays undetermined",
 			mutate: func(fx *groundsFixture) {
 				fx.reach.Refutation = nil

@@ -57,7 +57,7 @@ type parseResult struct {
 	decls     []decl
 	calls     []callSite      // method-call expressions inside method bodies
 	ingresses []ingressMarker // annotation/servlet entry-point markers
-	skipped   bool            // a construct was not fully modeled (e.g. annotation type body)
+	skipped   bool            // a construct was not fully modeled (e.g. an annotation type body that may hold code)
 }
 
 // stripJava removes comments, string literals, char literals, and text-block
@@ -220,10 +220,16 @@ func parseFile(src string) parseResult {
 			i = next
 		case isIdentStart(c):
 			word, next := readWord(r, i)
-			// An annotation type "@interface" is not modeled: it uses a distinct
-			// member grammar. Detect the '@' immediately before "interface" and
-			// declare partiality, skipping its body rather than misparsing it.
+			// An annotation type "@interface" uses a distinct member grammar and is
+			// not modeled: its elements stay out of decls. Its body is consumed
+			// whole when it provably holds no executable code (annotationBodyEnd);
+			// any other body, or a header that is not "@interface Name {", declares
+			// partiality.
 			if word == "interface" && precededByAt(r, i) {
+				if end, ok := annotationTypeEnd(r, next); ok {
+					i = end
+					continue
+				}
 				res.skipped = true
 				if open, ok := findBrace(r, next); ok {
 					i = skipGroup(r, open)
@@ -696,4 +702,351 @@ func indexWord(s, word string) int {
 		}
 		from = abs + len(word)
 	}
+}
+
+// An annotation type body is accepted as inert only when every member matches
+// the allow-list below; anything else (nested type, method call, lambda, "new",
+// a brace block that is not an array initializer, an unbalanced brace, EOF) is
+// rejected and the caller declares partiality. The scan runs over stripJava
+// output, where string and char literals are a single '_' placeholder token.
+//
+//	body     = "{" { member } "}"
+//	member   = ";" | { modifier | annotation } type name ( "(" ")" [ "default" value ] | "=" value ) ";"
+//	value    = number | name | annotation | "{" [ value { "," value } [ "," ] ] "}"
+//	name     = ident { ( "." ident | "[" "]" ) }          (literals, enum constants, class literals)
+//	number   = [ "+" | "-" ] digit-led token
+//	annotation = "@" qualified-name [ "(" [ pair { "," pair } ] ")" ]
+//	pair     = [ ident "=" ] value
+
+// annotationTypeEnd, given the index just past the "interface" keyword of an
+// "@interface", returns the index just past the body's closing brace and ok=true
+// when the header is "Name {" and the body is inert.
+func annotationTypeEnd(r []rune, pos int) (int, bool) {
+	pos = skipSpace(r, pos)
+	if pos >= len(r) || !isIdentStart(r[pos]) {
+		return 0, false
+	}
+	_, pos = readWord(r, pos)
+	pos = skipSpace(r, pos)
+	if pos >= len(r) || r[pos] != '{' {
+		return 0, false
+	}
+	return annotationBodyEnd(r, pos)
+}
+
+// annotationBodyPrimitives and annotationBodyModifiers are the only words that
+// may lead an element or constant declaration besides a reference type name.
+var annotationBodyPrimitives = map[string]bool{
+	"boolean": true, "byte": true, "char": true, "short": true,
+	"int": true, "long": true, "float": true, "double": true,
+}
+
+var annotationBodyModifiers = map[string]bool{
+	"public": true, "abstract": true, "static": true, "final": true,
+}
+
+// annotationBodyReserved are words that never name a type or element here; a
+// body that uses one is not the shape the allow-list describes.
+var annotationBodyReserved = map[string]bool{
+	"class": true, "interface": true, "enum": true, "record": true,
+	"new": true, "default": true, "void": true, "this": true, "super": true,
+	"switch": true, "return": true, "if": true, "for": true, "while": true,
+	"do": true, "try": true, "throw": true, "synchronized": true,
+}
+
+// annotationBodyEnd scans the body whose '{' is at open and returns the index
+// just past its '}'.
+func annotationBodyEnd(r []rune, open int) (int, bool) {
+	n := len(r)
+	pos := open + 1
+	for {
+		pos = skipSpace(r, pos)
+		if pos >= n {
+			return 0, false
+		}
+		switch r[pos] {
+		case '}':
+			return pos + 1, true
+		case ';':
+			pos++
+			continue
+		}
+		end, ok := annotationMember(r, pos)
+		if !ok {
+			return 0, false
+		}
+		pos = end
+	}
+}
+
+// annotationMember scans one element or constant declaration and returns the
+// index just past its terminating ';'.
+func annotationMember(r []rune, pos int) (int, bool) {
+	n := len(r)
+	// modifiers and member annotations
+	for {
+		pos = skipSpace(r, pos)
+		if pos >= n {
+			return 0, false
+		}
+		if r[pos] == '@' {
+			var ok bool
+			if pos, ok = annotationUse(r, pos); !ok {
+				return 0, false
+			}
+			continue
+		}
+		if isIdentStart(r[pos]) {
+			if w, nx := readWord(r, pos); annotationBodyModifiers[w] {
+				pos = nx
+				continue
+			}
+		}
+		break
+	}
+	// type
+	word, pos := readWord(r, pos)
+	if annotationBodyReserved[word] {
+		return 0, false
+	}
+	if !annotationBodyPrimitives[word] {
+		var ok bool
+		if pos, ok = qualifiedTail(r, pos); !ok {
+			return 0, false
+		}
+		pos = skipSpace(r, pos)
+		if pos < n && r[pos] == '<' {
+			end := skipGroup(r, pos)
+			if !typeArgumentsOnly(r[pos:end]) {
+				return 0, false
+			}
+			pos = end
+		}
+	}
+	for {
+		pos = skipSpace(r, pos)
+		if pos < n && r[pos] == '[' {
+			if j := skipSpace(r, pos+1); j < n && r[j] == ']' {
+				pos = j + 1
+				continue
+			}
+		}
+		break
+	}
+	// element or constant name
+	if pos >= n || !isIdentStart(r[pos]) {
+		return 0, false
+	}
+	name, pos := readWord(r, pos)
+	if annotationBodyReserved[name] {
+		return 0, false
+	}
+	pos = skipSpace(r, pos)
+	if pos >= n {
+		return 0, false
+	}
+	switch r[pos] {
+	case '(':
+		pos = skipSpace(r, pos+1)
+		if pos >= n || r[pos] != ')' {
+			return 0, false
+		}
+		pos = skipSpace(r, pos+1)
+		if w, nx := readWord(r, pos); w == "default" {
+			var ok bool
+			if pos, ok = annotationValue(r, nx); !ok {
+				return 0, false
+			}
+			pos = skipSpace(r, pos)
+		}
+	case '=':
+		var ok bool
+		if pos, ok = annotationValue(r, pos+1); !ok {
+			return 0, false
+		}
+		pos = skipSpace(r, pos)
+	default:
+		return 0, false
+	}
+	if pos >= n || r[pos] != ';' {
+		return 0, false
+	}
+	return pos + 1, true
+}
+
+// qualifiedTail consumes { "." ident } after an already-read identifier.
+func qualifiedTail(r []rune, pos int) (int, bool) {
+	n := len(r)
+	for {
+		j := skipSpace(r, pos)
+		if j >= n || r[j] != '.' {
+			return pos, true
+		}
+		j = skipSpace(r, j+1)
+		if j >= n || !isIdentStart(r[j]) {
+			return 0, false
+		}
+		_, pos = readWord(r, j)
+	}
+}
+
+// typeArgumentsOnly reports whether a "<...>" group holds only what a type
+// argument list can: identifiers, '.', ',', '?', '&', brackets, nesting and space.
+func typeArgumentsOnly(g []rune) bool {
+	for _, c := range g {
+		switch {
+		case isIdentPart(c), c == '.', c == ',', c == '?', c == '&',
+			c == '<', c == '>', c == '[', c == ']', c == ' ', c == '\t', c == '\n', c == '\r':
+		default:
+			return false
+		}
+	}
+	return len(g) >= 2 && g[len(g)-1] == '>'
+}
+
+// annotationUse scans "@Name" with an optional argument list, the '@' at pos.
+func annotationUse(r []rune, pos int) (int, bool) {
+	n := len(r)
+	pos = skipSpace(r, pos+1)
+	if pos >= n || !isIdentStart(r[pos]) {
+		return 0, false
+	}
+	w, pos := readWord(r, pos)
+	if w == "interface" || annotationBodyReserved[w] {
+		return 0, false
+	}
+	pos, ok := qualifiedTail(r, pos)
+	if !ok {
+		return 0, false
+	}
+	j := skipSpace(r, pos)
+	if j >= n || r[j] != '(' {
+		return pos, true
+	}
+	pos = skipSpace(r, j+1)
+	for {
+		if pos >= n {
+			return 0, false
+		}
+		if r[pos] == ')' {
+			return pos + 1, true
+		}
+		// pair = [ ident "=" ] value
+		if isIdentStart(r[pos]) {
+			_, nx := readWord(r, pos)
+			k := skipSpace(r, nx)
+			if k+1 < n && r[k] == '=' && r[k+1] != '=' {
+				pos = k + 1
+			}
+		}
+		if pos, ok = annotationValue(r, pos); !ok {
+			return 0, false
+		}
+		pos = skipSpace(r, pos)
+		if pos < n && r[pos] == ',' {
+			pos = skipSpace(r, pos+1)
+			continue
+		}
+		if pos >= n || r[pos] != ')' {
+			return 0, false
+		}
+	}
+}
+
+// annotationValue scans one value (see grammar) and returns the index just past
+// it. It does not check what follows; each caller requires its own terminator,
+// which is what rejects "Foo.compute()", "A + B", "x -> y" and "a ? b : c".
+func annotationValue(r []rune, pos int) (int, bool) {
+	n := len(r)
+	pos = skipSpace(r, pos)
+	if pos >= n {
+		return 0, false
+	}
+	c := r[pos]
+	switch {
+	case c == '{':
+		pos = skipSpace(r, pos+1)
+		for {
+			if pos >= n {
+				return 0, false
+			}
+			if r[pos] == '}' {
+				return pos + 1, true
+			}
+			var ok bool
+			if pos, ok = annotationValue(r, pos); !ok {
+				return 0, false
+			}
+			pos = skipSpace(r, pos)
+			if pos < n && r[pos] == ',' {
+				pos = skipSpace(r, pos+1)
+				continue
+			}
+			if pos >= n || r[pos] != '}' {
+				return 0, false
+			}
+		}
+	case c == '@':
+		return annotationUse(r, pos)
+	case c == '+' || c == '-':
+		pos = skipSpace(r, pos+1)
+		if pos >= n || !isDigit(r[pos]) {
+			return 0, false
+		}
+		return numberEnd(r, pos), true
+	case isDigit(c) || (c == '.' && pos+1 < n && isDigit(r[pos+1])):
+		return numberEnd(r, pos), true
+	case isIdentStart(c):
+		w, nx := readWord(r, pos)
+		if annotationBodyReserved[w] {
+			return 0, false
+		}
+		pos = nx
+		for {
+			j := skipSpace(r, pos)
+			if j >= n {
+				return pos, true
+			}
+			switch r[j] {
+			case '.':
+				j = skipSpace(r, j+1)
+				if j >= n || !isIdentStart(r[j]) {
+					return 0, false
+				}
+				w, pos = readWord(r, j)
+				if w != "class" && annotationBodyReserved[w] {
+					return 0, false
+				}
+			case '[':
+				j = skipSpace(r, j+1)
+				if j >= n || r[j] != ']' {
+					return 0, false
+				}
+				pos = j + 1
+			default:
+				return pos, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func isDigit(c rune) bool { return c >= '0' && c <= '9' }
+
+// numberEnd consumes a numeric literal token starting at a digit (or '.').
+func numberEnd(r []rune, pos int) int {
+	n := len(r)
+	hex := pos+1 < n && r[pos] == '0' && (r[pos+1] == 'x' || r[pos+1] == 'X')
+	for pos < n {
+		c := r[pos]
+		switch {
+		case isIdentPart(c), c == '.':
+			pos++
+		case (c == '+' || c == '-') && !hex && pos > 0 && (r[pos-1] == 'e' || r[pos-1] == 'E'):
+			pos++
+		default:
+			return pos
+		}
+	}
+	return pos
 }

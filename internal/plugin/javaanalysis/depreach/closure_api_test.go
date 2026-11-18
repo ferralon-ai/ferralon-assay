@@ -135,3 +135,120 @@ func TestMemos_ResetOnLink(t *testing.T) {
 		t.Errorf("SetLinked kept %d subtype closures and %d dispatches from the other bit", len(e.closed), len(e.dispatched))
 	}
 }
+
+// The path read from a whole search is the path a search for the sink returns, whether the
+// engine ran that whole search or was handed another engine's.
+func TestClosurePath_MatchesSearch(t *testing.T) {
+	shadow := classfile.Class{Name: "com/evil/netkit/ServiceImpl", Super: "java/lang/Object", Interfaces: []string{"com/evil/netkit/Service"}, Methods: []classfile.Method{
+		{Ref: mref("com/evil/netkit/ServiceImpl", "run", "()V")},
+	}}
+	tests := []struct {
+		name    string
+		classes []classfile.Class
+	}{
+		{"loaded classes", c7Classes()},
+		{"duplicated class name", append(c7Classes(), shadow)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var refs []classfile.MethodRef
+			for _, c := range tc.classes {
+				for _, m := range c.Methods {
+					refs = append(refs, m.Ref)
+				}
+			}
+			for _, linked := range []bool{false, true} {
+				searched := NewEngineOn(tc.classes, Classpath{})
+				searched.SetLinked(linked)
+				imported := NewEngineOn(tc.classes, Classpath{})
+				imported.SetLinked(linked)
+				read := 0
+				for _, in := range refs {
+					searched.ReachNone(in)
+					bits, miss, ok := searched.Closure(in)
+					from, treeOK := searched.ClosureTree(in)
+					if !ok || !treeOK || !imported.SetClosure(in, bits, miss) || !imported.SetClosureTree(in, from) {
+						t.Fatalf("linked=%v: %s's search did not move between engines", linked, in)
+					}
+					for _, sink := range refs {
+						fresh := NewEngineOn(tc.classes, Classpath{})
+						fresh.SetLinked(linked)
+						want := fresh.search(in, sink, nil)
+						for name, e := range map[string]*Engine{"searched": searched, "imported": imported} {
+							got, ok := e.ClosurePath(in, sink)
+							switch {
+							case ok && !reflect.DeepEqual(got, want.Path):
+								t.Fatalf("linked=%v %s ClosurePath(%s, %s) = %v, search = %v", linked, name, in, sink, got, want.Path)
+							case !ok && want.Verdict == ReachableCandidate && sink != in:
+								t.Fatalf("linked=%v %s ClosurePath(%s, %s) read no path, search = %v", linked, name, in, sink, want.Path)
+							case ok:
+								read++
+							}
+						}
+					}
+				}
+				if read == 0 {
+					t.Fatalf("linked=%v: no path was read from a whole search", linked)
+				}
+			}
+		})
+	}
+}
+
+func TestClosure_SetClosureTreeRefuses(t *testing.T) {
+	in := mref("com/acme/app/App", "reachable", "()V")
+	src := NewEngineOn(c7Classes(), Classpath{})
+	src.ReachNone(in)
+	bits, miss, _ := src.Closure(in)
+	from, ok := src.ClosureTree(in)
+	if !ok {
+		t.Fatal("no predecessors to export")
+	}
+	reached, unreached := -1, -1
+	for id, f := range from {
+		if f != 0 {
+			reached = id
+		} else if bits[id/64]&(1<<(id%64)) == 0 {
+			unreached = id
+		}
+	}
+	if reached < 0 || unreached < 0 {
+		t.Fatalf("fixture needs a reached and an unreached method: %v", from)
+	}
+	with := func(id int, f uint32) []uint32 {
+		out := append([]uint32(nil), from...)
+		out[id] = f
+		return out
+	}
+	tests := []struct {
+		name    string
+		from    []uint32
+		install bool // SetClosure first
+		ok      bool
+	}{
+		{"its own export", from, true, true},
+		{"no search installed", from, false, false},
+		{"short", from[:len(from)-1], true, false},
+		{"long", append(append([]uint32(nil), from...), 0), true, false},
+		{"predecessor outside the table", with(reached, uint32(len(from))+1), true, false},
+		{"predecessor of a method the search never enqueued", with(unreached, 1), true, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := NewEngineOn(c7Classes(), Classpath{})
+			if tc.install && !dst.SetClosure(in, bits, miss) {
+				t.Fatal("SetClosure refused the export")
+			}
+			if got := dst.SetClosureTree(in, tc.from); got != tc.ok {
+				t.Fatalf("SetClosureTree = %v, want %v", got, tc.ok)
+			}
+			if !tc.ok && dst.HasClosure(in) {
+				if _, read := dst.ClosurePath(in, refOf(dst, reached)); read {
+					t.Error("a refused tree was read")
+				}
+			}
+		})
+	}
+}
+
+func refOf(e *Engine, id int) classfile.MethodRef { return e.methodRefs()[id] }

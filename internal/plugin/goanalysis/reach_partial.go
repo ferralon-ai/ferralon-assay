@@ -587,6 +587,18 @@ func withholdForPartialRun(res plugin.ReachabilityResult, scanned vulnScan) plug
 	return res
 }
 
+// unversionedOnPartialRun declares partial_run_unversioned on a result read off a partial run for an
+// advisory the request named no versioned package of (pkg is empty): the scanned module's own
+// advisory, or one on a module whose version the build does not state. A run over the whole build
+// declares nothing here.
+func unversionedOnPartialRun(res plugin.ReachabilityResult, scanned vulnScan, pkg string) plugin.ReachabilityResult {
+	if scanned.partial == nil || pkg != "" {
+		return res
+	}
+	res.Partiality = withReason(res.Partiality, plugin.PartialReasonPartialRunUnversioned)
+	return res
+}
+
 // partialRunLimits discloses a partial run as tool_failure limits, one per module of a package the
 // run could not load (Package as a scoped limit names it), each naming those packages and the roots
 // the run left out. Each is bounded to Hidden, the modules the code left out can reach, and unbounded

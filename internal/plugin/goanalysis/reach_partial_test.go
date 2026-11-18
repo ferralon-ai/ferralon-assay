@@ -660,6 +660,36 @@ func TestListBuildPackages(t *testing.T) {
 	}
 }
 
+// TestUnversionedOnPartialRun: only a result read off a partial run, for an advisory the request
+// named no versioned package of, declares partial_run_unversioned. A run over the whole build never
+// does, so nothing downstream of the reason can touch a row such a run reports.
+func TestUnversionedOnPartialRun(t *testing.T) {
+	partial := &partialRun{Unloadable: []string{"example.com/app/ui"}}
+	cases := []struct {
+		name    string
+		partial *partialRun
+		pkg     string
+		want    bool
+	}{
+		{name: "partial run, no versioned package", partial: partial, want: true},
+		{name: "partial run, versioned package", partial: partial, pkg: "pkg:golang/example.com/dep@v1.2.3"},
+		{name: "whole build, no versioned package"},
+		{name: "whole build, versioned package", pkg: "pkg:golang/example.com/dep@v1.2.3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonReflectiveCall)}
+			res := unversionedOnPartialRun(in, vulnScan{partial: tc.partial}, tc.pkg)
+			if got := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPartialRunUnversioned); got != tc.want {
+				t.Fatalf("declared = %v, want %v (reasons %v)", got, tc.want, res.Partiality.Reasons)
+			}
+			if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonReflectiveCall) || res.Partiality.Complete {
+				t.Fatalf("the result's own limits must stand: %+v", res.Partiality)
+			}
+		})
+	}
+}
+
 // TestOnlyEmbedPatternMisses pins which `go list` package errors leave a load failure settled: only
 // a //go:embed pattern that names no file to embed. A module the go command may not fetch, a
 // command-line pattern it could not match, and an error that merely mentions an embed miss do not.

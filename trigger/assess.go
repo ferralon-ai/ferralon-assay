@@ -234,6 +234,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				UndeterminedReason: reason,
 				Evidence:           report.EvidenceSummary{Detail: report.UndeterminedDetail(reason)},
 			}
+			if pipeline.OwnAdvisoryHeldForPartialRun(store, assessmentID) {
+				f.Evidence.Detail = ownAdvisoryPartialRunDetail
+			}
 			break
 		}
 		f = report.AdvisoryFinding{

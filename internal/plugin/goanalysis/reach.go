@@ -199,7 +199,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		return plugin.ReachabilityResult{}, err
 	}
 	res.ScanToolchain = scanToolchain
-	return res, nil
+	return unversionedOnPartialRun(res, scanned, req.Package), nil
 }
 
 // reconciledResult turns one govulncheck run into the reachability result: it reconciles the

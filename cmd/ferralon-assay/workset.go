@@ -758,8 +758,8 @@ func versionlessPURL(purlType, name string) string {
 // the go.work its build runs under (goWorkspace), as codebase_inventory resolves both. Under a
 // go.work no go.mod states what the build holds, so the build list decides instead
 // (pipeline.GoWorkspaceModules): each module at the version the build selects, and unresolved, so
-// admitted by name but never queried by version, every module the workspace uses or replaces, and
-// every module when the go command cannot compute the list. When the workspace cannot be read at
+// admitted by name but never queried by version, every module the workspace uses or replaces with a fork or a
+// directory, and every module when the go command cannot compute the list. When the workspace cannot be read at
 // all, go.mod's requires are unresolved too: under a workspace's MVS a require is a lower bound,
 // not the version built. When the build's workspace cannot be resolved (a declared go.work that is
 // missing, does not parse or does not use the module), nothing says what the build holds or which

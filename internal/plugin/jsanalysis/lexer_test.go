@@ -173,6 +173,9 @@ func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
 		// still read.
 		{"comment in JSX text", "a = <p>\n/* {eval(x)} */\n</p>;\n", true, false, false},
 		{"comment in JSX text closed by a spaced tag", "a = <p>\n/* {eval(x)} */\n< /p>;\n", true, false, false},
+		{"comment in JSX text closed by a tag broken across lines", "a = <p>\n/* {eval(x)} */\n<\n/p>;\n", true, false, false},
+		{"comment in JSX text closed by a tag spaced with an ideographic space", "a = <p>\n/* {eval(x)} */\n<\u3000/p>;\n", true, false, false},
+		{"comment in a file whose slashes cost too much to tell from tags", strings.Repeat("x/ //", 4096) + "\n/* eval(x) */\n", true, false, false},
 		{"comment opened in a multi-line JSX attribute string", "a = <img alt=\"x\n/* \" />;\neval(x); // */\n", true, false, false},
 		{"comment opened in a JSX attribute string of a tag ended past a line comment", "a = <img alt=\"x\n/* \" / // c\n>;\neval(x); // */\n", true, false, false},
 		{"comment opened in a regex read as a division", "function f() {}\n/\\/*/.test(s);\neval(x); // */\n", true, false, false},
@@ -195,5 +198,12 @@ func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
 				t.Errorf("hidden text bound %v", mb.imports)
 			}
 		})
+	}
+}
+
+// A comment opener with no close after a lone slash ends the search for a tag.
+func TestJSXMarked_UnclosedCommentAfterSlash(t *testing.T) {
+	if jsxMarked([]rune("/ /*\n")) {
+		t.Error("jsxMarked = true for a slash before an unclosed comment")
 	}
 }

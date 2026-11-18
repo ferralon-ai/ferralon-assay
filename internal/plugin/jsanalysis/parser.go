@@ -608,10 +608,12 @@ func commentEnd(raw []rune, from int) int {
 // only find more pairs than the source holds. A closing '/' is never followed by '*' or '/'
 // (that would open a comment) nor preceded by '*' (in a tag, a '*' is inside a string, a
 // {} expression or a comment, and none of those ends just before it), so no other '/' is
-// looked past.
+// looked past. A file whose gaps cost more to skip than a few passes over it is reported
+// as marked: the answer that exempts nothing.
 func jsxMarked(src []rune) bool {
 	n := len(src)
-	// Past the last "*/" no comment closes, so skipGap need not look for one there.
+	// Past the last "*/" no comment closes: skipGap stops there and never asks commentEnd
+	// for a close that does not exist.
 	closeBy := -1
 	for j := n - 2; j >= 0; j-- {
 		if src[j] == '*' && src[j+1] == '/' {
@@ -619,6 +621,7 @@ func jsxMarked(src []rune) bool {
 			break
 		}
 	}
+	budget := 8*n + 1024
 	for i := 0; i < n; i++ {
 		switch src[i] {
 		case '<':
@@ -633,7 +636,8 @@ func jsxMarked(src []rune) bool {
 			if i > 0 && src[i-1] == '*' || i+1 < n && (src[i+1] == '*' || src[i+1] == '/') {
 				continue
 			}
-			if j := skipGap(src, i+1, closeBy); j < n && src[j] == '>' {
+			j := skipGap(src, i+1, closeBy)
+			if budget -= j - i; budget < 0 || j < n && src[j] == '>' {
 				return true
 			}
 		}
@@ -667,7 +671,7 @@ func skipGap(src []rune, i, closeBy int) int {
 }
 
 // jsBlank reports whether c is JS white space within a line, or LS or PS, neither of
-// which can change what kind of text follows them.
+// which changes what kind of text follows at a line start in code or in a tag's gap.
 func jsBlank(c rune) bool {
 	switch c {
 	case '\t', '\v', '\f', ' ', '\uFEFF', '\u2028', '\u2029':

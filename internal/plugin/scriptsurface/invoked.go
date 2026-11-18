@@ -75,7 +75,8 @@ func (v *Veto) relPath(path string) string {
 //     manager's configuration (hookConfig);
 //   - a workflow uses an action from the tree, and it is an action's metadata (action.yml);
 //   - a runner loads it by its default name without anything naming it (runnerDefault);
-//   - a file the build reads or the backstop reads, other than itself, names it (namedIn).
+//   - a file the build reads or the backstop reads, other than itself, names it, or runs a
+//     command a manifest links it as (namedIn).
 //
 // Each is an over-approximation: a name in a file nothing runs still counts.
 func (v *Veto) invoked(path string) bool {
@@ -146,7 +147,7 @@ func runnerDefault(path string) bool {
 
 // namedIn reports whether a file the build reads (buildRead's files) or one the backstop reads
 // (its texts), other than the file at path itself, names it at any path it is reached at
-// (pathsOf, names). When an entry of the build could not be read (buildRead's read), or a file
+// (pathsOf, names), or runs a command name a manifest links it as (Spec.Linked). When an entry of the build could not be read (buildRead's read), or a file
 // that may name it cannot be, every path counts as named.
 func (v *Veto) namedIn(path string) bool {
 	if named, ok := v.named[path]; ok {
@@ -170,8 +171,16 @@ func (v *Veto) namedInBuild(path string) bool {
 		return true
 	}
 	match := names(paths)
+	var cmds []string
+	var runs [][]byte
+	named := func(p string, data []byte) bool {
+		rest, bare, linked := v.withoutLinks(p, data, paths, match)
+		cmds = append(cmds, linked...)
+		runs = append(runs, bare)
+		return match(rest)
+	}
 	for _, f := range b.files {
-		if !slices.Contains(paths, f.path) && match(f.data) {
+		if !slices.Contains(paths, f.path) && named(f.path, f.data) {
 			return true
 		}
 	}
@@ -183,11 +192,50 @@ func (v *Veto) namedInBuild(path string) bool {
 		if err != nil {
 			return true
 		}
-		if match(data) {
+		if named(t, data) {
 			return true
 		}
 	}
-	return false
+	return len(cmds) > 0 && slices.ContainsFunc(runs, commandNamed(cmds))
+}
+
+// withoutLinks returns data, from the file at p, as namedIn reads it for the file reached at paths:
+// without the namings of it the lane's Linked hook finds there (rest), that also without the
+// package's own name (bare), and the command names those namings link it as. When the hook
+// is not set, does not read data, finds no naming of the file, or finds one it links that
+// match takes for the file but does not resolve to it, data stands as written.
+func (v *Veto) withoutLinks(p string, data []byte, paths []string, match func([]byte) bool) (rest, bare []byte, cmds []string) {
+	if v.spec.Linked == nil {
+		return data, data, nil
+	}
+	r, br, links, ok := v.spec.Linked(p, data)
+	if !ok {
+		return data, data, nil
+	}
+	dir := filepath.Dir(p)
+	for target, names := range links {
+		switch {
+		case slices.Contains(paths, filepath.Join(dir, filepath.FromSlash(target))):
+			cmds = append(cmds, names...)
+		case match([]byte(target)):
+			return data, data, nil
+		}
+	}
+	if cmds == nil {
+		return data, data, nil
+	}
+	return r, br, cmds
+}
+
+// commandNamed returns a matcher for text holding any of cmds as a whole word, in any case:
+// every place a command by that name may run, and more.
+func commandNamed(cmds []string) func(data []byte) bool {
+	quoted := make([]string, len(cmds))
+	for i, c := range cmds {
+		quoted[i] = regexp.QuoteMeta(c)
+	}
+	re := regexp.MustCompile(`(?i)(?:^|[^\w.-])(?:` + strings.Join(quoted, "|") + `)(?:$|[^\w.-])`)
+	return re.Match
 }
 
 // pathsOf returns every path the file at path, under root, is reached at: path itself, the path

@@ -14,11 +14,36 @@ func TestResolveVersions_YarnRunsName(t *testing.T) {
 			`"dependencies":{"express":"4.19.2"},"devDependencies":{"prettier":"2.8.4","npm-run-all":"4.1.5"},` +
 			`"scripts":{"lint":"eslint .",` + scripts + `}}`}
 	}
+	// compose runs cmd as a compose service's command:, which the rule cannot place, beside
+	// the root package.json with scripts and each extra file.
+	compose := func(scripts, cmd string, extra ...string) map[string]string {
+		files := pkg(scripts)
+		files["docker-compose.dev.yml"] = "services:\n  app:\n    command: " + cmd + "\n"
+		for i := 0; i+1 < len(extra); i += 2 {
+			files[extra[i]] = extra[i+1]
+		}
+		return files
+	}
+	const member = `{"name":"b","version":"1.0.0","scripts":{"dev":"nodemon src/index.js"}}`
 	tests := []struct {
 		name  string
 		files map[string]string
 		want  bool
 	}{
+		{"compose script with args appended", compose(`"dev":"nodemon src/index.js"`, "yarn dev --legacy-watch src"), true},
+		{"compose script with a short flag appended", compose(`"dev":"nodemon src/index.js"`, "yarn dev -L"), false},
+		{"compose script with nothing after it", compose(`"dev":"nodemon src/index.js"`, "yarn dev"), true},
+		{"compose yarn run of a script with args appended", compose(`"dev":"nodemon src/index.js"`, "yarn run dev --legacy-watch"), true},
+		{"compose script every package.json holds", compose(`"dev":"nodemon src/index.js"`, "yarn dev --legacy-watch", "b/package.json", member), true},
+		{"compose script one package.json lacks", compose(`"dev":"nodemon src/index.js"`, "yarn dev --legacy-watch", "b/package.json", `{"name":"b","version":"1.0.0"}`), false},
+		{"compose script one package.json lacks, run bare", compose(`"dev":"nodemon src/index.js"`, "yarn dev", "b/package.json", `{"name":"b","version":"1.0.0"}`), false},
+		{"compose script whose text adds a package", compose(`"dev":"yarn add left-pad"`, "yarn dev --legacy-watch"), false},
+		{"compose script whose text adds a package, in another package.json", compose(`"dev":"nodemon src/index.js"`, "yarn dev --legacy-watch", "b/package.json", `{"name":"b","version":"1.0.0","scripts":{"dev":"yarn add left-pad"}}`), false},
+		{"compose script ending in a comment, with args appended", compose(`"dev":"nodemon src/index.js # watch"`, "yarn dev --legacy-watch"), false},
+		{"compose script with a yarn option appended", compose(`"dev":"nodemon src/index.js"`, "yarn dev --cwd b"), false},
+		{"compose dependency bin", compose(`"dev":"nodemon src/index.js"`, "yarn prettier --write ."), false},
+		{"compose yarn add", compose(`"add":"echo hi"`, "yarn add left-pad"), false},
+		{"compose yarn install", compose(`"install":"echo hi"`, "yarn install"), false},
 		{"dependency bin with args", pkg(`"format":"yarn prettier --write ."`), true},
 		{"script with nothing after it", pkg(`"check":"yarn lint"`), true},
 		{"script with args appended", pkg(`"check":"yarn lint --fix"`), true},

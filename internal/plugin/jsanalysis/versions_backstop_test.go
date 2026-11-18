@@ -121,23 +121,43 @@ func TestResolveVersions_BackstopNamed(t *testing.T) {
 		`"":{"name":"app","version":"1.0.0","dependencies":{"express":"4.19.2"}},` +
 		`"node_modules/express":{"version":"4.19.2"}}}`
 	const script = "const { execSync } = require('child_process')\nexecSync('npm install express@4.18.2', { stdio: 'inherit' })\n"
+	// bin is a package.json for a package published as create-app, with fields.
+	bin := func(fields string) string {
+		return `{"name":"create-app","version":"1.0.0","dependencies":{"express":"4.19.2"},` + fields + `}`
+	}
 	tests := []struct {
-		name string
-		pkg  string
-		want backstopOutcome
+		name  string
+		pkg   string
+		want  backstopOutcome
+		extra map[string]string
 	}{
-		{"nothing names it", `{"name":"app","version":"1.0.0","dependencies":{"express":"4.19.2"}}`, annotate},
-		{"a package script runs it", `{"name":"app","version":"1.0.0","scripts":{"setup":"node scripts/setup.js"},"dependencies":{"express":"4.19.2"}}`, withhold},
-		{"a longer-named sibling is run", `{"name":"app","version":"1.0.0","scripts":{"setup":"node scripts/setup-ci.js"},"dependencies":{"express":"4.19.2"}}`, annotate},
+		{"nothing names it", `{"name":"app","version":"1.0.0","dependencies":{"express":"4.19.2"}}`, annotate, nil},
+		{"a package script runs it", `{"name":"app","version":"1.0.0","scripts":{"setup":"node scripts/setup.js"},"dependencies":{"express":"4.19.2"}}`, withhold, nil},
+		{"a longer-named sibling is run", `{"name":"app","version":"1.0.0","scripts":{"setup":"node scripts/setup-ci.js"},"dependencies":{"express":"4.19.2"}}`, annotate, nil},
+
+		// A bin links its file for whoever installs the package; it runs when its command does.
+		{"a string bin alone", bin(`"bin":"scripts/setup.js"`), annotate, nil},
+		{"a string bin written from the package root", bin(`"bin":"./scripts/setup.js"`), annotate, nil},
+		{"a string bin whose command a script runs", bin(`"bin":"scripts/setup.js","scripts":{"init":"create-app --yes"}`), withhold, nil},
+		{"a string bin whose command a workflow runs", bin(`"bin":"scripts/setup.js"`), withhold, map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: x\n    steps:\n      - run: create-app --yes\n"}},
+		{"a scoped string bin run by its unscoped name", `{"name":"@acme/create-app","version":"1.0.0","dependencies":{"express":"4.19.2"},"bin":"scripts/setup.js","scripts":{"init":"create-app"}}`, withhold, nil},
+		{"an object bin, its command run", bin(`"bin":{"setup-app":"scripts/setup.js","other-app":"scripts/other.js"},"scripts":{"init":"setup-app --yes"}`), withhold, nil},
+		{"an object bin, another command run", bin(`"bin":{"setup-app":"scripts/setup.js","other-app":"scripts/other.js"},"scripts":{"init":"other-app --yes"}`), annotate, nil},
+		{"a bin path a script also runs", bin(`"bin":"scripts/setup.js","scripts":{"setup":"node scripts/setup.js"}`), withhold, nil},
+		{"a bin of another package.json's file of the same name", bin(`"bin":"tools/setup.js"`), withhold, nil},
+		{"a bin array", bin(`"bin":["scripts/setup.js"]`), withhold, nil},
+		{"a bin object with a non-string value", bin(`"bin":{"setup-app":"scripts/setup.js","x":1}`), withhold, nil},
+		{"a string bin with no name", `{"version":"1.0.0","dependencies":{"express":"4.19.2"},"bin":"scripts/setup.js"}`, withhold, nil},
+		{"a bin given twice", bin(`"bin":"scripts/setup.js","bin":"scripts/setup.js"`), withhold, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dir := writeLockTree(t, map[string]string{"package.json": tt.pkg, "package-lock.json": lock, "scripts/setup.js": script})
-			cause := ""
-			if tt.want == annotate {
-				cause = "scripts/setup.js:2"
+			files := map[string]string{"package.json": tt.pkg, "package-lock.json": lock, "scripts/setup.js": script}
+			for k, v := range tt.extra {
+				files[k] = v
 			}
-			checkOutcome(t, resolveJS(t, dir, "express"), resolveJS(t, dir, "left-pad"), tt.want, cause)
+			dir := writeLockTree(t, files)
+			checkOutcome(t, resolveJS(t, dir, "express"), resolveJS(t, dir, "left-pad"), tt.want, "scripts/setup.js:2")
 		})
 	}
 }

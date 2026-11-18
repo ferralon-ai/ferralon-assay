@@ -153,6 +153,15 @@ type Spec struct {
 	// inline code that removes or rewrites a bound file withholds as a command naming the file
 	// does. nil means the lane reads no inline code.
 	Code func(words []string) []string
+	// Linked, when not nil, reads a manifest the build reads that names files its package
+	// links as commands for whoever installs it, never for its own build (package.json's bin).
+	// links maps each such file, a slash-separated path from the manifest's directory, to the
+	// command names it is linked as; rest is data without those namings, and bare is rest
+	// without the package's own name, which names every command a string bin links. ok is
+	// false when data is no such manifest, or one this cannot read whole, so every path in it
+	// counts as named. A file the manifest links counts as named by it only when a file the
+	// build or the backstop reads runs one of its command names (namedIn). nil means none is.
+	Linked func(path string, data []byte) (rest, bare []byte, links map[string][]string, ok bool)
 }
 
 func (s Spec) complete() bool {

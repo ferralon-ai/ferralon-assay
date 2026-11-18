@@ -72,12 +72,15 @@ func scriptSpec(root string, locks map[string]lockInfo, assumed *bool) scriptsur
 		Allowed: func(words []string, b scriptsurface.Binder) bool {
 			return laneAllowed(words, b, root, locks, assumed)
 		},
-		ReadOnly:    laneReadOnly,
-		Library:     gitShellLibrary,
-		Helper:      laneHelper,
-		Concurrent:  laneConcurrent,
-		ScriptRun:   laneScriptRun,
+		ReadOnly:   laneReadOnly,
+		Library:    gitShellLibrary,
+		Helper:     laneHelper,
+		Concurrent: laneConcurrent,
+		ScriptRun: func(words []string, b scriptsurface.Binder) ([]string, bool) {
+			return laneScriptRun(words, b, root)
+		},
 		Code:        laneCode,
+		Linked:      laneLinked,
 		Inert:       laneNpmrcWrite,
 		ReadRegular: readRegular,
 		Absent:      absent,
@@ -267,7 +270,7 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 				laneAssumesLock(b, "", root, locks, assumed, lockYarn)
 		}
 		if !yarnBuiltins[words[1]] {
-			return laneYarnRunsName(words, b)
+			return laneYarnRunsName(words, b, root)
 		}
 		return false
 	case "npx":
@@ -342,6 +345,7 @@ var (
 	yarnInstallFlags = map[string]bool{
 		"--frozen-lockfile": true, "--immutable": true, "--production": true, "--ignore-scripts": true,
 		"--non-interactive": true, "--silent": true, "--prefer-offline": true, "--check-files": true,
+		"--pure-lockfile": true,
 	}
 	pnpmInstallFlags = map[string]bool{
 		"--production": true, "--prod": true, "--ignore-scripts": true, "--frozen-lockfile": true,
@@ -698,6 +702,19 @@ func membersCovered(root, dir string, byDir map[string][]lockInfo) bool {
 	return true
 }
 
+// laneYarnPackages returns the package.json files a yarn command that runs a script by name
+// may read: the nearest from each directory the command may run in, or, when the rule cannot
+// place it (a compose command:, which runs wherever the image puts it), every package.json in
+// the tree the lane reads (packageManifests), with the name bound as laneRunsInTree binds it.
+// placed is false for the second. nil when there is none.
+func laneYarnPackages(b scriptsurface.Binder, root string) (pkgs []string, placed bool) {
+	if pkgs := b.Nearest("package.json"); pkgs != nil {
+		return pkgs, true
+	}
+	b.Bind("package.json")
+	return packageManifests(root), false
+}
+
 // inTree reports whether dir is root or under it.
 func inTree(root, dir string) bool {
 	rel, err := filepath.Rel(root, dir)
@@ -738,7 +755,7 @@ func laneRunsInTree(b scriptsurface.Binder, dir string) bool {
 // It returns no text, which withholds, when a package.json is not read here, a script is
 // missing (npm start with no start script runs node server.js), or its text is not one
 // laneExtends takes.
-func laneScriptRun(words []string, b scriptsurface.Binder) ([]string, bool) {
+func laneScriptRun(words []string, b scriptsurface.Binder, root string) ([]string, bool) {
 	for len(words) > 0 && laneKeptAssignment(words[0]) {
 		words = words[1:]
 	}
@@ -800,7 +817,8 @@ func laneScriptRun(words []string, b scriptsurface.Binder) ([]string, bool) {
 		if len(args) == 0 || name == "" || strings.HasPrefix(name, "-") || strings.ContainsAny(name, `/\`) {
 			return nil, false
 		}
-		texts, ok := laneScriptTexts(b.Nearest("package.json"), name, false)
+		pkgs, _ := laneYarnPackages(b, root)
+		texts, ok := laneScriptTexts(pkgs, name, false)
 		if !ok {
 			// Not a script everywhere it binds: yarn may run a bin, which laneAllowed decides.
 			return nil, false
@@ -1216,7 +1234,10 @@ var yarnBuiltins = map[string]bool{
 // 2+ takes a name with / or \ as a directory to run the remaining args in, bare yarn
 // (an install) when there are none; yarn 1 parses every argument before a -- as its own
 // options, --cwd among them, so either rebinds the command to a package.json not read here.
-func laneYarnRunsName(words []string, b scriptsurface.Binder) bool {
+//
+// A command the rule cannot place (a compose command:) binds to every package.json in the
+// tree (laneYarnPackages), and there name must be a script in each.
+func laneYarnRunsName(words []string, b scriptsurface.Binder, root string) bool {
 	name := words[1]
 	if name == "" || strings.HasPrefix(name, "-") || strings.ContainsAny(name, `/\`) {
 		return false
@@ -1226,7 +1247,7 @@ func laneYarnRunsName(words []string, b scriptsurface.Binder) bool {
 			return false
 		}
 	}
-	pkgs := b.Nearest("package.json")
+	pkgs, placed := laneYarnPackages(b, root)
 	if pkgs == nil {
 		return false
 	}
@@ -1244,6 +1265,10 @@ func laneYarnRunsName(words []string, b scriptsurface.Binder) bool {
 				return false
 			}
 			continue
+		}
+		if !placed {
+			// Which package.json a dependency's bin is installed beside is not known here.
+			return false
 		}
 		m, ok := readPackageJSON(p)
 		if !ok || !declaresDependency(m, name) {

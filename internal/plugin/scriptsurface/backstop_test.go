@@ -582,6 +582,7 @@ func TestVeto_BackstopInvoked(t *testing.T) {
 		{"a longer name run without an extension", map[string]string{"scripts/provision.js": "require('child_process').execSync('inst add x')\n", ".github/workflows/ci.yml": wf("node scripts/provisioner --prod")}, false, "scripts/provision.js:1"},
 
 		{"named by a workflow", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("tool ci/provision.yml")}, true, "ci/provision.yml:2"},
+		{"named by a package.json bin, with no Linked hook", map[string]string{"ci/provision.yml": hit, "package.json": "{\"name\": \"x\", \"bin\": \"ci/provision.yml\"}\n"}, true, "ci/provision.yml:2"},
 		{"named by base name after a cd", map[string]string{"ci/provision.yml": hit, ".github/workflows/ci.yml": wf("cd ci && tool provision.yml")}, true, "ci/provision.yml:2"},
 		{"named by a Dockerfile", map[string]string{"ci/provision.yml": hit, "Dockerfile": "FROM base\nCOPY . /src\nRUN tool /src/ci/provision.yml\n"}, true, "ci/provision.yml:2"},
 		{"named by an action no workflow uses", map[string]string{"ci/provision.yml": hit, ".github/actions/setup/action.yml": "name: x\nruns:\n  using: composite\n  steps:\n    - run: tool ci/provision.yml\n      shell: bash\n"}, true, "ci/provision.yml:2"},

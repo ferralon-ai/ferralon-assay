@@ -91,6 +91,10 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"npm install, an override names that repository by shorthand ending in .git", gitOverride("github:acme/qs.git", fromGit), assumed},
 		{"yarn install", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install")}, assumed},
 		{"yarn --frozen-lockfile", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn --frozen-lockfile")}, assumed},
+		{"yarn install --frozen-lockfile", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install --frozen-lockfile")}, assumed},
+		{"yarn install --pure-lockfile", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install --pure-lockfile")}, assumed},
+		{"yarn --pure-lockfile", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn --pure-lockfile")}, assumed},
+		{"Dockerfile copies the yarn lock, then yarn install --pure-lockfile", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json yarn.lock ./\nRUN yarn install --pure-lockfile\n"}, assumed},
 		{"pnpm install", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, ".github/workflows/ci.yml": ci("pnpm install")}, assumed},
 
 		// Commands that install nothing, or hold to the lock by their own flags.
@@ -145,6 +149,10 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"npm install after package.json is rewritten", npm(map[string]string{"Dockerfile": whole + "sed -i s/4.19/4.18/ package.json && npm install\n"}), withheld},
 		{"yarn install beside an npm lock", npm(map[string]string{".github/workflows/ci.yml": ci("yarn install")}), withheld},
 		{"yarn add", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn add left-pad")}, withheld},
+		{"yarn install --pure-lockfile with a package", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install --pure-lockfile left-pad")}, withheld},
+		{"yarn --pure-lockfile with a package", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn --pure-lockfile left-pad")}, withheld},
+		{"yarn install --pure-lockfile without the lock copied", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json ./\nRUN yarn install --pure-lockfile\n"}, withheld},
+		{"yarn install --frozen-lockfile with a package", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install --frozen-lockfile left-pad")}, withheld},
 		{"pnpm install --no-lockfile", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, ".github/workflows/ci.yml": ci("pnpm install --no-lockfile")}, withheld},
 		{"Dockerfile copies only package.json, then npm install", npm(map[string]string{"Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json ./\nRUN npm install\n"}), withheld},
 		{"Dockerfile copies only package.json, then yarn install", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json ./\nRUN yarn install\n"}, withheld},

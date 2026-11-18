@@ -532,7 +532,9 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 // leftOutImporters reports whether a non-test Go file the build left out imports, directly or
 // through other packages, one of module's packages that count, whatever the file's declarations
 // reach and whatever left it out: some build configuration of this source compiles that package in.
-// It follows imports as leftOutCallers does, and failed reports the same.
+// It walks the files leftOutCallers walks, so test files, nested modules and files marked
+// `//go:build ignore` are outside it, and follows every import of a package the build did not load,
+// whatever that package's module requires. failed reports the same.
 func leftOutImporters(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *releaseBound, buildDir string, env []string) (found, failed bool) {
 	found, _, failed, _ = leftOutWalk(ctx, pkgs, module, vulnerable, nil, release, buildDir, env, true)
 	return found, failed
@@ -582,7 +584,10 @@ func leftOutWalk(ctx context.Context, pkgs []*packages.Package, module string, v
 			if owner == "" {
 				return true, false
 			}
-			if !underModule(module, owner) && !graph.requires(owner, module) {
+			// A module that does not require this one can still import its packages: the build
+			// resolves them through the main module's requirement. That is rare enough to leave out
+			// of the search for a caller, and it decides whether any build imports the package.
+			if !importsOnly && !underModule(module, owner) && !graph.requires(owner, module) {
 				return false, false
 			}
 		}

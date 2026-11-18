@@ -91,7 +91,8 @@ inside are invented for illustration and correspond to no real advisory or codeb
 ```
 
 A real report also serializes `undetermined_reason` on any finding with verdict `undetermined`
-([the reasons](operator-guide.md#undetermined-reasons)), and a non-empty `partiality` array whenever
+([the reasons](operator-guide.md#undetermined-reasons)), `withheld_by` on a finding a limit of the
+analysis withheld, and a non-empty `partiality` array whenever
 some part of the codebase could not be resolved — see [Scope](../README.md#scope) for when that
 happens. See [`report/report.go`](../report/report.go) for the authoritative field-by-field
 documentation.

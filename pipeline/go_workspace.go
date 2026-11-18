@@ -311,6 +311,31 @@ func GoWorkspaceModules(ctx context.Context, buildDir string, ws GoWorkspace) (p
 	return pinned, unpinned, nil
 }
 
+// GoWorkspaceReplacedVersions returns, for each module the build of the Go module at buildDir
+// replaces by a fork or a local directory under the workspace ws, the version the build list selects
+// for it before the replacement. Such a module is in GoWorkspaceModules' unpinned: the code built is
+// not that release's. The version is where its advisories can still be looked up, as the build's
+// closest named release; a caller that queries it holds the module's rows to an open version axis
+// (moduleVersionFromBuild reports the module unpinned). It is empty when the go command cannot
+// compute the build list.
+func GoWorkspaceReplacedVersions(ctx context.Context, buildDir string, ws GoWorkspace) map[string]string {
+	structural, _, ok := workspaceUnpinned(ws)
+	if !ok {
+		return nil
+	}
+	mods, err := workspaceBuildList(ctx, buildDir, ws)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, m := range mods {
+		if _, pinned := m.pin(); m.Replace != nil && !m.Main && !pinned && !structural[m.Path] && m.Version != "" {
+			out[m.Path] = m.Version
+		}
+	}
+	return out
+}
+
 // listedModule is the part of `go list -m -json` output the pipeline reads.
 type listedModule struct {
 	Path    string

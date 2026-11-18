@@ -90,7 +90,11 @@ func TestReachability_RouteNotOverriddenFromDependency(t *testing.T) {
 			api := newKClassBuilder()
 			api.addMethodAnnotated("parse", "()V", append(api.invokeVirtual(objectMapper, "readValue", readValueDesc), opReturn),
 				api.anno(descGetMapping, kannoElem{name: "value", value: "/parse"}))
-			writeGradleCacheJar(t, dir, "com.example", "pets-api", "1.0", map[string][]byte{lib: api.build(lib, "java/lang/Object")})
+			libBytes := api.build(lib, "java/lang/Object")
+			if tt.ifc != "" {
+				libBytes = asInterface(api, libBytes)
+			}
+			writeGradleCacheJar(t, dir, "com.example", "pets-api", "1.0", map[string][]byte{lib: libBytes})
 			ctrl := newKClassBuilder()
 			ctrl.addMethod("other", "()V", []byte{opReturn})
 			if tt.ifc != "" {
@@ -120,4 +124,17 @@ func TestReachability_RouteNotOverriddenFromDependency(t *testing.T) {
 			}
 		})
 	}
+}
+
+// asInterface rewrites built's access_flags to ACC_PUBLIC|ACC_INTERFACE|ACC_ABSTRACT, so
+// a method it carries is an interface default method rather than a class method.
+func asInterface(b *kclassBuilder, built []byte) []byte {
+	const accInterfaceAbstractPublic = 0x0601
+	off := 10
+	for _, e := range b.entries {
+		off += len(e)
+	}
+	out := append([]byte{}, built...)
+	copy(out[off:], be2(accInterfaceAbstractPublic))
+	return out
 }

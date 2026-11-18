@@ -153,6 +153,11 @@ func TestCompiledDependencySupertype(t *testing.T) {
 		}, []classfile.Class{
 			cls("lib/Base", obj, nil, nil, meth("list", "()V", get("/pets"))),
 		}, map[string]string{"a/Impl.list()V": "GET /pets"}},
+		{"first-party overload is not an override of the dependency route", []classfile.Class{
+			cls("a/Impl", "lib/Base", nil, nil, meth("list", "(Ljava/lang/String;)V")),
+		}, []classfile.Class{
+			cls("lib/Base", obj, nil, nil, meth("list", "(I)V", get("/pets"))),
+		}, map[string]string{"lib/Base.list(I)V": "GET /pets", "a/Impl.list(Ljava/lang/String;)V": "GET /pets"}},
 		{"dependency method inheriting its route from a farther dependency", []classfile.Class{
 			cls("a/Impl", "lib/Mid", nil, nil),
 		}, []classfile.Class{

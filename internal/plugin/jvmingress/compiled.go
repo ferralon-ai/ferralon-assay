@@ -114,13 +114,15 @@ func Compiled(classes []classfile.Class, lookup func(string) (*classfile.Class, 
 	return out
 }
 
-// overridden reports whether c declares an instance method with m's name and parameter count.
+// overridden reports whether c declares an instance method with m's name and descriptor. A
+// generic or covariant override carries a bridge with the supertype's erased descriptor, so
+// the exact match holds for those; a same-name overload is not an override.
 func overridden(c *classfile.Class, m classfile.Method) bool {
 	if !overridable(m) {
 		return true
 	}
 	for _, cm := range c.Methods {
-		if overridable(cm) && cm.Ref.Name == m.Ref.Name && cm.Ref.ParamCount() == m.Ref.ParamCount() {
+		if overridable(cm) && cm.Ref.Name == m.Ref.Name && cm.Ref.Descriptor == m.Ref.Descriptor {
 			return true
 		}
 	}

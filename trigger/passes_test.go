@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"reflect"
 	"slices"
 	"strings"
@@ -503,6 +504,9 @@ func TestBaseline_ManyAdvisoriesOverlappedPasses(t *testing.T) {
 		want[id] = v
 	}
 	opts, analysis := passOptions(t, "never", stopAndWait)
+	// A committed repository, so the inventory memo's checkout reads (go.work search, HEAD) settle on
+	// the first advisory and the 40 do not each fork git, which a -race build on darwin can livelock.
+	opts = append(opts, pipeline.WithCheckout(fixedCheckout{dir: gitRepoWithGoMod(t, wiringGoMod), lang: "go"}))
 	rep := runPasses(t, passAdvisories(ids...), opts, analysis)
 	checkCutShort(t, rep, want, "")
 	got := make([]string, len(rep.Advisories))
@@ -513,4 +517,20 @@ func TestBaseline_ManyAdvisoriesOverlappedPasses(t *testing.T) {
 	if !reflect.DeepEqual(got, ids) {
 		t.Errorf("row order = %v, want the Report's order %v", got, ids)
 	}
+}
+
+// gitRepoWithGoMod is a directory holding go.mod as the one commit of a git repository.
+func gitRepoWithGoMod(t *testing.T, body string) string {
+	t.Helper()
+	dir := writeGoMod(t, body)
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "go.mod"},
+		{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "go.mod"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return dir
 }

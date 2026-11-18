@@ -48,7 +48,10 @@ assumptions:
 - no `//go:linkname` or assembly calls Go functions;
 - no cgo callback calls into Go;
 - the runtime calls no Go function on its own other than finalizers;
-- no `plugin.Open` loads code at run time (a reachable one is declared as `plugin_load`);
+- no `plugin.Open` loads code at run time. A reachable one is declared as `plugin_load`. In a build
+  with cgo off it loads nothing, and is declared as `plugin_load:cgo_off`: a `not_exploitable` row
+  beside it says in its detail that it holds for `CGO_ENABLED=0` and that a build with cgo on was
+  not checked. On a platform that has no plugins nothing is declared;
 - the analyzed program has the same packages and build configuration as the one govulncheck loads.
 
 ### `undetermined` reasons

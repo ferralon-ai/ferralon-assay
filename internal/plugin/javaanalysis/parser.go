@@ -185,6 +185,11 @@ func parseFile(src string) parseResult {
 	// enum flag drives leading enum-constant parsing.
 	var typeStack []frame
 
+	// imports maps the simple name of each single-type import to its qualified
+	// name; wildcard and static imports are not recorded (annotationTypeHeaderInert
+	// treats a name they could supply as unresolved).
+	imports := map[string]string{}
+
 	i := 0
 	for i < n {
 		c := r[i]
@@ -223,12 +228,16 @@ func parseFile(src string) parseResult {
 			// An annotation type "@interface" uses a distinct member grammar and is
 			// not modeled: its elements stay out of decls. Its body is consumed
 			// whole when it provably holds no executable code (annotationBodyEnd);
-			// any other body, or a header that is not "@interface Name {", declares
-			// partiality.
+			// any other body, a header that is not "@interface Name {", or an
+			// annotation on the type that is not a known-inert meta-annotation,
+			// declares partiality: an annotation type's meta-annotations give it
+			// dispatch or wiring meaning the lane does not model.
 			if word == "interface" && precededByAt(r, i) {
-				if end, ok := annotationTypeEnd(r, next); ok {
-					i = end
-					continue
+				if annotationTypeHeaderInert(r, i, imports, len(typeStack) > 0) {
+					if end, ok := annotationTypeEnd(r, next); ok {
+						i = end
+						continue
+					}
 				}
 				res.skipped = true
 				if open, ok := findBrace(r, next); ok {
@@ -277,7 +286,11 @@ func parseFile(src string) parseResult {
 			}
 			if word == "package" || word == "import" {
 				// skip to the terminating ';'
-				i = skipTo(r, next, ';')
+				end := skipTo(r, next, ';')
+				if word == "import" {
+					recordImport(imports, r[next:end])
+				}
+				i = end
 				continue
 			}
 			// Member-level: only consider declarations when the immediate
@@ -912,7 +925,7 @@ func annotationUse(r []rune, pos int) (int, bool) {
 		return 0, false
 	}
 	w, pos := readWord(r, pos)
-	if w == "interface" || annotationBodyReserved[w] {
+	if annotationBodyReserved[w] {
 		return 0, false
 	}
 	pos, ok := qualifiedTail(r, pos)
@@ -935,7 +948,7 @@ func annotationUse(r []rune, pos int) (int, bool) {
 		if isIdentStart(r[pos]) {
 			_, nx := readWord(r, pos)
 			k := skipSpace(r, nx)
-			if k+1 < n && r[k] == '=' && r[k+1] != '=' {
+			if k < n && r[k] == '=' {
 				pos = k + 1
 			}
 		}
@@ -1049,4 +1062,112 @@ func numberEnd(r []rune, pos int) int {
 		}
 	}
 	return pos
+}
+
+// inertMetaAnnotations are the only annotations an annotation type may carry
+// and still be accepted: the java.lang.annotation meta-annotations, none of
+// which gives the annotated type dispatch or wiring meaning. Any other
+// annotation, including a user-defined one, keeps the file skipped.
+var inertMetaAnnotations = map[string]bool{
+	"Retention": true, "Target": true, "Documented": true, "Inherited": true, "Repeatable": true,
+}
+
+const inertMetaPackage = "java.lang.annotation."
+
+// recordImport records a single-type import; text is what follows the "import"
+// keyword through the ';'.
+func recordImport(imports map[string]string, text []rune) {
+	name := strings.Join(strings.Fields(strings.TrimSuffix(string(text), ";")), "")
+	if name == "" || strings.HasPrefix(name, "static") || strings.HasSuffix(name, "*") {
+		return
+	}
+	imports[name[strings.LastIndexByte(name, '.')+1:]] = name
+}
+
+// annotationTypeHeaderInert reports whether every annotation on the "@interface"
+// whose '@' precedes the keyword at kw is a java.lang.annotation meta-annotation.
+// A simple name counts only through a single-type import of the java.lang.annotation
+// type (a wildcard or same-package type could supply a different one) and only
+// at the top level (an enclosing type could declare or inherit a member type of that
+// name); a fully qualified name needs neither. The header is the run of text back
+// to the previous ';', '{' or '}' outside an argument list; it must hold nothing but annotations and the
+// modifiers an annotation type allows.
+func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nested bool) bool {
+	at := kw - 1
+	for at >= 0 && r[at] != '@' {
+		at--
+	}
+	if at < 0 {
+		return false
+	}
+	start, depth := at, 0
+	for start > 0 {
+		c := r[start-1]
+		if c == ')' {
+			depth++
+		} else if c == '(' {
+			if depth == 0 {
+				return false
+			}
+			depth--
+		} else if depth == 0 && (c == ';' || c == '{' || c == '}') {
+			break
+		}
+		start--
+	}
+	pos := start
+	for pos < at {
+		pos = skipSpace(r, pos)
+		if pos >= at {
+			break
+		}
+		if r[pos] == '@' {
+			end, ok := annotationUse(r, pos)
+			if !ok || end > at {
+				return false
+			}
+			name, _ := annotationName(r, pos)
+			if !inertMetaName(name, imports, nested) {
+				return false
+			}
+			pos = end
+			continue
+		}
+		if !isIdentStart(r[pos]) {
+			return false
+		}
+		w, nx := readWord(r, pos)
+		if !annotationTypeModifiers[w] {
+			return false
+		}
+		pos = nx
+	}
+	return true
+}
+
+var annotationTypeModifiers = map[string]bool{
+	"public": true, "protected": true, "private": true, "abstract": true, "static": true, "strictfp": true,
+}
+
+// annotationName reads the qualified name after the '@' at pos with its spaces removed.
+func annotationName(r []rune, pos int) (string, int) {
+	pos = skipSpace(r, pos+1)
+	var b strings.Builder
+	for {
+		w, nx := readWord(r, pos)
+		b.WriteString(w)
+		j := skipSpace(r, nx)
+		if j >= len(r) || r[j] != '.' {
+			return b.String(), nx
+		}
+		b.WriteByte('.')
+		pos = skipSpace(r, j+1)
+	}
+}
+
+func inertMetaName(name string, imports map[string]string, nested bool) bool {
+	if rest, ok := strings.CutPrefix(name, inertMetaPackage); ok {
+		return inertMetaAnnotations[rest]
+	}
+	return !nested && inertMetaAnnotations[name] && imports[name] == inertMetaPackage+name
 }

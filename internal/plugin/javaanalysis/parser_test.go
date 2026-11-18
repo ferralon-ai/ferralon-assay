@@ -89,6 +89,13 @@ class Box<T extends Comparable<T>> extends Base implements Iface, Other {
 	}
 }
 
+const metaImports = `import java.lang.annotation.Retention;
+import java.lang.annotation.Target;
+import java.lang.annotation.Documented;
+import java.lang.annotation.Inherited;
+import java.lang.annotation.Repeatable;
+`
+
 func TestParseFile_AnnotationTypeBody(t *testing.T) {
 	// An annotation type is skipped (declared partiality) unless its body provably
 	// holds no executable code. Accepted bodies are an allow-list: element and
@@ -99,15 +106,28 @@ func TestParseFile_AnnotationTypeBody(t *testing.T) {
 		body        string
 		wantSkipped bool
 	}{
-		{"petclinic constraint shape", `
+		{"petclinic shape without the validator hook", `
 @Target({ElementType.FIELD, ElementType.METHOD, ElementType.PARAMETER})
 @Retention(RetentionPolicy.RUNTIME)
-@Constraint(validatedBy = PetAgeValidator.class)
+@Documented
 public @interface PetAgeValidation {
     String message() default "Pet age is invalid";
     Class<?>[] groups() default {};
     Class<? extends Payload>[] payload() default {};
 }`, false},
+		{"all meta-annotations", `
+@Documented @Inherited @Repeatable(Tags.class) @java.lang.annotation.Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.TYPE)
+@interface Tag { String value(); }`, false},
+		{"petclinic constraint shape stays skipped", `
+@Target({ElementType.FIELD, ElementType.METHOD, ElementType.PARAMETER})
+@Retention(RetentionPolicy.RUNTIME)
+@Constraint(validatedBy = PetAgeValidator.class)
+@Documented
+public @interface PetAgeValidation {
+    String message() default "Pet age is invalid";
+    Class<?>[] groups() default {};
+}`, true},
 		{"empty body", `@interface Marker {}`, false},
 		{"stray semicolons", `@interface Marker { ; ; }`, false},
 		{"literals of every kind", `@interface A {
@@ -194,7 +214,7 @@ public @interface PetAgeValidation {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pr := parseFile("package p;\n" + tt.body + "\n")
+			pr := parseFile("package p;\n" + metaImports + tt.body + "\n")
 			if pr.skipped != tt.wantSkipped {
 				t.Errorf("skipped = %v, want %v", pr.skipped, tt.wantSkipped)
 			}
@@ -303,5 +323,81 @@ func TestStripJava_PreservesNewlines(t *testing.T) {
 	}
 	if strings.Contains(got, "comment") || strings.Contains(got, "multi") {
 		t.Errorf("stripJava left comment content: %q", got)
+	}
+}
+
+func TestParseFile_AnnotationTypeHeader(t *testing.T) {
+	// An annotation type is itself annotated, and a composed annotation carries the
+	// behaviour of its meta-annotations. The file is accepted only when every
+	// annotation on the type is a java.lang.annotation meta-annotation that
+	// resolves, by import or by qualified name, to that package.
+	tests := []struct {
+		name        string
+		src         string
+		wantSkipped bool
+	}{
+		{"imported Target and Retention", `package p;
+import java.lang.annotation.Target;
+import java.lang.annotation.Retention;
+@Target(ElementType.METHOD) @Retention(RetentionPolicy.RUNTIME) public @interface A { String v() default ""; }`, false},
+		{"each meta-annotation by import", `package p;
+import java.lang.annotation.Documented;
+import java.lang.annotation.Inherited;
+import java.lang.annotation.Repeatable;
+@Documented @Inherited @Repeatable(As.class) @interface A {}`, false},
+		{"fully qualified, no import", `package p;
+@java.lang.annotation.Target(java.lang.annotation.ElementType.METHOD) @interface A {}`, false},
+		{"no annotations", `package p; @interface A {}`, false},
+		{"modifiers only", `package p; public abstract static @interface A {}`, false},
+
+		{"composed route", `package p;
+import java.lang.annotation.Target;
+@Target(ElementType.METHOD) @GetMapping public @interface ApiGet { @AliasFor(annotation = GetMapping.class) String[] value() default {}; }`, true},
+		{"composed request mapping", `package p; @RequestMapping(method = RequestMethod.GET) @interface ApiGet {}`, true},
+		{"composed scheduled", `package p; @Scheduled(fixedRate = 1000) @interface Tick {}`, true},
+		{"composed event listener", `package p; @EventListener @interface OnThing {}`, true},
+		{"composed stereotype", `package p; @Component @interface UseCase {}`, true},
+		{"composed transactional", `package p; @Transactional @interface Tx {}`, true},
+		{"user-defined meta-annotation", `package p; @MyMeta @interface A {}`, true},
+		{"user-defined after a good one", `package p;
+import java.lang.annotation.Retention;
+@Retention(RetentionPolicy.RUNTIME) @MyMeta @interface A {}`, true},
+		{"simple name without import", `package p; @Target(ElementType.METHOD) @interface A {}`, true},
+		{"import of another package's Target", `package p;
+import com.acme.Target;
+@Target @interface A {}`, true},
+		{"wildcard import could supply Target", `package p;
+import java.lang.annotation.*;
+@Target(ElementType.METHOD) @interface A {}`, true},
+		{"static import of Target", `package p;
+import static com.acme.Marks.Target;
+@Target @interface A {}`, true},
+		{"qualified name in another package", `package p; @com.acme.Target @interface A {}`, true},
+		{"partially qualified name", `package p; @annotation.Target @interface A {}`, true},
+		{"imported name is not a meta-annotation", `package p;
+import java.lang.annotation.Native;
+@Native @interface A {}`, true},
+		{"qualified composed route", `package p; @org.springframework.web.bind.annotation.GetMapping @interface A {}`, true},
+		{"nested annotation type, simple name", `package p;
+import java.lang.annotation.Target;
+class K { @Target(ElementType.METHOD) @interface A {} }`, true},
+		{"nested annotation type, qualified name", `package p;
+class K { @java.lang.annotation.Target(ElementType.METHOD) @interface A {} }`, false},
+		{"meta-annotation argument holds code", `package p;
+import java.lang.annotation.Target;
+@Target(foo()) @interface A {}`, true},
+		{"inside an open argument list", `package p;
+import java.lang.annotation.Target;
+class K { void m() { make( @Target @interface A {} ); } }`, true},
+		{"unclassified text before the annotation type", `package p;
+import java.lang.annotation.Target;
+K k = make() @Target @interface A {}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseFile(tt.src).skipped; got != tt.wantSkipped {
+				t.Errorf("skipped = %v, want %v", got, tt.wantSkipped)
+			}
+		})
 	}
 }

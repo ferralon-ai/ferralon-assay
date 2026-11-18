@@ -185,6 +185,8 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Effect.** Where the loader can bound cgo, limits are scoped per package or path. Where it cannot, a run-wide `cgo` did-not-run reason blocks `not_exploitable` scan-wide.
 
+**Exception: cgo off, files left out.** A scan with `CGO_ENABLED=0` whose build compiles no cgo code and only leaves cgo files out declares each limit as `cgo:files_dropped`. Each left-out file is still read for calls into the advisory's module, and one that may make them withholds the refutation with `excluded_files`. Otherwise the refutation is kept and the row clears to `not_exploitable` through the usual path, provided no other did-not-run limit applies. The scope is on the finding: `evidence.detail` says the decision holds for `CGO_ENABLED=0` and that a build with cgo on was not checked. The limit is still disclosed at scan level. Where the shipped build has cgo on, scan with cgo on.
+
 ### GO-REFLECT-CALL
 
 **Trigger.** The call graph, from govulncheck entry roots and the unsearched exported methods, reaches `reflect.Value.Call/CallSlice/Method/MethodByName` or `text/template` / `html/template` `Execute`/`ExecuteTemplate`.

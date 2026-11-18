@@ -303,11 +303,15 @@ func cgoPinned(ctx context.Context, dir string, env []string) ([]string, error) 
 // stub the build compiles in its place.
 //
 // runtime/cgo itself is not a cgo package here: every cgo package imports it.
+//
+// A build with cgo off (env sets CGO_ENABLED=0, as the pinned load does) that compiles no cgo code
+// and only left cgo files out declares each limit as cgo:files_dropped: nothing in that build crosses into C, and what is unread is the same program
+// built with cgo on.
 func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedReason, dropped, bounded bool) {
 	tags := goflagsTags(env)
 	cgoMods := map[string]string{} // module PURL -> one cgo package path in it
 	every := map[string]bool{"": true}
-	callbacks, unreadable := false, false
+	callbacks, unreadable, compiledAny := false, false, false
 	var droppedImports []string
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		every[modulePURL(p)] = true
@@ -326,6 +330,7 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 		if mod := modulePURL(p); cgoMods[mod] == "" || p.PkgPath < cgoMods[mod] {
 			cgoMods[mod] = p.PkgPath
 		}
+		compiledAny = compiledAny || compiled
 		if len(files) > 0 {
 			dropped, callbacks = true, true
 			for _, f := range files {
@@ -364,16 +369,32 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 			}
 		}
 	}
+	// A cgo module the build compiles no cgo code of, in a load pinned to cgo off, is one it only
+	// dropped files from.
+	reason := plugin.PartialReasonCgo
+	if !compiledAny && cgoOff(env) {
+		reason = plugin.PartialReasonCgoFilesDropped
+	}
 	list := sortedKeys(targets)
 	for _, mod := range sortedKeys(mapKeys(cgoMods)) {
 		scoped = append(scoped, plugin.ScopedReason{
-			Reason:  plugin.PartialReasonCgo,
+			Reason:  reason,
 			Package: mod,
 			Path:    cgoMods[mod],
 			Targets: list,
 		})
 	}
 	return scoped, dropped, true
+}
+
+// cgoOff reports whether env sets CGO_ENABLED=0, by its last setting as the go command reads it.
+func cgoOff(env []string) bool {
+	for _, kv := range slices.Backward(env) {
+		if v, ok := strings.CutPrefix(kv, "CGO_ENABLED="); ok {
+			return v == "0"
+		}
+	}
+	return false
 }
 
 const stdlibPURL = "pkg:golang/stdlib"
@@ -529,6 +550,24 @@ func goflagsTags(env []string) []string {
 // file that counts for any other cause, so constrained is a limit on its own only when found is
 // false.
 func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, symbols map[string][]string, release *releaseBound, buildDir string, env []string) (found bool, reasons []string, failed bool, constrained int) {
+	return leftOutWalk(ctx, pkgs, module, vulnerable, symbols, release, buildDir, env, false)
+}
+
+// leftOutImporters reports whether a non-test Go file the build left out imports, directly or
+// through other packages, one of module's packages that count, whatever the file's declarations
+// reach and whatever left it out: some build configuration of this source compiles that package in.
+// It walks the files leftOutCallers walks, so test files, nested modules, testdata, directories
+// whose name begins with `_` or `.`, files marked `//go:build ignore` and files a Go release the
+// build cannot compile under selects are outside it, and follows every import of a package the
+// build did not load, whatever that package's module requires. failed reports the same.
+func leftOutImporters(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *releaseBound, buildDir string, env []string) (found, failed bool) {
+	found, _, failed, _ = leftOutWalk(ctx, pkgs, module, vulnerable, nil, release, buildDir, env, true)
+	return found, failed
+}
+
+// leftOutWalk is leftOutCallers, or leftOutImporters when importsOnly: a file then counts by its
+// imports alone, with no narrowing to the advisory's symbols.
+func leftOutWalk(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, symbols map[string][]string, release *releaseBound, buildDir string, env []string, importsOnly bool) (found bool, reasons []string, failed bool, constrained int) {
 	reach := newModuleReach(pkgs, module, vulnerable)
 	stdlib := module == "stdlib"
 	var graph modGraph
@@ -570,7 +609,10 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 			if owner == "" {
 				return true, false
 			}
-			if !underModule(module, owner) && !graph.requires(owner, module) {
+			// A module that does not require this one can still import its packages: the build
+			// resolves them through the main module's requirement. That is rare enough to leave out
+			// of the search for a caller, and it decides whether any build imports the package.
+			if !importsOnly && !underModule(module, owner) && !graph.requires(owner, module) {
 				return false, false
 			}
 		}
@@ -677,6 +719,9 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 	counts := func(path string, own string, std bool) bool {
 		if !leftOutOf(path, own, std) {
 			return false
+		}
+		if importsOnly {
+			return true
 		}
 		r := row()
 		c, why, engineFailed, analyzed := r.countsWhy(path)

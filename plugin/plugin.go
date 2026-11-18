@@ -322,6 +322,12 @@ const (
 	// CGO_ENABLED` failed), so which of the build's cgo and non-cgo files the shipped binary
 	// compiles is unknown.
 	PartialReasonCgoUnresolved = PartialReasonCgo + ":env_unresolved"
+	// PartialReasonCgoFilesDropped localises cgo: the build has cgo off and compiles no cgo code,
+	// and it left out cgo files that a build with cgo on would compile. Those files are not in
+	// the scanned build, and the Go lane reads each one for calls into the advisory's module
+	// (excluded_files when one may make them). A refutation the lane keeps beside it says in its
+	// detail that it holds for CGO_ENABLED=0 only.
+	PartialReasonCgoFilesDropped = PartialReasonCgo + ":files_dropped"
 	// PartialReasonIfdefConfigVariance (new base, run-specific/loud): a preprocessor
 	// conditional (#ifdef/#if) gates code the analysis cannot resolve without the build's
 	// actual macro definitions, so the compiled configuration is undetermined. Every
@@ -734,6 +740,9 @@ const (
 	// RefutationAnalyzerSymbolNotReached: govulncheck reported the advisory against a module or
 	// package in the build and found no call path to any of its vulnerable symbols.
 	RefutationAnalyzerSymbolNotReached = "analyzer_symbol_not_reached"
+	// RefutationAnalyzerPackageNotImported: govulncheck reported the advisory against a module in
+	// the build, and the build imports none of the advisory's vulnerable packages of that module.
+	RefutationAnalyzerPackageNotImported = "analyzer_package_not_imported"
 	// RefutationPackageNotLoaded: the package is installed at the admitted version and no
 	// runtime-loaded module imports it.
 	RefutationPackageNotLoaded = "package_not_loaded"

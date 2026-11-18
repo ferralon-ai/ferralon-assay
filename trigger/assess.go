@@ -227,12 +227,14 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			}
 		}
 		if undetermined {
+			limits := withheldBy(store, assessmentID, pkg, reason)
 			f = report.AdvisoryFinding{
 				Advisory:           adv,
 				Package:            pkg,
 				Verdict:            report.VerdictUndetermined,
 				UndeterminedReason: reason,
-				Evidence:           report.EvidenceSummary{Detail: report.UndeterminedDetail(reason)},
+				WithheldBy:         limits,
+				Evidence:           report.EvidenceSummary{Detail: report.WithheldDetail(reason, limits)},
 			}
 			break
 		}
@@ -1317,20 +1319,13 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	if emptyGraphUncalledComplete(store, assessmentID) {
 		return report.ReasonAnalysisDidNotRun, true
 	}
-	reasons := didNotRunReasons(store, assessmentID, pkg)
-	versionHeld := false
-	if _, _, admitted := admittedPackage(store, assessmentID, pkg); !admitted {
-		kept := withoutVersionLimits(store, assessmentID, reasons)
-		versionHeld = len(kept) < len(reasons)
-		reasons = kept
-		// A row with no package is one whose version never resolved (a module replaced by a
-		// different path or a directory has none), so the limit that held it is the specific
-		// statement, whatever other axes declared.
-		if versionHeld && pkg == nil {
-			return report.ReasonPackageVersionUnresolved, true
-		}
+	reasons, versionHeld := keptDidNotRunReasons(store, assessmentID, pkg)
+	// A row with no package is one whose version never resolved (a module replaced by a
+	// different path or a directory has none), so the limit that held it is the specific
+	// statement, whatever other axes declared.
+	if versionHeld && pkg == nil {
+		return report.ReasonPackageVersionUnresolved, true
 	}
-	reasons = withoutBuildConstraintLimit(store, assessmentID, pkg, reasons)
 	switch {
 	case len(reasons) == 0:
 		return "", false
@@ -1347,15 +1342,30 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	return report.ReasonAnalysisDidNotRun, true
 }
 
+// keptDidNotRunReasons returns the did-not-run limits that hold against this advisory once the ones
+// another statement covers are dropped (withoutVersionLimits, withoutBuildConstraintLimit).
+// versionHeld reports that a version limit was among those dropped.
+func keptDidNotRunReasons(store artifact.Store, assessmentID string, pkg *report.Package) (reasons []string, versionHeld bool) {
+	reasons = didNotRunReasons(store, assessmentID, pkg)
+	if _, _, admitted := admittedPackage(store, assessmentID, pkg); !admitted {
+		kept := withoutVersionLimits(store, assessmentID, reasons)
+		versionHeld = len(kept) < len(reasons)
+		reasons = kept
+	}
+	return withoutBuildConstraintLimit(store, assessmentID, pkg, reasons), versionHeld
+}
+
 // scopeStatedLimits are the limits the Go lane declares beside a refutation it kept for the scanned
 // build alone, each stated in that refutation's detail. excluded_files:build_constraint: every file
 // the build left out that may call into the module was left out by its build constraints alone, and
 // the detail names the platform and tags. plugin_load:cgo_off: the program reaches plugin.Open in a
 // build with cgo off, where it loads nothing, and the detail says the refutation holds for
-// CGO_ENABLED=0.
+// CGO_ENABLED=0. cgo:files_dropped: the build has cgo off and left its cgo files out, and the detail
+// says the same.
 var scopeStatedLimits = map[string]bool{
 	plugin.PartialReasonExcludedFilesBuildConstraint: true,
 	plugin.PartialReasonPluginLoadCgoOff:             true,
+	plugin.PartialReasonCgoFilesDropped:              true,
 }
 
 // withoutBuildConstraintLimit drops, from the limits a refutation would be withheld by, the
@@ -1369,10 +1379,22 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
 	admitted, _, ok := admittedPackage(store, assessmentID, pkg)
-	if r := reach.Refutation; !ok || r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
+	r := reach.Refutation
+	if !ok || r == nil || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
 		return reasons
 	}
-	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return scopeStatedLimits[r] })
+	drops := scopeStatedLimits
+	switch r.Basis {
+	case plugin.RefutationAnalyzerSymbolNotReached:
+	case plugin.RefutationAnalyzerPackageNotImported:
+		// "No build file imports the package" is a claim about every platform, so it does not stand
+		// beside a file another platform builds that may call into the module. It reads the files cgo
+		// off drops too, so the cgo-off limits still clear.
+		drops = map[string]bool{plugin.PartialReasonPluginLoadCgoOff: true, plugin.PartialReasonCgoFilesDropped: true}
+	default:
+		return reasons
+	}
+	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return drops[r] })
 }
 
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a
@@ -1540,8 +1562,8 @@ func goPathWithin(p, root string) bool {
 //   - The subject's toolchain must NOT have been scanned (M4). This is the clause that LIFTS the
 //     undetermined verdict rather than adding to it: once the analysis has actually run under an
 //     exact subject toolchain, the empty path set IS evidence about the subject, and
-//     not_exploitable/vulnerable_symbol_unreachable becomes the established claim it always purported
-//     to be.
+//     not_exploitable, on the basis the refutation states, becomes the established claim it always
+//     purported to be.
 //
 // What is left is the empty path set govulncheck produced against the ANALYZER's Go rather than
 // the subject's.

@@ -61,11 +61,22 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 	ci := func(run string) string {
 		return "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: " + run + "\n"
 	}
+	// out is a Dockerfile shaped like the one Nx generates for a Node app: it copies a build
+	// output the tree does not hold to api, between commands that name api, then runs run.
+	out := func(before, run string, extra map[string]string) map[string]string {
+		files := npm(extra)
+		files["Dockerfile"] = "FROM docker.io/node:lts-alpine\nENV HOST=0.0.0.0\nWORKDIR /app\n" +
+			"RUN addgroup --system api && \\\n    adduser --system -G api api\n" +
+			before + "COPY dist/api api\nRUN chown -R api:api .\nRUN " + run + "\n"
+		return files
+	}
+	const prefixed = "npm --prefix api --omit=dev -f install"
 	type outcome int
 	const (
 		withheld outcome = iota
 		assumed
 		plain
+		built
 	)
 	tests := []struct {
 		name  string
@@ -93,6 +104,14 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"yarn --frozen-lockfile", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn --frozen-lockfile")}, assumed},
 		{"pnpm install", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, ".github/workflows/ci.yml": ci("pnpm install")}, assumed},
 
+		// Installs into a build output the tree does not hold.
+		{"Dockerfile installs into a copied build output", out("", prefixed, nil), built},
+		{"Dockerfile installs into a copied build output with --prefix=", out("", "npm install --prefix=api", nil), built},
+		{"Dockerfile runs npm ci in a copied build output", out("", "npm ci --prefix api", nil), built},
+		{"Dockerfile installs into a build output under an .npmrc that names a registry", out("COPY ci/npmrc .npmrc\n", prefixed, map[string]string{"ci/npmrc": "registry=https://registry.example.test/\n"}), built},
+		{"Dockerfile installs into a build output below a copied directory that holds none of it", out("COPY ci/ ./\n", prefixed, map[string]string{"ci/notes.txt": "x\n"}), built},
+		{"Dockerfile installs into a build output a mount does not reach", out("", "--mount=type=cache,target=/root/.npm "+prefixed, nil), built},
+
 		// Commands that install nothing, or hold to the lock by their own flags.
 		{"npm install the lock covers, placed", npm(map[string]string{"install.sh": "npm install\n"}), plain},
 		{"Dockerfile copies the tree, then npm ci", npm(map[string]string{"Dockerfile": whole + "npm ci\n"}), plain},
@@ -113,6 +132,46 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"jq reads package.json", npm(map[string]string{".github/workflows/ci.yml": ci("npm ci\n      - run: jq -r .version package.json")}), plain},
 		{"playwright browser install", npm(map[string]string{"package.json": `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"},"devDependencies":{"@playwright/test":"^1.40.0"},"scripts":{"pretest":"npx playwright install chromium"}}`,
 			"package-lock.json": `{"name":"app","lockfileVersion":3,"packages":{"":{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"},"devDependencies":{"@playwright/test":"^1.40.0"}},"node_modules/express":{"version":"4.19.2"},"node_modules/@playwright/test":{"version":"1.40.0","dev":true}}}`}), plain},
+
+		// Installs into a build output that may reach the scanned project, or leave the lock.
+		{"build output install names a package", out("", "npm --prefix api install left-pad", nil), withheld},
+		{"build output install --no-package-lock", out("", prefixed+" --no-package-lock", nil), withheld},
+		{"build output install --package-lock=false", out("", prefixed+" --package-lock=false", nil), withheld},
+		{"build output install --no-save", out("", prefixed+" --no-save", nil), withheld},
+		{"build output install at a prefix that leaves the WORKDIR", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY dist/api /api\nRUN npm --prefix ../api install\n"}, withheld},
+		{"build output install at an absolute prefix", out("", "npm --prefix /app/api install", nil), withheld},
+		{"build output install at a prefix in a variable", out("", "npm --prefix $API install", nil), withheld},
+		{"build output install at a prefix a command prints", out("", "npm --prefix $(echo api) install", nil), withheld},
+		{"build output install at a backquoted prefix", out("", "npm --prefix `echo api` install", nil), withheld},
+		{"build output install at a brace-expanded prefix", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY dist/api {api,web}\nRUN npm --prefix {api,web} install\n"}, withheld},
+		{"build output install inside node_modules", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY dist/api node_modules/api\nRUN npm --prefix node_modules/api install\n"}, withheld},
+		{"build output install into a directory another stage fills", out("COPY --from=build /out api\n", prefixed, nil), withheld},
+		{"build output install into a directory ADD fills", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Dockerfile": "FROM node:20\nWORKDIR /app\nADD dist/api api\nRUN npm --prefix api install\n"}, withheld},
+		{"build output install below a directory another stage fills", out("COPY --from=build /out /app\n", prefixed, nil), withheld},
+		{"build output install under an .npmrc that turns the lock off", out("COPY ci/npmrc .npmrc\n", prefixed, map[string]string{"ci/npmrc": "package-lock=false\n"}), withheld},
+		{"build output install under a home directory another stage fills", out("COPY --from=build /root /root\n", prefixed, nil), withheld},
+		{"build output install after a line is added to its .npmrc", out("", prefixed+" && echo x >> .npmrc", nil), withheld},
+		{"build output install into a directory the tree's manifest and lock are copied to", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY dist/api api\nCOPY package.json package-lock.json api/\nRUN npm --prefix api install\n"}, withheld},
+		{"build output install above a directory the tree's project is copied to", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY dist/api api\nCOPY . api/web/\nRUN npm --prefix api install\n"}, withheld},
+		{"build output install below a copy of the tree that holds the directory", out("COPY . .\n", prefixed, map[string]string{"api/package.json": api}), withheld},
+		{"build output install from a source the tree holds", out("", prefixed, map[string]string{"dist/api/package.json": api}), withheld},
+		{"build output install beside a source the tree holds", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "ci/notes.txt": "x\n", "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY dist/api ci/notes.txt api/\nRUN npm --prefix api install\n"}, withheld},
+		{"build output install from a glob", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY dist/ap* api\nRUN npm --prefix api install\n"}, withheld},
+		{"build output install in an Earthfile", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Earthfile": "VERSION 0.8\nbuild:\n    FROM node:20\n    WORKDIR /app\n    COPY dist/api api\n    RUN npm --prefix api install\n"}, withheld},
+		{"build output install under a mount of the output", out("", "--mount=type=cache,target=/app/api "+prefixed, nil), withheld},
+		{"build output install under a mount inside the output", out("", "--mount=type=cache,target=/app/api/node_modules "+prefixed, nil), withheld},
+		{"build output install under a mount above the output", out("", "--mount=type=bind,target=/app "+prefixed, nil), withheld},
+		{"build output install under a mount between the WORKDIR and the output", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY dist/api x/api\nRUN --mount=type=cache,target=/app/x npm --prefix x/api install\n"}, withheld},
+		{"build output install under a mount of the root", out("", "--mount=type=bind,target=/ "+prefixed, nil), withheld},
+		{"build output install under a mount at a target in a variable", out("", "--mount=type=cache,target=$DIR "+prefixed, nil), withheld},
+		{"build output install from a WORKDIR in a variable", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Dockerfile": "FROM node:20\nWORKDIR $APP\nCOPY dist/api api\nRUN npm --prefix api install\n"}, withheld},
+		{"build output install after cd into it", out("", "cd api && npm --prefix . install", nil), withheld},
+		{"build output install in a stage built on another", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Dockerfile": "FROM node:20 AS base\nRUN echo hi\nFROM base\nWORKDIR /app\nCOPY dist/api api\nRUN npm --prefix api install\n"}, withheld},
+		{"build output install, then a command names package.json", out("", prefixed+"\nRUN sed -i s/4.19/4.18/ api/package.json", nil), withheld},
+		{"build output install, then a command names the lock", out("", prefixed+"\nRUN rm -f api/package-lock.json", nil), withheld},
+		{"build output install beside an install of a package", out("", prefixed+"\nRUN npm install left-pad", nil), withheld},
+		{"build output install with yarn", out("", "yarn --cwd api install", nil), withheld},
+		{"build output install with pnpm", out("", "pnpm --dir api install", nil), withheld},
 
 		// Installs that can leave the lock.
 		{"npm install names a package", npm(map[string]string{"Dockerfile": whole + "npm install left-pad\n"}), withheld},
@@ -225,17 +284,22 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 			if got := r.Match.Resolved; got != (tt.want != withheld) {
 				t.Fatalf("Resolved = %v, want %v (partiality %+v)", got, tt.want != withheld, r.Partiality)
 			}
-			var notes []plugin.Annotation
-			for _, a := range r.Annotations {
-				if a.Reason == AnnotationInstallHonoursLock {
-					notes = append(notes, a)
+			for _, want := range []struct {
+				o              outcome
+				reason, detail string
+			}{{assumed, AnnotationInstallHonoursLock, lockAssumption}, {built, AnnotationBuildOutputInstall, buildOutputAssumption}} {
+				var notes []plugin.Annotation
+				for _, a := range r.Annotations {
+					if a.Reason == want.reason {
+						notes = append(notes, a)
+					}
 				}
-			}
-			switch {
-			case tt.want != assumed && len(notes) > 0:
-				t.Fatalf("annotations = %+v; want no lock assumption", notes)
-			case tt.want == assumed && (len(notes) != 1 || notes[0].Detail != lockAssumption || notes[0].Path != ""):
-				t.Fatalf("annotations = %+v; want one %s saying %q, with none of the tree's words", r.Annotations, AnnotationInstallHonoursLock, lockAssumption)
+				switch {
+				case tt.want != want.o && len(notes) > 0:
+					t.Fatalf("annotations = %+v; want no %s", notes, want.reason)
+				case tt.want == want.o && (len(notes) != 1 || notes[0].Detail != want.detail || notes[0].Path != ""):
+					t.Fatalf("annotations = %+v; want one %s saying %q, with none of the tree's words", r.Annotations, want.reason, want.detail)
+				}
 			}
 		})
 	}
@@ -253,6 +317,7 @@ func TestLoadClosure_LockAssumption(t *testing.T) {
 	}{
 		{"npm ci from the copied lock", "COPY package.json package-lock.json ./\nRUN npm ci\n", "", both, nil},
 		{"npm install over the whole tree", "COPY . /app\nRUN npm install\n", "", both, []string{lockAssumption}},
+		{"npm install into a build output", "COPY dist/api api\nRUN npm --prefix api install\n", "", both, []string{buildOutputAssumption}},
 		// idle is no direct dependency here, so the computed load's bound leaves it out.
 		{"npm install over a tree with a computed load", "COPY . /app\nRUN npm install\n", "module.exports = n => require(n);\n",
 			map[string]string{"used": "1.0.0"}, []string{computedLoadAssumption([]string{"first-party code"}), lockAssumption}},

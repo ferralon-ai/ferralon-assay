@@ -26,6 +26,13 @@ type Binder interface {
 	// as a surface on its own. With locks given, each of them that is there in dir must be a
 	// regular file read here, reached through no symlink. nil when any is not.
 	Prefixed(dir, name string, locks ...string) []string
+	// Built reports whether dir, a literal relative path with no .. part and no node_modules
+	// on the way to it, names from where a Dockerfile command runs the destination of a plain
+	// COPY whose every source no build context holds: a build output, which holds nothing the
+	// tree commits. Nothing else may have been copied, written or mounted at or under it, nor
+	// a directory copied above it hold anything there; a command's taint of everything is left
+	// to the mentions that bind reads. It binds names. false outside a Dockerfile.
+	Built(dir string, names ...string) bool
 	// Clear reports whether nothing is at p, a relative path whose only .. parts lead it, beside
 	// each file Nearest(name) returns: nothing in the build tree there and, under a Dockerfile,
 	// nothing copied or mounted there. In the tree, a p with .. must stay inside root from a
@@ -439,6 +446,9 @@ func (c *hostCursor) Prefixed(dir, name string, locks ...string) []string {
 	}
 	return found
 }
+
+// Built is false: a build-tree directory is not a build output.
+func (c *hostCursor) Built(string, ...string) bool { return false }
 
 // packageFile reports whether f is inside the build, reached through no symlink, and a regular
 // file read here.

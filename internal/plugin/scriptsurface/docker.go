@@ -5,13 +5,15 @@ import (
 	"maps"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
 // dockerEvent is one change to a stage's filesystem, by container path: a COPY from the
 // build context (hosts, the host files or directories copied), or a taint at dst, under dst
 // when dir, or everywhere when all; cmd when a command whose words were mentioned made it.
-// venv marks the taint a virtual environment's creation at dst left.
+// venv marks the taint a virtual environment's creation at dst left; built marks the taint a
+// plain COPY left at dst from sources no build context holds, a build output.
 type dockerEvent struct {
 	dst   string
 	hosts []string
@@ -20,6 +22,7 @@ type dockerEvent struct {
 	all   bool
 	cmd   bool
 	venv  bool
+	built bool
 }
 
 // covers reports whether the event changes the container path f.
@@ -213,8 +216,10 @@ func (st *dockerStage) mountTarget(m string) (string, bool) {
 }
 
 // copyInstr records a COPY or ADD. Only a plain COPY of existing build-context paths maps
-// files; anything else taints its destination, or everything when that is unknown.
-func (st *dockerStage) copyInstr(v *Veto, ctxs []string, rest string, add bool) {
+// files; anything else taints its destination, or everything when that is unknown. A plain
+// COPY in a Dockerfile (not earth) whose every source is a literal path no build context
+// holds marks its taint built.
+func (st *dockerStage) copyInstr(v *Veto, ctxs []string, rest string, add, earth bool) {
 	var args []string
 	if strings.HasPrefix(rest, "[") {
 		if json.Unmarshal([]byte(rest), &args) != nil {
@@ -304,10 +309,27 @@ func (st *dockerStage) copyInstr(v *Veto, ctxs []string, rest string, add bool) 
 		unplaced = unplaced || !placed
 	}
 	if len(mapped) == 0 || unplaced {
-		st.events = append(st.events, dockerEvent{dst: destC, dir: true, taint: true})
+		st.events = append(st.events, dockerEvent{dst: destC, dir: true, taint: true, built: !earth && v.absentFrom(ctxs, srcs)})
 		return
 	}
 	st.events = append(st.events, mapped...)
+}
+
+// absentFrom reports whether no build context in ctxs holds any of srcs, each a literal path
+// with nothing, not even a symlink, there or on the way to it.
+func (v *Veto) absentFrom(ctxs, srcs []string) bool {
+	for _, src := range srcs {
+		if strings.ContainsAny(src, "*?[") {
+			return false
+		}
+		rel := filepath.FromSlash(strings.TrimPrefix(path.Clean("/"+src), "/"))
+		for _, ctx := range ctxs {
+			if there, known := v.lstat(ctx, rel); there || !known {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // dockerCursor is the container directory a RUN, CMD or ENTRYPOINT command runs in.
@@ -469,6 +491,56 @@ func (c *dockerCursor) fork() cursor {
 // Prefixed is nil: a package root inside the image is not a build-tree directory the walk
 // reads.
 func (c *dockerCursor) Prefixed(string, string, ...string) []string { return nil }
+
+// Built reads dir as a build output when the newest change to it is a plain COPY of sources no
+// build context holds, and no mount, later write or copy above it can put anything there.
+func (c *dockerCursor) Built(dir string, names ...string) bool {
+	if !c.mountsKnown || path.IsAbs(dir) || strings.ContainsAny(dir, `{\`) {
+		return false
+	}
+	for _, part := range strings.Split(dir, "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	dest, ok := c.at(dir)
+	if !ok || slices.Contains(strings.Split(dest, "/"), "node_modules") {
+		return false
+	}
+	for _, m := range c.mounts {
+		if m == "/" || m == dest || strings.HasPrefix(m, dest+"/") || strings.HasPrefix(dest, m+"/") {
+			return false
+		}
+	}
+	built := false
+	for _, e := range c.st.events {
+		switch {
+		case e.all:
+			if !e.cmd {
+				return false
+			}
+		case e.dst == dest && e.built:
+			built = true
+		case e.dst == dest || strings.HasPrefix(e.dst, dest+"/"):
+			return false
+		case e.dst == "/" || strings.HasPrefix(dest, e.dst+"/"):
+			if e.taint {
+				return false
+			}
+			// A directory copied above it may hold one there already.
+			rel := filepath.FromSlash(strings.TrimPrefix(strings.TrimPrefix(dest, e.dst), "/"))
+			for _, h := range e.hosts {
+				if there, known := c.v.lstat(h, rel); there || !known {
+					return false
+				}
+			}
+		}
+	}
+	if built {
+		c.Bind(names...)
+	}
+	return built
+}
 
 func (c *dockerCursor) File(p string) bool { return c.Hosts(p) != nil }
 
@@ -835,7 +907,7 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 				st.wdKnown = false
 			}
 		case instr == "COPY" || instr == "ADD":
-			st.copyInstr(v, ctxs, rest, instr == "ADD")
+			st.copyInstr(v, ctxs, rest, instr == "ADD", earth)
 		case instr == "RUN" || instr == "CMD" || instr == "ENTRYPOINT":
 			var mounts []string
 			mountsKnown := true

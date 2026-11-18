@@ -44,6 +44,14 @@ var servletEntryMethods = map[string]bool{}
 // (registry-fed), consumed by isServletBase in parser.go.
 var servletSuperSuffix string
 
+// validatorSuper is the constraint-validator family's supertype simple name and
+// validatorEntryMethods its entry-method names (both registry-fed), consumed by
+// validatorentry.go.
+var (
+	validatorSuper        string
+	validatorEntryMethods = map[string]bool{}
+)
+
 func init() {
 	for _, f := range jvmingress.Families() {
 		switch f.Kind {
@@ -53,6 +61,11 @@ func init() {
 			servletSuperSuffix = f.Match.SuperSuffix
 			for _, m := range f.Match.Methods {
 				servletEntryMethods[m] = true
+			}
+		case jvmingress.KindConstraintValidator:
+			validatorSuper = f.Match.Supertype[strings.LastIndexByte(f.Match.Supertype, '/')+1:]
+			for _, m := range f.Match.Methods {
+				validatorEntryMethods[m] = true
 			}
 		default:
 			containerEntrypoints[f.Match.Annotation] = f.Kind

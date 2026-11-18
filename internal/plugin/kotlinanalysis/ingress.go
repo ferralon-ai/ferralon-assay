@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jvmingress"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -81,11 +82,22 @@ var (
 	servletSuperSuffix string
 	// servletMethods is the servlet family's entry-method-name set.
 	servletMethods = map[string]bool{}
+	// validatorSupers is the constraint-validator family's supertype as internal names
+	// under both the javax/ and jakarta/ roots; validatorMethods its entry-method names.
+	validatorSupers  = map[string]bool{}
+	validatorMethods = map[string]bool{}
 )
 
 func init() {
 	for _, f := range jvmingress.Families() {
 		switch {
+		case f.Kind == jvmingress.KindConstraintValidator:
+			for _, root := range []string{"javax/", "jakarta/"} {
+				validatorSupers[root+f.Match.Supertype] = true
+			}
+			for _, m := range f.Match.Methods {
+				validatorMethods[m] = true
+			}
 		case f.Match.Annotation != "" && f.Kind == jvmingress.KindHTTPRoute:
 			routeVerb[f.Match.Annotation] = f.Verb
 		case f.Match.Annotation != "":
@@ -116,7 +128,13 @@ type frameworkIngress struct {
 // roots this way can only raise reachability, never false-safe (inv.5).
 func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
 	var out []frameworkIngress
+	byName := make(map[string]*classfile.Class, len(classes))
+	for i := range classes {
+		byName[classes[i].Name] = &classes[i]
+	}
+	lookup := func(name string) (*classfile.Class, bool) { c, ok := byName[name]; return c, ok }
 	for _, c := range classes {
+		isValidator := len(validatorSupers) > 0 && validatorAncestor(&c, lookup)
 		base := classRequestMappingPath(c.Annotations)
 		isServlet := servletSuperSuffix != "" && superClassMatchesSuffix(c.Super, servletSuperSuffix)
 		for _, m := range c.Methods {
@@ -130,6 +148,10 @@ func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
 			}
 			if isServlet && servletMethods[m.Ref.Name] {
 				out = append(out, frameworkIngress{ref: m.Ref, kind: jvmingress.KindServlet})
+				continue
+			}
+			if isValidator && validatorMethods[m.Ref.Name] && !m.Abstract {
+				out = append(out, frameworkIngress{ref: m.Ref, kind: jvmingress.KindConstraintValidator})
 			}
 		}
 	}
@@ -140,6 +162,36 @@ func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
 		return out[i].kind < out[j].kind
 	})
 	return out
+}
+
+// validatorAncestor reports whether c is a ConstraintValidator by direct or inherited
+// supertype, or may be: an ancestor that is neither in lookup nor a platform class could
+// itself extend it, so it counts, and rooting such a class only adds roots. The walk is the
+// shape of containerCallback in launchentry.go.
+func validatorAncestor(c *classfile.Class, lookup func(string) (*classfile.Class, bool)) bool {
+	seen := map[string]bool{}
+	stack := append([]string{c.Super}, c.Interfaces...)
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		if validatorSupers[n] {
+			return true
+		}
+		ac, ok := lookup(n)
+		if !ok {
+			if depreach.IsPlatformClass(n) {
+				continue
+			}
+			return true
+		}
+		stack = append(stack, ac.Super)
+		stack = append(stack, ac.Interfaces...)
+	}
+	return false
 }
 
 // frameworkIngressRefs is the reachability seam: the method references of every framework

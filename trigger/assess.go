@@ -1380,8 +1380,9 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	case plugin.RefutationAnalyzerSymbolNotReached:
 	case plugin.RefutationAnalyzerPackageNotImported:
 		// "No build file imports the package" is a claim about every platform, so it does not stand
-		// beside a file another platform builds that may call into the module.
-		drops = map[string]bool{plugin.PartialReasonPluginLoadCgoOff: true}
+		// beside a file another platform builds that may call into the module. It reads the files cgo
+		// off drops too, so the cgo-off limits still clear.
+		drops = map[string]bool{plugin.PartialReasonPluginLoadCgoOff: true, plugin.PartialReasonCgoFilesDropped: true}
 	default:
 		return reasons
 	}

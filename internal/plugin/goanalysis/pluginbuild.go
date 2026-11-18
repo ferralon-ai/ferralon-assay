@@ -95,20 +95,29 @@ func (s *ssaProgram) runTimeReason(name string) (string, bool) {
 	return r, ok
 }
 
-// statePluginScope says, in the detail of a refutation kept beside plugin_load:cgo_off, the build
+// statePluginScope says, in the detail of each refutation kept beside plugin_load:cgo_off, the build
 // setting it holds for: the program reaches plugin.Open, which loads nothing with cgo off, and the
 // same program built with cgo on was not checked.
 func statePluginScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
-	r := res.Refutation
-	if r == nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoadCgoOff) {
+	if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoadCgoOff) {
 		return res
 	}
-	stated := *r
-	stated.Detail = pluginScopeDetail
-	if r.Detail != "" {
-		stated.Detail = r.Detail + "; " + pluginScopeDetail
+	state := func(r plugin.Refutation) plugin.Refutation {
+		if r.Detail == "" {
+			r.Detail = pluginScopeDetail
+		} else {
+			r.Detail += "; " + pluginScopeDetail
+		}
+		return r
 	}
-	res.Refutation = &stated
+	if res.Refutation != nil {
+		stated := state(*res.Refutation)
+		res.Refutation = &stated
+	}
+	res.Refutations = slices.Clone(res.Refutations)
+	for i, r := range res.Refutations {
+		res.Refutations[i] = state(r)
+	}
 	return res
 }
 

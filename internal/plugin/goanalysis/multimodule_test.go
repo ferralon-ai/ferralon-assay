@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -97,6 +98,45 @@ func TestResultPerModule(t *testing.T) {
 			}
 			if !slices.Equal(beside, tt.beside) {
 				t.Errorf("Refutations name %q, want %q", beside, tt.beside)
+			}
+		})
+	}
+}
+
+// TestStatePluginScope_OtherModules: beside plugin_load:cgo_off every refutation the result holds
+// states the cgo scope, the first module's or not, and the input's list is left as it was.
+func TestStatePluginScope_OtherModules(t *testing.T) {
+	other := []plugin.Refutation{
+		{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/b", Detail: "no call path"},
+		{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/c"},
+	}
+	first := &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/a", Detail: "no call path"}
+	cases := []struct {
+		name    string
+		reasons []string
+		first   *plugin.Refutation
+		want    []string
+	}{
+		{"beside plugin_load:cgo_off", []string{plugin.PartialReasonPluginLoadCgoOff}, first, []string{"no call path; " + pluginScopeDetail, pluginScopeDetail}},
+		{"with the first module withheld", []string{plugin.PartialReasonPluginLoadCgoOff}, nil, []string{"no call path; " + pluginScopeDetail, pluginScopeDetail}},
+		{"beside plugin_load", []string{plugin.PartialReasonPluginLoad}, first, []string{"no call path", ""}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := plugin.ReachabilityResult{Partiality: plugin.Partial(tc.reasons...), Refutation: tc.first, Refutations: slices.Clone(other)}
+			got := statePluginScope(in)
+			var details []string
+			for _, r := range got.Refutations {
+				details = append(details, r.Detail)
+			}
+			if !slices.Equal(details, tc.want) {
+				t.Errorf("details = %q, want %q", details, tc.want)
+			}
+			if !reflect.DeepEqual(in.Refutations, other) {
+				t.Error("the input refutations were changed in place")
+			}
+			if (got.Refutation == nil) != (tc.first == nil) {
+				t.Errorf("first refutation = %+v, want nil: %v", got.Refutation, tc.first == nil)
 			}
 		})
 	}

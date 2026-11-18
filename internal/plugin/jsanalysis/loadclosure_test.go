@@ -590,3 +590,99 @@ func TestLoadClosure_PrefixLoadByAlias(t *testing.T) {
 		t.Errorf("p loads z through the alias qa on a complete closure; got %+v", *lc)
 	}
 }
+
+// TestLoadClosure_Unbounded: a dependency module whose own loads or calls the lane cannot bound
+// withholds the closure only where it may run: in the closure, or anywhere while the closure is
+// incomplete for another reason. Outside a closure complete for every other reason it never
+// runs, and the first-party declines read code covers are retracted as with no such module.
+func TestLoadClosure_Unbounded(t *testing.T) {
+	const app = "const used = require('used');\nused.run();\n"
+	used := func(src string) *depPkg { return closurePkg("used", map[string]string{"index.js": src}) }
+	const (
+		usedPlain = "exports.run = function run() {};\n"
+		usedEval  = "exports.run = function run(s) { return eval(s); };\n"
+	)
+	// tool's browser field may remap its module's loads, so none of them is bounded.
+	tool := func() *depPkg {
+		return closurePkg("tool", map[string]string{
+			"package.json": `{"name":"tool","version":"1.0.0","main":"index.js","browser":{"./lib.js":"./shim.js"}}`,
+			"index.js":     "require('./lib');\nexports.run = function run() {};\n",
+			"lib.js":       "module.exports = 1;\n",
+			"shim.js":      "module.exports = 2;\n",
+		})
+	}
+	const inClosure = "has a load or call that is not bounded"
+	for _, tc := range []struct {
+		name  string
+		first string
+		pkgs  []*depPkg
+		// complete is the closure's verdict; vetoes are what it must name when incomplete.
+		complete bool
+		vetoes   []string
+		// declined is whether the first-party load of used stays declined.
+		declined bool
+	}{
+		{name: "nothing unbounded", first: app, pkgs: []*depPkg{used(usedPlain), closurePkg("idle", nil)}, complete: true},
+		{name: "unbounded module outside a complete closure", first: app, pkgs: []*depPkg{used(usedPlain), closurePkg("idle", nil), tool()}, complete: true},
+		{name: "first-party code loads the unbounded module", first: app + "require('tool');\n", pkgs: []*depPkg{used(usedPlain), closurePkg("idle", nil), tool()},
+			vetoes: []string{inClosure, unboundedVeto}, declined: true},
+		{name: "a loaded package loads the unbounded module", first: app, pkgs: []*depPkg{used("require('tool');\n" + usedPlain), closurePkg("idle", nil), tool()},
+			vetoes: []string{inClosure, unboundedVeto}, declined: true},
+		// The closure reads which first-party loads read code covers, whatever lies outside it.
+		{name: "unbounded module outside, first-party load not covered", first: app, pkgs: []*depPkg{
+			closurePkg("used", map[string]string{"package.json": `{"name":"used","version":"1.0.0","main":"index.js","browser":{"./index.js":"other"}}`}), closurePkg("idle", nil), tool()},
+			vetoes: []string{"first-party load of used is not covered by read code", unboundedVeto}, declined: true},
+		{name: "incomplete closure, nothing unbounded", first: app, pkgs: []*depPkg{used(usedEval), closurePkg("idle", nil)},
+			vetoes: []string{"evaluates code"}},
+		{name: "unbounded module outside an incomplete closure", first: app, pkgs: []*depPkg{used(usedEval), closurePkg("idle", nil), tool()},
+			vetoes: []string{"evaluates code", unboundedVeto}, declined: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cg, lc := closureOf(t, newDepFixture(t, map[string]string{"index.js": tc.first}, tc.pkgs...))
+			if lc.Complete != tc.complete {
+				t.Fatalf("complete = %v, want %v; vetoes %q", lc.Complete, tc.complete, lc.Vetoes)
+			}
+			if lc.refutes("pkg:npm/idle@1.0.0") != tc.complete {
+				t.Errorf("refutes(idle) = %v, want %v; vetoes %q", !tc.complete, tc.complete, lc.Vetoes)
+			}
+			for _, want := range tc.vetoes {
+				if !slices.ContainsFunc(lc.Vetoes, func(v string) bool { return strings.Contains(v, want) }) {
+					t.Errorf("vetoes = %q, want one containing %q", lc.Vetoes, want)
+				}
+			}
+			if !slices.Contains(tc.vetoes, unboundedVeto) && slices.Contains(lc.Vetoes, unboundedVeto) {
+				t.Errorf("vetoes = %q, want no %q", lc.Vetoes, unboundedVeto)
+			}
+			if got := slices.ContainsFunc(cg.Unresolved, func(u plugin.UnresolvedCall) bool { return u.Callee == "require" }); got != tc.declined {
+				t.Errorf("first-party load declined = %v, want %v; unresolved %+v", got, tc.declined, cg.Unresolved)
+			}
+		})
+	}
+}
+
+// TestLoadRecord_VetoUnbounded: a first-party load or call the lane cannot bound vetoes always,
+// and a dependency module's vetoes run-wide only beside another veto.
+func TestLoadRecord_VetoUnbounded(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		first, unbounded, another bool
+		want                      bool
+	}{
+		{name: "nothing unbounded"},
+		{name: "first-party", first: true, want: true},
+		{name: "first-party beside another veto", first: true, another: true, want: true},
+		{name: "dependency module alone", unbounded: true},
+		{name: "dependency module beside another veto", unbounded: true, another: true, want: true},
+		{name: "another veto alone", another: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lr := newLoadRecord()
+			lr.module("node_modules/tool/index").unbounded = tc.unbounded
+			lr.veto(tc.another, "another")
+			lr.vetoUnbounded(tc.first)
+			if got := lr.vetoes[unboundedVeto]; got != tc.want {
+				t.Errorf("vetoed = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

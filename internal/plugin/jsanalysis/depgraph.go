@@ -717,8 +717,8 @@ func callGraphWithClosure(ctx context.Context, buildDir string, store artifactca
 	// built under it, and it stands whenever the closure is not complete.
 	firstExempt, firstProto := g.anyExempt, g.anyProto
 	all := lr.merged(dflags, nil)
-	g.depUnbounded = g.depUnbounded || lr.anyUnbounded()
-	lr.veto(g.depUnbounded, "a load or call in dependency code is not bounded")
+	firstUnbounded := g.depUnbounded
+	g.depUnbounded = firstUnbounded || lr.anyUnbounded()
 
 	reached := reachedFrom(baseRoots, g.edges, aug.edges)
 	versions := map[string]int{}
@@ -733,11 +733,23 @@ func callGraphWithClosure(ctx context.Context, buildDir string, store artifactca
 		g.add(plugin.CallEdge{Caller: sym(rewrite(e.Caller.SCIP)), Callee: sym(rewrite(e.Callee.SCIP))}, aug.prov[e])
 	}
 
+	// The closure needs the first-party loads no read package covers. With a dependency module
+	// the lane cannot bound, the declines stay unless the closure is complete, which proves that
+	// module never runs: the cover is worked out on a copy and kept only then.
 	var kept []pkgSite
-	if !layout.berry && !layout.incomplete && !g.depUnbounded {
-		kept = coverReadPackages(prog, g, rewrite)
+	covered := g
+	if !layout.berry && !layout.incomplete && !firstUnbounded {
+		if g.depUnbounded {
+			c := *g
+			c.unresolved = slices.Clone(g.unresolved)
+			covered = &c
+		}
+		kept = coverReadPackages(prog, covered, rewrite)
 	}
-	lc := lr.close(prog, g, aug, baseRoots, entries, kept)
+	lc := lr.close(prog, g, aug, baseRoots, entries, kept, firstUnbounded)
+	if covered != g && lc.Complete {
+		g.unresolved, g.declined, g.flags = covered.unresolved, covered.declined, covered.flags
+	}
 	if layout.lockAssumed {
 		lc.Assumptions = append(lc.Assumptions, lockAssumption)
 	}
@@ -773,8 +785,8 @@ func callGraphWithClosure(ctx context.Context, buildDir string, store artifactca
 }
 
 // coverReadPackages retracts the first-party declines that dependency code read into prog
-// covers. It runs only when augment bounded every load and call in dependency code
-// (graphBuild.depUnbounded). A load is covered when every module any resolver may load for it is read (readLoad)
+// covers. Its result stands only when augment bounded every load and call in dependency code
+// (graphBuild.depUnbounded) or the load closure is complete. A load is covered when every module any resolver may load for it is read (readLoad)
 // and its load edge is in g; augment links each one. A call is resolved again with dependency
 // code attached and every resolver's candidates in play: one that now resolves to a function
 // whose edge is in g is no longer declined, and one into a read package that names no single

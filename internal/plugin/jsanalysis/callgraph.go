@@ -300,7 +300,8 @@ type graphBuild struct {
 	pkgCalls []pkgSite
 	entered  bool
 	// depUnbounded marks a load or call in read dependency code for which some resolver may run
-	// code the graph has no edge to; coverReadPackages then retracts nothing.
+	// code the graph has no edge to; coverReadPackages then retracts only under a complete load
+	// closure.
 	depUnbounded bool
 }
 

@@ -155,6 +155,18 @@ func (lr *loadRecord) anyUnbounded() bool {
 	return lr.any(nil, func(ml *modLimits) bool { return ml.unbounded })
 }
 
+// unboundedVeto is the veto a load or call the lane cannot bound declares run-wide.
+const unboundedVeto = "a load or call in dependency code is not bounded"
+
+// vetoUnbounded vetoes for the loads and calls the lane cannot bound outside the closure's
+// modules (close vetoes one inside). first marks one in first-party code, which vetoes always.
+// A dependency module outside a closure that is complete for every other reason never runs. While
+// any other veto stands the closure may be missing modules, that one among them, so its limit
+// holds run-wide. Called last, once every other veto is in.
+func (lr *loadRecord) vetoUnbounded(first bool) {
+	lr.veto(first || len(lr.vetoes) > 0 && lr.anyUnbounded(), unboundedVeto)
+}
+
 func (lr *loadRecord) anyExempt(only map[string]bool) bool {
 	return lr.any(only, func(ml *modLimits) bool { return ml.exempt })
 }
@@ -188,8 +200,16 @@ var loadCapableBuiltins = []string{"module", "child_process", "worker_threads", 
 
 // close computes the closure from the first-party roots and the inferred script roots over the
 // first-party edges in g and the dependency edges in aug. kept are the first-party loads no
-// read package covers.
-func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []string, entries []*depEntry, kept []pkgSite) *loadClosure {
+// read package covers. firstUnbounded marks a first-party load or call the lane cannot bound.
+//
+// The walk follows every edge the graph has, including those of a module whose own loads and
+// calls the lane cannot bound (modLimits.unbounded), whose edges may be too few. That module is
+// judged only once the walk is done: if the closure holds it, the closure may be missing what
+// it reaches and is vetoed. If no closure module is one and nothing else vetoes, every module
+// that runs is in the closure: a root is, and each module a closure module loads or calls is
+// on an edge the walk followed. A module outside the closure is never reached, so its missing
+// edges are never taken.
+func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []string, entries []*depEntry, kept []pkgSite, firstUnbounded bool) *loadClosure {
 	d := prog.deps
 	lc := &loadClosure{Installed: installedOrigins(entries)}
 	loaded := map[string]bool{}
@@ -378,6 +398,7 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 			lr.veto(f.loaderEscape, "loaded module "+m+" hands a module loader on")
 			lr.veto(f.toolFailure || f.unsupported, "loaded module "+m+" is not fully parsed")
 			lr.veto(ml.loadsCode, "loaded module "+m+" loads a built-in that can load or run other code")
+			lr.veto(ml.unbounded, "loaded module "+m+" has a load or call that is not bounded")
 		}
 	}
 	lr.veto((g.anyExempt || lr.anyExempt(lc.modules)) && (g.anyProto || lr.anyProto(lc.modules)),
@@ -387,6 +408,7 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 	lr.veto(g.flags.evaluated, "first-party code evaluates code")
 	lr.veto(g.flags.loaderEscape, "first-party code hands a module loader on")
 	lr.veto(prog.readFailed || prog.skipped || prog.unreadSource, "first-party code is not fully read")
+	lr.vetoUnbounded(firstUnbounded)
 
 	if len(computed) > 0 {
 		lc.Assumptions = append(lc.Assumptions, computedLoadAssumption(slices.Sorted(maps.Keys(computed))))

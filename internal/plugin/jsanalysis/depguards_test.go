@@ -430,11 +430,12 @@ func TestDepGuards_ReadPackageNoEntry(t *testing.T) {
 			"lib/b.js":     "module.exports = function b() {};\n",
 		}}
 	}
-	ok := newDepFixture(t, map[string]string{"index.js": guardIdle}, loader, b("lib/b.js"))
+	app := map[string]string{"index.js": "require('dep').run();\n"}
+	ok := newDepFixture(t, app, loader, b("lib/b.js"))
 	if cg := withDeps(t, ok.dir, ok.memStore()); hasReason(cg.Partiality, plugin.PartialReasonUnresolvedModule) {
 		t.Fatalf("control: an entry that selects a module adds no unresolved_module; got %+v", cg.Partiality)
 	}
-	f := newDepFixture(t, map[string]string{"index.js": guardIdle}, loader, b("build/b.node"))
+	f := newDepFixture(t, app, loader, b("build/b.node"))
 	if cg := withDeps(t, f.dir, f.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUnresolvedModule) {
 		t.Errorf("an entry that selects no parsed module must surface as unresolved_module; got %+v", cg.Partiality)
 	}

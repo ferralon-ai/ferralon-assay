@@ -142,12 +142,24 @@ func TestClosurePath_MatchesSearch(t *testing.T) {
 	shadow := classfile.Class{Name: "com/evil/netkit/ServiceImpl", Super: "java/lang/Object", Interfaces: []string{"com/evil/netkit/Service"}, Methods: []classfile.Method{
 		{Ref: mref("com/evil/netkit/ServiceImpl", "run", "()V")},
 	}}
+	// first reaches meet along two callers, left before right, and meet calls back into first.
+	static := func(name string, callees ...string) classfile.Method {
+		m := classfile.Method{Ref: mref("com/acme/app/Diamond", name, "()V")}
+		for _, c := range callees {
+			m.Edges = append(m.Edges, edge(classfile.EdgeStatic, "com/acme/app/Diamond", c, "()V"))
+		}
+		return m
+	}
+	diamond := classfile.Class{Name: "com/acme/app/Diamond", Super: "java/lang/Object", Methods: []classfile.Method{
+		static("first", "left", "right"), static("left", "meet"), static("right", "meet"), static("meet", "last", "first"), static("last"),
+	}}
 	tests := []struct {
 		name    string
 		classes []classfile.Class
 	}{
 		{"loaded classes", c7Classes()},
 		{"duplicated class name", append(c7Classes(), shadow)},
+		{"two callers and a cycle", []classfile.Class{diamond}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -224,20 +236,25 @@ func TestClosure_SetClosureTreeRefuses(t *testing.T) {
 		name    string
 		from    []uint32
 		install bool // SetClosure first
+		beyond  bool // the installed search met a method outside the table
 		ok      bool
 	}{
-		{"its own export", from, true, true},
-		{"no search installed", from, false, false},
-		{"short", from[:len(from)-1], true, false},
-		{"long", append(append([]uint32(nil), from...), 0), true, false},
-		{"predecessor outside the table", with(reached, uint32(len(from))+1), true, false},
-		{"predecessor of a method the search never enqueued", with(unreached, 1), true, false},
+		{"its own export", from, true, false, true},
+		{"search beyond the table", from, true, true, false},
+		{"no search installed", from, false, false, false},
+		{"short", from[:len(from)-1], true, false, false},
+		{"long", append(append([]uint32(nil), from...), 0), true, false, false},
+		{"predecessor outside the table", with(reached, uint32(len(from))+1), true, false, false},
+		{"predecessor of a method the search never enqueued", with(unreached, 1), true, false, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			dst := NewEngineOn(c7Classes(), Classpath{})
 			if tc.install && !dst.SetClosure(in, bits, miss) {
 				t.Fatal("SetClosure refused the export")
+			}
+			if tc.beyond {
+				dst.closures[in].beyond = true
 			}
 			if got := dst.SetClosureTree(in, tc.from); got != tc.ok {
 				t.Fatalf("SetClosureTree = %v, want %v", got, tc.ok)

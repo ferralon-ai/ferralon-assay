@@ -169,13 +169,18 @@ func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
 		{"comment closing mid-line before code", "/* eval(x) */ f();\n/* require(y) */\n", false, false, false},
 		{"hashbang then a header comment", "#!/usr/bin/env node\n/* eval(x) */\n", false, false, false},
 		{"byte order mark then a header comment", "\uFEFF/* eval(x) */\n", false, false, false},
+		{"comment after a block of line comments with empty ones", "'use strict';\n" + strings.Repeat("// Some prose describing the module and its options.\n// More of it.\n//\n", 400) + "var keys = f();\n/**\n * Function#apply, require(x), import(y), eval(z), o[k]\n */\nfunction g() {}\n", false, false, false},
+		{"comment after line comments that hold line comments", strings.Repeat("//   // const a = b / c; // d\n", 2000) + "/* eval(x) */\n", false, false, false},
+		{"comment after a long line of divisions before a line comment", strings.Repeat("x = a / b; ", 4096) + "// c\n/* eval(x) */\n", false, false, false},
 		// Each shape below can make a line-start "/*" that is not a comment, so its text is
 		// still read.
 		{"comment in JSX text", "a = <p>\n/* {eval(x)} */\n</p>;\n", true, false, false},
 		{"comment in JSX text closed by a spaced tag", "a = <p>\n/* {eval(x)} */\n< /p>;\n", true, false, false},
 		{"comment in JSX text closed by a tag broken across lines", "a = <p>\n/* {eval(x)} */\n<\n/p>;\n", true, false, false},
 		{"comment in JSX text closed by a tag spaced with an ideographic space", "a = <p>\n/* {eval(x)} */\n<\u3000/p>;\n", true, false, false},
-		{"comment in a file whose slashes cost too much to tell from tags", strings.Repeat("x/ //", 4096) + "\n/* eval(x) */\n", true, false, false},
+		{"comment in a file whose slashes cost too much to tell from tags", strings.Repeat("//\n/* a */\n", 4096) + "/* eval(x) */\n", true, false, false},
+		{"comment in a JSX attribute string of a tag ended past a block comment", "a = <img alt=\"x\n/* eval(x) */\n\" / /* c */>;\n", true, false, false},
+		{"comment after code beside one at a line start", "/* a */\nf(); /* eval(x) */\n", true, false, false},
 		{"comment opened in a multi-line JSX attribute string", "a = <img alt=\"x\n/* \" />;\neval(x); // */\n", true, false, false},
 		{"comment opened in a JSX attribute string of a tag ended past a line comment", "a = <img alt=\"x\n/* \" / // c\n>;\neval(x); // */\n", true, false, false},
 		{"comment opened in a regex read as a division", "function f() {}\n/\\/*/.test(s);\neval(x); // */\n", true, false, false},
@@ -206,4 +211,52 @@ func TestJSXMarked_UnclosedCommentAfterSlash(t *testing.T) {
 	if jsxMarked([]rune("/ /*\n")) {
 		t.Error("jsxMarked = true for a slash before an unclosed comment")
 	}
+}
+
+// What the gap scan remembers between slashes changes no answer: every short text over
+// the runes a gap is made of marks as it does when each gap is read afresh.
+func TestJSXMarked_MatchesAScanThatRemembersNothing(t *testing.T) {
+	fresh := func(src []rune) bool {
+		n := len(src)
+		for i := 0; i < n; i++ {
+			if src[i] != '/' || i > 0 && src[i-1] == '*' || i+1 < n && (src[i+1] == '*' || src[i+1] == '/') {
+				continue
+			}
+			j := i + 1
+			for j < n {
+				if jsBlank(src[j]) || isLineTerminator(src[j]) {
+					j++
+				} else if e := commentEnd(src, j+2); src[j] == '/' && j+1 < n && src[j+1] == '*' && e >= 0 {
+					j = e + 2
+				} else if src[j] == '/' && j+1 < n && src[j+1] == '/' {
+					for j < n && !isLineTerminator(src[j]) {
+						j++
+					}
+				} else {
+					break
+				}
+			}
+			if j < n && src[j] == '>' {
+				return true
+			}
+		}
+		return false
+	}
+	alphabet := []rune("/*\n >x")
+	const length = 9
+	src := make([]rune, length)
+	var walk func(k int)
+	walk = func(k int) {
+		if k == length {
+			if got, want := jsxMarked(src), fresh(src); got != want {
+				t.Fatalf("jsxMarked(%q) = %v, reading each gap afresh gives %v", string(src), got, want)
+			}
+			return
+		}
+		for _, c := range alphabet {
+			src[k] = c
+			walk(k + 1)
+		}
+	}
+	walk(0)
 }

@@ -612,12 +612,10 @@ func commentEnd(raw []rune, from int) int {
 // as marked: the answer that exempts nothing.
 func jsxMarked(src []rune) bool {
 	n := len(src)
-	// Past the last "*/" no comment closes: skipGap stops there and never asks commentEnd
-	// for a close that does not exist.
-	closeBy := -1
+	g := gapScan{src: src, closeBy: -1}
 	for j := n - 2; j >= 0; j-- {
 		if src[j] == '*' && src[j+1] == '/' {
-			closeBy = j
+			g.closeBy = j
 			break
 		}
 	}
@@ -636,8 +634,7 @@ func jsxMarked(src []rune) bool {
 			if i > 0 && src[i-1] == '*' || i+1 < n && (src[i+1] == '*' || src[i+1] == '/') {
 				continue
 			}
-			j := skipGap(src, i+1, closeBy)
-			if budget -= j - i; budget < 0 || j < n && src[j] == '>' {
+			if j := g.skip(i + 1); g.work > budget || j < n && src[j] == '>' {
 				return true
 			}
 		}
@@ -645,26 +642,81 @@ func jsxMarked(src []rune) bool {
 	return false
 }
 
-// skipGap returns the index of the first rune at or after i that is neither white space,
-// a line break, nor inside a comment; closeBy is the index of the last "*/" in src.
-func skipGap(src []rune, i, closeBy int) int {
-	n := len(src)
+// gapScan skips the white space, line breaks and comments after a '/'. Starts only move
+// forward through src, so it keeps what its last scans found: without that, each "//" of a
+// block of line comments would read the rest of the block again.
+type gapScan struct {
+	src []rune
+	// closeBy is the index of the last "*/" in src. Past it no comment closes: skip stops
+	// there and never asks commentEnd for a close that does not exist.
+	closeBy int
+	// work counts the runes read.
+	work int
+	// The comment found open at blockFrom closes at blockEnd, and the line read from
+	// lineFrom ends at lineEnd: so does one read from anywhere between the two.
+	blockFrom, blockEnd int
+	lineFrom, lineEnd   int
+	// A scan that met a line break at breakFrom outside a comment ended at breakEnd, and
+	// met no block comment before breakTo. Line comments end at the first line break, so
+	// every line break in [breakFrom, breakTo) was outside a comment in that scan, and a
+	// scan that meets one outside a comment ends at breakEnd too.
+	breakFrom, breakTo, breakEnd int
+}
+
+// skip returns the index of the first rune at or after i that is neither white space, a
+// line break, nor inside a comment.
+func (g *gapScan) skip(i int) int {
+	src, n := g.src, len(g.src)
+	first, block := -1, -1
 	for i < n {
 		switch {
-		case jsBlank(src[i]) || isLineTerminator(src[i]):
+		case isLineTerminator(src[i]):
+			if g.breakFrom <= i && i < g.breakTo {
+				if first >= 0 && block < 0 {
+					g.breakFrom = first
+				}
+				return g.breakEnd
+			}
+			if first < 0 {
+				first = i
+			}
+			g.work++
 			i++
-		case src[i] == '/' && i+1 < n && src[i+1] == '*':
-			if i+2 > closeBy {
-				return i
+			continue
+		case jsBlank(src[i]):
+			g.work++
+			i++
+			continue
+		case src[i] == '/' && i+1 < n && src[i+1] == '*' && i+2 <= g.closeBy:
+			if block < 0 {
+				block = i
 			}
-			e := commentEnd(src, i+2)
-			i = e + 2
+			if i < g.blockFrom || i > g.blockEnd {
+				e := commentEnd(src, i+2)
+				g.work += e - i
+				g.blockFrom, g.blockEnd = i, e
+			}
+			i = g.blockEnd + 2
+			continue
 		case src[i] == '/' && i+1 < n && src[i+1] == '/':
-			for i < n && !isLineTerminator(src[i]) {
-				i++
+			if i < g.lineFrom || i > g.lineEnd {
+				e := i
+				for e < n && !isLineTerminator(src[e]) {
+					e++
+				}
+				g.work += e - i
+				g.lineFrom, g.lineEnd = i, e
 			}
-		default:
-			return i
+			i = g.lineEnd
+			continue
+		}
+		break
+	}
+	if first >= 0 {
+		g.breakFrom, g.breakEnd = first, i
+		g.breakTo = i
+		if block >= 0 {
+			g.breakTo = block
 		}
 	}
 	return i

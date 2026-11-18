@@ -747,10 +747,13 @@ func laneRunsInTree(b scriptsurface.Binder, dir string) bool {
 // npm passes a run its positional arguments and everything after --; a --flag before -- sets
 // the npm config of that name for the run and every npm it starts (npm_config_<flag>), so each
 // must be no npm config (npmConfigs, by name, negation or the abbreviation npm expands) and the
-// script's text must then name no token. An npm short flag may be any config. yarn 1 parses
-// its own options anywhere before a --, so a yarn run takes none of yarnRunOptions and no --
-// or short flag. Every argument is laneSafeArg, so the composed text splits where the script's
-// own does and nowhere else, and names neither a token nor a file an install reads.
+// script's text must then name no token. An npm short flag may be any config. yarn hands a
+// script run every argument after the script's name, flags included, when none is --
+// (yarn 1: main in src/cli/index.js moves them past a -- before it parses any option; yarn
+// 2+: run is a proxy command); with a -- in them, yarn 1 parses the words before it as its
+// own options, so a yarn run takes no --. Every argument is laneSafeArg, so the composed text
+// splits where the script's own does and nowhere else, and names neither a token nor a file
+// an install reads.
 //
 // It returns no text, which withholds, when a package.json is not read here, a script is
 // missing (npm start with no start script runs node server.js), or its text is not one
@@ -829,10 +832,6 @@ func laneScriptRun(words []string, b scriptsurface.Binder, root string) ([]strin
 				return nil, true
 			}
 			if strings.HasPrefix(a, "-") {
-				opt, _, _ := strings.Cut(strings.TrimPrefix(a, "--"), "=")
-				if !strings.HasPrefix(a, "--") || yarnRunOptions[strings.TrimPrefix(opt, "no-")] {
-					return nil, true
-				}
 				flags = true
 			}
 		}
@@ -934,24 +933,6 @@ var npmConfigs = func() map[string]bool {
 	}
 	return m
 }()
-
-// yarnRunOptions are the yarn 1 options, past a no- negation, that yarn takes for itself
-// before a --, wherever they are written: each may move where the run binds or what an
-// install it starts reads.
-var yarnRunOptions = map[string]bool{
-	"cwd": true, "use-yarnrc": true, "default-rc": true, "modules-folder": true,
-	"global-folder": true, "link-folder": true, "cache-folder": true,
-	"preferred-cache-folder": true, "registry": true, "offline": true, "prefer-offline": true,
-	"production": true, "prod": true, "frozen-lockfile": true, "pure-lockfile": true,
-	"lockfile": true, "ignore-scripts": true, "ignore-engines": true, "ignore-optional": true,
-	"ignore-platform": true, "flat": true, "force": true, "har": true, "check-files": true,
-	"network-concurrency": true, "network-timeout": true, "mutex": true, "proxy": true,
-	"https-proxy": true, "strict-semver": true, "scripts-prepend-node-path": true,
-	"bin-links": true, "link-duplicates": true, "update-checksums": true, "skip-integrity-check": true,
-	"emoji": true, "verbose": true, "silent": true, "json": true, "progress": true,
-	"non-interactive": true, "otp": true, "version": true, "help": true, "enable-pnp": true,
-	"disable-pnp": true, "pnp": true, "focus": true, "audit": true,
-}
 
 // laneSafeArg reports whether an argument appended to a script's text stays one literal word
 // that names no token and no file an install reads.
@@ -1232,8 +1213,9 @@ var yarnBuiltins = map[string]bool{
 // name that is neither fails in both yarns rather than installing. Neither name nor an
 // argument may name a token, so the form withholds wherever the bare command would. yarn
 // 2+ takes a name with / or \ as a directory to run the remaining args in, bare yarn
-// (an install) when there are none; yarn 1 parses every argument before a -- as its own
-// options, --cwd among them, so either rebinds the command to a package.json not read here.
+// (an install) when there are none, which rebinds the command to a package.json not read
+// here; with a -- among the args, yarn 1 parses the words before it as its own options,
+// --cwd among them, which may do the same.
 //
 // A command the rule cannot place (a compose command:) binds to every package.json in the
 // tree (laneYarnPackages), and there name must be a script in each.

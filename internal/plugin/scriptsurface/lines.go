@@ -429,6 +429,7 @@ func unquoteWord(w string) string {
 type segment struct {
 	words      []string
 	expands    bool
+	escapes    bool // a double-quoted backslash escape (\n) was read as the character after it
 	guarded    bool
 	and        bool
 	background bool
@@ -611,6 +612,9 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 				case '\\':
 					if j+1 < len(s) {
 						j++
+						if strings.IndexByte("\"$`\\", s[j]) < 0 {
+							cur.escapes = true
+						}
 					}
 				case '$', '`':
 					cur.expands = true

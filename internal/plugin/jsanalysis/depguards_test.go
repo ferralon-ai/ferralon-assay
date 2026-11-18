@@ -216,8 +216,9 @@ func TestDepGuards_RunSourceCap(t *testing.T) {
 // (N7), an entry as two names differing only in case (one file on a case-insensitive
 // filesystem), or a top-level entry outside package/ past the unpacked-size cap (F2), leaves the
 // package unread with a scoped limit. A file held twice with the same bytes, or one the lane
-// does not read, is no guess, and a package.json field Node ignores when it is not a string
-// (`"main": false`) reads as absent.
+// does not read, is no guess and is read once, and a `main` that is not a string
+// (`"main": false`) reads as absent, as Node takes it. Node refuses a package whose `type` is
+// not a string, so that one stays unread.
 func TestDepGuards_TarballShape(t *testing.T) {
 	const run = "exports.run = function run() {};\n"
 	for _, tc := range []struct {
@@ -238,6 +239,10 @@ func TestDepGuards_TarballShape(t *testing.T) {
 			{name: "package/package.json", body: guardDepMain},
 			{name: "package/index.js", body: run},
 			{name: "package/./index.js", body: "exports.run = function run() { other(); };\n"},
+		}},
+		{"type_that_is_not_a_string", []tgzEntry{
+			{name: "package/package.json", body: `{"name":"dep","version":"1.0.0","type":1}`},
+			{name: "package/index.js", body: run},
 		}},
 		{"case_colliding_manifest", []tgzEntry{
 			{name: "package/package.json", body: guardDepMain},
@@ -290,7 +295,7 @@ func TestDepGuards_TarballShape(t *testing.T) {
 			{name: "package/index.js", body: run},
 		}},
 		{"main_that_is_not_a_string", []tgzEntry{
-			{name: "package/package.json", body: `{"name":"dep","version":"1.0.0","main":false,"type":1,"module":null}`},
+			{name: "package/package.json", body: `{"name":"dep","version":"1.0.0","main":false,"module":null}`},
 			{name: "package/index.js", body: run},
 		}},
 	} {
@@ -304,6 +309,10 @@ func TestDepGuards_TarballShape(t *testing.T) {
 			}
 			if hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, guardPURL) {
 				t.Errorf("a read package carries no limit; got %+v", cg.Partiality)
+			}
+			pkg, err := unpackDepPackage(t.Context(), &depEntry{name: "dep"}, p.tgz)
+			if err != nil || len(pkg.sources) != 1 {
+				t.Errorf("the package holds one source; got %+v, %v", pkg, err)
 			}
 		})
 	}

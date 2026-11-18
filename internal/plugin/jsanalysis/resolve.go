@@ -1074,8 +1074,8 @@ type pkgManifest struct {
 	binUnread bool
 }
 
-// looseString is a package.json field Node reads only when it is a string: any other value
-// (`"main": false`) reads as absent.
+// looseString is a package.json field whose value counts only when it is a string: Node takes a
+// `main` of any other type (`"main": false`) as absent, and does not read `module`.
 type looseString string
 
 func (l *looseString) UnmarshalJSON(data []byte) error {
@@ -1088,7 +1088,7 @@ func (l *looseString) UnmarshalJSON(data []byte) error {
 
 type rawPkg struct {
 	Name       string          `json:"name"`
-	Type       looseString     `json:"type"`
+	Type       string          `json:"type"`
 	Main       looseString     `json:"main"`
 	Workspaces json.RawMessage `json:"workspaces"`
 	Exports    json.RawMessage `json:"exports"`
@@ -1123,7 +1123,7 @@ func parsePkgManifest(data []byte) *pkgManifest {
 	if err := json.Unmarshal(data, &rp); err != nil {
 		return nil
 	}
-	m := &pkgManifest{name: rp.Name, typ: string(rp.Type), main: string(rp.Main), module: string(rp.Module)}
+	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: string(rp.Main), module: string(rp.Module)}
 	for _, deps := range []json.RawMessage{rp.Dependencies, rp.PeerDependencies, rp.OptionalDependencies} {
 		names, ok := declaredNames(deps)
 		m.declared, m.declaredOpen = append(m.declared, names...), m.declaredOpen || !ok

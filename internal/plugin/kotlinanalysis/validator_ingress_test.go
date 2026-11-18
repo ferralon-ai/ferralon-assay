@@ -178,3 +178,24 @@ func TestFindIngresses_ConstraintValidator(t *testing.T) {
 		})
 	}
 }
+
+func TestValidatorArities(t *testing.T) {
+	got := validatorArities(jvmingress.MatchSpec{
+		Methods: []string{"bound", "unbound"},
+		Arity:   map[string]int{"bound": 2},
+	})
+	if got["bound"] != 2 || got["unbound"] != anyArity || len(got) != 2 {
+		t.Errorf("validatorArities = %v, want bound=2 unbound=anyArity", got)
+	}
+}
+
+func TestFindIngresses_ConstraintValidatorAnyArityMethod(t *testing.T) {
+	validatorMethods["probe"] = anyArity
+	t.Cleanup(func() { delete(validatorMethods, "probe") })
+	got, _ := validatorIngressNames(t, []validatorClass{{"com/acme/V", "java/lang/Object", []string{"jakarta/validation/ConstraintValidator"}, []validatorMethod{
+		{"probe", "()V", false}, {"probe", "(IJ)V", false},
+	}}})
+	if want := []string{"com.acme.V.probe", "com.acme.V.probe"}; !slices.Equal(got, want) {
+		t.Errorf("any-arity method ingresses = %q, want %q", got, want)
+	}
+}

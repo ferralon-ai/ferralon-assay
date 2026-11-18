@@ -55,8 +55,9 @@ const scipRoleDefinition = 0x1
 
 // scipDocument is the decoded subset of a SCIP Document.
 type scipDocument struct {
-	occurrences []scipOccurrence
-	symbols     []scipSymbolInfo
+	relativePath string
+	occurrences  []scipOccurrence
+	symbols      []scipSymbolInfo
 }
 
 // scipOccurrence is the decoded subset of a SCIP Occurrence: the symbol it refers
@@ -543,6 +544,12 @@ func decodeDocument(data []byte) (scipDocument, error) {
 			return scipDocument{}, err
 		}
 		switch {
+		case field == 1 && wt == wireBytes: // relative_path
+			sub, err := r.bytesField()
+			if err != nil {
+				return scipDocument{}, err
+			}
+			doc.relativePath = string(sub)
 		case field == 2 && wt == wireBytes: // occurrences
 			sub, err := r.bytesField()
 			if err != nil {

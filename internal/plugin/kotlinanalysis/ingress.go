@@ -85,8 +85,25 @@ var (
 	// validatorSupers is the constraint-validator family's supertype as internal names
 	// under both the javax/ and jakarta/ roots; validatorMethods its entry-method names.
 	validatorSupers  = map[string]bool{}
-	validatorMethods = map[string]int{} // entry-method name -> parameter count
+	validatorMethods = map[string]int{} // entry-method name -> parameter count, anyArity for any
 )
+
+// anyArity marks an entry method that matches at every parameter count.
+const anyArity = -1
+
+// validatorArities maps each method of a family to its bound parameter count; a method the
+// family gives no Arity matches at any count (jvmingress.MatchSpec.Arity).
+func validatorArities(m jvmingress.MatchSpec) map[string]int {
+	out := make(map[string]int, len(m.Methods))
+	for _, name := range m.Methods {
+		n, ok := m.Arity[name]
+		if !ok {
+			n = anyArity
+		}
+		out[name] = n
+	}
+	return out
+}
 
 func init() {
 	for _, f := range jvmingress.Families() {
@@ -95,8 +112,8 @@ func init() {
 			for _, root := range []string{"javax/", "jakarta/"} {
 				validatorSupers[root+f.Match.Supertype] = true
 			}
-			for _, m := range f.Match.Methods {
-				validatorMethods[m] = f.Match.Arity[m]
+			for m, n := range validatorArities(f.Match) {
+				validatorMethods[m] = n
 			}
 		case f.Match.Annotation != "" && f.Kind == jvmingress.KindHTTPRoute:
 			routeVerb[f.Match.Annotation] = f.Verb
@@ -150,7 +167,7 @@ func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
 				out = append(out, frameworkIngress{ref: m.Ref, kind: jvmingress.KindServlet})
 				continue
 			}
-			if n, ok := validatorMethods[m.Ref.Name]; isValidator && ok && !m.Abstract && descriptorArity(m.Ref.Descriptor) == n {
+			if n, ok := validatorMethods[m.Ref.Name]; isValidator && ok && !m.Abstract && (n == anyArity || descriptorArity(m.Ref.Descriptor) == n) {
 				out = append(out, frameworkIngress{ref: m.Ref, kind: jvmingress.KindConstraintValidator})
 			}
 		}

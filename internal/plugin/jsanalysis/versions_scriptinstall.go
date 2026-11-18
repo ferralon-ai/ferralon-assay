@@ -465,8 +465,9 @@ func settingFileHolds(root, f, name, kind string) bool {
 // resolutions, pnpm.overrides) pins a package to a range that a version held for it, in a lock
 // beside the manifest, falls outside: an install would then replace that version. Only an
 // override of a bare package name with a version range can be compared. Any other (a nested
-// or selector key, a git, file or alias value) does not hold, except a "$name" reference to
-// the manifest's own range for that package.
+// or selector key, a file or alias value) does not hold, except a "$name" reference to the
+// manifest's own range for that package, and a GitHub repository the lock already installs
+// the package from (gitOverrideHolds).
 func overridesHold(manifest string, held []lockInfo) bool {
 	data, err := readRegular(manifest)
 	if err != nil {
@@ -495,10 +496,13 @@ func overridesHold(manifest string, held []lockInfo) bool {
 			if strings.HasPrefix(spec, "$") {
 				continue
 			}
-			if _, ok := parseRange(spec); !ok {
-				return false
-			}
 			name = normalizeNPMCoordinate(name)
+			if _, ok := parseRange(spec); !ok {
+				if !gitOverrideHolds(spec, name, held) {
+					return false
+				}
+				continue
+			}
 			for _, l := range held {
 				for _, dep := range l.deps {
 					if dep.Version != "" && normalizeNPMCoordinate(dep.Coordinate) == name && !rangeSatisfied(dep.Version, spec) {
@@ -506,6 +510,71 @@ func overridesHold(manifest string, held []lockInfo) bool {
 					}
 				}
 			}
+		}
+	}
+	return true
+}
+
+// gitOverrideHolds reports whether the override spec names a GitHub repository that every
+// held lock already installs name from, at a commit. npm keeps a locked git copy when the
+// requested repository is the one it was resolved from, spelled the same, and the request
+// either names that full commit or names no committish while the lock records none for the
+// package on any dependent (npm re-resolves a request whose ref differs from the recorded
+// one). Only an npm v2/v3 lock records where a copy came from.
+func gitOverrideHolds(spec, name string, held []lockInfo) bool {
+	repo, commit, ok := githubSpec(spec)
+	if !ok || commit != "" && !isCommitID(commit) {
+		return false
+	}
+	for _, l := range held {
+		if l.kind != lockNPM || commit == "" && l.refSpecs[name] {
+			return false
+		}
+		for _, src := range l.sources[name] {
+			from, at, ok := githubSpec(src)
+			if !ok || from != repo || !isCommitID(at) || commit != "" && commit != at {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// githubSpec splits a git dependency spec that names a github.com repository into
+// "owner/repo" and the committish after "#": the "github:owner/repo" shorthand,
+// or a git+ssh, git+https, ssh, https or git URL. Any other spec is not one.
+func githubSpec(spec string) (repo, committish string, ok bool) {
+	spec, committish, _ = strings.Cut(spec, "#")
+	rest, short := strings.CutPrefix(spec, "github:")
+	if !short {
+		rest = strings.TrimPrefix(spec, "git+")
+		found := false
+		for _, p := range []string{"ssh://git@github.com/", "https://github.com/", "git://github.com/"} {
+			if r, has := strings.CutPrefix(rest, p); has {
+				rest, found = r, true
+				break
+			}
+		}
+		if !found {
+			return "", "", false
+		}
+		rest = strings.TrimSuffix(rest, ".git")
+	}
+	owner, name, two := strings.Cut(rest, "/")
+	if !two || owner == "" || name == "" || strings.ContainsAny(rest, "@:?# ") || strings.Contains(name, "/") {
+		return "", "", false
+	}
+	return rest, committish, true
+}
+
+// isCommitID reports whether s is a full 40-digit hexadecimal commit id.
+func isCommitID(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
 		}
 	}
 	return true

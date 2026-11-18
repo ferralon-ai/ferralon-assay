@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -28,6 +29,27 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 	)
 	pkg := func(extra string) string {
 		return `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"}` + extra + `}`
+	}
+	// gitLock is lock with qs installed from each of sources, the first at the root.
+	const (
+		commit   = "2a70b41d5a9eb377a5b730d3379d00f26368d1e4"
+		other    = "6a15e5fcbc495fb3a9f107e356b683404c1130bb"
+		fromGit  = "git+ssh://git@github.com/acme/qs.git#" + commit
+		registry = "https://registry.npmjs.org/qs/-/qs-6.11.0.tgz"
+	)
+	gitLock := func(sources ...string) string {
+		l := `{"name":"app","lockfileVersion":3,"packages":{` +
+			`"":{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"}},` +
+			`"node_modules/express":{"version":"4.19.2"}`
+		at := "node_modules/qs"
+		for _, src := range sources {
+			l += `,"` + at + `":{"version":"6.11.0","resolved":"` + src + `"}`
+			at = "node_modules/express/" + at
+		}
+		return l + `}}`
+	}
+	gitOverride := func(spec string, sources ...string) map[string]string {
+		return map[string]string{"package.json": pkg(`,"overrides":{"qs":"` + spec + `"}`), "package-lock.json": gitLock(sources...), "install.sh": "npm install\n"}
 	}
 	npm := func(extra map[string]string) map[string]string {
 		files := map[string]string{"package.json": pkg(""), "package-lock.json": lock}
@@ -63,6 +85,9 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"Dockerfile copies an .npmrc that names a registry into the home directory", npm(map[string]string{"ci/.npmrc": "registry=https://registry.example.test/\n", "Dockerfile": copied + "COPY ci/.npmrc /root\nRUN npm install\n"}), assumed},
 		{"npm install with an override that refers to the manifest's own range", npm(map[string]string{"package.json": pkg(`,"overrides":{"express":"$express"}`), "install.sh": "npm install\n"}), assumed},
 		{"npm install with an override the lock holds to", npm(map[string]string{"package.json": pkg(`,"overrides":{"express":"4.19.2"}`), "install.sh": "npm install\n"}), assumed},
+		{"npm install, an override names the repository the lock installs from", gitOverride("github:acme/qs", fromGit), assumed},
+		{"npm install, an override names that repository at the locked commit", gitOverride("github:acme/qs#"+commit, fromGit), assumed},
+		{"npm install, an override names that repository by URL", gitOverride("git+https://github.com/acme/qs.git", fromGit, "git+https://github.com/acme/qs.git#"+commit), assumed},
 		{"yarn install", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install")}, assumed},
 		{"yarn --frozen-lockfile", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn --frozen-lockfile")}, assumed},
 		{"pnpm install", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, ".github/workflows/ci.yml": ci("pnpm install")}, assumed},
@@ -129,6 +154,20 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"Dockerfile adds an .npmrc to the home directory", npm(map[string]string{".npmrc": "registry=https://registry.example.test/\n", "Dockerfile": copied + "ADD .npmrc /root/.npmrc\nRUN npm install\n"}), withheld},
 		{"Dockerfile copies an .npmrc that turns the lock off into the home directory", npm(map[string]string{"ci/.npmrc": "package-lock=false\n", "Dockerfile": copied + "COPY ci/.npmrc /root\nRUN npm install\n"}), withheld},
 		{"pnpm install, an override keyed by a version selector", map[string]string{"package.json": pkg(`,"pnpm":{"overrides":{"express@<5":"4.19.2"}}`), "pnpm-lock.yaml": pnpmLock, ".github/workflows/ci.yml": ci("pnpm install")}, withheld},
+		{"npm install, an override names another repository than the lock installs from", gitOverride("github:acme/qs-fork", fromGit), withheld},
+		{"npm install, an override names another owner's repository", gitOverride("github:other/qs", fromGit), withheld},
+		{"npm install, an override names a commit the lock does not hold", gitOverride("github:acme/qs#"+other, fromGit), withheld},
+		{"npm install, an override names that repository in another case", gitOverride("github:Acme/qs", fromGit), withheld},
+		{"npm install, an override names a repository and a dependent is locked to a ref of it", map[string]string{"package.json": pkg(`,"overrides":{"qs":"github:acme/qs"}`), "install.sh": "npm install\n",
+			"package-lock.json": strings.Replace(gitLock(fromGit), `"node_modules/express":{`, `"node_modules/express":{"dependencies":{"qs":"github:acme/qs#main"},`, 1)}, withheld},
+		{"npm install, an override names a branch", gitOverride("github:acme/qs#main", fromGit), withheld},
+		{"npm install, an override names a repository and the lock installs from the registry", gitOverride("github:acme/qs", registry), withheld},
+		{"npm install, an override names a repository and one locked copy is from the registry", gitOverride("github:acme/qs", fromGit, registry), withheld},
+		{"npm install, an override names a repository and the lock records no commit", gitOverride("github:acme/qs", "git+ssh://git@github.com/acme/qs.git"), withheld},
+		{"npm install, an override names a repository and the lock records no source", gitOverride("github:acme/qs", ""), withheld},
+		{"npm install, an override names a repository on another host", gitOverride("git+https://gitlab.com/acme/qs.git", "git+https://gitlab.com/acme/qs.git#"+commit), withheld},
+		{"npm install, an override names a tarball", gitOverride("https://example.test/qs.tgz", fromGit), withheld},
+		{"yarn install, a resolution names a repository", map[string]string{"package.json": pkg(`,"resolutions":{"express":"github:acme/express"}`), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install")}, withheld},
 		{"npm install, a nested override", npm(map[string]string{"package.json": pkg(`,"overrides":{"express":{"qs":"6.11.0"}}`), "install.sh": "npm install\n"}), withheld},
 		{"npm install, an override pins a version the lock does not hold", npm(map[string]string{"package.json": pkg(`,"overrides":{"express":"4.19.0"}`), "install.sh": "npm install\n"}), withheld},
 		{"yarn install, a resolution pins a version the lock does not hold", map[string]string{"package.json": pkg(`,"resolutions":{"express":"4.19.0"}`), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install")}, withheld},

@@ -43,3 +43,27 @@ func TestFindIngresses_InheritedRoute(t *testing.T) {
 		}
 	}
 }
+
+// A route declared on an interface in a dependency JAR (a generated API published as its own
+// artifact) roots the first-party override that implements it.
+func TestReachability_RouteInheritedFromDependency(t *testing.T) {
+	dir := gradleJacksonBuild(t, `    implementation("com.example:pets-api:1.0")`)
+	api := newKClassBuilder()
+	api.addMethodAnnotated("parse", "()V", []byte{opReturn},
+		api.anno(descGetMapping, kannoElem{name: "value", value: "/parse"}))
+	writeGradleCacheJar(t, dir, "com.example", "pets-api", "1.0", map[string][]byte{
+		"com/example/api/PetsApi": api.build("com/example/api/PetsApi", "java/lang/Object"),
+	})
+	ctrl := newKClassBuilder()
+	ctrl.addMethod("parse", "()V", append(ctrl.invokeVirtual(objectMapper, "readValue", readValueDesc), opReturn))
+	writeClassFixture(t, dir, "com/example/web/PetsController",
+		ctrl.buildWithInterfaces("com/example/web/PetsController", "java/lang/Object", "com/example/api/PetsApi"))
+
+	res := reach(t, dir, readValueSink)
+	if len(res.Paths) != 1 {
+		t.Fatalf("paths = %v, want one from PetsController.parse (reasons %v)", res.Paths, res.Partiality.Reasons)
+	}
+	if got := res.Paths[0].Ingress.Name; got != "parse" {
+		t.Errorf("ingress = %+v, want PetsController.parse", res.Paths[0].Ingress)
+	}
+}

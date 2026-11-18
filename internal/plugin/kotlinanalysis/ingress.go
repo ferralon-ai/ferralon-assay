@@ -53,7 +53,7 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 // sorted by canonical symbol (then Kind) for determinism.
 func registerFrameworkIngresses(prog *program) []plugin.Ingress {
 	var ingresses []plugin.Ingress
-	for _, fi := range frameworkIngresses(prog.classes) {
+	for _, fi := range frameworkIngresses(prog.classes, nil) {
 		ingresses = append(ingresses, plugin.Ingress{
 			Kind:     fi.kind,
 			Symbol:   SymbolFromMethodRef(fi.ref),
@@ -113,8 +113,9 @@ type frameworkIngress struct {
 // Recognition matches GRANITE's Java lanes: a mapping/entrypoint annotation on a method is
 // sufficient on its own — no class-level stereotype gate — and a servlet method on a class
 // whose direct superclass name ends in the servlet suffix is an ingress. Over-approximating
-// roots this way can only raise reachability, never false-safe (inv.5).
-func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
+// roots this way can only raise reachability, never false-safe (inv.5). lookup resolves the
+// supertypes a method inherits a mapping from; nil resolves among classes alone.
+func frameworkIngresses(classes []classfile.Class, lookup func(string) (*classfile.Class, bool)) []frameworkIngress {
 	var out []frameworkIngress
 	for _, c := range classes {
 		base := classRequestMappingPath(c.Annotations)
@@ -134,15 +135,18 @@ func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
 		}
 	}
 	// A method that inherits its mapping from a supertype's method is an ingress too.
-	byName := make(map[string]*classfile.Class, len(classes))
-	own := map[string]bool{}
-	for i := range classes {
-		byName[classes[i].Name] = &classes[i]
+	if lookup == nil {
+		byName := make(map[string]*classfile.Class, len(classes))
+		for i := range classes {
+			byName[classes[i].Name] = &classes[i]
+		}
+		lookup = func(n string) (*classfile.Class, bool) { c, ok := byName[n]; return c, ok }
 	}
+	own := map[string]bool{}
 	for _, fi := range out {
 		own[fi.ref.String()] = true
 	}
-	for _, e := range jvmingress.Compiled(classes, func(n string) (*classfile.Class, bool) { c, ok := byName[n]; return c, ok }) {
+	for _, e := range jvmingress.Compiled(classes, lookup) {
 		if !own[e.Ref.String()] {
 			out = append(out, frameworkIngress{ref: e.Ref, kind: e.Kind, selector: e.Selector})
 		}
@@ -160,8 +164,8 @@ func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
 // ingress (routes, container entrypoints, and servlets), so Reachability can root a search
 // at any framework ingress just as it does at `main`. Order matches frameworkIngresses
 // (sorted) for determinism.
-func frameworkIngressRefs(classes []classfile.Class) []classfile.MethodRef {
-	fis := frameworkIngresses(classes)
+func frameworkIngressRefs(classes []classfile.Class, lookup func(string) (*classfile.Class, bool)) []classfile.MethodRef {
+	fis := frameworkIngresses(classes, lookup)
 	refs := make([]classfile.MethodRef, len(fis))
 	for i, fi := range fis {
 		refs[i] = fi.ref

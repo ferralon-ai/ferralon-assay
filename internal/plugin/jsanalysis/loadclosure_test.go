@@ -602,13 +602,22 @@ func TestLoadClosure_Unbounded(t *testing.T) {
 		usedPlain = "exports.run = function run() {};\n"
 		usedEval  = "exports.run = function run(s) { return eval(s); };\n"
 	)
-	// tool's browser field may remap its module's loads, so none of them is bounded.
+	// tool's relative load names a file two resolvers read differently, so the lane cannot bound
+	// the module that makes it.
 	tool := func() *depPkg {
 		return closurePkg("tool", map[string]string{
-			"package.json": `{"name":"tool","version":"1.0.0","main":"index.js","browser":{"./lib.js":"./shim.js"}}`,
-			"index.js":     "require('./lib');\nexports.run = function run() {};\n",
-			"lib.js":       "module.exports = 1;\n",
-			"shim.js":      "module.exports = 2;\n",
+			"index.js": "require('./lib');\nexports.run = function run() {};\n",
+			"lib.js":   "module.exports = 1;\n",
+			"lib.mjs":  "export default 2;\n",
+		})
+	}
+	// remapped holds a nested package.json whose browser field sends lib.js to shim.js, which
+	// loads idle; a bare load of its subpath reaches it only through the remap.
+	remapped := func() *depPkg {
+		return closurePkg("tool", map[string]string{
+			"sub/package.json": `{"browser":{"./lib.js":"./shim.js"}}`,
+			"sub/lib.js":       "module.exports = 1;\n",
+			"sub/shim.js":      "require('idle');\nmodule.exports = 2;\n",
 		})
 	}
 	const inClosure = "has a load or call that is not bounded"
@@ -619,23 +628,38 @@ func TestLoadClosure_Unbounded(t *testing.T) {
 		// complete is the closure's verdict; vetoes are what it must name when incomplete.
 		complete bool
 		vetoes   []string
-		// declined is whether the first-party load of used stays declined.
+		// declined is whether the first-party load of used stays declined; declares is which of
+		// the two reasons a kept decline raises the result must declare, as a limit or scoped to
+		// the closure.
 		declined bool
+		declares []string
 	}{
-		{name: "nothing unbounded", first: app, pkgs: []*depPkg{used(usedPlain), closurePkg("idle", nil)}, complete: true},
-		{name: "unbounded module outside a complete closure", first: app, pkgs: []*depPkg{used(usedPlain), closurePkg("idle", nil), tool()}, complete: true},
+		{name: "nothing unbounded", first: app, pkgs: []*depPkg{used(usedPlain), closurePkg("idle", nil)}, complete: true,
+			declares: []string{plugin.PartialReasonUnlistedSites}},
+		{name: "unbounded module outside a complete closure", first: app, pkgs: []*depPkg{used(usedPlain), closurePkg("idle", nil), tool()}, complete: true,
+			declares: []string{plugin.PartialReasonUnlistedSites}},
+		// The load alone leaves nothing declined once read code covers it, so a decline or flag
+		// the retraction failed to carry back shows.
+		{name: "unbounded module outside a complete closure, load covered", first: "require('used');\n", pkgs: []*depPkg{used(usedPlain), closurePkg("idle", nil), tool()}, complete: true},
 		{name: "first-party code loads the unbounded module", first: app + "require('tool');\n", pkgs: []*depPkg{used(usedPlain), closurePkg("idle", nil), tool()},
-			vetoes: []string{inClosure, unboundedVeto}, declined: true},
+			vetoes: []string{inClosure, unboundedVeto}, declined: true, declares: []string{plugin.PartialReasonUnlistedSites, plugin.PartialReasonUninspectablePackage}},
 		{name: "a loaded package loads the unbounded module", first: app, pkgs: []*depPkg{used("require('tool');\n" + usedPlain), closurePkg("idle", nil), tool()},
-			vetoes: []string{inClosure, unboundedVeto}, declined: true},
+			vetoes: []string{inClosure, unboundedVeto}, declined: true, declares: []string{plugin.PartialReasonUnlistedSites, plugin.PartialReasonUninspectablePackage}},
 		// The closure reads which first-party loads read code covers, whatever lies outside it.
 		{name: "unbounded module outside, first-party load not covered", first: app, pkgs: []*depPkg{
 			closurePkg("used", map[string]string{"package.json": `{"name":"used","version":"1.0.0","main":"index.js","browser":{"./index.js":"other"}}`}), closurePkg("idle", nil), tool()},
-			vetoes: []string{"first-party load of used is not covered by read code", unboundedVeto}, declined: true},
+			vetoes: []string{"first-party load of used is not covered by read code", unboundedVeto}, declined: true, declares: []string{plugin.PartialReasonUnlistedSites, plugin.PartialReasonUninspectablePackage}},
 		{name: "incomplete closure, nothing unbounded", first: app, pkgs: []*depPkg{used(usedEval), closurePkg("idle", nil)},
-			vetoes: []string{"evaluates code"}},
+			vetoes: []string{"evaluates code"}, declares: []string{plugin.PartialReasonUnlistedSites}},
 		{name: "unbounded module outside an incomplete closure", first: app, pkgs: []*depPkg{used(usedEval), closurePkg("idle", nil), tool()},
-			vetoes: []string{"evaluates code", unboundedVeto}, declined: true},
+			vetoes: []string{"evaluates code", unboundedVeto}, declined: true, declares: []string{plugin.PartialReasonUnlistedSites, plugin.PartialReasonUninspectablePackage}},
+		// A veto only first-party code raises still counts: the run-wide veto reads every other.
+		{name: "unbounded module outside a closure vetoed by first-party code", first: app + "eval('x');\n", pkgs: []*depPkg{used(usedPlain), closurePkg("idle", nil), tool()},
+			vetoes: []string{"first-party code evaluates code", unboundedVeto}, declined: true, declares: []string{plugin.PartialReasonUnlistedSites, plugin.PartialReasonUninspectablePackage}},
+		// A bare load of a nested directory's file may reach what its browser field remaps it to,
+		// which the closure holds no edge to: the veto stands for every closure.
+		{name: "remap under a nested package.json", first: app + "require('tool/sub/lib.js');\n", pkgs: []*depPkg{used(usedPlain), closurePkg("idle", nil), remapped()},
+			vetoes: []string{unboundedVeto}, declined: true, declares: []string{plugin.PartialReasonUnlistedSites, plugin.PartialReasonUninspectablePackage}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cg, lc := closureOf(t, newDepFixture(t, map[string]string{"index.js": tc.first}, tc.pkgs...))
@@ -653,6 +677,12 @@ func TestLoadClosure_Unbounded(t *testing.T) {
 			if !slices.Contains(tc.vetoes, unboundedVeto) && slices.Contains(lc.Vetoes, unboundedVeto) {
 				t.Errorf("vetoes = %q, want no %q", lc.Vetoes, unboundedVeto)
 			}
+			for _, r := range []string{plugin.PartialReasonUnlistedSites, plugin.PartialReasonUninspectablePackage} {
+				got := hasReason(cg.Partiality, r) || slices.ContainsFunc(cg.Partiality.Scoped, func(sr plugin.ScopedReason) bool { return sr.Reason == r })
+				if got != slices.Contains(tc.declares, r) {
+					t.Errorf("%s declared = %v, want %v; partiality %+v", r, got, !got, cg.Partiality)
+				}
+			}
 			if got := slices.ContainsFunc(cg.Unresolved, func(u plugin.UnresolvedCall) bool { return u.Callee == "require" }); got != tc.declined {
 				t.Errorf("first-party load declined = %v, want %v; unresolved %+v", got, tc.declined, cg.Unresolved)
 			}
@@ -661,23 +691,26 @@ func TestLoadClosure_Unbounded(t *testing.T) {
 }
 
 // TestLoadRecord_VetoUnbounded: a first-party load or call the lane cannot bound vetoes always,
-// and a dependency module's vetoes run-wide only beside another veto.
+// a browser-field remap vetoes always, and a dependency module's unbounded load or call vetoes
+// run-wide only beside another veto.
 func TestLoadRecord_VetoUnbounded(t *testing.T) {
 	for _, tc := range []struct {
-		name                      string
-		first, unbounded, another bool
-		want                      bool
+		name                                string
+		first, unbounded, remapped, another bool
+		want                                bool
 	}{
 		{name: "nothing unbounded"},
 		{name: "first-party", first: true, want: true},
 		{name: "first-party beside another veto", first: true, another: true, want: true},
 		{name: "dependency module alone", unbounded: true},
+		{name: "remap alone", remapped: true, want: true},
 		{name: "dependency module beside another veto", unbounded: true, another: true, want: true},
 		{name: "another veto alone", another: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lr := newLoadRecord()
-			lr.module("node_modules/tool/index").unbounded = tc.unbounded
+			ml := lr.module("node_modules/tool/index")
+			ml.unbounded, ml.remapped = tc.unbounded, tc.remapped
 			lr.veto(tc.another, "another")
 			lr.vetoUnbounded(tc.first)
 			if got := lr.vetoes[unboundedVeto]; got != tc.want {

@@ -718,7 +718,7 @@ func callGraphWithClosure(ctx context.Context, buildDir string, store artifactca
 	firstExempt, firstProto := g.anyExempt, g.anyProto
 	all := lr.merged(dflags, nil)
 	firstUnbounded := g.depUnbounded
-	g.depUnbounded = firstUnbounded || lr.anyUnbounded()
+	g.depUnbounded = firstUnbounded || lr.anyUnbounded() || lr.anyRemapped()
 
 	reached := reachedFrom(baseRoots, g.edges, aug.edges)
 	versions := map[string]int{}
@@ -1064,7 +1064,7 @@ func augment(ctx context.Context, prog *program, firstParty, depFiles []filePars
 		}
 		init := sym(moduleInitSCIP(f.module))
 		if len(b.specifiers) > 0 && pkg.remapsAlong(moduleDir(strings.TrimPrefix(f.module, pkg.entry.path+"/"))) {
-			ml.unbounded = true
+			ml.remapped = true
 		}
 		for _, ls := range b.specifiers {
 			algo := loadAlgo(ls.viaRequire)

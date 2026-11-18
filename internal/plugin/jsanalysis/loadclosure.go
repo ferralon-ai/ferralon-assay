@@ -57,7 +57,11 @@ type loadClosure struct {
 type modLimits struct {
 	flags partialFlags
 	// unbounded marks a load or call some resolver may run code the graph has no edge to.
-	unbounded     bool
+	unbounded bool
+	// remapped marks a module with loads in a directory a package.json browser field may remap.
+	// It describes how loads into that directory resolve, which the edges to the modules those
+	// loads reach do not follow, so it holds for every closure.
+	remapped      bool
 	exempt, proto bool
 	// loadsCode marks a load of a Node built-in that can load or run other code.
 	loadsCode bool
@@ -155,6 +159,10 @@ func (lr *loadRecord) anyUnbounded() bool {
 	return lr.any(nil, func(ml *modLimits) bool { return ml.unbounded })
 }
 
+func (lr *loadRecord) anyRemapped() bool {
+	return lr.any(nil, func(ml *modLimits) bool { return ml.remapped })
+}
+
 // unboundedVeto is the veto a load or call the lane cannot bound declares run-wide.
 const unboundedVeto = "a load or call in dependency code is not bounded"
 
@@ -162,9 +170,11 @@ const unboundedVeto = "a load or call in dependency code is not bounded"
 // modules (close vetoes one inside). first marks one in first-party code, which vetoes always.
 // A dependency module outside a closure that is complete for every other reason never runs. While
 // any other veto stands the closure may be missing modules, that one among them, so its limit
-// holds run-wide. Called last, once every other veto is in.
+// holds run-wide. Called last, once every other veto is in. A browser-field remap vetoes always:
+// it changes which module a load into the remapped directory reaches, wherever the module it
+// is recorded on sits.
 func (lr *loadRecord) vetoUnbounded(first bool) {
-	lr.veto(first || len(lr.vetoes) > 0 && lr.anyUnbounded(), unboundedVeto)
+	lr.veto(first || lr.anyRemapped() || len(lr.vetoes) > 0 && lr.anyUnbounded(), unboundedVeto)
 }
 
 func (lr *loadRecord) anyExempt(only map[string]bool) bool {

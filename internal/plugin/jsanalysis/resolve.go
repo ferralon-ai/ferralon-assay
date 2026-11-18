@@ -1074,14 +1074,26 @@ type pkgManifest struct {
 	binUnread bool
 }
 
+// looseString is a package.json field Node reads only when it is a string: any other value
+// (`"main": false`) reads as absent.
+type looseString string
+
+func (l *looseString) UnmarshalJSON(data []byte) error {
+	var s string
+	if json.Unmarshal(data, &s) == nil {
+		*l = looseString(s)
+	}
+	return nil
+}
+
 type rawPkg struct {
 	Name       string          `json:"name"`
-	Type       string          `json:"type"`
-	Main       string          `json:"main"`
+	Type       looseString     `json:"type"`
+	Main       looseString     `json:"main"`
 	Workspaces json.RawMessage `json:"workspaces"`
 	Exports    json.RawMessage `json:"exports"`
 	Imports    json.RawMessage `json:"imports"`
-	Module     string          `json:"module"`
+	Module     looseString     `json:"module"`
 	Browser    json.RawMessage `json:"browser"`
 	Bin        json.RawMessage `json:"bin"`
 	Dirs       struct {
@@ -1111,7 +1123,7 @@ func parsePkgManifest(data []byte) *pkgManifest {
 	if err := json.Unmarshal(data, &rp); err != nil {
 		return nil
 	}
-	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: rp.Main, module: rp.Module}
+	m := &pkgManifest{name: rp.Name, typ: string(rp.Type), main: string(rp.Main), module: string(rp.Module)}
 	for _, deps := range []json.RawMessage{rp.Dependencies, rp.PeerDependencies, rp.OptionalDependencies} {
 		names, ok := declaredNames(deps)
 		m.declared, m.declaredOpen = append(m.declared, names...), m.declaredOpen || !ok
@@ -1119,7 +1131,7 @@ func parsePkgManifest(data []byte) *pkgManifest {
 	devNames, ok := declaredNames(rp.DevDependencies)
 	m.devDeclared, m.declaredOpen = devNames, m.declaredOpen || !ok
 	if rp.Module != "" {
-		m.frontEntries = append(m.frontEntries, rp.Module)
+		m.frontEntries = append(m.frontEntries, string(rp.Module))
 	}
 	if len(rp.Browser) > 0 {
 		var one string

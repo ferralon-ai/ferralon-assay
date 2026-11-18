@@ -95,22 +95,39 @@ func (s *ssaProgram) runTimeReason(name string) (string, bool) {
 	return r, ok
 }
 
-// statePluginScope says, in the detail of a refutation kept beside plugin_load:cgo_off, the build
-// setting it holds for: the program reaches plugin.Open, which loads nothing with cgo off, and the
+// stateCgoOffScope says, in the detail of a refutation kept beside a limit that holds only because
+// the scanned build has cgo off, the build setting the refutation holds for. plugin_load:cgo_off:
+// the program reaches plugin.Open, which loads nothing with cgo off. cgo:files_dropped: the build
+// left out cgo files, none of which was found to call into the advisory's module. Either way the
 // same program built with cgo on was not checked.
-func statePluginScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
+func stateCgoOffScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
 	r := res.Refutation
-	if r == nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoadCgoOff) {
+	if r == nil {
+		return res
+	}
+	var scopes []string
+	if slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoadCgoOff) {
+		scopes = append(scopes, pluginScopeDetail)
+	}
+	if slices.ContainsFunc(res.Partiality.Scoped, func(s plugin.ScopedReason) bool {
+		return s.Reason == plugin.PartialReasonCgoFilesDropped
+	}) {
+		scopes = append(scopes, cgoFilesScopeDetail)
+	}
+	if len(scopes) == 0 {
 		return res
 	}
 	stated := *r
-	stated.Detail = pluginScopeDetail
 	if r.Detail != "" {
-		stated.Detail = r.Detail + "; " + pluginScopeDetail
+		scopes = append([]string{r.Detail}, scopes...)
 	}
+	stated.Detail = strings.Join(scopes, "; ")
 	res.Refutation = &stated
 	return res
 }
 
-// pluginScopeDetail is what statePluginScope adds to a refutation's detail.
-const pluginScopeDetail = "holds for CGO_ENABLED=0, where the plugin.Open call the program reaches loads nothing; a build with cgo on was not checked"
+// pluginScopeDetail and cgoFilesScopeDetail are what stateCgoOffScope adds to a refutation's detail.
+const (
+	pluginScopeDetail   = "holds for CGO_ENABLED=0, where the plugin.Open call the program reaches loads nothing; a build with cgo on was not checked"
+	cgoFilesScopeDetail = "holds for CGO_ENABLED=0, which leaves the build's cgo files out; a build with cgo on was not checked"
+)

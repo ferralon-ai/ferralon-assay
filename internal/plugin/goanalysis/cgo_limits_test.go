@@ -56,6 +56,9 @@ func TestCgoLimits(t *testing.T) {
 	limit := func(pkg, path string, targets ...string) []plugin.ScopedReason {
 		return []plugin.ScopedReason{{Reason: plugin.PartialReasonCgo, Package: pkg, Path: path, Targets: targets}}
 	}
+	droppedLimit := func(pkg, path string, targets ...string) []plugin.ScopedReason {
+		return []plugin.ScopedReason{{Reason: plugin.PartialReasonCgoFilesDropped, Package: pkg, Path: path, Targets: targets}}
+	}
 	cases := []struct {
 		name        string
 		pkgs        []*packages.Package
@@ -66,7 +69,8 @@ func TestCgoLimits(t *testing.T) {
 		{"a prebuilt object lets C call back", graph(depPkg([]string{plain}, []string{filepath.Join(dir, "blob.syso")}, nil, true)), true, limit(dep, "example.com/dep/c", every...)},
 		{"a SWIG interface lets C call back", graph(depPkg([]string{plain}, []string{filepath.Join(dir, "api.swig")}, nil, true)), true, limit(dep, "example.com/dep/c", every...)},
 		{"a cgo file that does not parse may export", graph(depPkg([]string{broken}, nil, nil, true)), true, limit(dep, "example.com/dep/c", every...)},
-		{"a dropped file's limit names the standard library", graph(depPkg(nil, nil, []string{plain}, false)), true, limit(dep, "example.com/dep/c", "", dep, stdlibPURL)},
+		{"a dropped file's limit names the standard library", graph(depPkg(nil, nil, []string{plain}, false)), true, droppedLimit(dep, "example.com/dep/c", "", dep, stdlibPURL)},
+		{"a dropped file beside compiled cgo stays cgo", graph(depPkg([]string{plain}, nil, []string{exported}, true)), true, limit(dep, "example.com/dep/c", every...)},
 		{"a dropped file that cannot be read bounds nothing", graph(depPkg(nil, nil, []string{missing}, false)), false, nil},
 		{"the compiled plugin package is no cgo module", graph(std("plugin", []string{plain})), true, nil},
 		{"the standard library's own cgo is no cgo module", with(graph(depPkg([]string{plain}, nil, nil, true)), std("net", []string{plain})), true, limit(dep, "example.com/dep/c", dep)},

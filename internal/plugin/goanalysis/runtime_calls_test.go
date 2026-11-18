@@ -187,9 +187,14 @@ func TestReflectReach_PluginLoadByBuild(t *testing.T) {
 	}
 }
 
-// TestStatePluginScope: a refutation kept beside plugin_load:cgo_off says in its detail that it
-// holds for CGO_ENABLED=0. Any other result is unchanged.
-func TestStatePluginScope(t *testing.T) {
+// TestStateCgoOffScope: a refutation kept beside plugin_load:cgo_off or a scoped cgo:files_dropped
+// says in its detail that it holds for CGO_ENABLED=0. Any other result is unchanged.
+func TestStateCgoOffScope(t *testing.T) {
+	scoped := func(res plugin.ReachabilityResult, reason string) plugin.ReachabilityResult {
+		res.Partiality.Complete = false
+		res.Partiality.Scoped = []plugin.ScopedReason{{Reason: reason, Path: "example.com/app/native", Targets: []string{"", "pkg:golang/example.com/vulnmod"}}}
+		return res
+	}
 	refuted := func(detail string, reasons ...string) plugin.ReachabilityResult {
 		return plugin.ReachabilityResult{
 			Partiality: plugin.Partial(reasons...),
@@ -205,11 +210,14 @@ func TestStatePluginScope(t *testing.T) {
 		{"an empty detail", refuted("", plugin.PartialReasonPluginLoadCgoOff), pluginScopeDetail},
 		{"beside plugin_load", refuted("no call path", plugin.PartialReasonPluginLoad), "no call path"},
 		{"beside another limit", refuted("no call path", plugin.PartialReasonExcludedFilesBuildConstraint), "no call path"},
+		{"beside scoped cgo:files_dropped", scoped(refuted("no call path"), plugin.PartialReasonCgoFilesDropped), "no call path; " + cgoFilesScopeDetail},
+		{"beside both", scoped(refuted("no call path", plugin.PartialReasonPluginLoadCgoOff), plugin.PartialReasonCgoFilesDropped), "no call path; " + pluginScopeDetail + "; " + cgoFilesScopeDetail},
+		{"beside scoped cgo", scoped(refuted("no call path"), plugin.PartialReasonCgo), "no call path"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			before := tc.in.Refutation.Detail
-			if got := statePluginScope(tc.in).Refutation.Detail; got != tc.want {
+			if got := stateCgoOffScope(tc.in).Refutation.Detail; got != tc.want {
 				t.Errorf("detail = %q, want %q", got, tc.want)
 			}
 			if tc.in.Refutation.Detail != before {
@@ -218,7 +226,7 @@ func TestStatePluginScope(t *testing.T) {
 		})
 	}
 	none := plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonPluginLoadCgoOff)}
-	if got := statePluginScope(none); got.Refutation != nil {
+	if got := stateCgoOffScope(none); got.Refutation != nil {
 		t.Errorf("a result with no refutation gained one: %+v", got.Refutation)
 	}
 }

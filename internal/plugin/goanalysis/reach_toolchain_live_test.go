@@ -15,7 +15,11 @@
 package goanalysis
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -139,6 +143,74 @@ func TestReachability_ToolchainFallbacks(t *testing.T) {
 				t.Error("ScanToolchain is empty after a fallback; the run must record which toolchain it actually used")
 			}
 			t.Logf("requested %s, fell back to %s", c.want, res.ScanToolchain)
+		})
+	}
+}
+
+// declaredToolchain is a release newer than any analyzer this test is likely to run on for a
+// while, so a module declaring it loads under a toolchain that is not the installed one.
+const declaredToolchain = "go1.26.10"
+
+// TestGovulncheckMatchesTheToolchainItLoadsUnder: when the go command uses a release in the module
+// other than the installed one, govulncheck reports that release, so standard-library advisories
+// are matched against the standard library it loads. The release is selected either by the
+// module's toolchain line or by a GOTOOLCHAIN the scan pins.
+func TestGovulncheckMatchesTheToolchainItLoadsUnder(t *testing.T) {
+	t.Setenv("GOTOOLCHAIN", "auto")
+	tests := []struct {
+		name  string
+		goMod string
+		pin   string
+	}{
+		{name: "declared by the module", goMod: "go 1.26.0\n\ntoolchain " + declaredToolchain + "\n"},
+		{name: "pinned by the scan", goMod: "go 1.22\n", pin: liveSubjectToolchain},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, src := range map[string]string{
+				"go.mod":  "module example.com/declared\n\n" + tc.goMod,
+				"main.go": "package main\n\nimport \"net/http\"\n\nfunc main() { _ = http.ListenAndServe(\":0\", nil) }\n",
+			} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx := context.Background()
+			installed := goEnvVersion(ctx, t.TempDir(), reachBaseEnv(ctx))
+			env := reachBaseEnv(ctx)
+			if tc.pin != "" {
+				env = append(env, "GOTOOLCHAIN="+tc.pin)
+			}
+			want := goEnvVersion(ctx, dir, env)
+			if want == "" {
+				t.Fatal("go env GOVERSION did not resolve in the module")
+			}
+			if sameGoToolchain(installed, want) {
+				t.Skipf("the installed release %s is the one the module loads under", installed)
+			}
+			out, err := govulncheckStream(ctx, dir, env, []string{"./..."})
+			if err != nil {
+				t.Fatalf("govulncheck: %v", err)
+			}
+			var got string
+			dec := json.NewDecoder(bytes.NewReader(out))
+			for {
+				var msg struct {
+					Config *struct {
+						GoVersion string `json:"go_version"`
+					} `json:"config"`
+				}
+				if err := dec.Decode(&msg); err != nil {
+					break
+				}
+				if msg.Config != nil {
+					got = msg.Config.GoVersion
+				}
+			}
+			if got != want {
+				t.Errorf("govulncheck go_version = %q, want %q, the release the go command uses in the module", got, want)
+			}
 		})
 	}
 }

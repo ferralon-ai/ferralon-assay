@@ -71,7 +71,7 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 
 	resp, opErr := dispatch(ctx, req)
 	if opErr != nil {
-		return writeError(stdout, opErr.Error())
+		return writeError(stdout, goanalysis.FailureText(opErr))
 	}
 	resp.Protocol = plugin.ProtocolVersion
 	return writeResponse(stdout, resp)

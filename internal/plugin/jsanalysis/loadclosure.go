@@ -651,6 +651,13 @@ var installerWords = map[string]bool{
 // nodeEvalFlags are Node's options that run their argument as code.
 var nodeEvalFlags = map[string]bool{"-e": true, "--eval": true, "-p": true, "--print": true, "-pe": true, "-ep": true}
 
+// jsRuntimes are the commands that take nodeEvalFlags.
+var jsRuntimes = map[string]bool{"node": true, "nodejs": true, "bun": true, "deno": true, "tsx": true, "ts-node": true}
+
+// inlineBuiltins are the built-ins through which code piped or handed to an interpreter starts
+// other code. An install script that names one outside a parsed file is not followed.
+var inlineBuiltins = map[string]bool{"child_process": true, "worker_threads": true, "vm": true}
+
 // inlineRequires matches an install script that is one `node -e` whose code only requires files
 // of its own package by literal relative path, the form a package uses to make its install step
 // optional (`node -e "try{require('./postinstall')}catch(e){}"`). The word scan roots each file.
@@ -957,7 +964,7 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 	for i := 0; i < len(texts); i++ {
 		lt := texts[i]
 		rel, origin := lt.rel, lt.origin
-		fetches, manager := false, false
+		fetches, manager, runtime := false, false, false
 		for _, w := range scriptLoadWords(lt.text) {
 			// A runner that fetches a command the install does not hold runs code no
 			// lockfile names, which may load anything installed.
@@ -980,7 +987,11 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 			if s := lt.dep; s != nil {
 				lr.veto(installerWords[w] || strings.HasSuffix(w, ".npm_execpath"), origin+" runs "+w+", which can install code no lockfile names")
 				// Code given on the command line is JavaScript the lane does not parse.
-				lr.veto(nodeEvalFlags[w] && !inlineRequires.MatchString(lt.text), origin+" runs inline code that is more than a require of its package's own files")
+				// The flag is read as Node's only after a JavaScript runtime is named: `mkdir -p`
+				// and `test -e` are not code.
+				runtime = runtime || jsRuntimes[w]
+				lr.veto(runtime && nodeEvalFlags[w] && !inlineRequires.MatchString(lt.text), origin+" runs inline code that is more than a require of its package's own files")
+				lr.veto(inlineBuiltins[strings.TrimPrefix(w, "node:")], origin+" names "+w+", a built-in that can run other code, outside a file the lane parses")
 				// A patched package's files are not what runs: its hidden bound stands in.
 				// A directory change moves what every later path names, and a path that ends in
 				// a slash is the start of a computed one: neither is a file the lane can name.

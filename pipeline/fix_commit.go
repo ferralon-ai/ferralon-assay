@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,17 +60,6 @@ func headContainsCommit(ctx context.Context, dir, commit string) bool {
 	return err == nil
 }
 
-// isAncestor asks whether a is b or one of its ancestors. answered is false when git failed rather
-// than said no.
-func isAncestor(ctx context.Context, dir, a, b string) (yes, answered bool) {
-	_, err := fixCommitGit(ctx, dir, "merge-base", "--is-ancestor", a, b)
-	if err == nil {
-		return true, true
-	}
-	var exit *exec.ExitError
-	return false, errors.As(err, &exit) && exit.ExitCode() == 1
-}
-
 // goVersionTag returns the ref of the tag that publishes version of the Go module mod from the
 // repository containing dir: the canonical semver tag under the module directory's prefix, at a
 // major version the module path allows. ok is false for anything else, a pseudo-version included,
@@ -102,12 +90,15 @@ func goVersionTag(ctx context.Context, dir, mod, version string) (ref string, ok
 
 // rangeEnteredBeforeFix reports whether the scanned history is known not to have entered the
 // affected range that starts at version lower after the fix commit. An advisory with several
-// ranges names one fix, and a HEAD that contains it may still sit inside a range opened later on
-// the same line. The range's first version is the module's tag for lower: when that tag is not in
-// HEAD's history the history never entered the range there, and when it is an ancestor of the fix
-// the fix came after it. A tag that is in HEAD's history and not in the fix's, a version with no
-// certain tag, a tag the repository lacks and any git failure all read as false. mod is the
-// project's Go module path; a project of another ecosystem has no tag convention to rely on.
+// ranges names one fix, and a HEAD that contains it may still sit inside a range opened later.
+//
+// The range's first version is the module's tag for lower, and whatever made that release
+// affected is in the tag's history. If HEAD's history holds it too, it is in the history of some
+// merge base of the tag and HEAD. So the range is settled only when every merge base is the fix
+// commit or one of its ancestors: all that HEAD shares with the affected release then predates
+// the fix. A version with no certain tag, a tag the repository lacks, histories with no merge
+// base and any git failure read as false. mod is the project's Go module path; a project of
+// another ecosystem has no tag convention to rely on.
 //
 // It assumes a complete history, which headContainsCommit establishes first.
 func rangeEnteredBeforeFix(ctx context.Context, dir, mod, commit, lower string) bool {
@@ -115,19 +106,17 @@ func rangeEnteredBeforeFix(ctx context.Context, dir, mod, commit, lower string) 
 	if !ok {
 		return false
 	}
-	tag, err := fixCommitGit(ctx, dir, "rev-parse", "-q", "--verify", ref+"^{commit}")
-	if err != nil || !fullCommitID.MatchString(tag) {
+	out, err := fixCommitGit(ctx, dir, "merge-base", "--all", ref+"^{commit}", "HEAD")
+	bases := strings.Fields(out)
+	if err != nil || len(bases) == 0 {
 		return false
 	}
-	inHead, answered := isAncestor(ctx, dir, tag, "HEAD")
-	if !answered {
-		return false
+	for _, base := range bases {
+		if _, err := fixCommitGit(ctx, dir, "merge-base", "--is-ancestor", base, commit); err != nil {
+			return false
+		}
 	}
-	if !inHead {
-		return true
-	}
-	beforeFix, _ := isAncestor(ctx, dir, tag, commit)
-	return beforeFix
+	return true
 }
 
 // fixCommitClears reports whether an advisory against the scanned project's own package is cleared

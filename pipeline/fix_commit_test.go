@@ -201,8 +201,8 @@ func TestHeadContainsCommit_NeverFetches(t *testing.T) {
 }
 
 // TestRangeEnteredBeforeFix: with HEAD at later and the fix at fix, a range is settled only when
-// the tag for its first version resolves and is either outside HEAD's history or already in the
-// fix's.
+// the tag for its first version resolves and everything it shares with HEAD is in the fix's
+// history.
 func TestRangeEnteredBeforeFix(t *testing.T) {
 	const app = "example.com/app"
 	bogus := strings.Repeat("0123456789", 4)
@@ -229,7 +229,7 @@ func TestRangeEnteredBeforeFix(t *testing.T) {
 		{name: "tagged after the named commit and before HEAD", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: fix, commit: base},
 		{name: "annotated tag after the fix", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: later, annotated: true},
 		{name: "annotated tag before the fix", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: base, annotated: true, want: true},
-		{name: "tagged on a branch HEAD does not contain", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: side, want: true},
+		{name: "tagged on a branch that left before the fix", mod: app, lower: "1.3.0", tag: "v1.3.0", tagAt: side, want: true},
 		{name: "no tag for the version", mod: app, lower: "1.3.0"},
 		{name: "a tag without the v", mod: app, lower: "1.3.0", tag: "1.3.0", tagAt: base},
 		{name: "a version written with its v", mod: app, lower: "v1.3.0", tag: "v1.3.0", tagAt: base, want: true},
@@ -267,6 +267,75 @@ func TestRangeEnteredBeforeFix(t *testing.T) {
 			}
 		})
 	}
+	// The remaining histories put the fix at fix and build on from later.
+	tagAt := func(t *testing.T, h fixHistory, at string) {
+		t.Helper()
+		fixtureGit(t, h.dir, "-c", "tag.gpgsign=false", "tag", "v1.3.0", at)
+	}
+	commitOn := func(t *testing.T, h fixHistory, msg string) string {
+		t.Helper()
+		fixtureGit(t, h.dir, "commit", "-q", "--allow-empty", "-m", msg)
+		return fixtureGit(t, h.dir, "rev-parse", "HEAD")
+	}
+	t.Run("a release branch cut after the fix carries the tag", func(t *testing.T) {
+		h := newFixHistory(t, nil)
+		fixtureGit(t, h.dir, "checkout", "-q", "-b", "release", h.later)
+		tagAt(t, h, commitOn(t, h, "release"))
+		fixtureGit(t, h.dir, "checkout", "-q", "main")
+		commitOn(t, h, "head")
+		if rangeEnteredBeforeFix(context.Background(), h.dir, app, h.fix, "1.3.0") {
+			t.Fatal("settled although HEAD shares history after the fix with the tagged release")
+		}
+	})
+	t.Run("HEAD sits before a tag made later on the same line", func(t *testing.T) {
+		h := newFixHistory(t, nil)
+		tagAt(t, h, commitOn(t, h, "release"))
+		h.at(t, h.later)
+		if rangeEnteredBeforeFix(context.Background(), h.dir, app, h.fix, "1.3.0") {
+			t.Fatal("settled although HEAD is past the fix on the way to the tagged release")
+		}
+	})
+	t.Run("a release branch cut at the fix carries the tag", func(t *testing.T) {
+		h := newFixHistory(t, nil)
+		fixtureGit(t, h.dir, "checkout", "-q", "-b", "release", h.fix)
+		tagAt(t, h, commitOn(t, h, "release"))
+		fixtureGit(t, h.dir, "checkout", "-q", "main")
+		if !rangeEnteredBeforeFix(context.Background(), h.dir, app, h.fix, "1.3.0") {
+			t.Fatal("not settled although HEAD shares nothing past the fix with the tagged release")
+		}
+	})
+	t.Run("two merge bases and only one is in the fix's history", func(t *testing.T) {
+		h := newFixHistory(t, nil)
+		fixtureGit(t, h.dir, "checkout", "-q", "-b", "a", h.base)
+		x := commitOn(t, h, "x")
+		fixtureGit(t, h.dir, "checkout", "-q", "-b", "b", h.base)
+		y := commitOn(t, h, "y")
+		fixtureGit(t, h.dir, "merge", "-q", "--no-ff", "-m", "b takes a", x)
+		fixtureGit(t, h.dir, "checkout", "-q", "a")
+		fixtureGit(t, h.dir, "merge", "-q", "--no-ff", "-m", "a takes b", y)
+		tagAt(t, h, "a")
+		fixtureGit(t, h.dir, "checkout", "-q", "b")
+		if all := strings.Fields(fixtureGit(t, h.dir, "merge-base", "--all", "v1.3.0", "HEAD")); len(all) != 2 {
+			t.Fatalf("merge bases = %v, want two", all)
+		}
+		// Whichever base git names first stands in for the fix; the other is not in its history.
+		first := fixtureGit(t, h.dir, "merge-base", "v1.3.0", "HEAD")
+		if rangeEnteredBeforeFix(context.Background(), h.dir, app, first, "1.3.0") {
+			t.Fatal("settled on one merge base while the other is outside the fix's history")
+		}
+		if !rangeEnteredBeforeFix(context.Background(), h.dir, app, fixtureGit(t, h.dir, "rev-parse", "a"), "1.3.0") {
+			t.Fatal("not settled although both merge bases are in the commit's history")
+		}
+	})
+	t.Run("the tag shares no history with HEAD", func(t *testing.T) {
+		h := newFixHistory(t, nil)
+		fixtureGit(t, h.dir, "checkout", "-q", "--orphan", "unrelated")
+		tagAt(t, h, commitOn(t, h, "unrelated"))
+		fixtureGit(t, h.dir, "checkout", "-q", "main")
+		if rangeEnteredBeforeFix(context.Background(), h.dir, app, h.fix, "1.3.0") {
+			t.Fatal("settled with no merge base")
+		}
+	})
 	t.Run("HEAD names no commit", func(t *testing.T) {
 		h := newFixHistory(t, nil)
 		fixtureGit(t, h.dir, "-c", "tag.gpgsign=false", "tag", "v1.3.0", h.side)
@@ -384,7 +453,7 @@ func TestDisqualification_FixCommitInHistory(t *testing.T) {
 		{name: "a later range tagged before the named fix", files: own, facts: facts("example.com/app", twoRanges),
 			head: func(h fixHistory) string { return h.later }, commit: func(h fixHistory) string { return h.fix },
 			tags: func(h fixHistory) map[string]string { return map[string]string{"v1.3.0": h.base} }, want: true},
-		{name: "a later range tagged on a branch HEAD does not contain", files: own, facts: facts("example.com/app", twoRanges),
+		{name: "a later range tagged on a branch that left before the fix", files: own, facts: facts("example.com/app", twoRanges),
 			head: func(h fixHistory) string { return h.later }, commit: func(h fixHistory) string { return h.fix },
 			tags: func(h fixHistory) map[string]string { return map[string]string{"v1.3.0": h.side} }, want: true},
 		{name: "a later range with no tag", files: own, facts: facts("example.com/app", twoRanges),

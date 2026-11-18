@@ -41,7 +41,7 @@ import (
 // what that variant declares. A call that type-checks against it cannot pass a function value to a
 // parameter the variant types without one, whatever the dropped file's signature; a call the variant
 // does not declare fails to type-check, which is a "cannot tell" above.
-func cgoCallbackTargets(top, cb, roots []*packages.Package, droppedFiles map[string][]string, tags []string) (mods map[string]bool, handed []*types.Named, ok bool) {
+func cgoCallbackTargets(top, cb, roots []*packages.Package, droppedFiles map[string][]string, tags []string) (mods map[string]bool, handed map[string][]*types.Named, ok bool) {
 	handed, ok = handedValues(top, cb, cbReflects(roots, droppedFiles), droppedFiles, tags)
 	if !ok {
 		return nil, nil, false
@@ -336,9 +336,10 @@ func callbackAPI(cb []*packages.Package) (members map[memberKey]bool, sigs map[s
 }
 
 // handedValues returns the types (handedType) of the values the build hands the cb packages, by
-// plain calls passing one where the package takes an interface. ok is false when the build may hand
-// them a function or interface value any other way, or cannot be shown not to.
-func handedValues(top, cb []*packages.Package, reflects bool, droppedFiles map[string][]string, tags []string) (handed []*types.Named, ok bool) {
+// plain calls passing one where the package takes an interface, keyed by the module of the package
+// that receives them. ok is false when the build may hand them a function or interface value any
+// other way, or cannot be shown not to.
+func handedValues(top, cb []*packages.Package, reflects bool, droppedFiles map[string][]string, tags []string) (handed map[string][]*types.Named, ok bool) {
 	members, sigs, ok := callbackAPI(cb)
 	if !ok {
 		return nil, false
@@ -351,8 +352,10 @@ func handedValues(top, cb []*packages.Package, reflects bool, droppedFiles map[s
 		}
 	}
 	isCb := map[string]bool{}
+	cbMod := map[string]string{}
 	for _, p := range cb {
 		isCb[p.PkgPath] = true
+		cbMod[p.PkgPath] = modulePURL(p)
 	}
 	searched := map[*types.Package]bool{}
 	for _, p := range top {
@@ -382,7 +385,7 @@ func handedValues(top, cb []*packages.Package, reflects bool, droppedFiles map[s
 	ctx.CgoEnabled = true
 	ctx.BuildTags = tags
 	failed := false
-	set := map[*types.Named]bool{}
+	set := map[string]map[*types.Named]bool{}
 	packages.Visit(top, nil, func(p *packages.Package) {
 		if failed || isCb[p.PkgPath] || p.PkgPath == "unsafe" {
 			return
@@ -426,8 +429,12 @@ func handedValues(top, cb []*packages.Package, reflects bool, droppedFiles map[s
 				}
 				if ts, cok := handedAt(p.TypesInfo, fn, call, searched, reflects); cok {
 					classified[id] = true
+					mod := cbMod[fn.Pkg().Path()]
+					if set[mod] == nil {
+						set[mod] = map[*types.Named]bool{}
+					}
 					for _, t := range ts {
-						set[t] = true
+						set[mod][t] = true
 					}
 				}
 				return true
@@ -469,11 +476,21 @@ func handedValues(top, cb []*packages.Package, reflects bool, droppedFiles map[s
 	if failed {
 		return nil, false
 	}
-	for t := range set {
-		handed = append(handed, t)
+	handed = map[string][]*types.Named{}
+	for mod, ts := range set {
+		handed[mod] = sortedHanded(ts)
 	}
-	sort.Slice(handed, func(i, j int) bool { return handedName(handed[i]) < handedName(handed[j]) })
 	return handed, true
+}
+
+// sortedHanded lists a set of handed types in the order of their names.
+func sortedHanded(set map[*types.Named]bool) []*types.Named {
+	var list []*types.Named
+	for t := range set {
+		list = append(list, t)
+	}
+	sort.Slice(list, func(i, j int) bool { return handedName(list[i]) < handedName(list[j]) })
+	return list
 }
 
 // handedName names a handed type as the limit discloses it.

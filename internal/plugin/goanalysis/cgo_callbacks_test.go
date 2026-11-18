@@ -61,6 +61,8 @@ const (
 		"func MountAll(hs ...Handler) {}\n" +
 		"func MountBoth(a, b Handler) {}\n" +
 		"func MountAny[T Handler](h T) {}\n"
+	// cbSecond makes libb a second cgo package that exports to C.
+	cbSecond = "package libb\n\n// #include <stdint.h>\nimport \"C\"\n\n//export libbHook\nfunc libbHook() {}\n\nfunc Do() {}\n"
 	// cbFS is a first-party package, not main, declaring types the build hands the cgo package.
 	cbFS = "package fsys\n\ntype FS struct{ Root string }\n\nfunc (f *FS) Serve() {}\nfunc (f FS) Stat() {}\nfunc (f *FS) hidden() {}\n\n" +
 		"type Hooked struct{ Hook func() }\n\nfunc (h *Hooked) Serve() {}\n\n" +
@@ -211,21 +213,25 @@ func TestCallGraph_HandedValueMethodsAreRoots(t *testing.T) {
 	cases := []struct {
 		name      string
 		body      string
+		libb      string
 		wantRoots []string
-		wantPath  string
+		wantPaths []string
 	}{
-		{"a value handed over", "\tcgolib.Mount(&fsys.FS{})\n", []string{methods + "Serve().", methods + "Stat()."},
-			"no call in this build hands example.com/cgolib a Go function or interface value other than example.com/app/fsys.FS, so its C code can reach only 3 modules and the methods of example.com/app/fsys.FS"},
-		{"nothing handed over", "\tc.Close()\n", nil,
-			"no call in this build hands example.com/cgolib a Go function or interface value, so its C code can reach only 3 modules"},
-		{"a function value handed over", "\tc.RegisterHook(func() {})\n", nil, "example.com/cgolib"},
+		{"a value handed over", "\tcgolib.Mount(&fsys.FS{})\n", "", []string{methods + "Serve().", methods + "Stat()."}, []string{
+			"no call in this build hands example.com/cgolib a Go function or interface value other than example.com/app/fsys.FS, so its C code can reach only 3 modules and the methods of example.com/app/fsys.FS"}},
+		{"nothing handed over", "\tc.Close()\n", "", nil, []string{
+			"no call in this build hands example.com/cgolib a Go function or interface value, so its C code can reach only 3 modules"}},
+		{"a function value handed over", "\tc.RegisterHook(func() {})\n", "", nil, []string{"example.com/cgolib"}},
+		{"two cgo packages, a value handed to one", "\tcgolib.Mount(&fsys.FS{})\n", cbSecond, []string{methods + "Serve().", methods + "Stat()."}, []string{
+			"no call in this build hands example.com/cgolib a Go function or interface value other than example.com/app/fsys.FS, so its C code can reach only 4 modules and the methods of example.com/app/fsys.FS",
+			"no call in this build hands example.com/libb a Go function or interface value, so its C code can reach only 4 modules"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CGO_ENABLED", "1")
 			t.Setenv("GOFLAGS", "-mod=mod")
 			t.Setenv("GOPROXY", "off")
-			dir := writeCbTree(t, map[string]string{"cgolib/c.go": cbCompiled, "cgolib/hook.go": cbExport, "app/fsys/f.go": cbFS, "app/main.go": handing(tc.body)})
+			dir := writeCbTree(t, map[string]string{"cgolib/c.go": cbCompiled, "cgolib/hook.go": cbExport, "app/fsys/f.go": cbFS, "libb/b.go": tc.libb, "app/main.go": handing(tc.body)})
 			res, err := LoadProgram(context.Background(), dir)
 			if err != nil {
 				t.Fatal(err)
@@ -249,8 +255,8 @@ func TestCallGraph_HandedValueMethodsAreRoots(t *testing.T) {
 					paths = append(paths, s.Path)
 				}
 			}
-			if !reflect.DeepEqual(paths, []string{tc.wantPath}) {
-				t.Errorf("cgo limit paths = %q, want %q", paths, tc.wantPath)
+			if !reflect.DeepEqual(paths, tc.wantPaths) {
+				t.Errorf("cgo limit paths = %q, want %q", paths, tc.wantPaths)
 			}
 		})
 	}

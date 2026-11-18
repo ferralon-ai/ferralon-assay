@@ -360,6 +360,8 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 		targets[mod] = true
 	}
 	narrowed := false
+	// received: the handed types by the module of the cgo package the build hands them to.
+	var received map[string][]*types.Named
 	if callbacks {
 		loaded := map[string]*packages.Package{}
 		packages.Visit(pkgs, nil, func(p *packages.Package) { loaded[p.PkgPath] = p })
@@ -376,7 +378,7 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 			}
 		}
 		var mods map[string]bool
-		if mods, handed, narrowed = cgoCallbackTargets(pkgs, cbPkgs, closure, droppedFiles, tags); narrowed {
+		if mods, received, narrowed = cgoCallbackTargets(pkgs, cbPkgs, closure, droppedFiles, tags); narrowed {
 			for mod := range mods {
 				targets[mod] = true
 			}
@@ -389,10 +391,16 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 		}
 	}
 	list := sortedKeys(targets)
+	all := map[*types.Named]bool{}
+	for _, ts := range received {
+		for _, t := range ts {
+			all[t] = true
+		}
+	}
 	for _, mod := range sortedKeys(mapKeys(cgoMods)) {
 		path := cgoMods[mod]
 		if narrowed {
-			path = cgoNarrowing(path, len(list), handed)
+			path = cgoNarrowing(path, len(list), received[mod])
 		}
 		scoped = append(scoped, plugin.ScopedReason{
 			Reason:  plugin.PartialReasonCgo,
@@ -401,11 +409,12 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 			Targets: list,
 		})
 	}
-	return scoped, handed, dropped, true
+	return scoped, sortedHanded(all), dropped, true
 }
 
 // cgoNarrowing is the Path of a cgo limit whose targets are narrowed to the cgo packages' import
-// closure: it states the ground the narrowing rests on.
+// closure: it states the ground the narrowing rests on. handed are the types the build hands that
+// limit's own cgo packages; the targets and the call-graph roots cover every limit's.
 func cgoNarrowing(pkg string, modules int, handed []*types.Named) string {
 	if len(handed) == 0 {
 		return fmt.Sprintf("no call in this build hands %s a Go function or interface value, so its C code can reach only %d modules", pkg, modules)

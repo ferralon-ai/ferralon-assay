@@ -19,8 +19,12 @@ A `not_exploitable` row stands on named grounds in every ecosystem. It needs an 
 resolved version, and either every advisory symbol resolved inside that package and searched from the
 entry points, or a positive refutation of the package. In Go it can also rest on the build itself: no
 module in the build holds the advisory's package, and none of the build's modules declares an advisory
-symbol. The row's `evidence.basis` and `evidence.detail` state which. Anything short of that is
-`undetermined`, with the missing ground as its reason.
+symbol, or the module is in the build and no non-test file of the scanned module that `./...` covers
+(so not `testdata`, nor a directory whose name begins with `_` or `.`), under any build constraint
+other than `ignore` or a Go release the build cannot compile under, imports any of the advisory's
+vulnerable packages of it (`vulnerable_symbol_absent`; the detail names the packages). The row's
+`evidence.basis` and `evidence.detail` state which. Anything short of that is `undetermined`, with
+the missing ground as its reason.
 
 In Go, a refutation also has to hold for code outside the build that imports your packages. The
 `library-entrypoints` input (`-library-entrypoints`, `ASSAY_LIBRARY_ENTRYPOINTS`) says which packages
@@ -62,7 +66,12 @@ that it holds for `CGO_ENABLED=0` and that a build with cgo on was not checked.
 ### `undetermined` reasons
 
 An `undetermined` row is an open question, never a clean bill. Its `undetermined_reason` names what
-the scan did not establish:
+the scan did not establish. A `refutation_withheld` or `analysis_did_not_run` row also lists, in
+`withheld_by`, the limits that withheld the verdict: each one's reason code and, when the limit is
+scoped to part of the build, the package and path holding the code the analysis could not see and the
+packages that code could reach. The row's detail names the same limits. An `analysis_did_not_run` row
+whose analysis failed or produced no call graph has no limit that says so, so its list can be empty,
+and a limit it does list is not the reason the analysis did not run.
 
 | Reason | What was missing |
 |---|---|

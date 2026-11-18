@@ -709,6 +709,12 @@ type AdvisoryFinding struct {
 	// verdict (why there is none), where EvidenceSummary states grounds FOR one, and an
 	// undetermined finding has no grounds to state.
 	UndeterminedReason string `json:"undetermined_reason,omitempty"`
+	// WithheldBy lists the limits of the analysis that withheld the verdict, in the order the run
+	// declared them. It is set only when UndeterminedReason is refutation_withheld or
+	// analysis_did_not_run (Validate enforces it). It may be empty there: an analysis that failed
+	// or produced no call graph declared no limit that says so, and the limits it lists then are
+	// the ones that would hold against the row had it run.
+	WithheldBy []Limit `json:"withheld_by,omitempty"`
 	// Evidence is the compact grounds behind the verdict (see EvidenceSummary).
 	Evidence EvidenceSummary `json:"evidence"`
 	// Annotations are the assumptions the analysis made in reaching this verdict, whatever it is:
@@ -1340,6 +1346,10 @@ func (r Report) Validate() error {
 		if f.UndeterminedReason != "" && f.Verdict != VerdictUndetermined {
 			return fmt.Errorf("report: advisory %q carries undetermined_reason %q but verdict is %q (a reason explains only an absent verdict)",
 				f.Advisory.ID, f.UndeterminedReason, f.Verdict)
+		}
+		if len(f.WithheldBy) > 0 && f.UndeterminedReason != ReasonRefutationWithheld && f.UndeterminedReason != ReasonAnalysisDidNotRun {
+			return fmt.Errorf("report: advisory %q carries withheld_by but its undetermined_reason is %q (limits explain only a verdict the analysis withheld)",
+				f.Advisory.ID, f.UndeterminedReason)
 		}
 		if !f.Evidence.Grade.Valid() {
 			return fmt.Errorf("report: advisory %q has invalid reachability grade %q", f.Advisory.ID, f.Evidence.Grade)

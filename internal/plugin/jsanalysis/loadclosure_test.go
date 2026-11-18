@@ -121,6 +121,7 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		"install script pipes code to node":                                            "names child_process, a built-in that can run other code",
 		"inline install code runs through a runtime named by a variable":               "runs inline code that is more than a require of its package's own files",
 		"install script runs a package manager":                                        "runs npm, which can install code no lockfile names",
+		"build installs a package no lockfile records":                                 "do not enumerate every installed package",
 	}
 	for _, tc := range []struct {
 		name   string

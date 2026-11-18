@@ -387,8 +387,10 @@ class K { @java.lang.annotation.Target(ElementType.METHOD) @interface A {} }`, f
 import java.lang.annotation.Target;
 @Target(foo()) @interface A {}`, true},
 		{"inside an open argument list", `package p;
-import java.lang.annotation.Target;
-class K { void m() { make( @Target @interface A {} ); } }`, true},
+class K { void m() { make( @java.lang.annotation.Target @interface A {} ); } }`, true},
+		{"words that are not modifiers before the annotation", `package p;
+class K { Foo bar @java.lang.annotation.Target @interface A {} }`, true},
+		{"qualified name in the package but not a meta-annotation", `package p; @java.lang.annotation.Native @interface A {}`, true},
 		{"unclassified text before the annotation type", `package p;
 import java.lang.annotation.Target;
 K k = make() @Target @interface A {}`, true},

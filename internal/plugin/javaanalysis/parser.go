@@ -1074,11 +1074,12 @@ var inertMetaAnnotations = map[string]bool{
 
 const inertMetaPackage = "java.lang.annotation."
 
-// recordImport records a single-type import; text is what follows the "import"
-// keyword through the ';'.
+// recordImport records an import under its last segment; text is what follows the
+// "import" keyword through the ';'. A static ("statica.B.C") or wildcard ("a.b.*")
+// entry never equals a java.lang.annotation qualified name, so it resolves nothing.
 func recordImport(imports map[string]string, text []rune) {
 	name := strings.Join(strings.Fields(strings.TrimSuffix(string(text), ";")), "")
-	if name == "" || strings.HasPrefix(name, "static") || strings.HasSuffix(name, "*") {
+	if name == "" {
 		return
 	}
 	imports[name[strings.LastIndexByte(name, '.')+1:]] = name
@@ -1094,11 +1095,8 @@ func recordImport(imports map[string]string, text []rune) {
 // modifiers an annotation type allows.
 func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nested bool) bool {
 	at := kw - 1
-	for at >= 0 && r[at] != '@' {
+	for at > 0 && r[at] != '@' {
 		at--
-	}
-	if at < 0 {
-		return false
 	}
 	start, depth := at, 0
 	for start > 0 {
@@ -1123,7 +1121,7 @@ func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nest
 		}
 		if r[pos] == '@' {
 			end, ok := annotationUse(r, pos)
-			if !ok || end > at {
+			if !ok {
 				return false
 			}
 			name, _ := annotationName(r, pos)
@@ -1132,9 +1130,6 @@ func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nest
 			}
 			pos = end
 			continue
-		}
-		if !isIdentStart(r[pos]) {
-			return false
 		}
 		w, nx := readWord(r, pos)
 		if !annotationTypeModifiers[w] {

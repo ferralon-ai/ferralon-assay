@@ -275,6 +275,12 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"Dockerfile sources nvm where the image runs", npm(map[string]string{"Dockerfile": "FROM node:20\nCMD . .nvm/nvm.sh && npm start\n"}), withheld},
 		{"npm run at a --prefix spelled as a flag", npm(map[string]string{"package.json": pkg(`,"scripts":{"setup":"npm install"}`), "-x/package.json": `{"name":"x","version":"1.0.0","scripts":{"setup":"echo hi"}}`, ".github/workflows/ci.yml": ci("npm run setup --prefix -x -- --no-package-lock")}), withheld},
 		{"Dockerfile writes nvm.sh from a heredoc", npm(map[string]string{"Dockerfile": "FROM node:20\nCOPY <<EOF .nvm/nvm.sh\nexport npm_config_package_lock=false\nEOF\nRUN . .nvm/nvm.sh && npm install\n"}), withheld},
+		{"npm run with an npm config spelled with a leading _", npm(map[string]string{"package.json": pkg(`,"scripts":{"lint":"eslint"}`), ".github/workflows/ci.yml": ci("npm run lint --_auth=x")}), withheld},
+		{"npm run hands a script a command after && before --", npm(map[string]string{"package.json": pkg(`,"scripts":{"lint":"eslint"}`), ".github/workflows/ci.yml": ci("npm run lint 'src&&touch x'")}), withheld},
+		{"npm run with a lone short flag", npm(map[string]string{"package.json": pkg(`,"scripts":{"lint":"eslint"}`), ".github/workflows/ci.yml": ci("npm run lint -ws")}), withheld},
+		{"npm run with a flag where the script name goes", npm(map[string]string{"package.json": pkg(`,"scripts":{"-s":"echo hi","setup":"npm install"}`), ".github/workflows/ci.yml": ci("npm run -s setup")}), withheld},
+		{"yarn script handed a command after &&", npm(map[string]string{"package.json": pkg(`,"scripts":{"lint":"eslint"}`), ".github/workflows/ci.yml": ci("yarn lint 'src&&touch x'")}), withheld},
+		{"Earthfile sources nvm on a stage built from the repository's Dockerfile", npm(map[string]string{"Dockerfile": "FROM node:20\nCOPY . .\n", "Earthfile": "VERSION 0.8\nbuild:\n    FROM DOCKERFILE .\n    RUN . .nvm/nvm.sh\n"}), withheld},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

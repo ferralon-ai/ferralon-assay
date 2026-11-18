@@ -52,9 +52,6 @@ func headContainsCommit(ctx context.Context, dir, commit string) bool {
 	if shallow, err := fixCommitGit(ctx, dir, "rev-parse", "--is-shallow-repository"); err != nil || shallow != "false" {
 		return false
 	}
-	if _, err := fixCommitGit(ctx, dir, "cat-file", "-e", commit+"^{commit}"); err != nil {
-		return false
-	}
 	_, err := fixCommitGit(ctx, dir, "merge-base", "--is-ancestor", commit, "HEAD")
 	return err == nil
 }

@@ -95,7 +95,14 @@ func TestModuleVersionFromBuild_Workspace(t *testing.T) {
 	failing := func(context.Context, string, GoWorkspace) ([]listedModule, error) {
 		return nil, errors.New("go: module lookup disabled by GOPROXY=off")
 	}
-	replacedBy := listing(listedModule{Path: "golang.org/x/text", Version: "v0.3.8", Replace: &struct{ Path, Version string }{Path: "../text"}})
+	type replacement = *struct{ Path, Version string }
+	replaced := func(r replacement) buildList {
+		return listing(listedModule{Path: "golang.org/x/text", Version: "v0.3.8", Replace: r})
+	}
+	replacedBy := replaced(&struct{ Path, Version string }{Path: "../text"})
+	sameModule := replaced(&struct{ Path, Version string }{Path: "golang.org/x/text", Version: "v0.3.6"})
+	fork := replaced(&struct{ Path, Version string }{Path: "github.com/example/text", Version: "v0.3.8"})
+	forkAtSameVersion := replaced(&struct{ Path, Version string }{Path: "github.com/example/text", Version: "v0.3.6"})
 	main := listing(listedModule{Path: "golang.org/x/text", Main: true})
 	cases := []struct {
 		name         string
@@ -115,8 +122,14 @@ func TestModuleVersionFromBuild_Workspace(t *testing.T) {
 		{"a module no member requires that the build list holds", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/n", listing(listedModule{Path: "example.com/n", Version: "v1.0.0"}), "v1.0.0", true, true},
 		{"a module no member requires when the go command cannot say", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/never", failing, "", false, true},
 		{"a member module", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB}, "example.com/mono/b", selected("v1.0.0"), "", false, true},
-		{"a module the go.work replaces", map[string]string{"go.work": work + "\nreplace golang.org/x/text => golang.org/x/text v0.3.0\n", "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", selected("v0.3.8"), "", false, true},
-		{"a module a member replaces", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB + "\nreplace golang.org/x/text => ../text\n"}, "golang.org/x/text", selected("v0.3.8"), "", false, true},
+		{"a version-only replace in the go.work", map[string]string{"go.work": work + "\nreplace golang.org/x/text => golang.org/x/text v0.3.6\n", "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", sameModule, "v0.3.6", true, true},
+		{"a version-only replace in a member", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB + "\nreplace golang.org/x/text => golang.org/x/text v0.3.6\n"}, "golang.org/x/text", sameModule, "v0.3.6", true, true},
+		{"a replace of another version, which the build does not select", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB + "\nreplace golang.org/x/text v0.3.0 => golang.org/x/text v0.3.1\n"}, "golang.org/x/text", selected("v0.3.8"), "v0.3.8", true, true},
+		{"a fork replace in the go.work", map[string]string{"go.work": work + "\nreplace golang.org/x/text => github.com/example/text v0.3.8\n", "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", fork, "", false, true},
+		{"a fork replace in a member, at a version inside the module's own", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB + "\nreplace golang.org/x/text => github.com/example/text v0.3.6\n"}, "golang.org/x/text", forkAtSameVersion, "", false, true},
+		{"a local-directory replace in the go.work", map[string]string{"go.work": work + "\nreplace golang.org/x/text => ./third_party/text\n", "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", replacedBy, "", false, true},
+		{"a local-directory replace in a member", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": modB + "\nreplace golang.org/x/text => ../text\n"}, "golang.org/x/text", replacedBy, "", false, true},
+		{"a version-only replace the go command cannot list", map[string]string{"go.work": work + "\nreplace golang.org/x/text => golang.org/x/text v0.3.6\n", "a/go.mod": modA, "b/go.mod": modB}, "golang.org/x/text", failing, "", false, true},
 		{"a member before go 1.17 the go command cannot resolve", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": "module example.com/mono/b\n\ngo 1.16\n\nrequire golang.org/x/text v0.3.8\n"}, "golang.org/x/text", failing, "", false, true},
 		{"a member before go 1.17 the go command resolves", map[string]string{"go.work": work, "a/go.mod": modA, "b/go.mod": "module example.com/mono/b\n\ngo 1.16\n\nrequire golang.org/x/text v0.3.8\n"}, "golang.org/x/text", selected("v0.3.10"), "v0.3.10", true, true},
 		{"a member with no go.mod", map[string]string{"go.work": work, "a/go.mod": modA}, "golang.org/x/text", selected("v0.3.8"), "", false, false},
@@ -162,9 +175,10 @@ func resetBuildLists(t *testing.T) {
 }
 
 // TestGoWorkspaceModules: the build list decides what a workspace build holds and at what version.
-// buildDir's own module is not a dependency; a module the workspace uses or replaces is held at no
-// required version; and when the go command cannot say, every module the workspace uses or
-// requires is held, none at a version.
+// buildDir's own module is not a dependency; a module the workspace uses, or replaces by a fork or a
+// directory, is held at no required version; one replaced by itself at a version is held at that
+// version; and when the go command cannot say, every module the workspace uses, requires or replaces
+// is held, none at a version.
 func TestGoWorkspaceModules(t *testing.T) {
 	const work = "go 1.22\n\nuse (\n\t./a\n\t./b\n)\n\nreplace example.com/r1 => example.com/r1 v1.0.1\n"
 	files := map[string]string{
@@ -177,8 +191,9 @@ func TestGoWorkspaceModules(t *testing.T) {
 		{Path: "example.com/mono/b", Main: true},
 		{Path: "golang.org/x/text", Version: "v0.3.9"},
 		{Path: "example.com/n", Version: "v1.2.0"},
-		{Path: "example.com/r1", Version: "v1.0.0"},
-		{Path: "example.com/r2", Version: "v1.0.0"},
+		{Path: "example.com/r1", Version: "v1.0.0", Replace: &struct{ Path, Version string }{Path: "example.com/r1", Version: "v1.0.1"}},
+		{Path: "example.com/r2", Version: "v1.0.0", Replace: &struct{ Path, Version string }{Path: "../r2"}},
+		{Path: "example.com/r3", Version: "v1.0.0", Replace: &struct{ Path, Version string }{Path: "example.com/fork", Version: "v1.0.0"}},
 		{Path: "example.com/listreplaced", Version: "v1.0.0", Replace: &struct{ Path, Version string }{Path: "../x"}},
 		{Path: "example.com/versionless"},
 	}
@@ -190,10 +205,10 @@ func TestGoWorkspaceModules(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := map[string]string{"golang.org/x/text": "v0.3.9", "example.com/n": "v1.2.0"}; !reflect.DeepEqual(pinned, want) {
+		if want := map[string]string{"golang.org/x/text": "v0.3.9", "example.com/n": "v1.2.0", "example.com/r1": "v1.0.1"}; !reflect.DeepEqual(pinned, want) {
 			t.Errorf("pinned = %v, want %v", pinned, want)
 		}
-		if want := []string{"example.com/listreplaced", "example.com/mono/b", "example.com/r1", "example.com/r2", "example.com/versionless"}; !reflect.DeepEqual(unpinned, want) {
+		if want := []string{"example.com/listreplaced", "example.com/mono/b", "example.com/r2", "example.com/r3", "example.com/versionless"}; !reflect.DeepEqual(unpinned, want) {
 			t.Errorf("unpinned = %v, want %v", unpinned, want)
 		}
 	})

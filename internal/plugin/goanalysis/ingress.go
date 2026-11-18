@@ -17,7 +17,7 @@ import (
 // req.BuildDir: the program main(s) and net/http handler shapes
 // (func(http.ResponseWriter, *http.Request) / http.HandlerFunc), plus
 // statically-discoverable registered routes (http.HandleFunc / ServeMux, macaron,
-// chi, gin and echo). It never guesses arbitrary exported funcs as ingresses — an
+// chi, gin, echo, beego, go-restful, websocket upgrades and gRPC services). It never guesses arbitrary exported funcs as ingresses — an
 // unrecognized func is simply not an ingress (absence is declared at the
 // reachability layer, not fabricated here). A load/SSA-build failure is a hard error
 // (inv.4).
@@ -74,8 +74,23 @@ func ingressesOf(sp *ssaProgram, res *LoadResult) plugin.IngressResult {
 		}
 	}
 
-	for _, route := range sp.discoverRoutes() {
-		add(plugin.Ingress{Kind: "http_route", Symbol: sym(route.symbol), Selector: route.selector})
+	// A handler one registration names with a pattern and another only implies (a
+	// beego controller routed by Router and again by Include) is listed by pattern.
+	routes := sp.discoverRoutes()
+	patterned := map[string]bool{}
+	for i := range routes {
+		if routes[i].kind == "" {
+			routes[i].kind = "http_route"
+		}
+		if routes[i].selector != "" {
+			patterned[routes[i].kind+"\x00"+routes[i].symbol] = true
+		}
+	}
+	for _, route := range routes {
+		if route.selector == "" && patterned[route.kind+"\x00"+route.symbol] {
+			continue
+		}
+		add(plugin.Ingress{Kind: route.kind, Symbol: sym(route.symbol), Selector: route.selector})
 	}
 
 	sort.Slice(ingresses, func(i, j int) bool {
@@ -181,6 +196,7 @@ func isPointerToNamed(t types.Type, pkgPath, name string) bool {
 }
 
 type route struct {
+	kind     string // the ingress kind; "" is "http_route"
 	selector string
 	symbol   string // SCIP of the registered handler func, when statically known
 }
@@ -203,6 +219,7 @@ type route struct {
 //     github.com/labstack/echo/v4: see pathRouter. The router is identified by the
 //     import path of the package DECLARING the called method, never by a type or
 //     method name alone, and a route's selector is its full composed pattern.
+//   - beego, go-restful, gorilla/websocket and gRPC services: see frameworkRoutes.
 //
 // A registrar whose pattern is not a constant (or, for Combo's chained verbs, is
 // carried on the Combo call rather than the verb call) still contributes its
@@ -221,6 +238,10 @@ func (s *ssaProgram) discoverRoutes() []route {
 				common := call.Common()
 				if router, name, recv, args := pathRegistrar(common); router != nil {
 					routes = append(routes, s.pathRoutes(prefixes, router, name, recv, args)...)
+					continue
+				}
+				if rs := s.frameworkRoutes(fn, common); len(rs) > 0 {
+					routes = append(routes, rs...)
 					continue
 				}
 				callee := common.StaticCallee()

@@ -43,6 +43,10 @@ type depEntry struct {
 	// patched marks a pnpm entry the install patches: its tarball is verified for its manifest
 	// facts, and its code, which is not what runs, is never read.
 	patched bool
+	// bins are the commands the lock says the entry installs; binsKnown is set when the lock
+	// records them (npm v2/v3), so an unread entry's commands are still known.
+	bins      []string
+	binsKnown bool
 }
 
 // depLayout is the install tree the selected lockfiles describe, keyed by install path. Node's
@@ -57,6 +61,9 @@ type depLayout struct {
 	// incomplete marks a lockfile that could not be read or selected, or an install surface the
 	// lane does not read (installSurfaces): the build may install a copy no lock read here places.
 	incomplete bool
+	// lockAssumed is set when the layout is complete only under lockAssumption: the build runs a
+	// bare install the lane cannot hold to a lock by reading.
+	lockAssumed bool
 	// unplaced are the packages of a pnpm or yarn classic lock the lane could not place: never
 	// read, and never found by lookup.
 	unplaced []*depEntry
@@ -83,9 +90,8 @@ func (l *depLayout) entries() []*depEntry {
 // the locks read here, leaves the whole layout incomplete: neither names the packages it changes.
 func buildDepLayout(ctx context.Context, buildDir string) *depLayout {
 	l := &depLayout{byPath: map[string]*depEntry{}}
-	if unread, _, _, _ := installSurfaces(ctx, buildDir, func() map[string]lockInfo { return parsedLocks(buildDir) }); unread {
-		l.incomplete = true
-	}
+	unread, _, _, _, lockAssumed := installSurfaces(ctx, buildDir, func() map[string]lockInfo { return parsedLocks(buildDir) })
+	l.incomplete, l.lockAssumed = unread, lockAssumed
 	roots, read := discoverProjectRoots(buildDir)
 	if !read {
 		l.incomplete = true
@@ -480,6 +486,8 @@ func (l *depLayout) addNpmV2(prefix string, pkgs map[string]npmLockPkg) {
 			purl:              makePURL(name, version),
 			digest:            mapIntegrity(pkg.Integrity),
 			lockInstallScript: pkg.HasInstallScript,
+			bins:              slices.Sorted(maps.Keys(pkg.Bin)),
+			binsKnown:         true,
 		}
 		e.unreadable = pkg.Link || e.digest == "" || isGitResolved(pkg.Resolved) ||
 			strings.HasPrefix(pkg.Resolved, "file:") || strings.HasPrefix(pkg.Version, "file:") ||

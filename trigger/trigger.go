@@ -228,11 +228,15 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	b.AddPartiality(invNotes...)
 	mods := goModulesOf(sbom, invNotes)
 
-	cut := 0
+	// cut and rows count the rows the scan stopped before assessing and all rows, sibling
+	// instances included, so the note's count is the number of scan_cut_short rows.
+	cut, rows := 0, len(admitted.Admitted)
 	var assessed []report.Advisory
-	for _, adv := range admitted.Admitted {
+	passes := newAdvisoryPasses(analysis, requestsFor(admitted.Admitted, req.Codebase), assessOpts)
+	defer passes.close()
+	for i, adv := range admitted.Admitted {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
+		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
 			b.AddFinding(cutShortFinding(adv))
 			cut++
@@ -265,11 +269,15 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 		sibs, sibNotes := siblingInstanceFindings(analysis, areq, st, assessmentID, assessOpts, sbom.Packages, mods, invNotes)
 		for _, sf := range sibs {
 			b.AddFinding(sf)
+			rows++
+			if sf.UndeterminedReason == report.ReasonScanCutShort {
+				cut++
+			}
 		}
 		b.AddPartiality(sibNotes...)
 	}
 	if cut > 0 {
-		b.AddPartiality(cutShortNote(cut, len(admitted.Admitted), stopCause(analysis)))
+		b.AddPartiality(cutShortNote(cut, rows, stopCause(analysis)))
 	}
 
 	b.WithProvenance(withSignals(report.Provenance{
@@ -360,7 +368,8 @@ type PRInheritResult struct {
 // inherits the baseline's findings, carrying a Baseline pointer. S1–S6 runs only for a
 // work-set advisory the baseline holds no usable row for (none, or a scan_cut_short one),
 // which would otherwise have none.
-// Slow path: at least one package changed → re-run S1–S6 for the advisories whose
+// Slow path: at least one package changed, or the entry-point statement differs from the one the
+// baseline's refutations rest on → re-run S1–S6 for the advisories whose
 // package changed and merge those findings over the inherited baseline findings.
 //
 // RunPRInherit only reads the store. The state ref holds the default branch's
@@ -385,7 +394,7 @@ func RunPRInherit(ctx context.Context, store statestore.StateStore, req PRInheri
 
 	changed := changedPackages(baseline.SBOM, req.PRSBOM)
 
-	if len(changed) == 0 {
+	if len(changed) == 0 && !restated(baseline, req.AssessOptions) {
 		// Nothing changed, so every baseline row stands but a scan_cut_short one, which says
 		// nothing and is replaced by a fresh row. An advisory new to the work set has no row to
 		// inherit either, and the Report's cursor covers it all the same.
@@ -548,6 +557,9 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	var retry []report.AdvisoryFinding
 	if req.DependencyFetch != nil {
 		retry = notFetchedRetry(state.Report, state.DepFetch, newIDs)
+	}
+	if restated(state.Report, req.AssessOptions) {
+		retry = restatedRetry(state.Report, newIDs, retry)
 	}
 
 	if len(newIDs) == 0 && len(retry) == 0 {

@@ -25,6 +25,7 @@ type depPkg struct {
 	path, name, version string
 	files               map[string]string
 	lockInstallScript   bool
+	lockBin             map[string]string
 	tgz                 []byte
 }
 
@@ -77,6 +78,9 @@ func newDepFixture(t *testing.T, firstParty map[string]string, pkgs ...*depPkg) 
 		}
 		if p.lockInstallScript {
 			entry["hasInstallScript"] = true
+		}
+		if p.lockBin != nil {
+			entry["bin"] = p.lockBin
 		}
 		lockPkgs[p.path] = entry
 	}
@@ -358,7 +362,7 @@ func TestDepGraph_Controls(t *testing.T) {
 	})
 
 	t.Run("native_addon_scoped", func(t *testing.T) {
-		f := newDepFixture(t, map[string]string{"index.js": idle}, plain(map[string]string{"build/Release/dep.node": "\x7fELF"}))
+		f := newDepFixture(t, map[string]string{"index.js": "require('dep');\n"}, plain(map[string]string{"build/Release/dep.node": "\x7fELF"}))
 		cg := withDeps(t, f.dir, f.memStore())
 		if !hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
 			t.Errorf("a native addon must scope its package; got %+v", cg.Partiality)
@@ -368,12 +372,12 @@ func TestDepGraph_Controls(t *testing.T) {
 		}
 	})
 
-	t.Run("dependency_computed_require_run_wide", func(t *testing.T) {
+	t.Run("dependency_computed_require_covers_loaded_code", func(t *testing.T) {
 		f := newDepFixture(t, map[string]string{"index.js": "require('dep');\n"}, plain(map[string]string{
 			"index.js": "const name = process.env.PLUGIN;\nexports.run = function run() { return require(name); };\n",
 		}))
-		if cg := withDeps(t, f.dir, f.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonComputedRequireSpecifier) {
-			t.Errorf("require(variable) in dependency code must stay run-wide; got %+v", cg.Partiality)
+		if cg := withDeps(t, f.dir, f.memStore()); !declares(cg.Partiality, plugin.PartialReasonComputedRequireSpecifier) {
+			t.Errorf("require(variable) in a loaded dependency must be declared over everything that loads; got %+v", cg.Partiality)
 		}
 	})
 

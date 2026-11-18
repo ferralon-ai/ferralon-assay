@@ -88,7 +88,7 @@ func TestDepGuards_HostileShapesRefusedFast(t *testing.T) {
 	for _, shape := range []string{"a(", "[", "x=>", "`${", "function f(){", "class A{m(){"} {
 		t.Run(shape, func(t *testing.T) {
 			src := strings.Repeat(shape, (1<<20)/len(shape))
-			f := newDepFixture(t, map[string]string{"index.js": guardIdle}, guardPkg(map[string]string{"index.js": src}))
+			f := newDepFixture(t, map[string]string{"index.js": "require('dep');\n"}, guardPkg(map[string]string{"index.js": src}))
 			start := time.Now()
 			cg := withDeps(t, f.dir, f.memStore())
 			if d := time.Since(start); d > 15*time.Second {
@@ -267,7 +267,8 @@ func TestDepGuards_TarballShape(t *testing.T) {
 
 // TestDepGuards_UnknownInstallScripts (B1, B2): a lock that does not record install scripts (npm
 // v1, pnpm, yarn classic) leaves each package it pins that is not read with a scoped limit and
-// withholds run-wide, since the package may run one at install.
+// withholds run-wide, since the package may run one at install. A lock that records them (npm
+// v3) leaves an unread package nothing loads with no limit at all: it never runs.
 func TestDepGuards_UnknownInstallScripts(t *testing.T) {
 	integrity := sri([]byte("dep"))
 	manifest := `{"name":"app","version":"1.0.0","dependencies":{"dep":"1.0.0"}}`
@@ -283,8 +284,8 @@ func TestDepGuards_UnknownInstallScripts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeProgram(t, map[string]string{"package.json": manifest, tc.lockName: tc.lock, "index.js": guardIdle})
 			cg := withDeps(t, dir, artifactcache.NewDeclaredAbsentStore())
-			if !hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, guardPURL) {
-				t.Errorf("an unread pinned package carries a scoped limit; got %+v", cg.Partiality)
+			if got := hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, guardPURL); got != tc.runWide {
+				t.Errorf("scoped limit on the unread package = %v, want %v; got %+v", got, tc.runWide, cg.Partiality)
 			}
 			if got := hasReason(cg.Partiality, plugin.PartialReasonUninspectablePackage); got != tc.runWide {
 				t.Errorf("run-wide uninspectable = %v, want %v; got %+v", got, tc.runWide, cg.Partiality)
@@ -306,7 +307,7 @@ func TestDepGuards_DualPackageOtherHalf(t *testing.T) {
 	if cg := withDeps(t, clean.dir, clean.memStore()); hasReason(cg.Partiality, plugin.PartialReasonEvaluatedCode) {
 		t.Fatalf("control: no eval, no evaluated_code; got %+v", cg.Partiality)
 	}
-	f := newDepFixture(t, map[string]string{"index.js": guardIdle}, dual("export function run(s) { return eval(s); }\n"))
+	f := newDepFixture(t, map[string]string{"index.js": "require('dep');\n"}, dual("export function run(s) { return eval(s); }\n"))
 	if cg := withDeps(t, f.dir, f.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonEvaluatedCode) {
 		t.Errorf("an eval in the .mjs half must surface as evaluated_code; got %+v", cg.Partiality)
 	}

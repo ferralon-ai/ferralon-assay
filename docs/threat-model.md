@@ -35,9 +35,10 @@ CDN, **`tuf-repo-cdn.sigstore.dev`**; neither request carries anything about you
 `cve-watch` adds **`api.osv.dev`**. The scan modes reach OSV only when work-set widening is switched
 on explicitly (`-osv-work-set` / `ASSAY_OSV_WORK_SET`, off by default) and no advisory policy is
 declared — a declared policy chooses the work set itself; that query sends package
-coordinates — ecosystem, name, version — and nothing else. Enabling subject-toolchain reachability
-(`ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY`, also off by default) additionally downloads a Go toolchain
-from the module proxy.
+coordinates — ecosystem, name, version — and nothing else. Subject-toolchain reachability
+(`ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY`, on by default) downloads a Go toolchain from the module
+proxy when the scan knows the exact Go release the repository builds with and the runner does not
+have it.
 
 A JavaScript scan fetches each package tarball its lockfile pins, by name and version, from the
 registry the repository's `.npmrc` (or `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`) names. This

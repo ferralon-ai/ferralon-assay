@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
@@ -21,5 +22,15 @@ func TestReportHTMLLimitLabel_DependencyNotFetched(t *testing.T) {
 	got := reportHTMLLimitLabel(report.ReasonDependencyNotFetched)
 	if got == report.ReasonDependencyNotFetched || !strings.Contains(got, "withheld") {
 		t.Errorf("reportHTMLLimitLabel(%q) = %q, want the dependency-not-fetched sentence", report.ReasonDependencyNotFetched, got)
+	}
+}
+
+// TestReportHTMLLimitLabel_PartialRunUnversioned: the limit a partial run declares for the scanned
+// module's own advisories renders a sentence, not the raw code.
+func TestReportHTMLLimitLabel_PartialRunUnversioned(t *testing.T) {
+	const want = "The scanned module's own version could not be established and the analysis searched only " +
+		"part of the build, so no verdict is reported for advisories on the module itself."
+	if got := reportHTMLLimitLabel(plugin.PartialReasonPartialRunUnversioned); got != want {
+		t.Errorf("reportHTMLLimitLabel(%q) = %q, want %q", plugin.PartialReasonPartialRunUnversioned, got, want)
 	}
 }

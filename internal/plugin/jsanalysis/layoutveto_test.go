@@ -267,8 +267,9 @@ func TestLayoutVeto_Yarn(t *testing.T) {
 		files    map[string]string
 		withheld bool
 	}{
-		{"yarn_frozen_install", map[string]string{".github/workflows/ci.yml": ciWorkflow("      - run: yarn install --frozen-lockfile\n")}, true},
-		{"yarn_frozen_bare", map[string]string{".github/workflows/ci.yml": ciWorkflow("      - run: yarn --frozen-lockfile\n")}, true},
+		{"yarn_frozen_install", map[string]string{".github/workflows/ci.yml": ciWorkflow("      - run: yarn install --frozen-lockfile\n")}, false},
+		{"yarn_frozen_bare", map[string]string{".github/workflows/ci.yml": ciWorkflow("      - run: yarn --frozen-lockfile\n")}, false},
+		{"yarn_add", map[string]string{".github/workflows/ci.yml": ciWorkflow("      - run: yarn add left-pad\n")}, true},
 		{"control_yarn_no_surface", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -56,6 +56,13 @@ func WithJavaBuildGraph(file string) JavaOption {
 	return func(p *javaPlugin) { p.env = append(p.env, BuildGraphEnv+"="+file) }
 }
 
+// WithJavaBuildCompile hands the subprocess what the host's compile step found when the build's
+// class output still did not cover the sources, or "" for nothing to say. Like WithJavaBuildGraph it
+// always sets the variable.
+func WithJavaBuildCompile(note string) JavaOption {
+	return func(p *javaPlugin) { p.env = append(p.env, BuildCompileEnv+"="+note) }
+}
+
 // WithJavaRunCacheDir hands the subprocess a directory, owned by the caller for one scan over one
 // checkout, where it keeps each root's whole reachability search so a later advisory's subprocess
 // does not search the program again. The caller removes the directory after the scan. An empty
@@ -78,6 +85,11 @@ const (
 
 // BuildGraphEnv carries the accepted build graph file to the Java and Kotlin subprocesses.
 const BuildGraphEnv = brand.EnvPrefix + "_BUILD_GRAPH"
+
+// BuildCompileEnv carries the host's compile note to the Java subprocess: the reason the build's
+// class output still does not cover the sources and the command to run, appended to the lane's
+// first_party_bytecode_absent reason.
+const BuildCompileEnv = brand.EnvPrefix + "_BUILD_COMPILE"
 
 func withJavaEnv(key, value string) JavaOption {
 	return func(p *javaPlugin) {

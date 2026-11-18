@@ -612,6 +612,34 @@ func TestBytecodeReach_NoClassesKeepsLexicalAnswer(t *testing.T) {
 	}
 }
 
+// The host's compile note ends the reason's disclosure path, so the row names what to run.
+func TestBytecodeReach_CompileNoteEndsTheReasonPath(t *testing.T) {
+	a := newApp(t, "", false)
+	a.source("src/main/java/com/acme/App.java", appSource)
+	graph := graphOption(t, a.tool, testModule(t, ".", "app", a.deps...))
+	scopedPath := func(opts ...Option) string {
+		res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: a.build, Symbols: []string{netkitSinkID}}, append([]Option{graph}, opts...)...)
+		if err != nil {
+			t.Fatalf("Reachability: %v", err)
+		}
+		for _, s := range res.Partiality.Scoped {
+			if s.Reason == reasonFirstPartyBytecodeAbsent {
+				return s.Path
+			}
+		}
+		t.Fatalf("no first_party_bytecode_absent: %+v", res.Partiality)
+		return ""
+	}
+	const base = "no compiled main classes under the build dir"
+	if got := scopedPath(); got != base {
+		t.Errorf("no note: path = %q, want %q", got, base)
+	}
+	const note = "`./mvnw -B compile` failed (tool_failed:compile: boom)"
+	if got := scopedPath(WithCompileNote(note)); got != base+"; "+note {
+		t.Errorf("path = %q", got)
+	}
+}
+
 // Class output older than its source does not stand for the program.
 func TestBytecodeReach_StaleClassesAreNotSearched(t *testing.T) {
 	a := newApp(t, "", false)

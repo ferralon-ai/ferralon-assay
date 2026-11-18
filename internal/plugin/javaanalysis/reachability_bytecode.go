@@ -73,7 +73,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 		reasons[r] = true
 	}
 	if !fp.complete() {
-		scoped = append(scoped, fp.scoped()...)
+		scoped = append(scoped, fp.noted(opts)...)
 	}
 
 	entry := findLaunchEntry(buildDir, fp, rc.class)

@@ -513,7 +513,7 @@ func (c *dockerCursor) present(p string) bool {
 // foreign holds for any path while no repository content can be in the stage, so it holds where
 // the WORKDIR is not known too.
 func (c *dockerCursor) foreign(string) bool {
-	return !c.st.repo && !c.later && c.mountsKnown && len(c.mounts) == 0
+	return !c.st.repo && !c.later
 }
 
 func (c *dockerCursor) venv() *venvMark { return &c.mark }

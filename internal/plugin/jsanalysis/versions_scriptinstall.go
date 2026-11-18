@@ -856,11 +856,12 @@ func npmRunArgs(args []string) (pos []string, flags, ok bool) {
 	return pos, flags, true
 }
 
-// npmConfigNamed reports whether --<name> may set an npm config: name, past a no- negation,
-// any case, is one of npmConfigs or the start of one, which npm expands.
+// npmConfigNamed reports whether --<name> may set an npm config: name, in any case, _ read as
+// -, and past any number of no- negations, is one of npmConfigs or the start of one, which
+// npm expands.
 func npmConfigNamed(name string) bool {
-	name = strings.ToLower(name)
-	for _, n := range []string{name, strings.TrimPrefix(name, "no-")} {
+	n := strings.ReplaceAll(strings.ToLower(name), "_", "-")
+	for {
 		if n == "" {
 			return true
 		}
@@ -869,11 +870,15 @@ func npmConfigNamed(name string) bool {
 				return true
 			}
 		}
+		t, ok := strings.CutPrefix(n, "no-")
+		if !ok {
+			return false
+		}
+		n = t
 	}
-	return false
 }
 
-// npmConfigs are the npm configs and their aliases, npm 6 through 11.
+// npmConfigs are the npm configs and their aliases, npm 6 through 11, each _ written as -.
 var npmConfigs = func() map[string]bool {
 	m := map[string]bool{}
 	for _, n := range strings.Fields(`
@@ -907,7 +912,7 @@ var npmConfigs = func() map[string]bool {
 		node-version send-metrics metrics-registry ignore-prepublish globalignorefile logstream
 		silent verbose quiet loud dd ddd desc enjoy-by porcelain readonly reg ws iwr local help
 		email auth _auth username _password otp`) {
-		m[n] = true
+		m[strings.ReplaceAll(n, "_", "-")] = true
 	}
 	return m
 }()
@@ -1352,11 +1357,15 @@ func laneKeptAssignment(word string) bool {
 }
 
 // lanePrefix takes one --prefix <dir> or --prefix=<dir> out of args, returning dir ("" when
-// there is none) and the args left; ok is false for a second one or one with no dir.
+// there is none) and the args left, reading none past a --; ok is false for a second one or
+// one with no dir.
 func lanePrefix(args []string) (dir string, rest []string, ok bool) {
 	for i := 0; i < len(args); i++ {
 		var d string
 		switch a := args[i]; {
+		case a == "--":
+			// What follows is the script's, a --prefix among it included.
+			return dir, append(rest, args[i:]...), true
 		case a == "--prefix":
 			if i+1 == len(args) {
 				return "", nil, false
@@ -1369,7 +1378,7 @@ func lanePrefix(args []string) (dir string, rest []string, ok bool) {
 			rest = append(rest, a)
 			continue
 		}
-		if dir != "" || d == "" {
+		if dir != "" || d == "" || strings.HasPrefix(d, "-") {
 			return "", nil, false
 		}
 		dir = d

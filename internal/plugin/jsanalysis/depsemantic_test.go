@@ -625,7 +625,7 @@ func TestSemantic_G8PnpmPatched(t *testing.T) {
 	}
 	cg := patched(patchHead, "q@1.0.0", "q@1.0.0")
 	if runWide(cg) || reaches(cg, "q", "1.0.0") || !hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, makePURL("q", "1.0.0")) {
-		t.Fatalf("scoped patch: q limited alone, unread; got %+v edges %+v", cg.Partiality, cg.Edges)
+		t.Fatalf("scoped patch: q carries its own limit, bounded to what loads, and is unread; got %+v edges %+v", cg.Partiality, cg.Edges)
 	}
 	for name, tc := range map[string]struct{ patch, cfg, lock string }{
 		"package_json":    {strings.ReplaceAll(patchHead, "lib/x.js", "package.json"), "q@1.0.0", "q@1.0.0"},
@@ -802,12 +802,12 @@ func TestSemantic_PnpmGlobalVirtualStore(t *testing.T) {
 }
 
 // TestSemantic_PnpmAllowBuilds: an allowBuilds block mapping of scalars in pnpm-workspace.yaml
-// is accepted with its values unread, and a value that stops a script never stops the script
-// from withholding. Any other shape, and allowBuilds in package.json, withholds. Each tree holds
+// is accepted with its values unread, and a value that stops a script never stops a script that
+// runs a package manager from withholding. Any other shape, and allowBuilds in package.json, withholds. Each tree holds
 // packages/b, unlisted, declaring a dependency the lock installs nothing for.
 func TestSemantic_PnpmAllowBuilds(t *testing.T) {
 	const pkgs = "packages:\n  - packages/a\n"
-	const postinstall = `{"name":"q","version":"1.0.0","main":"index.js","scripts":{"postinstall":"x"}}`
+	const postinstall = `{"name":"q","version":"1.0.0","main":"index.js","scripts":{"postinstall":"npm rebuild"}}`
 	for name, tc := range map[string]struct {
 		ws       string
 		manifest string
@@ -1722,7 +1722,7 @@ func TestSemantic_LayoutVeto(t *testing.T) {
 
 // TestSemantic_DepBindingGyp: a pnpm or yarn classic package that ships a binding.gyp and sets no
 // install or preinstall script gets `node-gyp rebuild` at install, an install script the lock
-// does not mark, so it withholds run-wide like an explicit one.
+// does not mark, so its compiled code is bounded to what the package declares.
 func TestSemantic_DepBindingGyp(t *testing.T) {
 	for _, mgr := range []string{"pnpm", "yarn"} {
 		for name, gypName := range map[string]string{"binding_gyp": "binding.gyp", "binding_gyp_case": "Binding.gyp", "control": ""} {
@@ -1740,8 +1740,8 @@ func TestSemantic_DepBindingGyp(t *testing.T) {
 				}
 				dir := semProgram(t, lockName, lock, map[string]string{"package.json": manifestWith("app", map[string]string{"p": "1.0.0"}, "")})
 				cg := semRun(t, dir, semStore(t, p, q))
-				if gyp && !runWide(cg) {
-					t.Errorf("a %s package with a binding.gyp and no install script withholds run-wide; got %+v", mgr, cg.Partiality)
+				if gyp && (runWide(cg) || !hasBounded(cg.Partiality, plugin.PartialReasonUninspectablePackage, "pkg:npm/p@1.0.0")) {
+					t.Errorf("a %s package with a binding.gyp and no install script is bounded to its declared packages; got %+v", mgr, cg.Partiality)
 				}
 				if !gyp && (runWide(cg) || !reaches(cg, "q", "1.0.0")) {
 					t.Errorf("control resolves q@1.0.0 through the %s layout; got %+v", mgr, cg.Partiality)

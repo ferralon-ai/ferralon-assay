@@ -61,6 +61,9 @@ type depLayout struct {
 	// incomplete marks a lockfile that could not be read or selected, or an install surface the
 	// lane does not read (installSurfaces): the build may install a copy no lock read here places.
 	incomplete bool
+	// lockAssumed is set when the layout is complete only under lockAssumption: the build runs a
+	// bare install the lane cannot hold to a lock by reading.
+	lockAssumed bool
 	// unplaced are the packages of a pnpm or yarn classic lock the lane could not place: never
 	// read, and never found by lookup.
 	unplaced []*depEntry
@@ -87,9 +90,8 @@ func (l *depLayout) entries() []*depEntry {
 // the locks read here, leaves the whole layout incomplete: neither names the packages it changes.
 func buildDepLayout(ctx context.Context, buildDir string) *depLayout {
 	l := &depLayout{byPath: map[string]*depEntry{}}
-	if unread, _, _, _ := installSurfaces(ctx, buildDir, func() map[string]lockInfo { return parsedLocks(buildDir) }); unread {
-		l.incomplete = true
-	}
+	unread, _, _, _, lockAssumed := installSurfaces(ctx, buildDir, func() map[string]lockInfo { return parsedLocks(buildDir) })
+	l.incomplete, l.lockAssumed = unread, lockAssumed
 	roots, read := discoverProjectRoots(buildDir)
 	if !read {
 		l.incomplete = true

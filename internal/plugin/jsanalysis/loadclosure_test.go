@@ -105,6 +105,7 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		"loaded package exports its require":                                           "used/index hands a module loader on",
 		"loaded package reads the wrapper's arguments":                                 "used/index hands a module loader on",
 		"loaded package reaches the main module's loader":                              "used/index hands a module loader on",
+		"build installs a package no lockfile records":                                 "do not enumerate every installed package",
 	}
 	for _, tc := range []struct {
 		name   string

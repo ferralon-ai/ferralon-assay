@@ -24,7 +24,8 @@ func TestDecodeClosure(t *testing.T) {
 	key := closureKey([]string{"k"})
 	miss := depreach.Result{Verdict: depreach.Undetermined, SinkPresent: true, HazardOnFrontier: true, HazardWhy: "reflection: x", HazardKinds: []string{"reflection"}, Reached: 7}
 	bits := []uint64{5, 1 << 63}
-	good, err := encodeClosure(key, testRoot, bits, miss)
+	from := []uint32{0, 0, 1}
+	good, err := encodeClosure(key, testRoot, bits, from, miss)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,12 +36,12 @@ func TestDecodeClosure(t *testing.T) {
 	}
 	other := testRoot
 	other.Name = "run"
-	foreignRoot, _ := encodeClosure(key, other, bits, miss)
-	foreignKey, _ := encodeClosure(closureKey([]string{"j"}), testRoot, bits, miss)
+	foreignRoot, _ := encodeClosure(key, other, bits, from, miss)
+	foreignKey, _ := encodeClosure(closureKey([]string{"j"}), testRoot, bits, from, miss)
 	// forge writes an entry whose checksum is valid but whose header or words say otherwise,
 	// so only the header checks can refuse it.
 	forge := func(mod func(*closureHeader), words []uint64) []byte {
-		hdr := closureHeader{Format: closureFormat, Key: hex.EncodeToString(key), Root: testRoot.String(), Words: len(bits), Miss: miss}
+		hdr := closureHeader{Format: closureFormat, Key: hex.EncodeToString(key), Root: testRoot.String(), Words: len(bits), Tree: len(from), Miss: miss}
 		mod(&hdr)
 		j, err := json.Marshal(hdr)
 		if err != nil {
@@ -50,6 +51,9 @@ func TestDecodeClosure(t *testing.T) {
 		buf.Write(j)
 		buf.WriteByte('\n')
 		if err := binary.Write(&buf, binary.LittleEndian, words); err != nil {
+			t.Fatal(err)
+		}
+		if err := binary.Write(&buf, binary.LittleEndian, from); err != nil {
 			t.Fatal(err)
 		}
 		sum := sha256.Sum256(buf.Bytes())
@@ -73,24 +77,28 @@ func TestDecodeClosure(t *testing.T) {
 		{"truncated", good[:len(good)-1], false},
 		{"no checksum", good[:len(good)-32], false},
 		{"header byte altered", flip(10), false},
-		{"bitset byte altered", flip(len(good) - 40), false},
+		{"bitset byte altered", flip(len(good) - 52), false},
+		{"predecessor byte altered", flip(len(good) - 40), false},
 		{"checksum altered", flip(len(good) - 1), false},
 		{"another root's entry", foreignRoot, false},
 		{"another key's entry", foreignKey, false},
 		{"forged whole entry", forge(same, bits), true},
-		{"another format's entry", forge(func(h *closureHeader) { h.Format = "assay-java-closure-v0" }, bits), false},
+		{"another format's entry", forge(func(h *closureHeader) { h.Format = "assay-java-closure-v1" }, bits), false},
+		{"fewer predecessors than the header counts", forge(func(h *closureHeader) { h.Tree++ }, bits), false},
+		{"negative word count", forge(func(h *closureHeader) { h.Words, h.Tree = -1, h.Tree+2*len(bits)+2 }, bits), false},
+		{"predecessor count that wraps", forge(func(h *closureHeader) { h.Tree = len(from) + 1<<62 }, bits), false},
 		{"more words than the header counts", forge(same, append(bits, 0)), false},
 		{"partial trailing word", partial, false},
 		{"word count that wraps", forge(func(h *closureHeader) { h.Words = len(bits) + 1<<61 }, bits), false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			gotBits, gotMiss, err := decodeClosure(tc.b, key, testRoot)
+			gotBits, gotFrom, gotMiss, err := decodeClosure(tc.b, key, testRoot)
 			if (err == nil) != tc.ok {
 				t.Fatalf("err = %v, want ok %v", err, tc.ok)
 			}
-			if tc.ok && (!reflect.DeepEqual(gotBits, bits) || !reflect.DeepEqual(gotMiss, miss)) {
-				t.Errorf("round trip: %v %+v", gotBits, gotMiss)
+			if tc.ok && (!reflect.DeepEqual(gotBits, bits) || !reflect.DeepEqual(gotFrom, from) || !reflect.DeepEqual(gotMiss, miss)) {
+				t.Errorf("round trip: %v %v %+v", gotBits, gotFrom, gotMiss)
 			}
 		})
 	}
@@ -205,6 +213,96 @@ func TestBytecodeReach_RunCacheMatchesFresh(t *testing.T) {
 				t.Errorf("cached runs differ from a fresh one:\nfresh  %+v\nfirst  %+v\nsecond %+v", fresh, first, second)
 			}
 		})
+	}
+}
+
+// A class file that changed after an earlier process stored its searches is searched again:
+// the run answers as a fresh one over the changed tree does, never from the stored entries.
+func TestBytecodeReach_ChangedClassIsSearchedAgain(t *testing.T) {
+	tests := []struct {
+		name          string
+		before, after func(*cpb) []byte
+	}{
+		{"path removed", callFetch, justReturn},
+		{"path added", justReturn, callFetch},
+		{"hazard added", justReturn, callUnloaded},
+		{"hazard removed", callUnloaded, justReturn},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.source("src/main/java/com/acme/App.java", appSource)
+			a.class("target/classes", "com/acme/App", mainCalling(tc.before))
+			dir := t.TempDir()
+			ctx := WithRunCacheDir(context.Background(), dir)
+			resetClosureCache()
+			stale := a.reachCtx(ctx, netkitSinkID)
+			stored, _ := filepath.Glob(filepath.Join(dir, "java-closure-*"))
+			if len(stored) == 0 {
+				t.Fatal("the first process stored no search")
+			}
+
+			a.class("target/classes", "com/acme/App", mainCalling(tc.after))
+			resetClosureCache()
+			fresh := a.reach(netkitSinkID)
+			if reflect.DeepEqual(fresh, stale) {
+				t.Fatal("the change does not move the answer")
+			}
+			resetClosureCache()
+			got := a.reachCtx(ctx, netkitSinkID)
+			if !reflect.DeepEqual(got, fresh) {
+				t.Errorf("answer over the changed class:\nfresh %+v\ngot   %+v", fresh, got)
+			}
+			if now, _ := filepath.Glob(filepath.Join(dir, "java-closure-*")); len(now) <= len(stored) {
+				t.Errorf("the changed tree stored no search of its own: %d entries before, %d after", len(stored), len(now))
+			}
+		})
+	}
+}
+
+// A later process reads a reached sink's path from the stored search: with the predecessors
+// of every stored entry dropped it still answers alike, by searching.
+func TestBytecodeReach_StoredPathMatchesSearched(t *testing.T) {
+	a := newApp(t, "", false)
+	a.source("src/main/java/com/acme/App.java", appSource)
+	a.class("target/classes", "com/acme/App", mainCalling(callFetch))
+	dir := t.TempDir()
+	ctx := WithRunCacheDir(context.Background(), dir)
+	resetClosureCache()
+	first := a.reachCtx(ctx, netkitSinkID)
+	if len(first.Paths) == 0 {
+		t.Fatal("fixture reaches no sink")
+	}
+	resetClosureCache()
+	read := a.reachCtx(ctx, netkitSinkID)
+
+	entries, _ := filepath.Glob(filepath.Join(dir, "java-closure-*"))
+	for _, e := range entries {
+		b, err := os.ReadFile(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := b[:len(b)-sha256.Size]
+		nl := bytes.IndexByte(body, '\n')
+		var hdr closureHeader
+		if err := json.Unmarshal(body[:nl], &hdr); err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Tree == 0 {
+			t.Fatalf("entry %s stores no predecessors", e)
+		}
+		words := body[nl+1 : nl+1+hdr.Words*8]
+		zeroed := make([]byte, hdr.Tree*4)
+		body = append(append(bytes.Clone(body[:nl+1]), words...), zeroed...)
+		sum := sha256.Sum256(body)
+		if err := os.WriteFile(e, append(body, sum[:]...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resetClosureCache()
+	searched := a.reachCtx(ctx, netkitSinkID)
+	if !reflect.DeepEqual(read, first) || !reflect.DeepEqual(searched, first) {
+		t.Errorf("answers differ:\nfirst    %+v\nread     %+v\nsearched %+v", first, read, searched)
 	}
 }
 

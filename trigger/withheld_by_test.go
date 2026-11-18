@@ -62,12 +62,18 @@ func TestFinding_WithheldBy(t *testing.T) {
 			name: "two scoped limits of one reason are both listed",
 			mutate: func(fx *groundsFixture) {
 				fx.reach.Refutation = nil
-				fx.scoped = []artifact.ScopedPartialityFlag{here, {Reason: here.Reason, Package: here.Package, Path: "other.go", Targets: here.Targets}}
+				fx.scoped = []artifact.ScopedPartialityFlag{
+					here,
+					{Reason: here.Reason, Package: here.Package, Path: "other.go", Targets: here.Targets},
+					{Reason: here.Reason, Package: here.Package, Path: here.Path, Targets: here.Targets[:1]},
+					here,
+				}
 			},
 			wantReason: report.ReasonAnalysisDidNotRun,
 			want: []report.Limit{
 				{Reason: plugin.PartialReasonCgo, Package: here.Package, Path: here.Path, Targets: here.Targets},
 				{Reason: plugin.PartialReasonCgo, Package: here.Package, Path: "other.go", Targets: here.Targets},
+				{Reason: plugin.PartialReasonCgo, Package: here.Package, Path: here.Path, Targets: here.Targets[:1]},
 			},
 		},
 		{
@@ -152,9 +158,9 @@ func TestWithInventoryLimits_WithheldBy(t *testing.T) {
 		Package: &report.Package{Ecosystem: "npm", Name: "left-pad", Version: "1.0.0", PURL: "pkg:npm/left-pad@1.0.0"},
 		Verdict: report.VerdictNotExploitable,
 	}
-	limit := report.PartialityNote{Reason: plugin.PartialReasonToolFailure, Ecosystem: "npm", Package: "pkg:npm/other", Path: "index.js"}
+	limit := report.PartialityNote{Reason: plugin.PartialReasonToolFailure, Ecosystem: "npm", Package: "pkg:npm/other", Path: "index.js", Targets: []string{"pkg:npm/left-pad"}}
 	got := withInventoryLimits(f, []report.PartialityNote{limit}, nil)
-	want := []report.Limit{{Reason: limit.Reason, Package: limit.Package, Path: limit.Path}}
+	want := []report.Limit{{Reason: limit.Reason, Package: limit.Package, Path: limit.Path, Targets: limit.Targets}}
 	if got.UndeterminedReason != report.ReasonAnalysisDidNotRun || !reflect.DeepEqual(got.WithheldBy, want) {
 		t.Fatalf("got %s/%q withheld_by %+v, want analysis_did_not_run and %+v", got.Verdict, got.UndeterminedReason, got.WithheldBy, want)
 	}

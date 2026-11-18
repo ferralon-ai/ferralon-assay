@@ -41,20 +41,21 @@ func withheldBy(store artifact.Store, assessmentID string, pkg *report.Package, 
 	// kept is declared with entries dropped, and a dropped one is always the earliest of its
 	// reason (withoutVersionLimits) or every one of it, so matching from the end pairs each kept
 	// reason with the declaration that survived.
+	held := make([]bool, len(declared))
+	for i, j := len(declared)-1, len(kept)-1; i >= 0 && j >= 0; i-- {
+		if declared[i].Reason == kept[j] {
+			held[i] = true
+			j--
+		}
+	}
 	var limits []report.Limit
 	seen := map[string]bool{}
-	for i, j := len(declared)-1, len(kept)-1; i >= 0 && j >= 0; i-- {
-		l := declared[i]
-		if l.Reason != kept[j] {
-			continue
-		}
-		j--
-		if key := limitKey(l); !seen[key] {
+	for i, l := range declared {
+		if key := limitKey(l); held[i] && !seen[key] {
 			seen[key] = true
 			limits = append(limits, l)
 		}
 	}
-	slices.Reverse(limits)
 	return limits
 }
 

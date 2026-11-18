@@ -131,6 +131,67 @@ func TestRestateNotImported(t *testing.T) {
 	}
 }
 
+// TestRestateNotImported_OtherCgoSetting: the build is loaded under one cgo setting, and a file only
+// the other setting compiles is still read. One that imports the vulnerable package keeps the basis,
+// with cgo off (a file importing "C" is dropped) and with cgo on (a file marked !cgo is).
+func TestRestateNotImported_OtherCgoSetting(t *testing.T) {
+	const (
+		cgoSSH     = "package main\n\n// void run(void) {}\nimport \"C\"\n\nimport _ \"example.com/vulnmod/ssh\"\n\nfunc init() { C.run() }\n"
+		cgoBlake   = "package main\n\n// void run(void) {}\nimport \"C\"\n\nimport \"example.com/vulnmod/blake\"\n\nfunc init() { C.run(); blake.Sum() }\n"
+		noCgoSSH   = "//go:build !cgo\n\npackage main\n\nimport _ \"example.com/vulnmod/ssh\"\n"
+		noCgoBlake = "//go:build !cgo\n\npackage main\n\nimport \"example.com/vulnmod/blake\"\n\nfunc init() { blake.Sum() }\n"
+	)
+	scanned := vulnScan{
+		imports:  narrowedScans.narrow.imports,
+		findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0"}}}},
+	}
+	cases := []struct {
+		name     string
+		cgo      string
+		file     string
+		restated bool
+	}{
+		{"cgo off, a dropped cgo file imports the vulnerable package", "0", cgoSSH, false},
+		{"cgo off, a dropped cgo file imports another package of the module", "0", cgoBlake, true},
+		{"cgo on, a file built only with cgo off imports the vulnerable package", "1", noCgoSSH, false},
+		{"cgo on, a file built only with cgo off imports another package of the module", "1", noCgoBlake, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CGO_ENABLED", tc.cgo)
+			dir := writeTree(t, merge(narrowedModule, map[string]string{"other.go": tc.file}))
+			load, err := LoadProgram(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if incompleteLoad(load.Packages, nil) {
+				t.Fatal("load incomplete")
+			}
+			var left []string
+			for _, p := range load.Packages {
+				left = append(left, p.IgnoredFiles...)
+			}
+			if len(left) != 1 || !strings.HasSuffix(left[0], "other.go") {
+				t.Fatalf("files the build left out = %v, want other.go alone", left)
+			}
+			res := restateNotImported(context.Background(), narrowedRefutation(), scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"))
+			if res.Refutation == nil {
+				t.Fatal("refutation dropped")
+			}
+			want := plugin.RefutationAnalyzerSymbolNotReached
+			if tc.restated {
+				want = plugin.RefutationAnalyzerPackageNotImported
+			}
+			if res.Refutation.Basis != want {
+				t.Fatalf("basis = %q, want %q (detail %q)", res.Refutation.Basis, want, res.Refutation.Detail)
+			}
+			if stated := strings.Contains(res.Refutation.Detail, "CGO_ENABLED="+tc.cgo); stated != tc.restated {
+				t.Errorf("detail %q states the cgo setting = %v, want %v", res.Refutation.Detail, stated, tc.restated)
+			}
+		})
+	}
+}
+
 // TestRestateNotImported_IncompleteLoad: a load that could not type-check a package cannot say the
 // vulnerable package is absent, so the refutation keeps its basis.
 func TestRestateNotImported_IncompleteLoad(t *testing.T) {

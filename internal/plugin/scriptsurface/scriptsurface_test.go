@@ -1081,6 +1081,92 @@ func TestVeto_Library(t *testing.T) {
 	}
 }
 
+// A helper the lane names withholds nothing; one at a path is one only where the build holds
+// nothing there and nothing from the repository may have been put there.
+func TestVeto_Helper(t *testing.T) {
+	help := testSpec
+	help.Helper = func(_ string, words []string) (string, bool) {
+		switch {
+		case len(words) != 2:
+		case words[1] == "$(dirname $0)/h.sh":
+			return "", true
+		case words[1] == ".tool/env":
+			return ".tool/env", true
+		}
+		return "", false
+	}
+	tests := []struct {
+		name  string
+		spec  Spec
+		files map[string]string
+		want  bool // withheld
+	}{
+		{"helper with no path", help, map[string]string{"install.sh": `. "$(dirname "$0")/h.sh"` + "\ninst sync\n"}, false},
+		{"helper at a path the build does not hold", help, map[string]string{"install.sh": "source .tool/env\n"}, false},
+		{"helper at a path the build holds", help, map[string]string{"install.sh": ". .tool/env\n", ".tool/env": "inst add x\n"}, true},
+		{"Dockerfile, nothing copied", help, map[string]string{"Dockerfile": "FROM base\nRUN . .tool/env\n"}, false},
+		{"Dockerfile, in a nested shell", help, map[string]string{"Dockerfile": "FROM base\nRUN bash -c \". .tool/env && echo ok\"\n"}, false},
+		{"Dockerfile, after a COPY", help, map[string]string{"Dockerfile": "FROM base\nCOPY inst.toml ./\nRUN . .tool/env\n"}, true},
+		{"Dockerfile, under a mount", help, map[string]string{"Dockerfile": "FROM base\nRUN --mount=type=cache,target=/root/.cache . .tool/env\n"}, true},
+		{"Dockerfile, on a stage that copied", help, map[string]string{"Dockerfile": "FROM base AS b\nCOPY . .\nFROM b\nRUN . .tool/env\n"}, true},
+		{"Dockerfile, where the image runs", help, map[string]string{"Dockerfile": "FROM base\nCMD . .tool/env && serve\n"}, true},
+		{"another file", help, map[string]string{"install.sh": ". .tool/other\n"}, true},
+		{"lane with no Helper", testSpec, map[string]string{"install.sh": ". .tool/env\n"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n"}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			if got := withheld(writeTree(t, files), tt.spec); got != tt.want {
+				t.Fatalf("withheld = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A script run is checked as the shell text the lane composes for it, from where it runs.
+func TestVeto_ScriptRun(t *testing.T) {
+	run := testSpec
+	run.ScriptRun = func(words []string, _ Binder) ([]string, bool) {
+		if len(words) < 2 || words[0] != "inst" || words[1] != "exec" {
+			return nil, false
+		}
+		if len(words) == 2 {
+			return nil, true
+		}
+		return []string{strings.Join(words[2:], " ")}, true
+	}
+	tests := []struct {
+		name  string
+		spec  Spec
+		files map[string]string
+		want  bool // withheld
+	}{
+		{"text with no installer", run, map[string]string{"install.sh": "inst exec echo hi\n"}, false},
+		{"text running an allowed form", run, map[string]string{"install.sh": "inst exec inst sync\n"}, false},
+		{"text that installs", run, map[string]string{"install.sh": "inst exec inst add x\n"}, true},
+		{"text that installs after it splits", run, map[string]string{"install.sh": `inst exec "echo a && inst add x"` + "\n"}, true},
+		{"text that does not split into whole commands", run, map[string]string{"install.sh": `inst exec "echo a &&"` + "\n"}, true},
+		{"nested within the bound", run, map[string]string{"install.sh": "inst exec inst exec echo hi\n"}, false},
+		{"nested past the bound", run, map[string]string{"install.sh": "inst exec inst exec inst exec inst exec inst exec echo hi\n"}, true},
+		{"no text", run, map[string]string{"install.sh": "inst exec\n"}, true},
+		{"lane with no ScriptRun", testSpec, map[string]string{"install.sh": "inst exec echo hi\n"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"inst.toml": "[deps]\n", "inst.lock": "lock\n"}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			if got := withheld(writeTree(t, files), tt.spec); got != tt.want {
+				t.Fatalf("withheld = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // AndList puts two commands in one list only when && alone joins them in one line of one
 // surface, and follows no command a run wrapper or nested shell starts.
 func TestVeto_AndList(t *testing.T) {

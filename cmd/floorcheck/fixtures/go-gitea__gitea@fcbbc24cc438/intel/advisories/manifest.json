@@ -1,0 +1,354 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 68,
+  "records": [
+    {
+      "identifier": "CVE-2025-11579",
+      "path": "2025/10/CVE-2025-11579.json",
+      "output_digest": "sha256:85c753c662cb407b65ded3a9dd6998c7bb845d7928357ccb2c7859b4fb876f4a"
+    },
+    {
+      "identifier": "CVE-2025-29923",
+      "path": "2025/03/CVE-2025-29923.json",
+      "output_digest": "sha256:0ec7be817f8f34a843eedbb4905cb312cf86343c54d3f959a0c746e08ff9c2ed"
+    },
+    {
+      "identifier": "CVE-2025-47911",
+      "path": "2026/02/CVE-2025-47911.json",
+      "output_digest": "sha256:4a95bafc040f4f0336c9ac8ede12df479df0c08277f6fbcec786480c3c369163"
+    },
+    {
+      "identifier": "CVE-2025-47913",
+      "path": "2025/11/CVE-2025-47913.json",
+      "output_digest": "sha256:b111fbbfe612e54e7954a95c65865d795f88bf824defb8cb723e061c56428edf"
+    },
+    {
+      "identifier": "CVE-2025-58058",
+      "path": "2025/08/CVE-2025-58058.json",
+      "output_digest": "sha256:1210bc626bbb37fb996a631a056cb427e76e8147012d931ae6439e89328c535d"
+    },
+    {
+      "identifier": "CVE-2025-58181",
+      "path": "2025/11/CVE-2025-58181.json",
+      "output_digest": "sha256:ad85031adfc747c877622e0341cfafb6bece127d01c8ede2494c98e77d3766cc"
+    },
+    {
+      "identifier": "CVE-2025-58190",
+      "path": "2026/02/CVE-2025-58190.json",
+      "output_digest": "sha256:852f7f890437feed09d397dee07b70920f2311aa3e486c1f5c4bf6e30da2f6e7"
+    },
+    {
+      "identifier": "CVE-2025-59937",
+      "path": "2025/09/CVE-2025-59937.json",
+      "output_digest": "sha256:8ddecf70206961d47762fc91191609a892c2cfd09704328407e1ee556388cdb7"
+    },
+    {
+      "identifier": "CVE-2025-8556",
+      "path": "2025/08/CVE-2025-8556.json",
+      "output_digest": "sha256:785ca3a55455dbdcfdc49fdaaee87b47786f3ca4d4036f3a40707f7d51bef7a6"
+    },
+    {
+      "identifier": "CVE-2026-111497",
+      "path": "2026/10/CVE-2026-111497.json",
+      "output_digest": "sha256:e82d7ce89fd3d1cc115caab19cb19bccfdcf76c1737c0c174d0165bb557b16c1"
+    },
+    {
+      "identifier": "CVE-2026-116591",
+      "path": "2026/10/CVE-2026-116591.json",
+      "output_digest": "sha256:accbb6a99df9f6933814257318415414468cf375941fabec3743f6016df619cc"
+    },
+    {
+      "identifier": "CVE-2026-1229",
+      "path": "2026/02/CVE-2026-1229.json",
+      "output_digest": "sha256:7902ef8a9b6283839f44f8e650150b74b875a707dad9f0d310e0cbc3b6c137dc"
+    },
+    {
+      "identifier": "CVE-2026-25680",
+      "path": "2026/05/CVE-2026-25680.json",
+      "output_digest": "sha256:4f1740d586b7d00be6615bd747480ead1ac89d3adbdee7d5486264f1f71b11ee"
+    },
+    {
+      "identifier": "CVE-2026-25681",
+      "path": "2026/05/CVE-2026-25681.json",
+      "output_digest": "sha256:8676cc4357f576f9bdb2f21e4335eec1bc73f1677f2e5a69d127e3b88e3de674"
+    },
+    {
+      "identifier": "CVE-2026-25934",
+      "path": "2026/02/CVE-2026-25934.json",
+      "output_digest": "sha256:6d7d7ef3a8045a5bd3c3ece136564977cf3838ebb2036128336531031a31ba1f"
+    },
+    {
+      "identifier": "CVE-2026-27136",
+      "path": "2026/05/CVE-2026-27136.json",
+      "output_digest": "sha256:c9a36ad457c1cbdeba97c98f8b01402126c4e4504c236d4766b0b8fd897eb63c"
+    },
+    {
+      "identifier": "CVE-2026-32952",
+      "path": "2026/04/CVE-2026-32952.json",
+      "output_digest": "sha256:b601425a244f804eea944f887a47e07cbdb239d23cbfe4e9f65fcf6c856d508e"
+    },
+    {
+      "identifier": "CVE-2026-33762",
+      "path": "2026/03/CVE-2026-33762.json",
+      "output_digest": "sha256:361f9e706695e87c9bdb3d55e735f245824124a047edc41412f1230578c88a98"
+    },
+    {
+      "identifier": "CVE-2026-33809",
+      "path": "2026/03/CVE-2026-33809.json",
+      "output_digest": "sha256:a8b3810e5dd743362bd3a14c5c56f655be8cadbb3a8f1e0a60339107b760514f"
+    },
+    {
+      "identifier": "CVE-2026-33812",
+      "path": "2026/04/CVE-2026-33812.json",
+      "output_digest": "sha256:7e28a665ca45e221d08b22f1ec0edeb1ce654d3df300f76a17711934965aa964"
+    },
+    {
+      "identifier": "CVE-2026-33813",
+      "path": "2026/04/CVE-2026-33813.json",
+      "output_digest": "sha256:9e686be26e487135f11567170afc529af3fc52ca34086855f5d055b10b1d02c4"
+    },
+    {
+      "identifier": "CVE-2026-33814",
+      "path": "2026/05/CVE-2026-33814.json",
+      "output_digest": "sha256:2dc569acadcbfcf55e0fc96b74b0eba71647753f6b263504c97306881c64ad76"
+    },
+    {
+      "identifier": "CVE-2026-34165",
+      "path": "2026/03/CVE-2026-34165.json",
+      "output_digest": "sha256:351a11ea7876201df266968a590924092d2ec6293807bf308d4d6484ba6f1149"
+    },
+    {
+      "identifier": "CVE-2026-39831",
+      "path": "2026/05/CVE-2026-39831.json",
+      "output_digest": "sha256:af04b0a25bae68b204a68260b62136c72dc755a89c0c41ee1d7fdcdaf9e76892"
+    },
+    {
+      "identifier": "CVE-2026-39834",
+      "path": "2026/05/CVE-2026-39834.json",
+      "output_digest": "sha256:83ffa87ff902eefde0d7e4942165380b4b9233b4b5da8cc35c30981e6de45f40"
+    },
+    {
+      "identifier": "CVE-2026-41506",
+      "path": "2026/05/CVE-2026-41506.json",
+      "output_digest": "sha256:1748ed1af7df29b38f29e58ae242cfc7aa69ce6f8388c4358dc8a94cc252ddfd"
+    },
+    {
+      "identifier": "CVE-2026-42500",
+      "path": "2026/05/CVE-2026-42500.json",
+      "output_digest": "sha256:5bd7e0dbda9b75c1512961f4c329b2bebae38d400301909158723e390f56c95b"
+    },
+    {
+      "identifier": "CVE-2026-42502",
+      "path": "2026/05/CVE-2026-42502.json",
+      "output_digest": "sha256:27d2b62ba66fb61b9a3afd421040148046d7117bc80f9da821b45c9a681816dd"
+    },
+    {
+      "identifier": "CVE-2026-42506",
+      "path": "2026/05/CVE-2026-42506.json",
+      "output_digest": "sha256:a82f9b332e684587e822d8138f0b33e8e73666eb9062e7e22ccffff31a7d1de5"
+    },
+    {
+      "identifier": "CVE-2026-44740",
+      "path": "2026/06/CVE-2026-44740.json",
+      "output_digest": "sha256:3745642b65bbb6ff6514dfeb16859a013c95da7ee308ffa07a201d27449061be"
+    },
+    {
+      "identifier": "CVE-2026-44973",
+      "path": "2026/05/CVE-2026-44973.json",
+      "output_digest": "sha256:8d2f1805cb6be80b973bb0491b8033d378834ebab67f6ea407131c0719673c6b"
+    },
+    {
+      "identifier": "CVE-2026-45570",
+      "path": "2026/05/CVE-2026-45570.json",
+      "output_digest": "sha256:a4ea1bcfc3803cac3de1b3e22c1e6ca95f9bc3deb5c2512f4efdd4a08f5b1eb0"
+    },
+    {
+      "identifier": "CVE-2026-46597",
+      "path": "2026/05/CVE-2026-46597.json",
+      "output_digest": "sha256:64476f890f0f94fb0e4951a91303cbf9b30cb0f6a469f609f1a21e8d412cd30c"
+    },
+    {
+      "identifier": "CVE-2026-46599",
+      "path": "2026/05/CVE-2026-46599.json",
+      "output_digest": "sha256:b6fccde3347c245048be1861b57215277cef60b7fc449c7fd3ca887b370b6c1f"
+    },
+    {
+      "identifier": "CVE-2026-46601",
+      "path": "2026/06/CVE-2026-46601.json",
+      "output_digest": "sha256:082bfcd423a2d7b403d29725070d76c1e77e5cb96d80de9d96a18b644736f68c"
+    },
+    {
+      "identifier": "CVE-2026-46602",
+      "path": "2026/06/CVE-2026-46602.json",
+      "output_digest": "sha256:041f7b086b986b38edee8f8f8762040829e425141e8d1b0ee5242a5a47f35205"
+    },
+    {
+      "identifier": "CVE-2026-46603",
+      "path": "2026/08/CVE-2026-46603.json",
+      "output_digest": "sha256:da96f4890391c63fcd4e71ce5a44336c5e627d753172324de4764df5f2287a97"
+    },
+    {
+      "identifier": "CVE-2026-46604",
+      "path": "2026/06/CVE-2026-46604.json",
+      "output_digest": "sha256:3292e5f36ca726501007346fbb7d6b8ff05b9ca9114115ecd4b2295550e3cd11"
+    },
+    {
+      "identifier": "CVE-2026-5160",
+      "path": "2026/04/CVE-2026-5160.json",
+      "output_digest": "sha256:29471c43e051103c2a290ad727413940b56d5dd59be227c873a395452eb786c4"
+    },
+    {
+      "identifier": "CVE-2026-56852",
+      "path": "2026/07/CVE-2026-56852.json",
+      "output_digest": "sha256:234aa0a7193357c0dd92add743d09c8323f65d24b0609937863c537f47d583a9"
+    },
+    {
+      "identifier": "CVE-2026-56854",
+      "path": "2026/08/CVE-2026-56854.json",
+      "output_digest": "sha256:4f8eeecac1bd7827ef4677889400b20292084b01c61531269fe387603ab2240d"
+    },
+    {
+      "identifier": "CVE-2026-56855",
+      "path": "2026/09/CVE-2026-56855.json",
+      "output_digest": "sha256:4b104ab513a8c59090e4ce5920ab61965b0bd5b2b8068c11b247035844b20998"
+    },
+    {
+      "identifier": "CVE-2026-72816",
+      "path": "2026/08/CVE-2026-72816.json",
+      "output_digest": "sha256:521d014ab1221455de9b541685ceeb05b7dc308542d40b6bdf1477876934b14f"
+    },
+    {
+      "identifier": "CVE-2026-72817",
+      "path": "2026/08/CVE-2026-72817.json",
+      "output_digest": "sha256:3cd4a2135b7be586bc008c1f828890b4c876e50fc15c0f0c3ef04a70f8443d4e"
+    },
+    {
+      "identifier": "CVE-2026-78659",
+      "path": "2026/10/CVE-2026-78659.json",
+      "output_digest": "sha256:63e734a9c3f2a0ebcc119a02af4152c1f7748f4aca76baaa40f133c28b290727"
+    },
+    {
+      "identifier": "CVE-2026-78660",
+      "path": "2026/10/CVE-2026-78660.json",
+      "output_digest": "sha256:33ff823a2275375df62437ea0e9b700564fa487ddb218d8154d993c9635451cd"
+    },
+    {
+      "identifier": "CVE-2026-78661",
+      "path": "2026/10/CVE-2026-78661.json",
+      "output_digest": "sha256:72ad9fd63388c5e725de2005259ccac04261e4549834e62d915091ebd36bc9e3"
+    },
+    {
+      "identifier": "CVE-2026-78662",
+      "path": "2026/09/CVE-2026-78662.json",
+      "output_digest": "sha256:c7b830f4141dfdc8b6fa2d128d9d87eb6cd89dc275e8bdd2bc8a963f9dd9180c"
+    },
+    {
+      "identifier": "CVE-2026-78663",
+      "path": "2026/10/CVE-2026-78663.json",
+      "output_digest": "sha256:6b2523ef656ccb06d15b05c3a803e879d1e5c98f0cd1ba78a8fd1d49903aca32"
+    },
+    {
+      "identifier": "CVE-2026-78669",
+      "path": "2026/10/CVE-2026-78669.json",
+      "output_digest": "sha256:94338fba7da513c1b5aed7234096aac021e07e7e2a4f474ec683251165d08b25"
+    },
+    {
+      "identifier": "CVE-2026-84303",
+      "path": "2026/09/CVE-2026-84303.json",
+      "output_digest": "sha256:6d9eba707fd9eeb726547240a7ea4cbd74d3c514298181c6b9debd459ecf6a3a"
+    },
+    {
+      "identifier": "CVE-2026-84304",
+      "path": "2026/09/CVE-2026-84304.json",
+      "output_digest": "sha256:1f6e8cb4f7e6ca529dd3e96806d0ec2665a823c9b020d8c1caa002a9aa7c4fd6"
+    },
+    {
+      "identifier": "CVE-2026-84445",
+      "path": "2026/09/CVE-2026-84445.json",
+      "output_digest": "sha256:2a475f9c8a45cfbbd601b8a8a59d7fe62624ad1e50a13cc8cf0b68241458ea6a"
+    },
+    {
+      "identifier": "CVE-2026-97032",
+      "path": "2026/10/CVE-2026-97032.json",
+      "output_digest": "sha256:c33ed7dc21ab8c7588c43686709fba02fd0b449ccffc917c9ba6ed4e9ed74c73"
+    },
+    {
+      "identifier": "CVE-2026-97045",
+      "path": "2026/10/CVE-2026-97045.json",
+      "output_digest": "sha256:2273715025e36ff5b7214a6ff61b91030c0069f9037fe9c62d3bd90155e58423"
+    },
+    {
+      "identifier": "GHSA-45gg-vh54-h5m9",
+      "path": "2026/05/GHSA-45gg-vh54-h5m9.json",
+      "output_digest": "sha256:cd13e17fec4a1cc5b553324dc1a3da6bb648cea64364ec1a16d2e011de39b3b4"
+    },
+    {
+      "identifier": "GHSA-9w9f-6mg8-jp7w",
+      "path": "2022/06/GHSA-9w9f-6mg8-jp7w.json",
+      "output_digest": "sha256:685f289871094eaa262a5d04dfd219188efa3dcff9ea28210dc1ca29d0332548"
+    },
+    {
+      "identifier": "GHSA-hcg3-q754-cr77",
+      "path": "2025/02/GHSA-hcg3-q754-cr77.json",
+      "output_digest": "sha256:a1f9713367dc29016e02bdb2c921580118cbd8acc8afb413549105aae50e079a"
+    },
+    {
+      "identifier": "GHSA-hrxh-6v49-42gf",
+      "path": "2026/07/GHSA-hrxh-6v49-42gf.json",
+      "output_digest": "sha256:64ab84a088b16ab40f18d40a67984d1beb5a7ffe7a365595f22fee29618ff697"
+    },
+    {
+      "identifier": "GHSA-mh63-6h87-95cp",
+      "path": "2025/03/GHSA-mh63-6h87-95cp.json",
+      "output_digest": "sha256:9ba8e228aae6bc65bd936ef372759a0f37953b83eee7c754d79e257225c0a66f"
+    },
+    {
+      "identifier": "GHSA-p77j-4mvh-x3m3",
+      "path": "2026/03/GHSA-p77j-4mvh-x3m3.json",
+      "output_digest": "sha256:b6fdedcca10162a293bf3a0b354f4ae02643871f3ad449579c6570f80a5ece0a"
+    },
+    {
+      "identifier": "GHSA-vgwf-h737-ff37",
+      "path": "2026/05/GHSA-vgwf-h737-ff37.json",
+      "output_digest": "sha256:09c1349180ebbcd09122f9adeac02f5398dc504dc4da6ae8ae089ff475b4352d"
+    },
+    {
+      "identifier": "GHSA-vvgc-356p-c3xw",
+      "path": "2025/04/GHSA-vvgc-356p-c3xw.json",
+      "output_digest": "sha256:764e6743ff39649d94d7539818a34b5a140385af2ecf07c7befb10b728130a3b"
+    },
+    {
+      "identifier": "GHSA-w879-237q-wc7r",
+      "path": "2026/05/GHSA-w879-237q-wc7r.json",
+      "output_digest": "sha256:d7a9656cb08906def28dc4a8512058650a8eb3e73c93dbd75cc76ce5b7d80f32"
+    },
+    {
+      "identifier": "GHSA-x527-x647-q7gg",
+      "path": "2026/05/GHSA-x527-x647-q7gg.json",
+      "output_digest": "sha256:94c0078cf827a9f17a0aada0d7926ca83c100e56a9ec7c7d5bcea004eedc412a"
+    },
+    {
+      "identifier": "GO-2026-5026",
+      "path": "2026/05/GO-2026-5026.json",
+      "output_digest": "sha256:aee9a20c3254d5374f983121e116b40efb14000cdd548ee47e1a323e22721d52"
+    },
+    {
+      "identifier": "GO-2026-5932",
+      "path": "2026/07/GO-2026-5932.json",
+      "output_digest": "sha256:27e1d030d5a1df8220968271e89dd808af181c91d54db764bafed2185ac2dd3d"
+    },
+    {
+      "identifier": "GO-2026-6905",
+      "path": "2026/11/GO-2026-6905.json",
+      "output_digest": "sha256:23c948ac670f28b073f9ccae800434016d89e84fdcdbb6c14c2a92b036bb6a7d"
+    }
+  ],
+  "corpus_digest": "sha256:ccd2b78a86962b6fac97ff76a1b09b714e6218b011aedfdf5feb3b988ee761ed",
+  "provenance": {
+    "generator": "floor fixture extraction",
+    "policy_id": "floor-fixture",
+    "policy_query": "the records this fixture's adjudicated expectations name",
+    "source_corpus_digest": "sha256:2233ff305c007bbfdd0e88d8e121f26a7699927ce277d87092ed08caab987af0"
+  }
+}

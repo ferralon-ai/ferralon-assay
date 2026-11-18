@@ -1,0 +1,230 @@
+schema: ferralon.floor-expect.v1
+scan: complete
+findings:
+  - advisory: CVE-2026-111497
+    package: "github.com/andybalholm/brotli@v1.1.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/andybalholm/brotli.*Reader.Read, github.com/andybalholm/brotli.decodeError.Error reached from pkg/config/runtime.*MiddlewareInfo.AddError"
+  - advisory: GO-2022-1037
+    package: "-"
+    truth: not_affected
+    floor: disqualified
+    basis: version_not_in_affected_range
+    note: "out of range: go 1.23.12 is outside every affected range (fixed in 1.18.7, 1.19.2)"
+  - advisory: GO-2023-1568
+    package: "-"
+    truth: not_affected
+    floor: disqualified
+    basis: version_not_in_affected_range
+    note: "out of range: go 1.23.12 is outside every affected range (fixed in 1.19.6, 1.20.1)"
+  - advisory: GO-2023-1705
+    package: "-"
+    truth: not_affected
+    floor: disqualified
+    basis: version_not_in_affected_range
+    note: "out of range: go 1.23.12 is outside every affected range (fixed in 1.19.8, 1.20.3)"
+  - advisory: GO-2023-1839
+    package: "-"
+    truth: not_affected
+    floor: disqualified
+    basis: version_not_in_affected_range
+    note: "out of range: go 1.23.12 is outside every affected range (fixed in 1.19.10, 1.20.5)"
+  - advisory: GO-2023-2041
+    package: "-"
+    truth: not_affected
+    floor: disqualified
+    basis: version_not_in_affected_range
+    note: "out of range: go 1.23.12 is outside every affected range (fixed in 1.20.8, 1.21.1)"
+  - advisory: GO-2023-2382
+    package: "-"
+    truth: not_affected
+    floor: disqualified
+    basis: version_not_in_affected_range
+    note: "out of range: go 1.23.12 is outside every affected range (fixed in 1.20.12, 1.21.5)"
+  - advisory: GO-2024-2599
+    package: "-"
+    truth: not_affected
+    floor: disqualified
+    basis: version_not_in_affected_range
+    note: "out of range: go 1.23.12 is outside every affected range (fixed in 1.21.8, 1.22.1)"
+  - advisory: GO-2024-2888
+    package: "-"
+    truth: not_affected
+    floor: disqualified
+    basis: version_not_in_affected_range
+    note: "out of range: go 1.23.12 is outside every affected range (fixed in 1.21.11, 1.22.4)"
+  - advisory: CVE-2026-33814
+    package: "golang.org/x/net@v0.33.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*Transport.NewClientConn, golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip reached from pkg/server/service.*h2cTransportWrapper.RoundTrip"
+  - advisory: CVE-2026-78659
+    package: "golang.org/x/net@v0.33.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*Framer.WriteContinuation, golang.org/x/net/http2.*Framer.WriteSettings, golang.org/x/net/http2.*Framer.WriteWindowUpdate, golang.org/x/net/http2.*gzipReader.Close, golang.org/x/net/http2.*responseWriter.FlushError, golang.org/x/net/http2.StreamError.Error, golang.org/x/net/http2.headerFieldValueError.Error, golang.org/x/net/http2.pseudoHeaderError.Error reached from pkg/config/runtime.*MiddlewareInfo.AddError"
+  - advisory: CVE-2026-78660
+    package: "golang.org/x/net@v0.33.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*Transport.NewClientConn, golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip reached from pkg/server/service.*smartRoundTripper.RoundTrip"
+  - advisory: CVE-2026-78663
+    package: "golang.org/x/net@v0.33.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*Framer.WriteGoAway, golang.org/x/net/http2.*gzipReader.Close, golang.org/x/net/http2.*requestBody.Close, golang.org/x/net/http2.*responseWriter.Flush, golang.org/x/net/http2.*responseWriter.WriteHeader, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.ConfigureServer, golang.org/x/net/http2.pseudoHeaderError.Error reached from pkg/config/runtime.*MiddlewareInfo.AddError"
+  - advisory: CVE-2026-78669
+    package: "golang.org/x/net@v0.33.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*Framer.ReadFrame, golang.org/x/net/http2.*Framer.WriteSettings, golang.org/x/net/http2.*Framer.WriteWindowUpdate, golang.org/x/net/http2.*requestBody.Close, golang.org/x/net/http2.ConfigureTransports, golang.org/x/net/http2.GoAwayError.Error, golang.org/x/net/http2.headerFieldNameError.Error, golang.org/x/net/http2.stickyErrWriter.Write reached from integration/helloworld.*greeterClient.StreamExample"
+  - advisory: CVE-2026-97032
+    package: "golang.org/x/net@v0.33.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*Framer.WritePing, golang.org/x/net/http2.*Framer.WriteRSTStream, golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.connError.Error, golang.org/x/net/http2.stickyErrWriter.Write, golang.org/x/net/http2.transportResponseBody.Close, golang.org/x/net/http2.transportResponseBody.Read reached from integration/helloworld.*greeterClient.StreamExample"
+  - advisory: GHSA-f5pg-7wfw-84q9
+    package: "github.com/aws/aws-sdk-go@v1.44.327"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: GHSA-7f33-f4f5-xwgw
+    package: "github.com/aws/aws-sdk-go@v1.44.327"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2025-11065
+    package: "github.com/go-viper/mapstructure/v2@v2.2.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-viper/mapstructure/v2.*Decoder.decodeBool, github.com/go-viper/mapstructure/v2.*Decoder.decodeFloat, github.com/go-viper/mapstructure/v2.*Decoder.decodeInt, github.com/go-viper/mapstructure/v2.*Decoder.decodeUint reached from pkg/provider/acme.*Provider.Provide"
+  - advisory: GHSA-qxp5-gwg8-xv66
+    package: "golang.org/x/net@v0.33.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http/httpproxy.*config.useProxy reached from pkg/server/service.*smartRoundTripper.RoundTrip"
+  - advisory: CVE-2025-29923
+    package: "github.com/redis/go-redis/v9@v9.6.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/redis/go-redis/v9.*baseClient.initConn reached from pkg/provider/kv.*storeWrapper.WatchTree"
+  - advisory: CVE-2025-54799
+    package: "github.com/go-acme/lego/v4@v4.21.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-acme/lego/v4/acme/api/internal/sender.NewDoer reached from pkg/provider/acme.*Provider.Provide"
+  - advisory: CVE-2025-59530
+    package: "github.com/quic-go/quic-go@v0.48.2"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/quic-go/quic-go.ListenAddrEarly, github.com/quic-go/quic-go.ListenEarly reached from pkg/server.*http3server.Start"
+  - advisory: CVE-2025-64702
+    package: "github.com/quic-go/quic-go@v0.48.2"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/quic-go/quic-go/http3.*Error.Error, github.com/quic-go/quic-go/http3.*Server.Close, github.com/quic-go/quic-go/http3.*Server.Serve, github.com/quic-go/quic-go/http3.*body.Close, github.com/quic-go/quic-go/http3.*body.Read, github.com/quic-go/quic-go/http3.*responseWriter.FlushError, github.com/quic-go/quic-go/http3.*responseWriter.Write, github.com/quic-go/quic-go/http3.*responseWriter.WriteHeader reached from pkg/middlewares/customerrors.*codeModifier.Write"
+  - advisory: CVE-2026-116591
+    package: "github.com/klauspost/compress@v1.17.11-0.20241004063537-dbd6c381492a"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/klauspost/compress/fse.Compress, github.com/klauspost/compress/fse.Decompress, github.com/klauspost/compress/huff0.Compress1X, github.com/klauspost/compress/huff0.Compress4X, github.com/klauspost/compress/huff0.ReadTable reached from pkg/middlewares/compress.*responseWriter.Flush"
+  - advisory: CVE-2026-24051
+    package: "go.opentelemetry.io/otel/sdk@v1.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: go.opentelemetry.io/otel/sdk/resource.WithProcessCommandArgs, go.opentelemetry.io/otel/sdk/trace.*recordingSpan.AddEvent, go.opentelemetry.io/otel/sdk/trace.*recordingSpan.End, go.opentelemetry.io/otel/sdk/trace.Shutdown$1, go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.IsRecording, go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.SetAttributes, go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.SetStatus, go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.TracerProvider reached from pkg/middlewares/capture.*readCounter.Read"
+  - advisory: CVE-2026-33997
+    package: "github.com/docker/docker@v27.1.1+incompatible"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/docker/docker/api.init, github.com/docker/docker/api/types/swarm/runtime.init, github.com/docker/docker/api/types/system.init, github.com/docker/docker/api/types/versions.init, github.com/docker/docker/client.*Client.Close, github.com/docker/docker/client.WithDialContext, github.com/docker/docker/errdefs.errNotFound.Unwrap, github.com/docker/docker/errdefs.errUnauthorized.Unwrap reached from pkg/provider/docker.init"
+  - advisory: CVE-2026-34040
+    package: "github.com/docker/docker@v27.1.1+incompatible"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/docker/docker/api/types/swarm/runtime.init, github.com/docker/docker/api/types/time.GetTimestamp, github.com/docker/docker/api/types/versions.LessThan, github.com/docker/docker/client.*Client.ServiceList, github.com/docker/docker/client.WithHost, github.com/docker/docker/errdefs.errCancelled.Cause, github.com/docker/docker/errdefs.errInvalidParameter.Unwrap, github.com/docker/docker/errdefs.init reached from pkg/provider/docker.init"
+  - advisory: GHSA-78h2-9frx-2jm8
+    package: "github.com/go-jose/go-jose/v4@v4.0.4"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-jose/go-jose/v4.*JSONWebKey.Public, github.com/go-jose/go-jose/v4.*JSONWebKey.Thumbprint, github.com/go-jose/go-jose/v4.*SignerOptions.WithHeader, github.com/go-jose/go-jose/v4.*SignerOptions.WithType, github.com/go-jose/go-jose/v4.JSONWebKey.MarshalJSON, github.com/go-jose/go-jose/v4.JSONWebSignature.FullSerialize, github.com/go-jose/go-jose/v4.NewSigner, github.com/go-jose/go-jose/v4.init reached from pkg/provider/acme.*Provider.Provide"
+  - advisory: GO-2026-5026
+    package: "golang.org/x/net@v0.33.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/idna.*Profile.ToASCII, golang.org/x/net/idna.ToASCII, golang.org/x/net/idna.ToUnicode reached from pkg/server/service.*smartRoundTripper.RoundTrip"
+  - advisory: CVE-2026-39882
+    package: "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp@v0.8.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp.*Exporter.Export reached from pkg/types.*OTelLog.NewLoggerProvider"
+  - advisory: CVE-2026-39883
+    package: "go.opentelemetry.io/otel/sdk@v1.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: go.opentelemetry.io/otel/sdk/resource.New reached from pkg/types.*OTelLog.NewLoggerProvider"
+  - advisory: CVE-2026-40898
+    package: "github.com/quic-go/quic-go@v0.48.2"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/quic-go/quic-go/http3.*Error.Error, github.com/quic-go/quic-go/http3.*Server.Close, github.com/quic-go/quic-go/http3.*Server.Serve, github.com/quic-go/quic-go/http3.*body.Close, github.com/quic-go/quic-go/http3.*body.Read, github.com/quic-go/quic-go/http3.*responseWriter.FlushError, github.com/quic-go/quic-go/http3.*responseWriter.WriteHeader, github.com/quic-go/quic-go/http3.*stateTrackingStream.Read reached from pkg/server.*http3server.Shutdown"
+  - advisory: CVE-2026-56852
+    package: "golang.org/x/text@v0.21.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/text/unicode/norm.Form.Bytes, golang.org/x/text/unicode/norm.Form.IsNormalString, golang.org/x/text/unicode/norm.Form.Properties, golang.org/x/text/unicode/norm.Form.QuickSpan, golang.org/x/text/unicode/norm.Form.String reached from pkg/server/service.*h2cTransportWrapper.RoundTrip"
+  - advisory: CVE-2026-63209
+    package: "github.com/klauspost/compress@v1.17.11-0.20241004063537-dbd6c381492a"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2026-81869
+    package: "go.opentelemetry.io/otel/sdk@v1.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: go.opentelemetry.io/otel/sdk/internal/env.BatchSpanProcessorMaxQueueSize, go.opentelemetry.io/otel/sdk/internal/env.SpanEventAttributeCount, go.opentelemetry.io/otel/sdk/resource.WithProcessCommandArgs, go.opentelemetry.io/otel/sdk/resource.WithTelemetrySDK, go.opentelemetry.io/otel/sdk/trace.TraceIDRatioBased, go.opentelemetry.io/otel/sdk/trace.WithSampler, go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.AddEvent, go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.SetStatus reached from pkg/types.*OTelTracing.Setup"
+  - advisory: CVE-2026-81870
+    package: "go.opentelemetry.io/otel/exporters/otlp/otlptrace@v1.28.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: go.opentelemetry.io/otel/exporters/otlp/otlptrace.*Exporter.ExportSpans, go.opentelemetry.io/otel/exporters/otlp/otlptrace.*Exporter.Shutdown, go.opentelemetry.io/otel/exporters/otlp/otlptrace.New, go.opentelemetry.io/otel/exporters/otlp/otlptrace.Shutdown$1, go.opentelemetry.io/otel/exporters/otlp/otlptrace.Start$1, go.opentelemetry.io/otel/exporters/otlp/otlptrace.Version, go.opentelemetry.io/otel/exporters/otlp/otlptrace.init, go.opentelemetry.io/otel/exporters/otlp/otlptrace/internal/tracetransform.init reached from pkg/types.*OTelTracing.Setup"
+  - advisory: CVE-2026-81871
+    package: "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc@v0.8.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.*Exporter.Export, go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.New, go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.WithCompressor, go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.WithHeaders, go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.WithInsecure, go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc.init, go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc/internal/retry.Config.RequestFunc, go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc/internal/transform.LogRecord$1 reached from pkg/types.*OTelLog.NewLoggerProvider"
+  - advisory: CVE-2026-81872
+    package: "go.opentelemetry.io/otel/sdk/log@v0.8.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: go.opentelemetry.io/otel/sdk/log.*LoggerProvider.Logger, go.opentelemetry.io/otel/sdk/log.*logger.Emit, go.opentelemetry.io/otel/sdk/log.WithProcessor, go.opentelemetry.io/otel/sdk/log.init, go.opentelemetry.io/otel/sdk/log.init$2, go.opentelemetry.io/otel/sdk/log.init$3, go.opentelemetry.io/otel/sdk/log.init$4, go.opentelemetry.io/otel/sdk/log/internal/x.init reached from pkg/proxy/httputil.*bufferPool.Get"
+  - advisory: CVE-2026-84303
+    package: "google.golang.org/grpc@v1.67.1"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2026-84304
+    package: "google.golang.org/grpc@v1.67.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: google.golang.org/grpc/internal/transport.*http2Client.Close, google.golang.org/grpc/internal/transport.*http2Client.NewStream, google.golang.org/grpc/internal/transport.*recvBuffer.load, google.golang.org/grpc/internal/transport.*recvBuffer.put, google.golang.org/grpc/internal/transport.*transportReader.Read, google.golang.org/grpc/mem.BufferSlice.MaterializeToBuffer, google.golang.org/grpc/mem.IsBelowBufferPoolingThreshold, google.golang.org/grpc/mem.NewBuffer reached from integration/helloworld.*greeterClient.StreamExample"
+  - advisory: GHSA-fv92-fjc5-jj9h
+    package: "github.com/go-viper/mapstructure/v2@v2.2.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-viper/mapstructure/v2.Decode, github.com/go-viper/mapstructure/v2.init, github.com/go-viper/mapstructure/v2/internal/errors.As, github.com/go-viper/mapstructure/v2/internal/errors.Join, github.com/go-viper/mapstructure/v2/internal/errors.New, github.com/go-viper/mapstructure/v2/internal/errors.init reached from pkg/provider/acme.*Provider.Provide"
+  - advisory: GHSA-hrxh-6v49-42gf
+    package: "google.golang.org/grpc@v1.67.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: google.golang.org/grpc/internal/transport.*controlBuffer.executeAndPut, google.golang.org/grpc/internal/transport.*controlBuffer.getOnceLocked, google.golang.org/grpc/internal/transport.*http2Client.Close, google.golang.org/grpc/internal/transport.*http2Client.GracefulClose, google.golang.org/grpc/internal/transport.*http2Client.NewStream, google.golang.org/grpc/internal/transport.*transportReader.Read reached from pkg/provider/kv.*storeWrapper.Close"
+  - advisory: GO-2026-5932
+    package: "golang.org/x/crypto@v0.31.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/openpgp.init, golang.org/x/crypto/openpgp/armor.init, golang.org/x/crypto/openpgp/elgamal.init, golang.org/x/crypto/openpgp/errors.init, golang.org/x/crypto/openpgp/packet.init, golang.org/x/crypto/openpgp/s2k.init reached from pkg/version.init"

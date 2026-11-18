@@ -3,9 +3,12 @@ package goanalysis
 import (
 	"cmp"
 	"go/token"
+	"go/types"
+	"slices"
 	"sort"
 	"strings"
 
+	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
 )
 
@@ -29,6 +32,11 @@ type taintAnalysis struct {
 	onPath map[*ssa.Function]bool
 	// hits maps a sink SCIP id to the ingress SCIP id that reached it.
 	hits map[string]string
+	// graph is the VTA call graph, built on the first call through an interface.
+	graph       *callgraph.Graph
+	graphFailed bool
+	// impls caches implementations by call site.
+	impls map[ssa.CallInstruction][]*ssa.Function
 }
 
 type taintOrigin struct {
@@ -48,6 +56,7 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 		origin:  map[ssa.Value]taintOrigin{},
 		onPath:  map[*ssa.Function]bool{},
 		hits:    map[string]string{},
+		impls:   map[ssa.CallInstruction][]*ssa.Function{},
 	}
 
 	var work []ssa.Value
@@ -296,6 +305,10 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 		return
 	}
 
+	if common.IsInvoke() {
+		ta.propagateInvoke(in, v, o, seed)
+	}
+
 	callee := common.StaticCallee()
 
 	// Sink check: a tainted value used as an argument to a resolved sink call is
@@ -317,8 +330,10 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 		// callee (r.Header.Get, url.Values.Get, strings.TrimSpace) has none: an
 		// unmodeled transform forwards taint from a tainted argument, the receiver
 		// included, to its result. A (T, error) result's tuple carries it to its
-		// Extract. A dynamic call with no static callee forwards nothing; the
-		// append and copy builtins are modeled above (propagateBuiltin).
+		// Extract. A dynamic call with no static callee forwards nothing to its
+		// result (propagateInvoke carries an argument into the build's own
+		// implementations); the append and copy builtins are modeled above
+		// (propagateBuiltin).
 		// Only the result is tainted, never a pointer argument the callee writes
 		// through: json.Unmarshal(body, &v) and json.NewDecoder(r.Body).Decode(&req)
 		// leave v and req clean, so a sink that reads them is not a taint hit. This
@@ -371,6 +386,100 @@ func (ta *taintAnalysis) propagateCall(in ssa.CallInstruction, v ssa.Value, o ta
 	if val, ok := in.(ssa.Value); ok {
 		seed(val, o)
 	}
+}
+
+// propagateInvoke handles a tainted argument v of a call to a method of an interface the
+// build's own code declares. The call has no static callee, so v goes to every method of
+// the build's own types that the call graph resolves the call to (implementations): each
+// is a sink hit, as a static call to it would be, and its matching parameter is tainted.
+// A tainted receiver alone forwards nothing, and neither does any call's result: seeding
+// it would taint the result of every such call made with a tainted ctx.
+func (ta *taintAnalysis) propagateInvoke(in ssa.CallInstruction, v ssa.Value, o taintOrigin, seed func(ssa.Value, taintOrigin)) {
+	common := in.Common()
+	if !argContains(common.Args, v) {
+		return
+	}
+	for _, impl := range ta.implementations(in) {
+		sym := ta.sp.scipFunc(impl)
+		if ta.sinks == nil || ta.sinks[sym] {
+			if _, seen := ta.hits[sym]; !seen {
+				ta.hits[sym] = o.ingress
+			}
+		}
+		ta.onPath[impl] = true
+		for i, a := range common.Args {
+			// An invoke's Args leave the receiver out; a method's Params start with it.
+			if a == v && i+1 < len(impl.Params) {
+				seed(impl.Params[i+1], taintOrigin{ingress: o.ingress, enclFn: impl})
+			}
+		}
+	}
+}
+
+// implementations returns the methods the invoke in can reach: the callees the VTA call
+// graph gives the call site, the same graph a reachable path's frames come from, so
+// taint enters no method the call cannot be shown to reach. Only a method declared with
+// a body in a package with built bodies counts, and none does unless the interface
+// method's own package has built bodies too, so io.Writer's Write does not reach every
+// Write the build declares. The order is compareFuncs'.
+func (ta *taintAnalysis) implementations(in ssa.CallInstruction) []*ssa.Function {
+	if impls, ok := ta.impls[in]; ok {
+		return impls
+	}
+	var impls []*ssa.Function
+	prog := ta.sp.prog
+	if built(prog.Package(in.Common().Method.Pkg())) {
+		if ta.graph == nil && !ta.graphFailed {
+			g, err := ta.sp.buildGraph("vta")
+			ta.graph, ta.graphFailed = g, err != nil
+		}
+		if ta.graph != nil {
+			if node := ta.graph.Nodes[in.Parent()]; node != nil {
+				for _, e := range node.Out {
+					if e.Site == in {
+						impls = ta.wrapped(impls, e.Callee, map[*callgraph.Node]bool{})
+					}
+				}
+			}
+		}
+		slices.SortFunc(impls, ta.sp.compareFuncs)
+		impls = slices.Compact(impls)
+	}
+	ta.impls[in] = impls
+	return impls
+}
+
+// wrapped appends the declared methods node stands for: node's own function, the method
+// a synthetic wrapper wraps, or, for a wrapper around an embedded interface, what the
+// call inside it reaches. A wrapper passes its arguments on in order, so the parameters
+// of what it reaches line up with the call's.
+func (ta *taintAnalysis) wrapped(impls []*ssa.Function, node *callgraph.Node, seen map[*callgraph.Node]bool) []*ssa.Function {
+	if seen[node] {
+		return impls
+	}
+	seen[node] = true
+	fn := node.Func
+	if obj, ok := fn.Object().(*types.Func); ok && fn.Synthetic != "" {
+		if fn = ta.sp.prog.FuncValue(obj); fn == nil && types.IsInterface(obj.Signature().Recv().Type()) {
+			for _, e := range node.Out {
+				impls = ta.wrapped(impls, e.Callee, seen)
+			}
+			return impls
+		}
+	}
+	if fn != nil && fn.Blocks != nil && built(fn.Pkg) {
+		impls = append(impls, fn)
+	}
+	return impls
+}
+
+// built reports whether pkg's function bodies were built: its init has one exactly then.
+func built(pkg *ssa.Package) bool {
+	if pkg == nil {
+		return false
+	}
+	init := pkg.Func("init")
+	return init != nil && init.Blocks != nil
 }
 
 // propagateBuiltin models the builtins that move data from one argument to another:

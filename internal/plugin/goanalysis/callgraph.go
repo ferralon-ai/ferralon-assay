@@ -31,6 +31,8 @@ type ssaProgram struct {
 	typePkg map[*types.Package]*packages.Package
 	// handed are the load's cgoHanded types.
 	handed []*types.Named
+	// plugin: which package plugin the build compiled.
+	plugin pluginBuild
 }
 
 // loadSSA loads the module at buildDir and builds its SSA program in one step,
@@ -72,7 +74,7 @@ func buildSSAWith(res *LoadResult, create func([]*packages.Package, ssa.BuilderM
 			typePkg[p.Types] = p
 		}
 	}
-	return &ssaProgram{prog: prog, pkgs: pkgs, typePkg: typePkg, handed: res.cgoHanded}, nil
+	return &ssaProgram{prog: prog, pkgs: pkgs, typePkg: typePkg, handed: res.cgoHanded, plugin: res.plugin}, nil
 }
 
 // scipFunc emits the SCIP id for an SSA function, using the precise
@@ -330,7 +332,8 @@ func classifyCallee(fn *ssa.Function, reasons map[string]bool) {
 // runTimeCallees maps each function that calls code chosen at run time to the reason it declares.
 // reflect.Value's Call, CallSlice, Method and MethodByName call a function or method picked by a
 // value or a name, and a template's Execute calls the methods and functions its text names; the
-// call graph follows none of those calls. plugin.Open loads Go code the build never compiled.
+// call graph follows none of those calls. plugin.Open loads Go code the build never compiled; a
+// build that compiled its stub loads none, which runTimeReason accounts for.
 var runTimeCallees = map[string]string{
 	"(reflect.Value).Call":                      plugin.PartialReasonReflectiveCall,
 	"(reflect.Value).CallSlice":                 plugin.PartialReasonReflectiveCall,
@@ -350,7 +353,7 @@ func (s *ssaProgram) runTimeCalls(graph *callgraph.Graph) []string {
 	reasons := map[string]bool{}
 	declare := func(fn *ssa.Function) {
 		if obj, ok := fn.Object().(*types.Func); ok {
-			if r, ok := runTimeCallees[obj.FullName()]; ok {
+			if r, ok := s.runTimeReason(obj.FullName()); ok {
 				reasons[r] = true
 			}
 		}

@@ -19,17 +19,40 @@ A `not_exploitable` row stands on named grounds in every ecosystem. It needs an 
 resolved version, and either every advisory symbol resolved inside that package and searched from the
 entry points, or a positive refutation of the package. In Go it can also rest on the build itself: no
 module in the build holds the advisory's package, and none of the build's modules declares an advisory
-symbol. The row's `evidence.basis` and `evidence.detail` state which. Anything short of that is
-`undetermined`, with the missing ground as its reason.
+symbol, or the module is in the build and no non-test file of the scanned module that `./...` covers
+(so not `testdata`, nor a directory whose name begins with `_` or `.`), under any build constraint
+other than `ignore` or a Go release the build cannot compile under, imports any of the advisory's
+vulnerable packages of it (`vulnerable_symbol_absent`; the detail names the packages). The row's
+`evidence.basis` and `evidence.detail` state which. Anything short of that is `undetermined`, with
+the missing ground as its reason.
 
 In Go, a refutation also has to hold for code outside the build that imports your packages. The
-`library-entrypoints` input (`-library-entrypoints`, `ASSAY_LIBRARY_ENTRYPOINTS`) says which packages
-those are: `auto` (the default) takes every importable package outside a `cmd`, `example`, `examples`,
-`test`, `tests` or `testdata` path element, `none` says the build ships programs only, and a list of paths relative to the repository
-root names them, with `!path` taking a path out. When one of them reaches the advisory's vulnerable
-package, the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that holds only
-because of what you declared carries that declaration on the report as an assumption, and the Report
-lists the sets under `library_entrypoints`.
+`entrypoints` input (`-entrypoints`, `ASSAY_ENTRYPOINTS`) says which packages those are, with the
+clause `go:library=...`: `auto` (the default) takes every importable package outside a `cmd`,
+`example`, `examples`, `test`, `tests` or `testdata` path element, `go:library=none` says the build
+ships programs only, and a list of paths relative to the repository root names them, with
+`!go:library=path` taking a path out. `library-entrypoints` (`-library-entrypoints`,
+`ASSAY_LIBRARY_ENTRYPOINTS`) is the alias for those clauses and takes the same statement without the
+prefix: `library-entrypoints: none` is `entrypoints: go:library=none`. Give both only when they say the
+same thing, the same mode over the same paths; two different statements stop the run before it
+analyses anything, naming both. A value you pass is handed to Assay and read as given. Assay never
+fetches one and looks for no configuration file. When one of the packages reaches the advisory's
+vulnerable package, the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that
+holds only because of what you declared carries that declaration on the report as an assumption, and
+the Report lists the sets under `library_entrypoints`.
+
+`entrypoints` takes clauses of the form `<lane>:<selector>` or `<lane>:<kind>=<selector>`, over the
+lanes `go`, `java`, `kotlin`, `js`, `python` and `dotnet`. A bare `auto` changes nothing, and neither
+does `<lane>:auto` or `<lane>:<kind>=auto` on its own, for any lane and any kind. Today only the Go
+library entry points read a clause. Any other clause that asks for something, for another lane, for
+the Go lane as a whole or for its mains and handlers, stops the run before it analyses anything: `lane java does not
+accept entry-point overrides yet`. A bare `none` names every lane, so it binds the lane the scan runs
+and must be one that can drop all of its roots; on a Go scan it stops the run and asks for
+`go:library=none`, and on a scan of a language the lanes above do not cover it changes nothing, and a `go:library` clause
+on a scan of another language is read by no lane. The check of the value runs before the repository is
+cloned or its dependencies resolved, so a value that does not parse, or that no lane can honour, stops
+the run with the reason first, for a language with no analyzer in the release as well; only a bare
+`none` waits for the detected language.
 
 In Go, the call-graph search does not follow calls made through `reflect` or a template's `Execute`,
 so Assay bounds them per advisory. From the build's entry points it collects every type the program
@@ -48,13 +71,29 @@ assumptions:
 - no `//go:linkname` or assembly calls Go functions;
 - no cgo callback calls into Go;
 - the runtime calls no Go function on its own other than finalizers;
-- no `plugin.Open` loads code at run time (a reachable one is declared as `plugin_load`);
+- no `plugin.Open` loads code at run time. A reachable one is declared as `plugin_load`. In a build
+  with cgo off it loads nothing, and is declared as `plugin_load:cgo_off`: a `not_exploitable` row
+  beside it says in its detail that it holds for `CGO_ENABLED=0` and that a build with cgo on was
+  not checked. On a platform that has no plugins nothing is declared;
 - the analyzed program has the same packages and build configuration as the one govulncheck loads.
+
+A build with cgo off compiles none of its cgo files. Each one is read for calls into the advisory's
+module, and a file that may make one leaves the row `undetermined` (`excluded_files`). When none
+does, the scan-level notes carry `cgo:files_dropped`, and a `not_exploitable` row says in its detail
+that it holds for `CGO_ENABLED=0` and that a build with cgo on was not checked.
 
 ### `undetermined` reasons
 
 An `undetermined` row is an open question, never a clean bill. Its `undetermined_reason` names what
-the scan did not establish:
+the scan did not establish. A `refutation_withheld` or `analysis_did_not_run` row also lists, in
+`withheld_by`, the limits that withheld the verdict: each one's reason code and, when the limit is
+scoped to part of the build, the package and path holding the code the analysis could not see and the
+packages that code could reach. A row lists in full up to eight scoped limits of one reason that name
+its package, and those that count against it without naming it while there are three or fewer. The
+rest of that reason are one entry whose `others` is their number; the scan-level `partiality` notes
+carry the package and path of each, not its targets. The row's detail names the same limits. An `analysis_did_not_run` row
+whose analysis failed or produced no call graph has no limit that says so, so its list can be empty,
+and a limit it does list is not the reason the analysis did not run.
 
 | Reason | What was missing |
 |---|---|
@@ -200,29 +239,31 @@ absent, because the analysis did not run on your toolchain.
 
 ### `subject-toolchain-reachability`
 
-By default the reachability analysis runs under the scanner's toolchain, so its "the vulnerable
-symbol is not present" result is evidence about the scanner's Go, not yours. Standard-library
-advisories it cannot otherwise settle are reported `undetermined`, with `undetermined_reason` set to
-`go_toolchain_not_scanned` (or `go_toolchain_unresolved` when no toolchain fact resolved at all), and
-OpenVEX carries them as `under_investigation`.
+When your toolchain resolved **exactly**, the reachability analysis runs under that Go release,
+downloading it if the runner doesn't already have it. Its results are ordinary verdicts about your
+Go: an absent symbol can be reported `not_exploitable`, and a present one becomes a
+`reachable_candidate`.
 
-Set the Action input `subject-toolchain-reachability: "true"` (or `ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY`
-on the CLI) and, when your toolchain resolved **exactly**, the analysis runs under that Go release,
-downloading it if the runner doesn't already have it. Its results then become ordinary verdicts: an
-absent symbol can be reported `not_exploitable`, and a present one becomes a `reachable_candidate`.
-Before turning it on:
+When it did not resolve exactly, the analysis runs under the scanner's toolchain, so its "the
+vulnerable symbol is not present" result is evidence about the scanner's Go, not yours.
+Standard-library advisories it cannot otherwise settle are reported `undetermined`, with
+`undetermined_reason` set to `go_toolchain_not_scanned` (or `go_toolchain_unresolved` when no
+toolchain fact resolved at all), and OpenVEX carries them as `under_investigation`.
 
-- **Findings can appear on scans that are green today.** A repository on an older Go has
-  standard-library vulnerabilities a newer Go does not show. That is the point, and it changes what a
-  clean report means.
+This is on by default. Set the Action input `subject-toolchain-reachability: "false"` (or
+`ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY=false` on the CLI) to always run under the scanner's
+toolchain. What to know:
+
+- **Findings appear that a scan under the scanner's Go does not show.** A repository on an older Go
+  has standard-library vulnerabilities a newer Go does not have.
 - **It needs an exact toolchain.** `go.mod` floors are not enough. The Action has no input for the
   declaration, so set `ASSAY_SUBJECT_GO_VERSION` in the `env:` of the step that runs the Action.
-  Without an exact toolchain the input changes nothing, and that is not an error.
+  Without an exact toolchain the analysis runs under the scanner's, and that is not an error.
 - **It never fails the scan.** If the toolchain can't be downloaded or can't load your module, the
   analysis falls back to the scanner's toolchain and the advisory stays `undetermined`. The report
   never claims your toolchain was scanned when it was not.
 - **Go 1.20 is the floor.** The analyzer cannot drive an older `go` command; below 1.20 the advisory
-  stays `undetermined` whatever you set.
+  stays `undetermined`.
 - **The first run is slower.** It downloads a Go toolchain from the module proxy.
 
 ### Observed CI toolchain
@@ -242,8 +283,7 @@ or later), ranked after the observation; without the assertion that toolchain is
 is unresolved. That resolved toolchain settles which advisory versions apply, but it is never the
 release `subject-toolchain-reachability` runs under: that needs your declaration or the trusted
 observation. The Action sets neither variable; set them in the `env:` of the step that runs it. These,
-like `ASSAY_SUBJECT_GO_VERSION`, take effect in `pr-inherit` and `cve-watch`; `baseline` resolves the Go
-toolchain from `go.mod` alone.
+like `ASSAY_SUBJECT_GO_VERSION`, take effect in every scan mode, `baseline` included.
 
 ## Subject build conditions for Java and Maven
 
@@ -272,6 +312,21 @@ that table describes, so on any other release, or none, more methods count as po
 The scan does the same for the whole build when a module's Maven or Gradle toolchain selects a JDK
 other than the stated one, or when the graph cannot say which JDK a module uses: an Android project,
 or a graph file written before toolchains were recorded.
+
+## Compiling the first-party classes
+
+The Java and Kotlin lanes search the build's compiled classes. When the checkout holds none for a module,
+or a class is older than its source, a scan with `-build-graph auto` runs the project's own compile
+before the analysis: `mvn -B compile` (with the stated `-P` profiles and properties) for Maven, or
+`gradle classes` for Gradle, with the repository's `mvnw` or `gradlew` when it has one. Tests are not run.
+A job that builds before the scan, so `target/` or `build/` is present and current, is not rebuilt.
+
+Each build tool's run is bounded at 10 minutes. The scan logs the command it ran, or why it could not, to
+stderr. When the output still does not cover the sources, the affected Java results are undetermined with
+the reason `first_party_bytecode_absent`, and its path names the command to run and the end of the tool's
+error. The affected Kotlin results carry `tool_failure:no_build_output`; the command and the cause are in
+the stderr log only. A scan with `-build-graph off`, or one
+that reads a graph file, does not run the build tool: run that command in a step before the scan.
 
 ## Resolving the JVM build graph
 

@@ -321,9 +321,11 @@ func assessUnrowed(ctx context.Context, req PRInheritRequest, advisories []asses
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
-	for _, adv := range advisories {
+	passes := newAdvisoryPasses(analysis, requestsFor(advisories, req.Codebase), assessOpts)
+	defer passes.close()
+	for i, adv := range advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
+		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
 			findings = append(findings, cutShortFinding(adv))
 			cut++
@@ -375,10 +377,15 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
+	// The baseline's rows were reached under its entry-point statement; under another they are
+	// assessed again, not inherited.
+	entryChanged := restated(baseline, req.AssessOptions)
 	cut := 0
-	for _, adv := range req.Advisories {
+	passes := newAdvisoryPasses(analysis, requestsFor(req.Advisories, req.Codebase), assessOpts)
+	defer passes.close()
+	for i, adv := range req.Advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
+		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
 			reFindings[adv.ID+"\x00"+adv.Source] = cutShortFinding(adv)
 			freshIDs[adv.ID] = struct{}{}
@@ -419,7 +426,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		if !inherited {
 			_, inherited = baselineRows[advisory.ID+"\x00"]
 		}
-		if inherited && !affectedPackageChanged(st, assessmentID, pkg, changedSet) {
+		if inherited && !entryChanged && !affectedPackageChanged(st, assessmentID, pkg, changedSet) {
 			continue
 		}
 		reFindings[advisory.ID+"\x00"+advisory.Source] = f
@@ -548,6 +555,44 @@ func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *repo
 	return !anyNamed
 }
 
+// restated reports whether the run states a go library entry-point statement other than the one the
+// stored Report's refutations rest on, so the rows it holds were reached under another one. A Report
+// that records no golang set is read as auto: the lane records its set whenever a refutation exists.
+// A recorded statement that does not parse counts as another.
+func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
+	was := plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}
+	for _, r := range stored.LibraryEntrypoints {
+		if r.Ecosystem != "golang" {
+			continue
+		}
+		var err error
+		if was, err = plugin.ParseLibraryEntrypoints(r.Input); err != nil {
+			return true
+		}
+	}
+	return !pipeline.SameLibraryStatement(was, pipeline.LibraryStatementOf(opts...))
+}
+
+// restatedRetry is the stored rows a cve-watch run assesses again because the entry-point statement
+// changed since they were reached: every row not already assessed this run (by retry or as a new
+// advisory). A row withheld as dependency_not_fetched is left to notFetchedRetry, whose conditions
+// it keeps.
+func restatedRetry(prior *report.Report, newIDs []string, retry []report.AdvisoryFinding) []report.AdvisoryFinding {
+	done := map[string]bool{}
+	for _, f := range retry {
+		done[f.Advisory.ID+"\x00"+f.Advisory.Source] = true
+	}
+	for _, f := range prior.Advisories {
+		key := f.Advisory.ID + "\x00" + f.Advisory.Source
+		if done[key] || f.UndeterminedReason == report.ReasonDependencyNotFetched || (f.Advisory.Source == osvSource && slices.Contains(newIDs, f.Advisory.ID)) {
+			continue
+		}
+		done[key] = true
+		retry = append(retry, f)
+	}
+	return retry
+}
+
 // canonicalKey is the changed-set key under the ecosystem's name-equivalence rule.
 func canonicalKey(ecosystem, name string) string {
 	switch ecosystem {
@@ -594,11 +639,44 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	var assessed []report.Advisory
 	packages := map[string][]string{}
 	undetermined := map[string]bool{}
-	// assess assesses ref against pkg and keys the finding under key, the row it replaces.
-	assess := func(ref assessment.VulnRef, pkg *report.Package, key string) {
-		areq := assessment.Request{Vulnerability: ref, Codebase: req.Codebase}
+	// What is assessed, in order: the newly-relevant advisories, then each stored row to retry that
+	// no earlier assessment already keys.
+	type watched struct {
+		ref assessment.VulnRef
+		pkg *report.Package
+		key string
+	}
+	var todo []watched
+	keyed := map[string]struct{}{}
+	for _, a := range osvResult.Advisories {
+		if _, ok := newSet[a.ID]; !ok {
+			continue
+		}
+		pkg := a.Package
+		key := a.ID + "\x00" + osvSource
+		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, &pkg, key})
+		keyed[key] = struct{}{}
+	}
+	for _, f := range retry {
+		key := f.Advisory.ID + "\x00" + f.Advisory.Source
+		if _, ok := keyed[key]; ok {
+			continue
+		}
+		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key})
+		keyed[key] = struct{}{}
+	}
+	reqs := make([]assessment.Request, len(todo))
+	for i, w := range todo {
+		reqs[i] = assessment.Request{Vulnerability: w.ref, Codebase: req.Codebase}
+	}
+	passes := newAdvisoryPasses(analysis, reqs, assessOpts)
+	defer passes.close()
+	// assess assesses todo[i] and keys the finding under its key, the row it replaces.
+	assess := func(i int) {
+		ref, pkg, key := todo[i].ref, todo[i].pkg, todo[i].key
+		areq := reqs[i]
 		workSet = append(workSet, ref)
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
+		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
 			reFindings[key] = cutShortFinding(ref)
 			freshIDs[ref.ID] = struct{}{}
@@ -633,19 +711,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			undetermined[advisory.ID] = true
 		}
 	}
-	for _, a := range osvResult.Advisories {
-		if _, ok := newSet[a.ID]; !ok {
-			continue
-		}
-		pkg := a.Package
-		assess(assessment.VulnRef{ID: a.ID, Source: osvSource}, &pkg, a.ID+"\x00"+osvSource)
-	}
-	for _, f := range retry {
-		key := f.Advisory.ID + "\x00" + f.Advisory.Source
-		if _, ok := reFindings[key]; ok {
-			continue
-		}
-		assess(assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key)
+	for i := range todo {
+		assess(i)
 	}
 
 	b := report.NewBuilder(report.Subject{

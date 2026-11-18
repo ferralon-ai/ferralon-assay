@@ -411,6 +411,13 @@ untrusted input can enter the program. A graded candidate reports its symbol, it
 `report/report.go:430`, `docs/operator-guide.md:90`. *See also:*
 [reachability grade](#reachability-grade), [library entry points](#library-entrypoints).
 
+<a id="entrypoints"></a>**`entrypoints`** — The input that states which entry points a lane's analysis
+starts from, as clauses naming their lane: `go:library=none`, `!go:library=cmd/x`, `js:module=none`. A bare
+`auto` infers every lane's. Today the Go library entry points are the only clause a lane reads; any
+other clause that asks for something stops the run before it analyses anything. The value is handed to Assay and never
+fetched. *Source:* `docs/operator-guide.md:25`. *See also:*
+[library entry points](#library-entrypoints).
+
 <a id="episode"></a>**Episode** — Not defined in the docs; as used, the `assessment.Assessment` and
 `verdict.PoE` types carry a list of Episode IDs recorded during the run or that produced the verdict.
 *Source:* `assessment/assessment.go:84`, `verdict/verdict.go:193`.
@@ -541,10 +548,11 @@ declares partiality instead of hiding it. *Source:* `README.md:482`, `README.md:
 *See also:* [partiality](#partiality), [seam](#seam).
 
 <a id="library-entrypoints"></a>**library entry points / library escape** — In Go, the packages code
-outside the build may import (`library-entrypoints`: `auto`, `none`, or a list with `!path`
-exclusions). When one of them reaches the advisory's vulnerable package, the refutation is withheld
-(`library_escape`) and the row is `undetermined` with `refutation_withheld`. *Source:*
-`docs/operator-guide.md:25`, `docs/capabilities/go.md:200`. *See also:* [withhold](#withhold).
+outside the build may import (`entrypoints` clause `go:library=`; `library-entrypoints` is its alias and
+takes `auto`, `none`, or a list with `!path` exclusions). When one of them reaches the advisory's
+vulnerable package, the refutation is withheld (`library_escape`) and the row is `undetermined` with
+`refutation_withheld`. *Source:* `docs/operator-guide.md:25`, `docs/capabilities/go.md:200`. *See also:*
+[entrypoints](#entrypoints), [withhold](#withhold).
 
 <a id="link-to-console"></a>**`link-to-console` (Ferralon console)** — The only switch that decides
 whether a scan contacts Ferralon; default `false`. When on, the scan sends results to the ingest
@@ -809,10 +817,10 @@ identity, revision and resolved commit (`subject.repo`, `subject.revision`,
 `auto`, or the path of its `go.work`; the scan uses that `go.work`, never an ambient one. *Source:*
 `action.yml:194`, `docs/capabilities/go.md:47`. *See also:* [subject](#subject).
 
-<a id="subject-toolchain-reachability"></a>**`subject-toolchain-reachability`** — Opt-in setting that,
+<a id="subject-toolchain-reachability"></a>**`subject-toolchain-reachability`** — Setting, on by default, that,
 when the subject's toolchain resolved exactly, runs Go reachability under that Go release, so a
 standard-library advisory can get an ordinary verdict instead of `go_toolchain_not_scanned`.
-*Source:* `docs/operator-guide.md:209`, `docs/operator-guide.md:203`. *See also:*
+*Source:* `docs/operator-guide.md:214`, `docs/operator-guide.md:203`. *See also:*
 [toolchain fact](#toolchain-fact).
 
 <a id="surface"></a>**surface** — **Collision.** (1) A publish surface: where a run's result lands

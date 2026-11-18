@@ -10,32 +10,27 @@ import (
 )
 
 // subjectToolchainReachEnv is the env var name action.yml exports on the run step, duplicated here
-// on purpose: a typo on either side of that seam would silently disable the M4 gate forever, with
+// on purpose: a typo on either side of that seam would leave the Action input without effect, with
 // no other test in the tree going red.
 const subjectToolchainReachEnv = "ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY"
 
-// TestSubjectToolchainReachOption covers the subject-toolchain reachability release gate. The default is
-// OFF, and the table pins that only an affirmative spelling opens it: this gate guards a
-// verdict-behavior change, so a typo, a stale "0", or a shell that exported an empty string must all
-// leave it shut.
+// TestSubjectToolchainReachOption: the setting is on unless the value is a negative spelling, so an
+// unset variable, an empty one and a typo all keep the default.
 func TestSubjectToolchainReachOption(t *testing.T) {
 	cases := []struct {
 		env  string
 		want bool
 	}{
-		{"", false},
+		{"", true},
 		{"1", true},
 		{"true", true},
-		{"TRUE", true},
-		{" yes ", true},
 		{"on", true},
+		{"maybe", true},
 		{"0", false},
 		{"false", false},
-		{"off", false},
+		{"FALSE", false},
+		{" off ", false},
 		{"no", false},
-		{"2", false},
-		{"maybe", false},
-		{"1 1", false},
 	}
 	for _, c := range cases {
 		t.Setenv(subjectToolchainReachEnv, c.env)
@@ -55,39 +50,36 @@ func TestSubjectToolchainReachOption(t *testing.T) {
 	}
 }
 
-// TestSubjectToolchainReachIsUnsetByDefault pins the release gate's whole reason for existing: with
-// nothing set — the state every caller other than an Action that opts in is in — no option is
-// produced at all, so AssessStages is byte-identical to the pre-M4 assembly.
-func TestSubjectToolchainReachIsUnsetByDefault(t *testing.T) {
+// TestSubjectToolchainReachIsOnWhenUnset: a caller that sets nothing analyzes under the subject's
+// toolchain.
+func TestSubjectToolchainReachIsOnWhenUnset(t *testing.T) {
 	if err := os.Unsetenv(subjectToolchainReachEnv); err != nil {
 		t.Fatalf("unsetenv: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Unsetenv(subjectToolchainReachEnv) })
-	if opt := subjectToolchainReachOption(); opt != nil {
-		t.Fatal("the M4 gate produced an option with its env var absent; it must default OFF")
+	if subjectToolchainReachOption() == nil {
+		t.Fatal("no option with the env var absent; the setting must default on")
 	}
 }
 
-// TestActionExportsTheReachGateEnv closes the seam a comment cannot: the gate is only reachable from
-// the shipped Action if action.yml exports exactly this env name on the run step. A rename on either
-// side would otherwise disable the flag forever with nothing in the tree going red — the same shape
-// of dead wiring the toolchain fact exists to repair, which is why this is an assertion and not a note.
-func TestActionExportsTheReachGateEnv(t *testing.T) {
+// TestActionExportsTheReachEnv: the Action input reaches the CLI only if action.yml exports exactly
+// this env name on the run step, defaults the input to on, and turns it off only on an explicit
+// 'false'.
+func TestActionExportsTheReachEnv(t *testing.T) {
 	path := filepath.Join("..", "..", "action.yml")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	yml := string(body)
-	if !strings.Contains(yml, subjectToolchainReachEnv+":") {
-		t.Errorf("action.yml exports no %s on the run step; the Action input cannot reach the gate", subjectToolchainReachEnv)
+	if !strings.Contains(yml, subjectToolchainReachEnv+": ${{ inputs.subject-toolchain-reachability != 'false' }}") {
+		t.Errorf("action.yml does not export %s as on unless the input is 'false'", subjectToolchainReachEnv)
 	}
-	// The input must be opt-IN: gated on an explicit 'true', not on "anything but false". An
-	// opt-OUT ternary here would turn M4 on for every caller that never named the input.
-	if !strings.Contains(yml, "inputs.subject-toolchain-reachability == 'true'") {
-		t.Error("action.yml does not gate subject-toolchain-reachability on an explicit 'true'; the M4 input must be opt-in")
+	input := yml[strings.Index(yml, "  subject-toolchain-reachability:"):]
+	if next := strings.Index(input[1:], "\n  subject-"); next >= 0 {
+		input = input[:next+1]
 	}
-	if !strings.Contains(yml, "subject-toolchain-reachability:") {
-		t.Error("action.yml declares no subject-toolchain-reachability input")
+	if !strings.Contains(input, `default: "true"`) {
+		t.Error(`action.yml does not default the subject-toolchain-reachability input to "true"`)
 	}
 }

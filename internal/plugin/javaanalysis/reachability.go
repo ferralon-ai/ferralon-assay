@@ -78,7 +78,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest, opts ...O
 		if multi {
 			part = withMultipleProjects(part, why)
 		} else {
-			part = withScoped(part, fp.scoped())
+			part = withScoped(part, fp.noted(opts))
 		}
 		return plugin.ReachabilityResult{Partiality: part, Paths: paths}, nil
 	}

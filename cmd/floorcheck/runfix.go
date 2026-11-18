@@ -557,8 +557,9 @@ func scanAndCompare(ctx context.Context, o runOptions, name string, fx Fixture, 
 	return compareFixture(fx, obs, prior, priorName, defaultRules)
 }
 
-// scanArgs is the scanner's command line for a fixture: the flags floor/scan.sh passes, from the
-// scenario, then the scenario's own scan.flags.
+// scanArgs is the scanner's command line for a fixture: the harness's flags from the scenario,
+// with the scenario's pinned Go release as the subject's toolchain, then the scenario's own
+// scan.flags.
 func scanArgs(fx Fixture, target, outDir, timeout string) []string {
 	repo, _ := subjectRepo(fx.Scenario.Repo)
 	args := []string{
@@ -575,6 +576,9 @@ func scanArgs(fx Fixture, target, outDir, timeout string) []string {
 		args = append(args, "-advisory-signals", fx.SignalsPath)
 	}
 	args = append(args, "-require-advisory-corpus", "-scan-timeout", timeout)
+	if g := fx.Scenario.Build.Go; g != "" {
+		args = append(args, "-subject-go-version", "go"+g)
+	}
 	return append(args, fx.Scenario.Scan.Flags...)
 }
 
@@ -764,6 +768,17 @@ type FixtureSummary struct {
 	Incomplete []string `json:"incomplete,omitempty"`
 	Unexpected int      `json:"unexpected"`
 	Drift      int      `json:"drift"`
+	// Expectations is each expectation's outcome, in the fixture's order.
+	Expectations []ExpectSummary `json:"expectations,omitempty"`
+}
+
+// ExpectSummary is one expectation's outcome in a run summary.
+type ExpectSummary struct {
+	Advisory string         `json:"advisory"`
+	Package  string         `json:"package"`
+	Outcome  string         `json:"outcome"`
+	Floor    report.Verdict `json:"floor"`
+	Observed report.Verdict `json:"observed,omitempty"`
 }
 
 // Counts is how many expectations reached each outcome.
@@ -787,6 +802,11 @@ func summarizeRun(results []FixtureResult) RunSummary {
 			if e.Compared != nil {
 				observed = " observed " + string(e.Compared.Verdict)
 			}
+			es := ExpectSummary{Advisory: e.Advisory, Package: e.Package, Outcome: e.Outcome, Floor: e.Floor}
+			if e.Compared != nil {
+				es.Observed = e.Compared.Verdict
+			}
+			sum.Expectations = append(sum.Expectations, es)
 			switch e.Outcome {
 			case OutcomeRegressed:
 				sum.Counts.Regressed++

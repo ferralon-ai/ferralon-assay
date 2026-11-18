@@ -176,6 +176,9 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		graph, done = acquireBuildGraph(ctx, buildDir, graphReq)
 		graphTime = time.Since(graphStart)
 		logPhase(os.Stderr, "graph", graphTime)
+		if graph.failure == nil {
+			graph.compileNote = compileJVM(ctx, buildDir, graphReq, os.Stderr)
+		}
 		prev := cleanup
 		cleanup = func() { done(); prev() }
 	}
@@ -286,9 +289,9 @@ func (e *analyzerMissingError) Unwrap() error { return e.missing }
 // language), so a single override suffices. cfOpts apply to the C-family plugin only, goOpts to the
 // Go plugin only.
 func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option, jsOpts []plugin.JSOption, pyOpts []plugin.PythonOption, javaOpts []plugin.JavaOption, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
-	var graphFile string
+	var graphFile, compileNote string
 	if graph != nil {
-		graphFile = graph.file
+		graphFile, compileNote = graph.file, graph.compileNote
 	}
 	switch language {
 	case checkout.LangGo:
@@ -297,7 +300,7 @@ func selectPlugin(language, bin string, graph *jvmGraph, goOpts []plugin.Option,
 		}
 		return plugin.NewGoPlugin(goOpts...)
 	case checkout.LangJava:
-		javaOpts = append(javaOpts, plugin.WithJavaBuildGraph(graphFile))
+		javaOpts = append(javaOpts, plugin.WithJavaBuildGraph(graphFile), plugin.WithJavaBuildCompile(compileNote))
 		if bin != "" {
 			javaOpts = append(javaOpts, plugin.WithJavaBinaryPath(bin))
 		}

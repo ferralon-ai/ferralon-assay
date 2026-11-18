@@ -82,8 +82,10 @@ type LanguagePlugin interface {
 type Partiality struct {
 	Complete bool     `json:"complete"`
 	Reasons  []string `json:"reasons,omitempty"` // canonical reason codes; see PartialReason*
-	// Cause names what the lane could not run: the command and its error. Disclosure only, the
-	// dependency inventory's note carries it after its fixed text.
+	// Cause names what the lane could not run: the command and its error. On a reachability result
+	// it may instead name the unsearched method behind unsearched_methods. It explains one reason
+	// only, and other Reasons may stand beside it. Disclosure only, the dependency inventory's note
+	// carries it after its fixed text.
 	Cause string `json:"cause,omitempty"`
 	// Scoped carries limits the lane can bound to the packages the hidden code could reach. Reasons
 	// stay run-wide; a scoped reason counts against an advisory exactly as a run-wide one unless its
@@ -313,10 +315,21 @@ const (
 	// PartialReasonPluginLoad: the program reaches a load of Go code the build never compiled
 	// (plugin.Open), so none of that code's calls were read.
 	PartialReasonPluginLoad = "plugin_load"
+	// PartialReasonPluginLoadCgoOff localises plugin_load: the program reaches plugin.Open in a
+	// build with cgo off, where it loads nothing, on a platform where the same program built with
+	// cgo on would load plugins. A refutation the Go lane keeps beside it says in its detail that
+	// it holds for CGO_ENABLED=0 only.
+	PartialReasonPluginLoadCgoOff = PartialReasonPluginLoad + ":cgo_off"
 	// PartialReasonCgoUnresolved: the go command did not resolve whether cgo is on (`go env
 	// CGO_ENABLED` failed), so which of the build's cgo and non-cgo files the shipped binary
 	// compiles is unknown.
 	PartialReasonCgoUnresolved = PartialReasonCgo + ":env_unresolved"
+	// PartialReasonCgoFilesDropped localises cgo: the build has cgo off and compiles no cgo code,
+	// and it left out cgo files that a build with cgo on would compile. Those files are not in
+	// the scanned build, and the Go lane reads each one for calls into the advisory's module
+	// (excluded_files when one may make them). A refutation the lane keeps beside it says in its
+	// detail that it holds for CGO_ENABLED=0 only.
+	PartialReasonCgoFilesDropped = PartialReasonCgo + ":files_dropped"
 	// PartialReasonIfdefConfigVariance (new base, run-specific/loud): a preprocessor
 	// conditional (#ifdef/#if) gates code the analysis cannot resolve without the build's
 	// actual macro definitions, so the compiled configuration is undetermined. Every
@@ -707,6 +720,10 @@ type ReachabilityResult struct {
 	Searched []string `json:"searched,omitempty"`
 	// Refutation is lane-held positive evidence that the package's vulnerable code cannot run.
 	Refutation *Refutation `json:"refutation,omitempty"`
+	// Refutations holds a refutation of each other package the advisory names that the lane also
+	// refuted, each on its own evidence and under its own Assumptions. A package the advisory names
+	// that is absent from both fields is not refuted.
+	Refutations []Refutation `json:"refutations,omitempty"`
 	// LibraryEntrypoints is the entry-point set the lane resolved from
 	// ReachabilityRequest.LibraryEntrypoints, when it resolved one.
 	LibraryEntrypoints *ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
@@ -748,6 +765,9 @@ const (
 	// RefutationAnalyzerSymbolNotReached: govulncheck reported the advisory against a module or
 	// package in the build and found no call path to any of its vulnerable symbols.
 	RefutationAnalyzerSymbolNotReached = "analyzer_symbol_not_reached"
+	// RefutationAnalyzerPackageNotImported: govulncheck reported the advisory against a module in
+	// the build, and the build imports none of the advisory's vulnerable packages of that module.
+	RefutationAnalyzerPackageNotImported = "analyzer_package_not_imported"
 	// RefutationPackageNotLoaded: the package is installed at the admitted version and no
 	// runtime-loaded module imports it.
 	RefutationPackageNotLoaded = "package_not_loaded"
@@ -878,6 +898,10 @@ type GenerateHarnessRequest struct {
 	Sink    string `json:"sink"`
 	Ingress string `json:"ingress,omitempty"`
 	Kind    string `json:"kind"` // "fuzz" | "unit" | "integration"
+	// BuildDir is the build the sink was resolved in. A lane that reads the sink's
+	// signature from it writes a harness that calls the sink; empty, the harness names it.
+	BuildDir string `json:"build_dir,omitempty"`
+	GoWork   string `json:"go_work,omitempty"` // see ReachabilityRequest.GoWork
 }
 
 // HarnessResult is GenerateHarness's response: the generated reproducer skeleton.

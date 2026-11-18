@@ -363,6 +363,9 @@ func reportHTMLLimitLabel(reason string) string {
 	case report.ReasonDependencyNotFetched:
 		return "Some advisories were last assessed on a run that did not read all the dependency code the " +
 			"lockfile pins, so the verdicts that run reached are withheld and no verdict is reported for them."
+	case plugin.PartialReasonPartialRunUnversioned:
+		return "The scanned module's own version could not be established and the analysis searched only " +
+			"part of the build, so no verdict is reported for advisories on the module itself."
 	default:
 		return reason
 	}

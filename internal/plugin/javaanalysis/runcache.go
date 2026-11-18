@@ -32,11 +32,13 @@ func WithRunCacheDir(ctx context.Context, dir string) context.Context {
 
 // closureFormat names the on-disk layout of one root's search; a change to it, or to what a
 // search records, changes every key.
-const closureFormat = "assay-java-closure-v1"
+const closureFormat = "assay-java-closure-v2"
 
-// closureStore keeps each root's whole search (depreach.Engine.Closure) in the run cache, so a
-// later advisory's process answers a sink no root's search reached without searching again. key
-// hashes every input those searches read; an entry under any other key is never read.
+// closureStore keeps each root's whole search (depreach.Engine.Closure) and its predecessors
+// (ClosureTree) in the run cache, so a later advisory's process answers without searching
+// again: a sink no root's search reached from the search's result, and a sink one did reach
+// with the path the predecessors give. key hashes every input those searches read; an entry
+// under any other key is never read.
 type closureStore struct {
 	dir string
 	key []byte
@@ -117,11 +119,14 @@ func (s *closureStore) load(e *depreach.Engine, root classfile.MethodRef) bool {
 	if err != nil {
 		return false
 	}
-	bits, miss, err := decodeClosure(b, s.key, root)
-	if err != nil {
+	bits, from, miss, err := decodeClosure(b, s.key, root)
+	if err != nil || !e.SetClosure(root, bits, miss) {
 		return false
 	}
-	return e.SetClosure(root, bits, miss)
+	// Refused predecessors leave the search installed without them, and a sink it reached
+	// is then searched for.
+	e.SetClosureTree(root, from)
+	return true
 }
 
 // save stores root's search, when e holds one it can export. A failed write leaves no entry.
@@ -130,14 +135,15 @@ func (s *closureStore) save(e *depreach.Engine, root classfile.MethodRef) {
 		return
 	}
 	bits, miss, ok := e.Closure(root)
-	if !ok {
+	from, treeOK := e.ClosureTree(root)
+	if !ok || !treeOK {
 		return
 	}
 	path := s.path(root)
 	if _, err := os.Stat(path); err == nil {
 		return
 	}
-	b, err := encodeClosure(s.key, root, bits, miss)
+	b, err := encodeClosure(s.key, root, bits, from, miss)
 	if err != nil {
 		return
 	}
@@ -159,13 +165,14 @@ type closureHeader struct {
 	Key    string
 	Root   string
 	Words  int
+	Tree   int
 	Miss   depreach.Result
 }
 
-// encodeClosure lays an entry out as a JSON header line, the bitset words little-endian, and a
-// sha256 over both.
-func encodeClosure(key []byte, root classfile.MethodRef, bits []uint64, miss depreach.Result) ([]byte, error) {
-	hdr, err := json.Marshal(closureHeader{Format: closureFormat, Key: hex.EncodeToString(key), Root: root.String(), Words: len(bits), Miss: miss})
+// encodeClosure lays an entry out as a JSON header line, the bitset words then the predecessor
+// entries, both little-endian, and a sha256 over all three.
+func encodeClosure(key []byte, root classfile.MethodRef, bits []uint64, from []uint32, miss depreach.Result) ([]byte, error) {
+	hdr, err := json.Marshal(closureHeader{Format: closureFormat, Key: hex.EncodeToString(key), Root: root.String(), Words: len(bits), Tree: len(from), Miss: miss})
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +180,9 @@ func encodeClosure(key []byte, root classfile.MethodRef, bits []uint64, miss dep
 	buf.Write(hdr)
 	buf.WriteByte('\n')
 	if err := binary.Write(&buf, binary.LittleEndian, bits); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.LittleEndian, from); err != nil {
 		return nil, err
 	}
 	sum := sha256.Sum256(buf.Bytes())
@@ -184,32 +194,42 @@ var errClosureCorrupt = errors.New("java closure entry corrupt")
 
 // decodeClosure reads an entry encodeClosure wrote for key and root. A short, altered or foreign
 // entry is errClosureCorrupt, never a partial answer.
-func decodeClosure(b, key []byte, root classfile.MethodRef) ([]uint64, depreach.Result, error) {
+func decodeClosure(b, key []byte, root classfile.MethodRef) ([]uint64, []uint32, depreach.Result, error) {
+	corrupt := func() ([]uint64, []uint32, depreach.Result, error) {
+		return nil, nil, depreach.Result{}, errClosureCorrupt
+	}
 	if len(b) < sha256.Size {
-		return nil, depreach.Result{}, errClosureCorrupt
+		return corrupt()
 	}
 	body, sum := b[:len(b)-sha256.Size], b[len(b)-sha256.Size:]
 	if want := sha256.Sum256(body); !bytes.Equal(want[:], sum) {
-		return nil, depreach.Result{}, errClosureCorrupt
+		return corrupt()
 	}
 	nl := bytes.IndexByte(body, '\n')
 	if nl < 0 {
-		return nil, depreach.Result{}, errClosureCorrupt
+		return corrupt()
 	}
 	var hdr closureHeader
 	if err := json.Unmarshal(body[:nl], &hdr); err != nil {
-		return nil, depreach.Result{}, errClosureCorrupt
+		return corrupt()
 	}
 	rest := body[nl+1:]
+	// Each count is bounded by the bytes present before the two are summed, so neither wraps.
 	if hdr.Format != closureFormat || hdr.Key != hex.EncodeToString(key) || hdr.Root != root.String() ||
-		len(rest)%8 != 0 || hdr.Words != len(rest)/8 {
-		return nil, depreach.Result{}, errClosureCorrupt
+		hdr.Words < 0 || hdr.Tree < 0 || hdr.Words > len(rest)/8 || hdr.Tree > len(rest)/4 ||
+		hdr.Words*8+hdr.Tree*4 != len(rest) {
+		return corrupt()
 	}
 	bits := make([]uint64, hdr.Words)
-	if err := binary.Read(bytes.NewReader(rest), binary.LittleEndian, bits); err != nil {
-		return nil, depreach.Result{}, errClosureCorrupt
+	from := make([]uint32, hdr.Tree)
+	r := bytes.NewReader(rest)
+	if err := binary.Read(r, binary.LittleEndian, bits); err != nil {
+		return corrupt()
 	}
-	return bits, hdr.Miss, nil
+	if err := binary.Read(r, binary.LittleEndian, from); err != nil {
+		return corrupt()
+	}
+	return bits, from, hdr.Miss, nil
 }
 
 var buildID struct {

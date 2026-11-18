@@ -12,15 +12,14 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// TestWithholdRefutation_UnsearchedMethods: among the library view's withholds (withholdRefutation),
-// with the entry points resolved from no declaration as production resolves them, an exported method
-// govulncheck never searches (one of a generic type, or one promoted from a type outside its entry
-// points) on an exported package-level type of the entry package lib withholds a refutation as
+// TestReconciledResult_WithholdsForUnsearchedMethods: an exported method govulncheck never searches (one
+// of a generic type, or one promoted from a type outside its entry points), of an exported
+// package-level type of a library entry point, withholds a refutation and declares
 // unsearched_methods when the package declaring it imports the refuted module, directly or through
-// other packages. Any other method, or one in the main package, which is no entry point, declares no
-// unsearched_methods; lib may still withhold the refutation as library_escape, which is another
-// test's. The build leaves no file out, so excluded_files is never declared.
-func TestWithholdRefutation_UnsearchedMethods(t *testing.T) {
+// other packages, and declares nothing otherwise. The library package is importable, so the
+// reconciliation resolves it as an entry point; library_escape, which runs after this step, may
+// withhold the refutation too, so only unsearched_methods is read.
+func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 	base := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
 		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
@@ -94,19 +93,15 @@ func TestWithholdRefutation_UnsearchedMethods(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			module := "pkg:golang/example.com/vulnmod"
-			if tc.scanned.imports != nil {
-				module = "pkg:golang/stdlib"
+			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, plugin.LibraryEntrypoints{})
+			if err != nil {
+				t.Fatal(err)
 			}
-			res := withholdRefutation(context.Background(), plugin.ReachabilityResult{
-				Partiality: plugin.Complete(),
-				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: module},
-			}, tc.scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"), resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir))
 			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonUnsearchedMethods); declared != tc.withheld {
 				t.Errorf("unsearched_methods declared = %v, want %v (partiality %+v)", declared, tc.withheld, res.Partiality)
 			}
 			if tc.withheld && res.Refutation != nil {
-				t.Errorf("refutation stands beside unsearched_methods: %+v", res.Refutation)
+				t.Errorf("refutation stands beside unsearched_methods (result %+v)", res)
 			}
 			if declaresExcluded(res.Partiality.Reasons) {
 				t.Errorf("excluded_files declared with nothing left out (partiality %+v)", res.Partiality)
@@ -309,7 +304,7 @@ func TestWithholdForUnsearchedMethods_VulnerablePackages(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := writeTree(t, merge(narrowedModule, map[string]string{"internal/lib/lib.go": tc.lib}))
+			dir := writeTree(t, merge(narrowedModule, map[string]string{"lib/lib.go": tc.lib}))
 			load, err := LoadProgram(context.Background(), dir)
 			if err != nil {
 				t.Fatal(err)
@@ -317,7 +312,7 @@ func TestWithholdForUnsearchedMethods_VulnerablePackages(t *testing.T) {
 			if incompleteLoad(load.Packages, nil) {
 				t.Fatal("load incomplete")
 			}
-			res := withholdForUnsearchedMethods(narrowedRefutation(), tc.scanned, load.Packages, entrypoints{pkgs: load.Packages})
+			res := withholdForUnsearchedMethods(narrowedRefutation(), tc.scanned, load.Packages, resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
@@ -461,7 +456,7 @@ func TestNarrowedGates_StandardLibraryWidening(t *testing.T) {
 // cut by hand: a complete load always holds it.
 func TestWithholdForUnsearchedMethods_DeclaringPackageNotLoaded(t *testing.T) {
 	dir := writeTree(t, merge(narrowedModule, map[string]string{
-		"internal/lib/lib.go": "package lib\n\nimport \"example.com/vulnmod/blake\"\n\ntype S struct{ blake.T }\n",
+		"lib/lib.go": "package lib\n\nimport \"example.com/vulnmod/blake\"\n\ntype S struct{ blake.T }\n",
 	}))
 	load, err := LoadProgram(context.Background(), dir)
 	if err != nil {
@@ -469,15 +464,16 @@ func TestWithholdForUnsearchedMethods_DeclaringPackageNotLoaded(t *testing.T) {
 	}
 	var lib *packages.Package
 	for _, p := range load.Packages {
-		if p.PkgPath == "example.com/m/internal/lib" {
+		if p.PkgPath == "example.com/m/lib" {
 			lib = p
 		}
 	}
 	if lib == nil {
-		t.Fatal("internal/lib not loaded")
+		t.Fatal("lib not loaded")
 	}
 	lib.Imports = map[string]*packages.Package{}
-	res := withholdForUnsearchedMethods(narrowedRefutation(), narrowedScans.narrow, []*packages.Package{lib}, entrypoints{pkgs: []*packages.Package{lib}})
+	pkgs := []*packages.Package{lib}
+	res := withholdForUnsearchedMethods(narrowedRefutation(), narrowedScans.narrow, pkgs, resolveEntrypoints(pkgs, plugin.LibraryEntrypoints{}, dir))
 	if res.Refutation != nil {
 		t.Fatal("refutation stands, want withheld")
 	}

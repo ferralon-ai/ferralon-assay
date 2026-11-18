@@ -113,6 +113,15 @@ type Spec struct {
 	// each shell text checked as sh -c would run it, and whether words is one. A runner with no
 	// commands withholds, as does one this cannot read. nil means the lane has none.
 	Concurrent func(words []string) (cmds []string, ok bool)
+	// ReadOnly reports whether a command holding no token only reads the files its arguments
+	// name, so naming a file an allowed command binds to does not rewrite it. It is asked only
+	// about a command with no redirect and no command substitution. nil means no command is.
+	ReadOnly func(words []string) bool
+	// Inert reports whether a command holding no token, its redirects included, leaves every
+	// file it names meaning what an allowed command read from it: a write of settings the lane
+	// accepts. Such a command names no file. It is not asked about a command whose words lost
+	// a double-quoted escape. nil means no command is.
+	Inert func(words []string) bool
 	// ReadRegular reads a whole regular file, and Absent reports whether a filesystem error
 	// means a path is not there: the lane's own, so every file this reads is read the lane's way.
 	ReadRegular func(path string) ([]byte, error)
@@ -124,6 +133,12 @@ type Spec struct {
 	// with no slash, names a shell library the lane knows installs nothing. A word that may name
 	// a file the build holds where the command runs is never one. nil means none is.
 	Library func(word string) bool
+	// Code returns the words of a command holding no token, past its leading assignments and
+	// launchers (sudo, env), that are code an interpreter runs
+	// (the argument of node -e). Every file name written in one is named as an argument is, so
+	// inline code that removes or rewrites a bound file withholds as a command naming the file
+	// does. nil means the lane reads no inline code.
+	Code func(words []string) []string
 }
 
 func (s Spec) complete() bool {
@@ -715,6 +730,23 @@ func (v *Veto) mention(args []string) {
 	}
 }
 
+// mentionCode records every file name written in the inline code among a command's words.
+func (v *Veto) mentionCode(words []string) {
+	if v.spec.Code == nil {
+		return
+	}
+	for _, code := range v.spec.Code(words[programAt(words):]) {
+		for _, name := range strings.FieldsFunc(strings.ToLower(code), notFileNameRune) {
+			v.mentioned[name] = true
+		}
+	}
+}
+
+// notFileNameRune reports whether r cannot be part of a file's base name as code writes one.
+func notFileNameRune(r rune) bool {
+	return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
+}
+
 // trimShell strips a leading redirect and shell punctuation from both ends of w: an opening
 // or closing bracket only when w does not close or open it, or parentheses wrapping the word.
 func trimShell(w string) string {
@@ -1251,7 +1283,10 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
 	if !v.segmentHasToken(words) {
-		v.mention(words) // a leading NAME=VALUE, or a command run by its path, names one too
+		if !v.readsOnly(words) && (v.spec.Inert == nil || seg.escapes || !v.spec.Inert(words)) {
+			v.mention(words) // a leading NAME=VALUE, or a command run by its path, names one too
+			v.mentionCode(words)
+		}
 		switch dir, ok := venvWrites(seg, cur); {
 		case ok:
 			cur.wrote(dir, mark.made == dir)
@@ -1286,6 +1321,21 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install command: " + strings.Join(words, " ")
 	}
 	return ""
+}
+
+// readsOnly reports whether the lane says a command only reads the files it names
+// (Spec.ReadOnly), and nothing in it writes or runs anything else: no redirect, and no command
+// substitution, whose command may name the same files.
+func (v *Veto) readsOnly(words []string) bool {
+	if v.spec.ReadOnly == nil || hasRedirect(words) {
+		return false
+	}
+	for _, w := range words {
+		if strings.Contains(w, "$(") || strings.Contains(w, "`") {
+			return false
+		}
+	}
+	return v.spec.ReadOnly(words)
 }
 
 // concurrent applies the rule to the commands a concurrent runner starts, each in a shell of

@@ -199,7 +199,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		return plugin.ReachabilityResult{}, err
 	}
 	res.ScanToolchain = scanToolchain
-	return res, nil
+	return unversionedOnPartialRun(res, scanned, req.Package), nil
 }
 
 // reconciledResult turns one govulncheck run into the reachability result: it reconciles the
@@ -220,10 +220,15 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	return resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
+	res, err := resultPerModule(ctx, scanned, g, buildDir, env, load, entry)
+	if err != nil {
+		return res, err
+	}
+	return statePluginScope(res), nil
 }
 
-// resultFromGraph is reconciledResult over the reconcile graph g.
+// resultFromGraph is reconciledResult over the reconcile graph g, for the first module the findings
+// name (resultPerModule judges the others).
 func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
 	evidence := withholdForPartialRun(evidenceResult(scanned.findings, g.CallGraph, env), scanned)
 	res := evidence
@@ -238,6 +243,7 @@ func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 		} else {
 			entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir)
 			res = withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env, entrypoints)
+			res = restateNotImported(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env)
 			res.LibraryEntrypoints = entrypoints.record()
 		}
 	}
@@ -248,12 +254,62 @@ func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 	return res, nil
 }
 
+// restateNotImported restates a module refutation the withholds kept as
+// analyzer_package_not_imported when no non-test file of the scanned module that `./...` covers (so
+// not testdata, nor a directory whose name begins with `_` or `.`), under any build constraint other
+// than `ignore` or a Go release the build cannot compile under, imports any of the advisory's
+// vulnerable packages of that module:
+// govulncheck matched the module alone, the advisory's entries list the module's vulnerable
+// packages, the load is complete and holds none of them, and no file the build left out imports one
+// (leftOutImporters). With no listed package, a package-level
+// finding, an incomplete load, a left-out file that imports one, or a step of that check failing,
+// the refutation keeps its basis. The detail names the packages and the load's cgo setting.
+func restateNotImported(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || slices.ContainsFunc(scanned.findings, func(f vulnFinding) bool { return len(f.Trace) > 0 && f.Trace[0].Package != "" }) {
+		return res
+	}
+	vulnerable := scanned.countingPackages(module)
+	if len(vulnerable) == 0 || incompleteLoad(pkgs, scanned.partial.readImports()) {
+		return res
+	}
+	loaded := newModuleReach(pkgs, module, vulnerable).loaded
+	if slices.ContainsFunc(vulnerable, func(p string) bool { return loaded[p] != nil }) {
+		return res
+	}
+	if found, failed := leftOutImporters(ctx, pkgs, module, vulnerable, release, buildDir, env); found || failed {
+		return res
+	}
+	// The claim holds with cgo on or off, since the walk covers the files either setting drops. The
+	// setting is resolved again only to name it in the detail.
+	pinned, err := cgoPinned(ctx, buildDir, env)
+	if err != nil {
+		return res
+	}
+	names := vulnerable
+	if len(names) > 5 {
+		names = append(slices.Clone(names[:5]), fmt.Sprintf("%d more", len(vulnerable)-5))
+	}
+	restated := *r
+	restated.Basis = plugin.RefutationAnalyzerPackageNotImported
+	restated.Detail = fmt.Sprintf("%s; the build (CGO_ENABLED=%s) imports none of the advisory's vulnerable packages of %s, and neither does a non-test file it leaves out: %s",
+		r.Detail, envOr(pinned, "CGO_ENABLED", ""), module, strings.Join(names, ", "))
+	res.Refutation = &restated
+	return res
+}
+
 // withholdForReflectReach drops a refutation, and every Searched sink, that a call reflection makes
 // may contradict. govulncheck follows no such call, so when what those calls can reach (reflectReach)
 // holds one of the advisory's vulnerable symbols, or that reach is unknown, the search that found no
-// path never covered it. The result then declares reflection:call instead.
+// path never covered it. The result then declares reflection:call instead. A refutation that rests on
+// the build importing none of the vulnerable packages (restateNotImported) stands whatever the reach:
+// reflection calls only code the build compiles in.
 func withholdForReflectReach(res plugin.ReachabilityResult, scanned vulnScan, reach map[string][]string) plugin.ReachabilityResult {
-	if r := res.Refutation; r != nil {
+	if r := res.Refutation; r != nil && r.Basis != plugin.RefutationAnalyzerPackageNotImported {
 		module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
 		if !ok || reflectMayReach(reach, scanned, module) {
 			res.Refutation = nil
@@ -313,29 +369,32 @@ func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scan
 // packages that count (countingPackages), directly or through other packages, the search that found
 // no path never covered it.
 // Reach is read off the import graph, never the call graph, which is what misses these methods.
-// The result then declares unsearched_methods instead, and its Cause names the method and the entry
-// package that made it count.
+// The result then declares unsearched_methods instead, and its Cause names the first such method,
+// in package path and source order, and the entry package that made it count.
 func withholdForUnsearchedMethods(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, entry entrypoints) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok {
-		res.Refutation = nil
-		res.Partiality = withReason(res.Partiality, plugin.PartialReasonUnsearchedMethods)
+	m, found := unsearchedMethod{}, !ok
+	if ok {
+		m, found = unsearchedCaller(pkgs, entry, module, scanned.countingPackages(module))
+	}
+	if !found {
 		return res
 	}
-	if m, found := unsearchedCaller(pkgs, entry, module, scanned.countingPackages(module)); found {
-		res.Refutation = nil
-		res.Partiality = withReason(res.Partiality, plugin.PartialReasonUnsearchedMethods)
+	res.Refutation = nil
+	res.Partiality = withReason(res.Partiality, plugin.PartialReasonUnsearchedMethods)
+	if m.fn != nil {
 		res.Partiality.Cause = fmt.Sprintf("unsearched method %s, reached through entry package %s, may call into %s", m.fn.FullName(), m.pkg.PkgPath, module)
 	}
 	return res
 }
 
 // countedMethods returns the unsearched methods a caller of the build can invoke: those of an
-// exported package-level type of a package in entry's entry points.
+// exported package-level type of a package in entry's entry points. It filters each type that reaches
+// a method, so a method an unexported type also reaches still counts through the exported one.
 func countedMethods(pkgs []*packages.Package, entry entrypoints) []unsearchedMethod {
 	inEntry := map[*packages.Package]bool{}
 	for _, p := range entry.pkgs {
@@ -346,7 +405,7 @@ func countedMethods(pkgs []*packages.Package, entry entrypoints) []unsearchedMet
 	})
 }
 
-// unsearchedCaller returns a counted unsearched method that may call into module's packages that
+// unsearchedCaller returns the first counted unsearched method that may call into module's packages that
 // count: vulnerable, or every package of module when that is empty. A method whose declaring package
 // the load does not hold counts.
 func unsearchedCaller(pkgs []*packages.Package, entry entrypoints, module string, vulnerable []string) (unsearchedMethod, bool) {
@@ -711,11 +770,10 @@ func evidenceResult(findings []vulnFinding, cg plugin.CallGraphResult, env []str
 }
 
 // moduleRefutation states govulncheck's module-level evidence as a refutation of the module it
-// matched. An advisory spanning several modules refutes the first in path order; the gate
-// matches it against the admitted package and ignores a refutation of any other.
+// matched. An advisory spanning several modules refutes the first in path order; resultPerModule
+// refutes the others, and the gate matches each against the packages the advisory names.
 func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 	var module, version string
-	imported := false
 	for _, f := range findings {
 		if len(f.Trace) == 0 {
 			continue
@@ -727,13 +785,13 @@ func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 		if module == "" || fr.Module < module {
 			module, version = fr.Module, fr.Version
 		}
-		if fr.Package != "" {
-			imported = true
-		}
 	}
 	if module == "" {
 		return nil
 	}
+	imported := slices.ContainsFunc(findings, func(f vulnFinding) bool {
+		return len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Package != ""
+	})
 	use := "a vulnerable package is not imported"
 	if imported {
 		use = "a vulnerable package is imported"
@@ -838,6 +896,21 @@ func subjectToolchainEnv(ctx context.Context, baseEnv []string, buildDir, wanted
 		return candidate, wanted, true
 	}
 	return baseEnv, local, false
+}
+
+// govulncheckEnv is env with GOVERSION set to the release the go command uses in buildDir.
+// govulncheck matches standard-library advisories against GOVERSION, and without one in its
+// environment asks `go env GOVERSION` in the process's working directory, not in buildDir: under
+// GOTOOLCHAIN=auto that is the installed release, while the packages it loads are the ones the
+// module's go and toolchain lines select. Setting it keeps the advisory match and the loaded
+// standard library on one release. When the release cannot be resolved env is returned as is; the
+// load then fails for the same reason.
+func govulncheckEnv(ctx context.Context, buildDir string, env []string) []string {
+	v := goEnvVersion(ctx, buildDir, env)
+	if v == "" {
+		return env
+	}
+	return append(slices.Clip(env), "GOVERSION="+v)
 }
 
 // goEnvVersion reports `go env GOVERSION` for buildDir under env — the release the go command
@@ -1099,7 +1172,7 @@ func govulncheckStream(ctx context.Context, buildDir string, env, patterns []str
 	cmd := scan.Command(ctx, append([]string{"-C", buildDir, "-json", "-mode=source", "-scan=symbol"}, patterns...)...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	cmd.Env = env
+	cmd.Env = govulncheckEnv(ctx, buildDir, env)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("govulncheck start (%q): %w", buildDir, err)
 	}
@@ -1185,13 +1258,15 @@ func loadPackageErrors(err error) []packages.Error {
 // packagesResolveOffline reports whether every package a govulncheck load of buildDir reads
 // resolves from local files: `go list` of the same packages under env, with module fetching turned
 // off, reports no error. A package error of the failed load then cannot be a module fetch that a
-// later run might complete; what remains (cgo, type checking) reads only files already on disk.
+// later run might complete; what remains (cgo, type checking) reads only files already on disk. An
+// error that only says a //go:embed pattern matched no file is not one a fetch completes either
+// (onlyEmbedPatternMisses).
 func packagesResolveOffline(ctx context.Context, buildDir string, env []string) bool {
 	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-f", "{{with .Error}}{{.Err}}{{end}}", "./...")
 	cmd.Dir = buildDir
 	cmd.Env = append(slices.Clone(env), "GOPROXY=off")
 	out, err := cmd.Output()
-	return err == nil && len(bytes.TrimSpace(out)) == 0
+	return err == nil && onlyEmbedPatternMisses(out)
 }
 
 // reconcileGraph is the call graph Reachability reconciles paths against, with what reflection's

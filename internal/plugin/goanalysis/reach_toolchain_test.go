@@ -144,6 +144,16 @@ func goToolchainOf(env []string) string {
 
 // scratchModule writes a minimal buildable module so `go env GOVERSION` has a real directory to
 // resolve against (it is directory-sensitive under GOTOOLCHAIN=auto).
+// unsetAmbientToolchain removes any GOTOOLCHAIN the test process inherited (actions/setup-go
+// exports GOTOOLCHAIN=local), so the "never pins" assertions test the code, not the CI job's env.
+func unsetAmbientToolchain(t *testing.T) {
+	t.Helper()
+	t.Setenv("GOTOOLCHAIN", "")
+	if err := os.Unsetenv("GOTOOLCHAIN"); err != nil {
+		t.Fatalf("unset GOTOOLCHAIN: %v", err)
+	}
+}
+
 func scratchModule(t *testing.T, goDirective string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -161,6 +171,7 @@ func scratchModule(t *testing.T, goDirective string) string {
 // exactly. This is the environment every flag-off run and every non-exact-bound run still gets, so
 // a regression here is a silent behavior change on every scan that is green today.
 func TestReachBaseEnv_ForcesWorkspaceOffAndDoesNotPin(t *testing.T) {
+	unsetAmbientToolchain(t)
 	ctx := context.Background()
 	env := reachBaseEnv(ctx)
 	if !slices.Contains(env, "GOWORK=off") {
@@ -182,6 +193,7 @@ func TestReachBaseEnv_ForcesWorkspaceOffAndDoesNotPin(t *testing.T) {
 // the caller wants (already gated on flag + exact bound upstream), does the run pin one, and which
 // toolchain does it report having run under?
 func TestSubjectToolchainEnv_SwitchDecision(t *testing.T) {
+	unsetAmbientToolchain(t)
 	dir := scratchModule(t, "1.21")
 	base := reachBaseEnv(context.Background())
 

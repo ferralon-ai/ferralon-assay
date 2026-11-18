@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
@@ -44,9 +46,12 @@ const (
 // inventory when stopAt is "inventory", cancels the scan's analysis context from inside the call.
 type stoppingPlugin struct {
 	refutingGoPlugin
-	stop   context.CancelFunc
-	stopAt string
-	mode   stopMode
+	stop context.CancelFunc
+	// stopAfterSettle stops the scan once the first pass has settled every advisory, so a stop in
+	// analysis never races the first pass running ahead of it.
+	stopAfterSettle context.CancelFunc
+	stopAt          string
+	mode            stopMode
 }
 
 func (p stoppingPlugin) ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
@@ -62,7 +67,7 @@ func (p stoppingPlugin) Reachability(ctx context.Context, req plugin.Reachabilit
 	if req.VulnID != p.stopAt {
 		return p.refutingGoPlugin.Reachability(ctx, req)
 	}
-	p.stop()
+	p.stopAfterSettle()
 	if p.mode == stopAndSucceed {
 		return p.refutingGoPlugin.Reachability(ctx, req)
 	}
@@ -77,11 +82,20 @@ func stoppingOptions(t *testing.T, stopAt string, mode stopMode) ([]pipeline.Ass
 	t.Helper()
 	analysis, cancel := context.WithCancelCause(context.Background())
 	t.Cleanup(func() { cancel(nil) })
+	settled := make(chan struct{})
+	analysis = context.WithValue(analysis, passesDoneKey{}, sync.OnceFunc(func() { close(settled) }))
 	p := stoppingPlugin{
 		refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()},
 		stop:             func() { cancel(errTestStop) },
-		stopAt:           stopAt,
-		mode:             mode,
+		stopAfterSettle: func() {
+			select {
+			case <-settled:
+			case <-time.After(30 * time.Second):
+			}
+			cancel(errTestStop)
+		},
+		stopAt: stopAt,
+		mode:   mode,
 	}
 	return []pipeline.AssessOption{
 		pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),

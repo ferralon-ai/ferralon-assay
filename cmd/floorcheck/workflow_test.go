@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,7 +110,7 @@ func TestFloorWorkflow(t *testing.T) {
 		{"plan", "SELECTED: ${{ inputs.fixtures }}"},
 		{"plan", `"$fc" validate --fixtures-root cmd/floorcheck/fixtures "${names[@]}"`},
 		{"plan", `"$fc" list --fixtures-root cmd/floorcheck/fixtures`},
-		{"plan", "actions/upload-artifact@v4"},
+		{"plan", "actions/upload-artifact@v6"},
 		{"fixture", `"$bin/floorcheck" run "$FIXTURE"`},
 		{"fixture", "FIXTURE: ${{ matrix.name }}"},
 		{"fixture", "go-version: ${{ matrix.go }}"},
@@ -119,7 +120,7 @@ func TestFloorWorkflow(t *testing.T) {
 		{"fixture", "matrix.apt != ''\nset -euo pipefail\nsudo apt-get update -q"},
 		{"fixture", "APT_PACKAGES: ${{ matrix.apt }}"},
 		{"fixture", "sudo apt-get install -y -q --no-install-recommends $APT_PACKAGES"},
-		{"fixture", "actions/upload-artifact@v4\nalways()"},
+		{"fixture", "actions/upload-artifact@v6\nalways()"},
 		{"fixture", "sparse-checkout: cmd/floorcheck/fixtures"},
 		{"fixture", "\nalways()\nset -uo pipefail\nmkdir -p \"$RUNNER_TEMP/floor-obs\""},
 		{"fixture", "RUN_EXIT: ${{ steps.run.outputs.exit }}"},
@@ -132,6 +133,11 @@ func TestFloorWorkflow(t *testing.T) {
 		if !strings.Contains(steps(tc.job), tc.want) {
 			t.Errorf("job %s lacks %q", tc.job, tc.want)
 		}
+	}
+
+	// The summary job's is the run's only job summary, so it heads the run page.
+	if strings.Contains(steps("fixture"), "GITHUB_STEP_SUMMARY") {
+		t.Error("the fixture job writes a job summary; the run's summary would trail one per fixture")
 	}
 
 	fx := w.Jobs["fixture"]
@@ -215,6 +221,8 @@ func TestFloorWorkflowSummary(t *testing.T) {
 		{"one missing", map[string]string{"a": OutcomePass, "b": OutcomePass}, 2},
 		{"one damaged", map[string]string{"a": OutcomePass, "b": "damaged", "c": OutcomePass}, 2},
 		{"damaged beside a regression", map[string]string{"a": "damaged", "b": OutcomeRegressed, "c": OutcomePass}, 1},
+		{"no observations", map[string]string{}, 2},
+		{"all damaged", map[string]string{"a": "damaged", "b": "damaged", "c": "damaged"}, 2},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -227,7 +235,15 @@ func TestFloorWorkflowSummary(t *testing.T) {
 				data := []byte("{\"fixtures\": [")
 				if outcome != "damaged" {
 					var err error
-					data, err = json.Marshal(RunSummary{Schema: "x", Fixtures: []FixtureSummary{{Fixture: name, Outcome: outcome, Unexpected: 7, Drift: 4}}})
+					fs := FixtureSummary{Fixture: name, Outcome: outcome, Counts: Counts{Met: 3}, Unexpected: 7, Drift: 4,
+						Expectations: []ExpectSummary{{Advisory: "CVE-9-" + name, Package: "m", Outcome: OutcomeMet, Floor: "reachable_candidate", Observed: "reachable_candidate"}}}
+					switch outcome {
+					case OutcomeRegressed:
+						fs.Counts.Regressed, fs.Regressed = 1, []string{"CVE-1 lost"}
+					case OutcomeIncomplete:
+						fs.Counts.Incomplete, fs.Incomplete = 1, []string{"CVE-2 unjudged"}
+					}
+					data, err = json.Marshal(RunSummary{Schema: "x", Fixtures: []FixtureSummary{fs}})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -248,9 +264,41 @@ func TestFloorWorkflowSummary(t *testing.T) {
 			if code != tc.want {
 				t.Errorf("exit %d, want %d\n%s", code, tc.want, out)
 			}
-			if md, _ := os.ReadFile(filepath.Join(dir, "step.md")); tc.outcomes["c"] == OutcomePass &&
-				!strings.Contains(string(md), "| c | pass | 0 | 0 | 0 | 0 | 7 | 4 |") {
-				t.Errorf("the table does not show fixture c's unexpected and drift counts:\n%s", md)
+			md, _ := os.ReadFile(filepath.Join(dir, "step.md"))
+			if tc.outcomes["c"] == OutcomePass {
+				for _, row := range []string{
+					"| **c** | **pass** | - | **3** | - | - | **7** | **4** |",
+					"| <sub>&nbsp;&nbsp;↳ CVE-9-c</sub><br><sup>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`m`</sup> |  |  | ✓ |  |  | | |",
+				} {
+					if !strings.Contains(string(md), row) {
+						t.Errorf("the table lacks %q:\n%s", row, md)
+					}
+				}
+			}
+			verdict := map[int]string{0: "pass", 1: "regressed", 2: "incomplete"}[tc.want]
+			if !strings.HasPrefix(string(md), "## ") || !strings.Contains(strings.SplitN(string(md), "\n", 2)[0], "Floor run "+verdict+": ") {
+				t.Errorf("the summary does not open on the %s headline:\n%s", verdict, md)
+			}
+			if tc.want == 1 && !strings.Contains(string(md), "### Regressed\n\n- b: CVE-1 lost") {
+				t.Errorf("the summary does not list the regression:\n%s", md)
+			}
+			for name, outcome := range tc.outcomes {
+				if outcome == OutcomeIncomplete && !strings.Contains(string(md), "### Incomplete\n\n- "+name+": CVE-2 unjudged") {
+					t.Errorf("the summary does not list %s's incomplete expectation:\n%s", name, md)
+				}
+			}
+			unobserved := 0
+			for _, n := range planned {
+				if o, ok := tc.outcomes[n]; !ok || o == "damaged" {
+					unobserved++
+				}
+			}
+			if hasU := strings.Contains(string(md), fmt.Sprintf("· %d without an observation", unobserved)); hasU != (unobserved > 0) {
+				t.Errorf("the headline miscounts the %d fixtures without an observation:\n%s", unobserved, md)
+			}
+			level := map[int]string{0: "::notice title=Floor run::", 1: "::error title=Floor run::", 2: "::warning title=Floor run::"}[tc.want]
+			if !strings.Contains(out, level+strings.TrimPrefix(strings.SplitN(string(md), "\n", 2)[0], "## ")) {
+				t.Errorf("the run does not annotate its headline at %q:\n%s", level, out)
 			}
 		})
 	}

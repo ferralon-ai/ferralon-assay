@@ -35,9 +35,10 @@ CDN, **`tuf-repo-cdn.sigstore.dev`**; neither request carries anything about you
 `cve-watch` adds **`api.osv.dev`**. The scan modes reach OSV only when work-set widening is switched
 on explicitly (`-osv-work-set` / `ASSAY_OSV_WORK_SET`, off by default) and no advisory policy is
 declared — a declared policy chooses the work set itself; that query sends package
-coordinates — ecosystem, name, version — and nothing else. Enabling subject-toolchain reachability
-(`ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY`, also off by default) additionally downloads a Go toolchain
-from the module proxy.
+coordinates — ecosystem, name, version — and nothing else. Subject-toolchain reachability
+(`ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY`, on by default) downloads a Go toolchain from the module
+proxy when the scan knows the exact Go release the repository builds with and the runner does not
+have it.
 
 A JavaScript scan fetches each package tarball its lockfile pins, by name and version, from the
 registry the repository's `.npmrc` (or `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`) names. This
@@ -91,3 +92,13 @@ fetches from the repositories the build configures with the job's credentials, a
 would; a branch that rewrites those repositories sends those credentials to the host it names. A scan
 with `-build-graph off`, or one that reads a graph resolved ahead of the scan, does not run the build
 tool.
+
+When the checkout holds no compiled main classes, or they are older than the sources, the same scan
+also runs the repository's own `mvn compile` or `gradle classes` (the wrapper when the repository has
+one) so the Java and Kotlin lanes can read the build's bytecode. That run executes the build's compiler
+plugins, annotation processors and code generators on the runner, with the job's credentials and the
+repositories the build configures, and writes the build's output directory (`target/`, `build/`) into the
+checkout, where a later step of the job sees it. It does not run tests, and it does not run when the
+output is already present and current. Each build tool's run is bounded at 10 minutes; a run that fails
+or is not possible leaves the scan to go on and the affected results undetermined. For Java the reason
+carries the command and the cause; the scan's stderr carries them for Kotlin.

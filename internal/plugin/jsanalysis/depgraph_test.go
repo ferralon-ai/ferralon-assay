@@ -25,7 +25,10 @@ type depPkg struct {
 	path, name, version string
 	files               map[string]string
 	lockInstallScript   bool
-	tgz                 []byte
+	// link makes the lock entry a link to a directory the install does not read.
+	link    bool
+	lockBin map[string]string
+	tgz     []byte
 }
 
 // buildTgz packs files under npm's "package/" top directory.
@@ -77,6 +80,20 @@ func newDepFixture(t *testing.T, firstParty map[string]string, pkgs ...*depPkg) 
 		}
 		if p.lockInstallScript {
 			entry["hasInstallScript"] = true
+		}
+		if p.link {
+			entry = map[string]any{"resolved": "packages/" + p.name, "link": true}
+		}
+		if p.lockBin != nil {
+			entry["bin"] = p.lockBin
+		}
+		var declares map[string]json.RawMessage
+		_ = json.Unmarshal([]byte(p.files["package.json"]), &declares)
+		for _, k := range []string{"dependencies", "optionalDependencies", "peerDependencies"} {
+			var deps map[string]string
+			if json.Unmarshal(declares[k], &deps) == nil && len(deps) > 0 {
+				entry[k] = deps
+			}
 		}
 		lockPkgs[p.path] = entry
 	}
@@ -135,11 +152,17 @@ func withDeps(t *testing.T, dir string, store artifactcache.Store) plugin.CallGr
 	return res
 }
 
-// hasScoped reports whether p carries an unbounded scoped limit attributed to pkg: the limit of
-// a package whose code is hidden, which may load any installed package.
+// hasBounded reports a limit in pkg that names the packages its hidden code may reach.
+func hasBounded(p plugin.Partiality, reason, pkg string) bool {
+	return slices.ContainsFunc(p.Scoped, func(s plugin.ScopedReason) bool {
+		return s.Reason == reason && s.Package == pkg && len(s.Targets) > 0
+	})
+}
+
+// hasScoped reports a limit declared in pkg, bounded or not.
 func hasScoped(p plugin.Partiality, reason, pkg string) bool {
 	for _, s := range p.Scoped {
-		if s.Reason == reason && s.Package == pkg && len(s.Targets) == 0 {
+		if s.Reason == reason && s.Package == pkg {
 			return true
 		}
 	}
@@ -302,7 +325,7 @@ func TestDepGraph_Controls(t *testing.T) {
 		f := newDepFixture(t, map[string]string{"index.js": app}, p)
 		tampered := artifactcache.NewMemStore(map[artifactcache.Ref][]byte{f.ref(p): buildTgz(t, map[string]string{"package.json": `{"name":"dep"}`, "index.js": "exports.run = function run() { evil(); };\n"})})
 		cg := withDeps(t, f.dir, tampered)
-		if !hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
+		if !hasBounded(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
 			t.Errorf("an integrity mismatch must leave dep unread with a scoped limit; got %+v", cg.Partiality)
 		}
 		if slices.ContainsFunc(cg.Edges, func(e plugin.CallEdge) bool {
@@ -315,7 +338,7 @@ func TestDepGraph_Controls(t *testing.T) {
 	t.Run("offline_empty_cache", func(t *testing.T) {
 		f := newDepFixture(t, map[string]string{"index.js": app}, plain(nil))
 		cg := withDeps(t, f.dir, artifactcache.NewDeclaredAbsentStore())
-		if !hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
+		if !hasBounded(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
 			t.Errorf("a cache miss must scope dep uninspectable; got %+v", cg.Partiality)
 		}
 		if cg.Partiality.Complete {
@@ -358,9 +381,9 @@ func TestDepGraph_Controls(t *testing.T) {
 	})
 
 	t.Run("native_addon_scoped", func(t *testing.T) {
-		f := newDepFixture(t, map[string]string{"index.js": idle}, plain(map[string]string{"build/Release/dep.node": "\x7fELF"}))
+		f := newDepFixture(t, map[string]string{"index.js": "require('dep');\n"}, plain(map[string]string{"build/Release/dep.node": "\x7fELF"}))
 		cg := withDeps(t, f.dir, f.memStore())
-		if !hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
+		if !hasBounded(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
 			t.Errorf("a native addon must scope its package; got %+v", cg.Partiality)
 		}
 		if hasReason(cg.Partiality, plugin.PartialReasonUninspectablePackage) {
@@ -368,12 +391,12 @@ func TestDepGraph_Controls(t *testing.T) {
 		}
 	})
 
-	t.Run("dependency_computed_require_run_wide", func(t *testing.T) {
+	t.Run("dependency_computed_require_covers_loaded_code", func(t *testing.T) {
 		f := newDepFixture(t, map[string]string{"index.js": "require('dep');\n"}, plain(map[string]string{
 			"index.js": "const name = process.env.PLUGIN;\nexports.run = function run() { return require(name); };\n",
 		}))
-		if cg := withDeps(t, f.dir, f.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonComputedRequireSpecifier) {
-			t.Errorf("require(variable) in dependency code must stay run-wide; got %+v", cg.Partiality)
+		if cg := withDeps(t, f.dir, f.memStore()); !declares(cg.Partiality, plugin.PartialReasonComputedRequireSpecifier) {
+			t.Errorf("require(variable) in a loaded dependency must be declared over everything that loads; got %+v", cg.Partiality)
 		}
 	})
 
@@ -446,7 +469,11 @@ func TestDepGraph_NoNewNotExploitable(t *testing.T) {
 				t.Errorf("fixture %d: head completed a graph main left partial", i)
 			}
 			for _, r := range base.Partiality.Reasons {
-				if !hasReason(head.Partiality, r) && !(read && r == plugin.PartialReasonUninspectablePackage) {
+				// An unread package that loads keeps the limit, bounded to what it may reach.
+				bounded := r == plugin.PartialReasonUninspectablePackage && slices.ContainsFunc(head.Partiality.Scoped, func(s plugin.ScopedReason) bool {
+					return s.Reason == r && s.Package == "pkg:npm/dep@1.0.0" && len(s.Targets) > 0
+				})
+				if !hasReason(head.Partiality, r) && !(read && r == plugin.PartialReasonUninspectablePackage) && !bounded {
 					t.Errorf("fixture %d: head dropped limit %s", i, r)
 				}
 			}

@@ -1043,12 +1043,18 @@ func stripJSExt(p string) string {
 // pkgManifest is the resolver's view of a package.json: identity, module type, and the
 // raw exports/imports maps (interpreted by resolveExportsField).
 type pkgManifest struct {
-	name       string
-	typ        string
-	main       string
-	workspaces []string
-	exports    interface{}
-	imports    interface{}
+	// declared are the names under dependencies, peerDependencies and optionalDependencies;
+	// devDeclared those under devDependencies, which only the project's own install places.
+	declared    []string
+	devDeclared []string
+	// declaredOpen marks a dependency field in a form the lane does not read names from.
+	declaredOpen bool
+	name         string
+	typ          string
+	main         string
+	workspaces   []string
+	exports      interface{}
+	imports      interface{}
 	// frontEntries are the module and browser field targets a bundler building for the
 	// browser may load in place of main: the module field, a string browser field, and every
 	// path an object browser field maps to.
@@ -1060,17 +1066,56 @@ type pkgManifest struct {
 	browserMain string
 	browserMap  []string
 	browserBare bool
+	// bin maps each command the package installs to its package-relative file.
+	bin map[string]string
+	// binDir is directories.bin: every file in it is a command. binUnread is set when bin is
+	// neither a string nor a map of strings.
+	binDir    string
+	binUnread bool
+}
+
+// looseString is a package.json field whose value counts only when it is a string: Node takes a
+// `main` of any other type (`"main": false`) as absent, and does not read `module`.
+type looseString string
+
+func (l *looseString) UnmarshalJSON(data []byte) error {
+	var s string
+	if json.Unmarshal(data, &s) == nil {
+		*l = looseString(s)
+	}
+	return nil
 }
 
 type rawPkg struct {
 	Name       string          `json:"name"`
 	Type       string          `json:"type"`
-	Main       string          `json:"main"`
+	Main       looseString     `json:"main"`
 	Workspaces json.RawMessage `json:"workspaces"`
 	Exports    json.RawMessage `json:"exports"`
 	Imports    json.RawMessage `json:"imports"`
-	Module     string          `json:"module"`
+	Module     looseString     `json:"module"`
 	Browser    json.RawMessage `json:"browser"`
+	Bin        json.RawMessage `json:"bin"`
+	Dirs       struct {
+		Bin string `json:"bin"`
+	} `json:"directories"`
+
+	Dependencies         json.RawMessage `json:"dependencies"`
+	DevDependencies      json.RawMessage `json:"devDependencies"`
+	PeerDependencies     json.RawMessage `json:"peerDependencies"`
+	OptionalDependencies json.RawMessage `json:"optionalDependencies"`
+}
+
+// declaredNames returns the names a package.json dependency field lists. It reports false for
+// a field that is not an object: package managers read some of those forms as names, and the
+// lane does not.
+func declaredNames(field json.RawMessage) ([]string, bool) {
+	if len(field) == 0 {
+		return nil, true
+	}
+	var deps map[string]json.RawMessage
+	err := json.Unmarshal(field, &deps)
+	return slices.Sorted(maps.Keys(deps)), err == nil
 }
 
 func parsePkgManifest(data []byte) *pkgManifest {
@@ -1078,9 +1123,15 @@ func parsePkgManifest(data []byte) *pkgManifest {
 	if err := json.Unmarshal(data, &rp); err != nil {
 		return nil
 	}
-	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: rp.Main, module: rp.Module}
+	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: string(rp.Main), module: string(rp.Module)}
+	for _, deps := range []json.RawMessage{rp.Dependencies, rp.PeerDependencies, rp.OptionalDependencies} {
+		names, ok := declaredNames(deps)
+		m.declared, m.declaredOpen = append(m.declared, names...), m.declaredOpen || !ok
+	}
+	devNames, ok := declaredNames(rp.DevDependencies)
+	m.devDeclared, m.declaredOpen = devNames, m.declaredOpen || !ok
 	if rp.Module != "" {
-		m.frontEntries = append(m.frontEntries, rp.Module)
+		m.frontEntries = append(m.frontEntries, string(rp.Module))
 	}
 	if len(rp.Browser) > 0 {
 		var one string
@@ -1101,6 +1152,16 @@ func parsePkgManifest(data []byte) *pkgManifest {
 			}
 		}
 	}
+	if len(rp.Bin) > 0 {
+		var one string
+		if json.Unmarshal(rp.Bin, &one) == nil && one != "" {
+			// A string bin installs one command named after the package, less its scope.
+			m.bin = map[string]string{path.Base(rp.Name): one}
+		} else {
+			m.binUnread = json.Unmarshal(rp.Bin, &m.bin) != nil
+		}
+	}
+	m.binDir = rp.Dirs.Bin
 	if len(rp.Exports) > 0 {
 		_ = json.Unmarshal(rp.Exports, &m.exports)
 	}

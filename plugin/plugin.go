@@ -82,8 +82,10 @@ type LanguagePlugin interface {
 type Partiality struct {
 	Complete bool     `json:"complete"`
 	Reasons  []string `json:"reasons,omitempty"` // canonical reason codes; see PartialReason*
-	// Cause names what the lane could not run: the command and its error. Disclosure only, the
-	// dependency inventory's note carries it after its fixed text.
+	// Cause names what the lane could not run: the command and its error. On a reachability result
+	// it may instead name the unsearched method behind unsearched_methods. It explains one reason
+	// only, and other Reasons may stand beside it. Disclosure only, the dependency inventory's note
+	// carries it after its fixed text.
 	Cause string `json:"cause,omitempty"`
 	// Scoped carries limits the lane can bound to the packages the hidden code could reach. Reasons
 	// stay run-wide; a scoped reason counts against an advisory exactly as a run-wide one unless its

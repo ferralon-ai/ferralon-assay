@@ -486,6 +486,9 @@ func parseManifestData(path string, data []byte) ([]plugin.ResolvedDependency, [
 		// mentions dependencies still takes the parse-failure path.
 		deps, ok = parseHatchBuild(data)
 		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok && !bytes.Contains(data, []byte("dependencies"))
+	case "tox.ini":
+		// Listed only when toxDepsRead reads every deps entry (scanSurfaces).
+		return parseToxDeps(data, dir)
 	case "hatch.toml":
 		// hatch reads its environments from here as well as from pyproject.toml's [tool.hatch].
 		var h hatchConfig
@@ -1296,6 +1299,9 @@ func parseManifestCoverage(path string) ([]plugin.ResolvedDependency, bool) {
 		return append(deps, buildRequires(path, data)...), ok
 	case "hatch_build.py":
 		return parseHatchBuild(data)
+	case "tox.ini":
+		deps, _, ok := parseToxDeps(data, filepath.Dir(path))
+		return deps, ok
 	case "hatch.toml":
 		// No declaration of its own here: manifestDecls reads its environments.
 		var h hatchConfig

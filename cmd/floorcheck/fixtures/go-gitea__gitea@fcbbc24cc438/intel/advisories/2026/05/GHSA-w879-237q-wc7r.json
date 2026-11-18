@@ -1,0 +1,60 @@
+{
+  "affected": [
+    {
+      "coordinate": "golang.org/x/crypto",
+      "fixed_versions": [
+        "0.52.0"
+      ],
+      "purl": "pkg:golang/golang.org/x/crypto",
+      "ranges": [
+        {
+          "fixed": "0.52.0",
+          "upper_exclusive": "0.52.0"
+        }
+      ],
+      "version_scheme": "gomod"
+    },
+    {
+      "coordinate": "golang.org/x/crypto/ssh",
+      "purl": "pkg:golang/golang.org/x/crypto/ssh",
+      "version_scheme": "honest-absent"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "0.52.0",
+      "fixed_version": "0.52.0"
+    }
+  ],
+  "aliases": [
+    "CVE-2026-39829",
+    "GO-2026-5018"
+  ],
+  "coordinate": "golang.org/x/crypto",
+  "purl": "pkg:golang/golang.org/x/crypto",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "The RSA and DSA public key parsers did not enforce size limits on key parameters. A crafted public key with an excessively large modulus or DSA parameter could cause several minutes of CPU consumption during signature verification. This could be triggered by unauthenticated clients during public key authentication. RSA moduli are now limited to 8192 bits, and DSA parameters are validated per FIPS 186-2.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "golang.org/x/crypto/ssh.Dial",
+    "golang.org/x/crypto/ssh.NewClientConn",
+    "golang.org/x/crypto/ssh.NewServerConn",
+    "golang.org/x/crypto/ssh.NewSignerFromKey",
+    "golang.org/x/crypto/ssh.ParseAuthorizedKey",
+    "golang.org/x/crypto/ssh.ParseKnownHosts",
+    "golang.org/x/crypto/ssh.ParsePrivateKey",
+    "golang.org/x/crypto/ssh.ParsePrivateKeyWithPassphrase",
+    "golang.org/x/crypto/ssh.ParsePublicKey",
+    "golang.org/x/crypto/ssh.ParseRawPrivateKey",
+    "golang.org/x/crypto/ssh.ParseRawPrivateKeyWithPassphrase",
+    "golang.org/x/crypto/ssh.checkDSAParams",
+    "golang.org/x/crypto/ssh.parseDSA",
+    "golang.org/x/crypto/ssh.parseRSA"
+  ],
+  "version_scheme": "gomod",
+  "vuln_id": "GHSA-w879-237q-wc7r",
+  "withdrawn": false
+}

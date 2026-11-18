@@ -2,8 +2,10 @@ package pythonanalysis
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -25,7 +27,7 @@ func TestResolveVersions_UnreadInstallSurfaceVetoes(t *testing.T) {
 		"ci dir":                {".ci/requirements.txt", pin},
 		"dist dir":              {"dist/requirements.txt", pin},
 		"venv dir":              {".venv/requirements.txt", pin},
-		"tox":                   {"tox.ini", "[testenv]\ndeps = pyjwt==2.10.0\n"},
+		"tox":                   {"tox.ini", "[testenv]\ndeps =\n  py312: pyjwt==2.10.0\n"},
 		"nox":                   {"noxfile.py", "import nox\n\n@nox.session\ndef t(s):\n    s.install(\"pyjwt==2.10.0\")\n"},
 		"constraints":           {"constraints.txt", pin},
 		"conda env":             {"conda-env.yml", "dependencies:\n  - pip:\n    - pyjwt==2.10.0\n"},
@@ -197,7 +199,8 @@ func TestCallGraph_UnreadInstallSurfaceIsToolFailure(t *testing.T) {
 	}{
 		"pylock":    {"pylock.toml", "lock-version = \"1.0\"\n[[packages]]\nname = \"othermod\"\nversion = \"1.0\"\n", true},
 		"rye lock":  {"requirements.lock", "othermod==1.0\n", true},
-		"tox":       {"tox.ini", "[testenv]\ndeps = othermod\n", true},
+		"tox":       {"tox.ini", "[testenv]\ndeps =\n  py312: othermod\n", true},
+		"tox read":  {"tox.ini", "[testenv]\ndeps = othermod\n", false},
 		"conda":     {"conda-env.yml", "dependencies:\n  - pip:\n    - othermod==1.0\n", true},
 		"build dir": {"build/requirements.txt", "othermod==1.0\n", true},
 		"lowercase": {"pipfile", "[packages]\nothermod = \"*\"\n", true},
@@ -414,6 +417,104 @@ func TestResolveVersions_ScriptSurfaceNarrowed(t *testing.T) {
 				if r := resolveVersion(t, dir, c); r.Match.Resolved || r.Partiality.Complete {
 					t.Errorf("%s: Resolved = %v, Complete = %v, want both false", c, r.Match.Resolved, r.Partiality.Complete)
 				}
+			}
+		})
+	}
+}
+
+// toxDeps reads a tox.ini's deps as tox does, one requirement per line of each value, and reads
+// none of them when one entry is a form whose install is not known here, or the file sets a key
+// that installs past its deps.
+func TestToxDeps(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want []string // nil: not read
+	}{
+		{"one line", "[testenv]\ndeps = pytest==8.0.0\n", []string{"pytest==8.0.0"}},
+		{"continuation lines and comments", "[tox]\nenvlist = py312\n\n[testenv]\ndeps =\n  pytest\n  # coverage<7\n\n  pytest-cov>=4  # coverage plugin\n  requests[socks]==2.31.0; python_version >= \"3.8\"\ncommands = pytest\n", []string{"pytest", "pytest-cov>=4", "requests[socks]==2.31.0; python_version >= \"3.8\""}},
+		{"colon delimiter, two sections", "[testenv]\ndeps: pytest\n[testenv:lint]\ndeps = flake8==7.0.0\nskip_install = true\n", []string{"pytest", "flake8==7.0.0"}},
+		{"empty deps", "[testenv]\ndeps =\ncommands = pytest\n", []string{}},
+		{"no deps", "[testenv]\ncommands = pytest\n", nil},
+		{"substitution", "[testenv]\ndeps = -r{toxinidir}/requirements.txt\n", nil},
+		{"section substitution", "[testenv:lint]\ndeps =\n  {[testenv]deps}\n  flake8\n", nil},
+		{"factor-conditional", "[testenv]\ndeps =\n  pytest\n  buster: nose\n", nil},
+		{"negated factor", "[testenv]\ndeps = !py312: mock\n", nil},
+		{"-r a file", "[testenv]\ndeps = -rrequirements.txt\n", nil},
+		{"-c a file", "[testenv]\ndeps =\n  pytest\n  -c constraints.txt\n", nil},
+		{"-e", "[testenv]\ndeps = -e ./vendor/lib\n", nil},
+		{"index option", "[testenv]\ndeps =\n  --index-url https://pkgs.example.com/simple\n  pytest\n", nil},
+		{"URL", "[testenv]\ndeps = https://example.com/pkg-1.0.tar.gz\n", nil},
+		{"VCS", "[testenv]\ndeps = git+https://github.com/x/y.git#egg=y\n", nil},
+		{"direct reference", "[testenv]\ndeps = pkg @ https://example.com/pkg-1.0.tar.gz\n", nil},
+		{"path", "[testenv]\ndeps = vendor/pkg\n", nil},
+		{"archive", "[testenv]\ndeps = pkg-1.0-py3-none-any.whl\n", nil},
+		{"two on one line", "[testenv]\ndeps = pytest pytest-cov\n", nil},
+		{"continued with a backslash", "[testenv]\ndeps = pytest \\\n  >=8\n", nil},
+		{"requires provisions plugins", "[tox]\nrequires = tox-uv\n[testenv]\ndeps = pytest\n", nil},
+		{"minimum version provisions tox", "[tox]\nmin_version = 4.0\n[testenv]\ndeps = pytest\n", nil},
+		{"install_command", "[testenv]\ndeps = pytest\ninstall_command = python -m pip install {opts} {packages}\n", nil},
+		{"line that does not parse", "[testenv]\ndeps = pytest\nnot a key\n", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := toxDeps(tt.src)
+			if tt.want == nil {
+				if ok {
+					t.Fatalf("toxDeps = %q, read; want not read", got)
+				}
+				return
+			}
+			if !ok || !slices.Equal(got, tt.want) {
+				t.Fatalf("toxDeps = %q, %v; want %q, read", got, ok, tt.want)
+			}
+		})
+	}
+}
+
+// A tox.ini whose deps are read is a read version surface: its pins join the inventory, and a
+// tox run in its directory binds to it instead of withholding. One that is not read, or a tox
+// run that may install past it, withholds as before.
+func TestResolveVersions_ToxDeps(t *testing.T) {
+	const (
+		reqs   = "pyjwt==2.8.0\n"
+		read   = "[testenv]\ndeps =\n  pytest==8.0.0\n  coverage\ncommands = pytest\n"
+		factor = "[testenv]\ndeps =\n  pytest==8.0.0\n  buster: nose\n"
+		subst  = "[testenv]\ndeps = {[base]deps}\n"
+		bare   = "[testenv]\ncommands = pytest\n"
+	)
+	tests := []struct {
+		name     string
+		files    map[string]string
+		read     bool // the tox.ini is read: its pins join the inventory
+		resolved bool // nothing withholds: pyjwt and pytest resolve, and pyjwt is complete
+	}{
+		{"deps read", map[string]string{"tox.ini": read}, true, true},
+		{"tox run binds", map[string]string{"tox.ini": read, "install.sh": "#!/bin/sh\ntox -e py312\n"}, true, true},
+		{"bare tox run binds", map[string]string{"tox.ini": read, "Makefile": "test:\n\ttox\n"}, true, true},
+		{"factor-conditional deps", map[string]string{"tox.ini": factor}, false, false},
+		{"tox run on factor-conditional deps", map[string]string{"tox.ini": factor, "install.sh": "#!/bin/sh\ntox -e py312\n"}, false, false},
+		{"substitution", map[string]string{"tox.ini": subst}, false, false},
+		{"tox run on a tox.ini without deps", map[string]string{"tox.ini": bare, "install.sh": "#!/bin/sh\ntox -e py312\n"}, false, false},
+		{"tox run with posargs", map[string]string{"tox.ini": read, "install.sh": "#!/bin/sh\ntox -e py312 -- -x\n"}, true, false},
+		{"tox run from another directory", map[string]string{"tox.ini": read, "ci/run.sh": "#!/bin/sh\ntox -e py312\n"}, true, false},
+		{"tox run with TOX_OVERRIDE", map[string]string{"tox.ini": read, "install.sh": "#!/bin/sh\nexport TOX_OVERRIDE=testenv.deps+=jinja2\ntox -e py312\n"}, true, false},
+		{"dh --test-tox in debian/rules", map[string]string{"tox.ini": read, "debian/rules": "#!/usr/bin/make -f\n%:\n\tdh $@ --buildsystem=pybuild --test-tox\n",
+			"Makefile": "deb:\n\tdebian/rules binary\n"}, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"requirements.txt": reqs}
+			maps.Copy(files, tt.files)
+			dir := writeTree(t, files)
+			r := resolveVersion(t, dir, "pyjwt")
+			if r.Match.Resolved != tt.resolved || r.Partiality.Complete != tt.resolved {
+				t.Fatalf("pyjwt = %+v %+v, want resolved and complete %v", r.Match, r.Partiality, tt.resolved)
+			}
+			// A tox pin is read only from a tox.ini read here, and never proves an absence.
+			p := resolveVersion(t, dir, "pytest")
+			if p.Found != tt.read || p.Match.Resolved != tt.resolved || p.Exhaustive {
+				t.Fatalf("pytest = found %v %+v exhaustive %v, want found %v, resolved %v, not exhaustive", p.Found, p.Match, p.Exhaustive, tt.read, tt.resolved)
 			}
 		})
 	}

@@ -88,13 +88,13 @@ findings:
     package: "github.com/aws/aws-sdk-go@v1.44.327"
     truth: unreachable
     floor: not_exploitable
-    basis: vulnerable_symbol_unreachable
+    basis: vulnerable_symbol_absent
     note: "govulncheck: required, vulnerable package never imported"
   - advisory: GHSA-7f33-f4f5-xwgw
     package: "github.com/aws/aws-sdk-go@v1.44.327"
     truth: unreachable
     floor: not_exploitable
-    basis: vulnerable_symbol_unreachable
+    basis: vulnerable_symbol_absent
     note: "govulncheck: required, vulnerable package never imported"
   - advisory: CVE-2025-11065
     package: "github.com/go-viper/mapstructure/v2@v2.2.1"
@@ -180,7 +180,7 @@ findings:
     package: "github.com/klauspost/compress@v1.17.11-0.20241004063537-dbd6c381492a"
     truth: unreachable
     floor: not_exploitable
-    basis: vulnerable_symbol_unreachable
+    basis: vulnerable_symbol_absent
     note: "govulncheck: required, vulnerable package never imported"
   - advisory: CVE-2026-81869
     package: "go.opentelemetry.io/otel/sdk@v1.32.0"
@@ -206,7 +206,7 @@ findings:
     package: "google.golang.org/grpc@v1.67.1"
     truth: unreachable
     floor: not_exploitable
-    basis: vulnerable_symbol_unreachable
+    basis: vulnerable_symbol_absent
     note: "govulncheck: required, vulnerable package never imported"
   - advisory: CVE-2026-84304
     package: "google.golang.org/grpc@v1.67.1"

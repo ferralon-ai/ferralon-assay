@@ -798,9 +798,13 @@ func summarizeRun(results []FixtureResult) RunSummary {
 		}
 		for _, e := range r.Expectations {
 			label := e.Advisory + " " + e.Package
-			observed := ""
+			floor, observed := string(e.Floor), ""
 			if e.Compared != nil {
 				observed = " observed " + string(e.Compared.Verdict)
+			}
+			if e.Reason == ReasonBasisMismatch && e.Compared != nil {
+				floor += " (" + string(e.Basis) + ")"
+				observed += " (" + string(e.Compared.Basis) + ")"
 			}
 			es := ExpectSummary{Advisory: e.Advisory, Package: e.Package, Outcome: e.Outcome, Floor: e.Floor}
 			if e.Compared != nil {
@@ -810,7 +814,7 @@ func summarizeRun(results []FixtureResult) RunSummary {
 			switch e.Outcome {
 			case OutcomeRegressed:
 				sum.Counts.Regressed++
-				sum.Regressed = append(sum.Regressed, fmt.Sprintf("%s: floor %s,%s [%s]", label, e.Floor, observed, e.Reason))
+				sum.Regressed = append(sum.Regressed, fmt.Sprintf("%s: floor %s,%s [%s]", label, floor, observed, e.Reason))
 			case OutcomeMet:
 				sum.Counts.Met++
 			case OutcomeImproved:

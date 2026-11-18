@@ -119,8 +119,10 @@ type ExpectResult struct {
 	Package  string         `json:"package"`
 	Truth    string         `json:"truth"`
 	Floor    report.Verdict `json:"floor"`
-	Outcome  string         `json:"outcome"`
-	Reason   string         `json:"reason,omitempty"`
+	// Basis is the expected non-exploitable basis, when the expectation pins one.
+	Basis   verdict.NonExploitableBasis `json:"basis,omitempty"`
+	Outcome string                      `json:"outcome"`
+	Reason  string                      `json:"reason,omitempty"`
 	// Compared is the matching finding the outcome was judged on: the worst one when several match.
 	Compared *Observed `json:"compared,omitempty"`
 	// Matches is every matching finding, when more than one matched.
@@ -193,7 +195,7 @@ func incompleteResult(name string, fx *Fixture, fails []Failure) FixtureResult {
 		res.Repo, res.Commit = fx.Scenario.Repo, fx.Scenario.Commit
 		for _, x := range fx.Expect.Findings {
 			res.Expectations = append(res.Expectations, ExpectResult{Advisory: x.Advisory, Package: x.Package,
-				Truth: x.Truth, Floor: x.Floor, Outcome: OutcomeIncomplete})
+				Truth: x.Truth, Floor: x.Floor, Basis: x.Basis, Outcome: OutcomeIncomplete})
 		}
 	}
 	return res
@@ -325,7 +327,7 @@ var outcomeSeverity = map[string]int{OutcomeRegressed: 0, OutcomeMet: 1, Outcome
 // judge decides one expectation from its matching findings. Several matches are judged on the worst,
 // so a regression is never masked by a better duplicate.
 func judge(x Expectation, matches []report.AdvisoryFinding, rules orderRules) ExpectResult {
-	er := ExpectResult{Advisory: x.Advisory, Package: x.Package, Truth: x.Truth, Floor: x.Floor}
+	er := ExpectResult{Advisory: x.Advisory, Package: x.Package, Truth: x.Truth, Floor: x.Floor, Basis: x.Basis}
 	if len(matches) == 0 {
 		er.Reason = ReasonMissing
 		er.Outcome = OutcomeIncomplete

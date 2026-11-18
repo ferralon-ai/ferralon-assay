@@ -118,6 +118,7 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		"install script names a path that ends in a slash":                             "names ./lib/, the start of a path it completes when it runs",
 		"install script completes a path from the environment":                         "names ./, the start of a path it completes when it runs",
 		"install script pipes code to node":                                            "names child_process, a built-in that can run other code",
+		"inline install code runs through a runtime named by a variable":               "runs inline code that is more than a require of its package's own files",
 		"install script runs a package manager":                                        "runs npm, which can install code no lockfile names",
 	}
 	for _, tc := range []struct {
@@ -278,6 +279,7 @@ func TestLoadClosure_Refutes(t *testing.T) {
 		{name: "install script completes a path from the environment", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"package.json": `{"name":"other","version":"1.0.0","scripts":{"postinstall":"node ./$PLATFORM"}}`, "linux.js": "require('idle');\n"})}},
 		{name: "install script pipes code to node", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"package.json": `{"name":"other","version":"1.0.0","scripts":{"postinstall":"echo \"require('child_process').fork('./x')\" | node"}}`, "x.js": "require('idle');\n"})}},
 		{name: "install script makes a directory first", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"package.json": `{"name":"other","version":"1.0.0","scripts":{"postinstall":"mkdir -p out && test -e x.js && node x.js"}}`, "x.js": "module.exports = 1;\n"})}, want: true, scripted: "other"},
+		{name: "inline install code runs through a runtime named by a variable", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"package.json": `{"name":"other","version":"1.0.0","scripts":{"postinstall":"\"$npm_node_execpath\" -e \"require(['id','le'].join(''))\""}}`, "x.js": "module.exports = 1;\n"})}},
 		{name: "binding.gyp with no install script", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used(usedPlain), idle(), closurePkg("other", map[string]string{"binding.gyp": "{}\n"})}, want: true, scripted: "other", compiled: "other"},
 		{name: "a loaded package loads an unread package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("require('mid');\n" + usedPlain), closurePkg("mid", nil), idle()}, unread: []string{"mid"}, want: true, unreadBound: "mid"},
 		{name: "a loaded package loads an unread package that declares it", first: map[string]string{"index.js": app}, pkgs: []*depPkg{used("require('mid');\n" + usedPlain),

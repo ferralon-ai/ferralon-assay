@@ -78,6 +78,8 @@ type LoadResult struct {
 	cgoBounded bool
 	// cgoUnresolved: `go env CGO_ENABLED` failed, so which variant of the build was loaded is unknown.
 	cgoUnresolved bool
+	// plugin: which package plugin the load compiled (pluginBuildOf).
+	plugin pluginBuild
 	// goVersion is the Go release the load ran under; buildGoVersion is the subject's toolchain when
 	// the caller established it (loadForBuild), else "". buildGoFloor is the subject's binding go.mod
 	// floor when the caller holds one, else "". buildRelease reads them.
@@ -183,7 +185,7 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 
 	return &LoadResult{
 		Packages: pkgs, Partiality: part, members: members, cgo: cgo, cgoBounded: bounded,
-		cgoUnresolved: cgoErr != nil, goVersion: goVersion,
+		cgoUnresolved: cgoErr != nil, goVersion: goVersion, plugin: pluginBuildOf(ctx, buildDir, pkgs, cfg.Env),
 	}, nil
 }
 
@@ -296,8 +298,9 @@ func cgoPinned(ctx context.Context, dir string, env []string) ([]string, error) 
 // The standard library's own cgo (the net resolver, os/user lookups, plugin's dlopen) that C cannot
 // call back from holds no cgo module: its C calls only the C library, its Go side is in the graph,
 // and an advisory on the standard library names Go symbols. Whether plugin.Open is reached is
-// declared by the call graph, not here: as plugin_load (runTimeCalls), whether it is reached
-// directly or reflectively.
+// declared by the call graph, not here (runTimeCalls), whether it is reached directly or
+// reflectively: as plugin_load, or as plugin_load:cgo_off when cgo is off and package plugin is the
+// stub the build compiles in its place.
 //
 // runtime/cgo itself is not a cgo package here: every cgo package imports it.
 func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedReason, dropped, bounded bool) {

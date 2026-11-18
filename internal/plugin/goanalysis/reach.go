@@ -220,7 +220,11 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	return resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
+	res, err := resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
+	if err != nil {
+		return res, err
+	}
+	return statePluginScope(res), nil
 }
 
 // resultFromGraph is reconciledResult over the reconcile graph g.

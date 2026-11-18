@@ -2,6 +2,7 @@ package jsanalysis
 
 import (
 	"context"
+	"math/rand/v2"
 	"strings"
 	"testing"
 
@@ -138,30 +139,60 @@ func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
 		{"prefix require between a stray backtick and a template", "a = <p>Run `npm i</p>;\nconst m = require('./plugins/' + x);\nb = `ok`;\n", false, true, false},
 		{"prefix import() between a stray backtick and a template", "a = <p>Run `npm i</p>;\nconst m = import('./plugins/' + x);\nb = `ok`;\n", false, false, true},
 		{"eval between a stray opener and a comment", "a = <p>src/*</p>;\neval(x);\n/* c */\n", true, false, false},
-		{"import in a comment", "/* import(x) */\n", false, false, true},
-		{"loader alias declared in a comment", "/* const r = require; */\nr(x);\n", false, true, false},
+		{"import in a comment after code", "f(); /* import(x) */\n", false, false, true},
+		{"loader alias declared in a comment after code", "f(); /* const r = require; */\nr(x);\n", false, true, false},
 		{"text nested in blanked text", "a = <p>src/*</p>;\nc = <p>Run `npm i</p>;\nrequire(x);\nb = `ok`;\n/* c */\n", false, true, false},
-		{"JSDoc types", "/** @param {Function} f\n * @returns {import(x).T} */\n", false, false, false},
-		{"prose", "/* Function that this returns, eval it and require the rest; we require. */\n", false, false, false},
+		{"JSDoc types after code", "f(); /** @param {Function} f\n * @returns {import(x).T} */\n", false, false, false},
+		{"prose after code", "f(); /* Function that this returns, eval it and require the rest; we require. */\n", false, false, false},
 		{"prose naming module after a JSX apostrophe", "a = <p>Don't run the real module, mutated (module paths) on module</p>;\n", false, false, false},
 		{"module.require after a JSX apostrophe", "a = <p>Don't {module.require(x)}</p>;\n", false, true, false},
 		{"module handed on after a JSX apostrophe", "a = <p>Don't {f(module)}</p>;\n", false, true, false},
-		{"module after return in a comment", "/* return module */\n", false, true, false},
+		{"module after return in a comment after code", "f(); /* return module */\n", false, true, false},
 		{"brackets from separate templates", "a = `x]`;\nb = `[k]`;\nc = `[j]`;\n", false, false, false},
-		{"computed index pair in a comment", "/* o[a][b]() */\n", true, false, false},
+		{"computed index pair in a comment after code", "f(); /* o[a][b]() */\n", true, false, false},
 		{"require alias declared in code, used after a JSX apostrophe", "const r = createRequire(u);\na = <p>Don't {r(x)}</p>;\n", false, true, false},
 		{"createRequire alias declared in code, used after a JSX apostrophe", "const { createRequire: mk } = m;\na = <p>Don't {mk(u)(x)}</p>;\n", false, true, false},
-		{"require alias declared in a comment beside one declared in code", "/* const r = createRequire(u); */\nconst a = createRequire(u);\nr(x);\n", false, true, false},
-		{"createRequire alias declared in a comment", "/* import { createRequire as mk } from 'module'; */\nmk(u)(x);\n", false, true, false},
+		{"require alias declared in a comment after code beside one declared in code", "f(); /* const r = createRequire(u); */\nconst a = createRequire(u);\nr(x);\n", false, true, false},
+		{"createRequire alias declared in a comment after code", "f(); /* import { createRequire as mk } from 'module'; */\nmk(u)(x);\n", false, true, false},
 		{"eval after a non-JSDoc @word", "a = <p>Don't mail me@home {eval(x)}</p>;\n", true, false, false},
-		{"JSDoc type left open on its line", "/** @param {Object\n * eval(x) } */\n", true, false, false},
+		{"JSDoc type left open on its line after code", "f(); /** @param {Object\n * eval(x) } */\n", true, false, false},
 		{"name after a JSDoc tag", "a = <p>Don't @param me {eval(x)}</p>;\n", true, false, false},
 		{"eval asserted as a type after a JSX apostrophe", "a = <p>Don't {(eval as any)(x)}</p>;\n", true, false, false},
 		{"eval tested with in after a JSX apostrophe", "a = <p>Don't {eval in o}</p>;\n", true, false, false},
 		{"identifier-escaped eval after a JSX apostrophe", "a = <p>Don't {\\u0065val(x)}</p>;\n", true, false, false},
 		{"text nested within the layer bound is lexed", "x = 'a" + strings.Repeat(" \\'b", 7) + " \"require(y)\"\n", false, false, false},
 		{"text nested past the layer bound is read unlexed", "x = 'a" + strings.Repeat(" \\'b", 8) + " \"require(y)\"\n", false, true, false},
-		{"class extending Function in a comment", "/* class F extends Function {} */\n", true, false, false},
+		{"class extending Function in a comment after code", "f(); /* class F extends Function {} */\n", true, false, false},
+		// A block comment opened at the first non-blank of a line, in a file with no JSX
+		// element, after lines that hold no '`', no "/*" and none ending in '\', is a comment.
+		{"JSDoc block at a line start", "var keys = require('./keys');\n/**\n * @category Object\n * @param {string} [code]\n * Function#apply, require(x), import(y), eval(z), o[k]\n */\nfunction f(o) { return o; }\n", false, false, false},
+		{"block comment after a division, a regex, a URL comment and a generic", "var a = x / 2, re = /ab+c/g;\n// see http://x\nlet b: Array<string> = [];\n  /* eval(x) require(y) import(z) */\n", false, false, false},
+		{"comment closing mid-line before code", "/* eval(x) */ f();\n/* require(y) */\n", false, false, false},
+		{"hashbang then a header comment", "#!/usr/bin/env node\n/* eval(x) */\n", false, false, false},
+		{"byte order mark then a header comment", "\uFEFF/* eval(x) */\n", false, false, false},
+		{"comment after a block of line comments with empty ones", "'use strict';\n" + strings.Repeat("// Some prose describing the module and its options.\n// More of it.\n//\n", 400) + "var keys = f();\n/**\n * Function#apply, require(x), import(y), eval(z), o[k]\n */\nfunction g() {}\n", false, false, false},
+		{"comment after line comments that hold line comments", strings.Repeat("//   // const a = b / c; // d\n", 2000) + "/* eval(x) */\n", false, false, false},
+		{"comment after a long line comment full of slashes", "x = a / " + strings.Repeat("// / ", 8192) + "\n1;\n/* eval(x) */\n", false, false, false},
+		// Each shape below can make a line-start "/*" that is not a comment, so its text is
+		// still read.
+		{"comment in JSX text", "a = <p>\n/* {eval(x)} */\n</p>;\n", true, false, false},
+		{"comment in JSX text closed by a spaced tag", "a = <p>\n/* {eval(x)} */\n< /p>;\n", true, false, false},
+		{"comment in JSX text closed by a tag broken across lines", "a = <p>\n/* {eval(x)} */\n<\n/p>;\n", true, false, false},
+		{"comment in JSX text closed by a tag spaced with an ideographic space", "a = <p>\n/* {eval(x)} */\n<\u3000/p>;\n", true, false, false},
+		{"comment in a file whose slashes cost too much to tell from tags", strings.Repeat("//\n/* a */\n", 4096) + "/* eval(x) */\n", true, false, false},
+		{"comment in a JSX attribute string of a tag ended past a block comment", "a = <img alt=\"x\n/* eval(x) */\n\" / /* c */>;\n", true, false, false},
+		{"comment in a JSX attribute string of a tag ended past a comment opened on another's last rune", "a = <img alt=\"x\n/* / /*\" src={eval(x)} / /*/*/>;\n", true, false, false},
+		{"comment after code beside one at a line start", "/* a */\nf(); /* eval(x) */\n", true, false, false},
+		{"comment opened in a multi-line JSX attribute string", "a = <img alt=\"x\n/* \" />;\neval(x); // */\n", true, false, false},
+		{"comment opened in a JSX attribute string of a tag ended past a line comment", "a = <img alt=\"x\n/* \" / // c\n>;\neval(x); // */\n", true, false, false},
+		{"comment opened in a regex read as a division", "function f() {}\n/\\/*/.test(s);\neval(x); // */\n", true, false, false},
+		{"comment after a regex read as a division holding a backtick", "function f() {}\n/`/.test(s);\nb = `\n/* `;\neval(x); // */\n", true, false, false},
+		{"line-start /*/ after a comment hidden in a regex read as a division", "function f() {}\n/'/.test(s); /* '\n/*/ eval(x) */2/;\n", true, false, false},
+		{"comment after a string continued past a regex read as a division", "function f() {}\n/'/.test(s) && g('a\\\n/* ');\neval(x); // */\n", true, false, false},
+		{"comment after a string continued by a backslash-CRLF", "function f() {}\r\n/'/.test(s) && g('a\\\r\n/* ');\r\neval(x); // */\r\n", true, false, false},
+		{"comment after an HTML-like comment holding a backtick", "<!-- `\nb = `\n/* `;\neval(x); // */\n", true, false, false},
+		{"comment after a hashbang holding a backtick", "#!/usr/bin/env node `\nb = `\n/* `;\neval(x); // */\n", true, false, false},
+		{"comment inside a template substitution", "a = `${\n/* eval(x) */ 1}`;\n", true, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := []rune(tc.src)
@@ -174,5 +205,83 @@ func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
 				t.Errorf("hidden text bound %v", mb.imports)
 			}
 		})
+	}
+}
+
+// A comment opener with no close after a lone slash ends the search for a tag.
+func TestJSXMarked_UnclosedCommentAfterSlash(t *testing.T) {
+	if jsxMarked([]rune("/ /*\n")) {
+		t.Error("jsxMarked = true for a slash before an unclosed comment")
+	}
+}
+
+// A comment that opens before the last one read is read afresh: here the second slash
+// meets a comment whose close the first slash's gap never reached.
+func TestJSXMarked_CommentOpenedBeforeTheRememberedOne(t *testing.T) {
+	if !jsxMarked([]rune("/\n/*\n/\n/*//*/>*/")) {
+		t.Error("jsxMarked = false for a tag end past a comment")
+	}
+}
+
+// What the gap scan remembers between slashes changes no answer: every short text over
+// the runes a gap is made of, and a spread of long ones, marks as it does when each gap is
+// read afresh.
+func TestJSXMarked_MatchesAScanThatRemembersNothing(t *testing.T) {
+	fresh := func(src []rune) bool {
+		n := len(src)
+		for i := 0; i < n; i++ {
+			if src[i] != '/' || i > 0 && src[i-1] == '*' || i+1 < n && (src[i+1] == '*' || src[i+1] == '/') {
+				continue
+			}
+			j := i + 1
+			for j < n {
+				if jsBlank(src[j]) || isLineTerminator(src[j]) {
+					j++
+				} else if e := commentEnd(src, j+2); src[j] == '/' && j+1 < n && src[j+1] == '*' && e >= 0 {
+					j = e + 2
+				} else if src[j] == '/' && j+1 < n && src[j+1] == '/' {
+					for j < n && !isLineTerminator(src[j]) {
+						j++
+					}
+				} else {
+					break
+				}
+			}
+			if j < n && src[j] == '>' {
+				return true
+			}
+		}
+		return false
+	}
+	check := func(src []rune) {
+		if got, want := jsxMarked(src), fresh(src); got != want {
+			t.Fatalf("jsxMarked(%q) = %v, reading each gap afresh gives %v", string(src), got, want)
+		}
+	}
+	const length = 9
+	src := make([]rune, length)
+	var walk func(alphabet []rune, k int)
+	walk = func(alphabet []rune, k int) {
+		if k == length {
+			check(src)
+			return
+		}
+		for _, c := range alphabet {
+			src[k] = c
+			walk(alphabet, k+1)
+		}
+	}
+	walk([]rune("/*\n >x"), 0)
+
+	// Texts short enough that the work budget is never spent, so only the memory differs.
+	rng := rand.New(rand.NewPCG(1, 2))
+	for _, alphabet := range [][]rune{[]rune("/*\n>"), []rune("/*\n >"), []rune("//**\n\r\u2028 >x")} {
+		for range 400000 {
+			long := make([]rune, 10+rng.IntN(30))
+			for k := range long {
+				long[k] = alphabet[rng.IntN(len(alphabet))]
+			}
+			check(long)
+		}
 	}
 }

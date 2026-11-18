@@ -1,0 +1,54 @@
+{
+  "affected": [
+    {
+      "coordinate": "stdlib",
+      "fixed_versions": [
+        "1.20.12",
+        "1.21.5"
+      ],
+      "purl": "pkg:golang/stdlib",
+      "ranges": [
+        {
+          "fixed": "1.20.12",
+          "upper_exclusive": "1.20.12"
+        },
+        {
+          "fixed": "1.21.5",
+          "introduced": "1.21.0-0",
+          "upper_exclusive": "1.21.5"
+        }
+      ],
+      "version_scheme": "go-toolchain"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "1.20.12",
+      "fixed_version": "1.20.12"
+    },
+    {
+      "fixed": "1.21.5",
+      "fixed_version": "1.21.5"
+    }
+  ],
+  "aliases": [
+    "BIT-golang-2023-39326",
+    "CVE-2023-39326"
+  ],
+  "coordinate": "stdlib",
+  "purl": "pkg:golang/stdlib",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "A malicious HTTP sender can use chunk extensions to cause a receiver reading from a request or response body to read many more bytes from the network than are in the body. A malicious HTTP client can further exploit this to cause a server to automatically read a large amount of data (up to about 1GiB) when a handler fails to read the entire body of a request. Chunk extensions are a little-used HTTP feature which permit including additional metadata in a request or response body sent using the chunked encoding. The net/http chunked encoding reader discards this metadata. A sender can exploit this by inserting a large metadata segment with each byte transferred. The chunk reader now produces an error if the ratio of real body to encoded bytes grows too small.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "net/http/internal.chunkedReader.Read",
+    "net/http/internal.chunkedReader.beginChunk",
+    "net/http/internal.readChunkLine"
+  ],
+  "version_scheme": "go-toolchain",
+  "vuln_id": "GO-2023-2382",
+  "withdrawn": false
+}

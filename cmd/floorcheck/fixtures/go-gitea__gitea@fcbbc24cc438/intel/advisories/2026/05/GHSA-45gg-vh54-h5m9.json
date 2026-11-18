@@ -1,0 +1,48 @@
+{
+  "affected": [
+    {
+      "coordinate": "golang.org/x/crypto",
+      "fixed_versions": [
+        "0.52.0"
+      ],
+      "purl": "pkg:golang/golang.org/x/crypto",
+      "ranges": [
+        {
+          "fixed": "0.52.0",
+          "upper_exclusive": "0.52.0"
+        }
+      ],
+      "version_scheme": "gomod"
+    },
+    {
+      "coordinate": "golang.org/x/crypto/ssh",
+      "purl": "pkg:golang/golang.org/x/crypto/ssh",
+      "version_scheme": "honest-absent"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "0.52.0",
+      "fixed_version": "0.52.0"
+    }
+  ],
+  "aliases": [
+    "CVE-2026-39828",
+    "GO-2026-5014"
+  ],
+  "coordinate": "golang.org/x/crypto",
+  "purl": "pkg:golang/golang.org/x/crypto",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "When an SSH server authentication callback returned PartialSuccessError with non-nil Permissions, those permissions were silently discarded, potentially dropping certificate restrictions such as force-command after a second factor succeeded. Returning non-nil Permissions with PartialSuccessError now results in a connection error.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "golang.org/x/crypto/ssh.NewServerConn",
+    "golang.org/x/crypto/ssh.connection.serverAuthenticate"
+  ],
+  "version_scheme": "gomod",
+  "vuln_id": "GHSA-45gg-vh54-h5m9",
+  "withdrawn": false
+}

@@ -355,42 +355,65 @@ func searchedReflectMayReach(reach map[string][]string, scanned vulnScan) bool {
 // build's resolved library entry points.
 func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string, entry entrypoints) plugin.ReachabilityResult {
 	res = withholdForLeftOutFiles(ctx, res, scanned, pkgs, release, buildDir, env)
-	res = withholdForUnsearchedMethods(res, scanned, pkgs)
+	res = withholdForUnsearchedMethods(res, scanned, pkgs, entry)
 	return withholdForLibraryEscape(res, scanned, pkgs, entry)
 }
 
 // withholdForUnsearchedMethods drops a refutation that exported methods govulncheck never searched
-// (unsearchedMethods) may contradict. A caller of the package can still invoke one, so when the
-// package that declares it imports one of the refuted module's packages that count
-// (countingPackages), directly or through other packages, the search that found no path never
-// covered it.
+// (unsearchedMethods) may contradict. Only a method a caller of the build can invoke counts: an
+// exported method of an exported package-level type, reached through a package of entry's entry
+// points (countedMethods). When the package that declares one imports one of the refuted module's
+// packages that count (countingPackages), directly or through other packages, the search that found
+// no path never covered it.
 // Reach is read off the import graph, never the call graph, which is what misses these methods.
-// The result then declares unsearched_methods instead.
-func withholdForUnsearchedMethods(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
+// The result then declares unsearched_methods instead, and its Cause names the first such method,
+// in package path and source order, and the entry package that made it count.
+func withholdForUnsearchedMethods(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, entry entrypoints) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
-	if !ok || unsearchedCallers(pkgs, module, scanned.countingPackages(module)) {
-		res.Refutation = nil
-		res.Partiality = withReason(res.Partiality, plugin.PartialReasonUnsearchedMethods)
+	m, found := unsearchedMethod{}, !ok
+	if ok {
+		m, found = unsearchedCaller(pkgs, entry, module, scanned.countingPackages(module))
+	}
+	if !found {
+		return res
+	}
+	res.Refutation = nil
+	res.Partiality = withReason(res.Partiality, plugin.PartialReasonUnsearchedMethods)
+	if m.fn != nil {
+		res.Partiality.Cause = fmt.Sprintf("unsearched method %s, reached through entry package %s, may call into %s", m.fn.FullName(), m.pkg.PkgPath, module)
 	}
 	return res
 }
 
-// unsearchedCallers reports whether an unsearched method may call into module's packages that count:
-// vulnerable, or every package of module when that is empty. A method whose declaring package the
-// load does not hold counts.
-func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []string) bool {
+// countedMethods returns the unsearched methods a caller of the build can invoke: those of an
+// exported package-level type of a package in entry's entry points. It filters each type that reaches
+// a method, so a method an unexported type also reaches still counts through the exported one.
+func countedMethods(pkgs []*packages.Package, entry entrypoints) []unsearchedMethod {
+	inEntry := map[*packages.Package]bool{}
+	for _, p := range entry.pkgs {
+		inEntry[p] = true
+	}
+	return slices.DeleteFunc(unsearchedMethodsOf(pkgs), func(m unsearchedMethod) bool {
+		return !inEntry[m.pkg] || !m.recv.Exported() || m.recv.Parent() != m.pkg.Types.Scope()
+	})
+}
+
+// unsearchedCaller returns the first counted unsearched method that may call into module's packages that
+// count: vulnerable, or every package of module when that is empty. A method whose declaring package
+// the load does not hold counts.
+func unsearchedCaller(pkgs []*packages.Package, entry entrypoints, module string, vulnerable []string) (unsearchedMethod, bool) {
 	reach := newModuleReach(pkgs, module, vulnerable)
-	for _, m := range unsearchedMethods(pkgs) {
-		decl := reach.loaded[m.Pkg().Path()]
+	for _, m := range countedMethods(pkgs, entry) {
+		decl := reach.loaded[m.fn.Pkg().Path()]
 		if decl == nil || reach.reachesModule(decl) {
-			return true
+			return m, true
 		}
 	}
-	return false
+	return unsearchedMethod{}, false
 }
 
 // withholdForLibraryEscape drops a refutation an importer of the build's packages may contradict.
@@ -797,6 +820,7 @@ func withReason(p plugin.Partiality, reason string) plugin.Partiality {
 	slices.Sort(reasons)
 	out := plugin.Partial(reasons...)
 	out.Scoped = p.Scoped
+	out.Cause = p.Cause
 	return out
 }
 

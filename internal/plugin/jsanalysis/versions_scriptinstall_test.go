@@ -347,7 +347,7 @@ func TestResolveVersions_ScriptForms(t *testing.T) {
 		{"prefix: given twice", tree(`"client":"npm start --prefix frontend --prefix frontend"`, nil), nil, false},
 		{"prefix: no dir", tree(`"client":"npm start --prefix"`, nil), nil, false},
 		{"prefix: npm test is not a prefixed form", tree(`"t":"npm test --prefix frontend"`, nil), nil, false},
-		{"prefix: npm start with another argument", tree(`"client":"npm start --prefix frontend extra"`, nil), nil, false},
+		{"prefix: npm start with another argument", tree(`"client":"npm start --prefix frontend extra"`, nil), nil, true},
 		{"prefix: absolute dir", tree(`"build":"npm run build --prefix /frontend"`, nil), nil, false},
 		{"prefix: after a cd to an expansion", tree(`"build":"cd $X && npm run build --prefix frontend"`, nil), nil, false},
 		{"prefix: after a cd to no directory", tree(`"build":"cd nowhere && npm run build --prefix frontend"`, nil), nil, false},

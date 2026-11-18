@@ -1,0 +1,54 @@
+{
+  "affected": [
+    {
+      "coordinate": "stdlib",
+      "fixed_versions": [
+        "1.21.11",
+        "1.22.4"
+      ],
+      "purl": "pkg:golang/stdlib",
+      "ranges": [
+        {
+          "fixed": "1.21.11",
+          "upper_exclusive": "1.21.11"
+        },
+        {
+          "fixed": "1.22.4",
+          "introduced": "1.22.0-0",
+          "upper_exclusive": "1.22.4"
+        }
+      ],
+      "version_scheme": "go-toolchain"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "1.21.11",
+      "fixed_version": "1.21.11"
+    },
+    {
+      "fixed": "1.22.4",
+      "fixed_version": "1.22.4"
+    }
+  ],
+  "aliases": [
+    "BIT-golang-2024-24789",
+    "CVE-2024-24789"
+  ],
+  "coordinate": "stdlib",
+  "purl": "pkg:golang/stdlib",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "The archive/zip package's handling of certain types of invalid zip files differs from the behavior of most zip implementations. This misalignment could be exploited to create an zip file with contents that vary depending on the implementation reading the file. The archive/zip package now rejects files containing these errors.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "archive/zip.NewReader",
+    "archive/zip.OpenReader",
+    "archive/zip.findSignatureInBlock"
+  ],
+  "version_scheme": "go-toolchain",
+  "vuln_id": "GO-2024-2888",
+  "withdrawn": false
+}

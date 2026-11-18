@@ -72,6 +72,7 @@ func scriptSpec(root string, locks map[string]lockInfo, assumed *bool) scriptsur
 		ReadOnly:    laneReadOnly,
 		Library:     gitShellLibrary,
 		Concurrent:  laneConcurrent,
+		CodeWords:   true,
 		ReadRegular: readRegular,
 		Absent:      absent,
 	}

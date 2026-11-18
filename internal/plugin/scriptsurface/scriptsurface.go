@@ -128,6 +128,10 @@ type Spec struct {
 	// with no slash, names a shell library the lane knows installs nothing. A word that may name
 	// a file the build holds where the command runs is never one. nil means none is.
 	Library func(word string) bool
+	// CodeWords makes a word that holds code (a quote or a parenthesis inside it, as the
+	// argument of node -e does) name every file name written in it, so inline code that
+	// removes or rewrites a bound file withholds as a command naming the file does.
+	CodeWords bool
 }
 
 func (s Spec) complete() bool {
@@ -716,7 +720,17 @@ func (v *Veto) mention(args []string) {
 				}
 			}
 		}
+		if v.spec.CodeWords && strings.ContainsAny(w, "\"'`(") {
+			for _, name := range strings.FieldsFunc(strings.ToLower(w), notFileNameRune) {
+				v.mentioned[name] = true
+			}
+		}
 	}
+}
+
+// notFileNameRune reports whether r cannot be part of a file's base name as code writes one.
+func notFileNameRune(r rune) bool {
+	return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
 }
 
 // trimShell strips a leading redirect and shell punctuation from both ends of w: an opening

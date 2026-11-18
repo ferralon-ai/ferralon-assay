@@ -199,8 +199,8 @@ func TestGoWorkspaceReplacedVersions(t *testing.T) {
 	for _, v := range []string{"v1.0.0", "v1.1.0"} {
 		publish(t, proxy, "example.com/m", v, map[string]string{"go.mod": "module example.com/m\n\ngo 1.21\n", "m.go": "package m\n"})
 	}
-	publish(t, proxy, "example.com/fork", "v1.0.0", map[string]string{"go.mod": "module example.com/fork\n\ngo 1.21\n", "m.go": "package m\n"})
-	sum := download(t, proxy, "example.com/m@v1.0.0", "example.com/m@v1.1.0", "example.com/fork@v1.0.0")
+	publish(t, proxy, "example.com/fork", "v1.2.0", map[string]string{"go.mod": "module example.com/fork\n\ngo 1.21\n", "m.go": "package m\n"})
+	sum := download(t, proxy, "example.com/m@v1.0.0", "example.com/m@v1.1.0", "example.com/fork@v1.2.0")
 	const memberHead = "module example.com/mono/a\n\ngo 1.21\n\nrequire example.com/m v1.0.0\n"
 	for _, tc := range []struct {
 		name        string
@@ -209,8 +209,8 @@ func TestGoWorkspaceReplacedVersions(t *testing.T) {
 	}{
 		{"no replace", "", "", map[string]string{}},
 		{"same-module replace", "", "replace example.com/m => example.com/m v1.1.0\n", map[string]string{}},
-		{"fork replace in the go.mod", "", "replace example.com/m => example.com/fork v1.0.0\n", map[string]string{"example.com/m": "v1.0.0"}},
-		{"fork replace in the go.work", "replace example.com/m => example.com/fork v1.0.0\n", "", map[string]string{"example.com/m": "v1.0.0"}},
+		{"fork replace in the go.mod", "", "replace example.com/m => example.com/fork v1.2.0\n", map[string]string{"example.com/m": "v1.0.0"}},
+		{"fork replace in the go.work", "replace example.com/m => example.com/fork v1.2.0\n", "", map[string]string{"example.com/m": "v1.0.0"}},
 		{"directory replace in the go.mod", "", "replace example.com/m => ../m\n", map[string]string{"example.com/m": "v1.0.0"}},
 		{"directory replace in the go.work", "replace example.com/m => ./m\n", "", map[string]string{"example.com/m": "v1.0.0"}},
 	} {

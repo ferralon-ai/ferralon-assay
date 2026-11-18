@@ -127,9 +127,9 @@ func TestWorkSet_ForkedModuleIsQueriedAtTheRequireVersion(t *testing.T) {
 		name    string
 		replace string
 	}{
-		{"fork", "replace example.com/m => example.com/fork v1.5.1\n"},
+		{"fork", "replace example.com/m => example.com/fork v1.7.0\n"},
 		{"directory", "replace example.com/m => ../m\n"},
-		{"fork at the exact version", "replace example.com/m v1.5.0 => example.com/fork v1.5.1\n"},
+		{"fork at the exact version", "replace example.com/m v1.5.0 => example.com/fork v1.7.0\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := resolveWorkSet(context.Background(), goFixture(t, head+tc.replace), osv, idSource{"GO-TEST-0001": true})

@@ -37,6 +37,14 @@ func TestWithheldDetail(t *testing.T) {
 	if got != want {
 		t.Errorf("WithheldDetail = %q, want %q", got, want)
 	}
+	many := make([]Limit, withheldDetailLimits+2)
+	for i := range many {
+		many[i] = Limit{Reason: "cgo", Path: string(rune('a' + i))}
+	}
+	got = WithheldDetail(ReasonRefutationWithheld, many)
+	if !strings.HasSuffix(got, "cgo at h; and 2 more") {
+		t.Errorf("WithheldDetail of %d limits = %q, want the first %d and a count of the rest", len(many), got, withheldDetailLimits)
+	}
 }
 
 // TestValidate_WithheldBy: limits ride only on a row the analysis withheld.

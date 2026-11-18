@@ -37,10 +37,28 @@ func TestReport_WithheldByReachesEveryFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectReportHTML: %v", err)
 	}
+	var log struct {
+		Runs []struct {
+			Results []struct {
+				Message struct {
+					Text string `json:"text"`
+				} `json:"message"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(sarif, &log); err != nil {
+		t.Fatal(err)
+	}
+	var messages []string
+	for _, run := range log.Runs {
+		for _, res := range run.Results {
+			messages = append(messages, res.Message.Text)
+		}
+	}
 	for _, l := range limits {
 		phrase := report.LimitPhrase(l)
-		if !strings.Contains(string(sarif), phrase) {
-			t.Errorf("SARIF does not name %q", phrase)
+		if !strings.Contains(strings.Join(messages, "\n"), phrase) {
+			t.Errorf("no SARIF result message names %q", phrase)
 		}
 		if !strings.Contains(string(html), phrase) {
 			t.Errorf("HTML does not name %q", phrase)
@@ -52,5 +70,16 @@ func TestReport_WithheldByReachesEveryFormat(t *testing.T) {
 	}
 	if !strings.Contains(string(js), `"withheld_by":[{"reason":"library_escape"},{"reason":"cgo","package":"pkg:golang/example.com/c","path":"bridge.go","targets":["pkg:golang/golang.org/x/text"]}]`) {
 		t.Errorf("JSON report does not carry withheld_by: %s", js)
+	}
+}
+
+// TestReport_WithheldByOmittedWhenEmpty: a row with no limits serializes no withheld_by key.
+func TestReport_WithheldByOmittedWhenEmpty(t *testing.T) {
+	js, err := json.Marshal(undeterminedReport())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(js), "withheld_by") {
+		t.Errorf("a report with no limits carries withheld_by: %s", js)
 	}
 }

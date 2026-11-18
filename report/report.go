@@ -711,7 +711,9 @@ type AdvisoryFinding struct {
 	UndeterminedReason string `json:"undetermined_reason,omitempty"`
 	// WithheldBy lists the limits of the analysis that withheld the verdict, in the order the run
 	// declared them. It is set only when UndeterminedReason is refutation_withheld or
-	// analysis_did_not_run (Validate enforces it), and may be empty there.
+	// analysis_did_not_run (Validate enforces it). It may be empty there: an analysis that failed
+	// or produced no call graph declared no limit that says so, and the limits it lists then are
+	// the ones that would hold against the row had it run.
 	WithheldBy []Limit `json:"withheld_by,omitempty"`
 	// Evidence is the compact grounds behind the verdict (see EvidenceSummary).
 	Evidence EvidenceSummary `json:"evidence"`

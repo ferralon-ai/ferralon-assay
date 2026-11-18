@@ -42,6 +42,9 @@ func LimitPhrase(l Limit) string {
 	return b.String()
 }
 
+// withheldDetailLimits is how many limits WithheldDetail names before counting the rest.
+const withheldDetailLimits = 8
+
 // WithheldDetail is UndeterminedDetail(reason) followed by the limits that withheld the verdict. With
 // no limits it is UndeterminedDetail(reason).
 func WithheldDetail(reason string, limits []Limit) string {
@@ -49,9 +52,17 @@ func WithheldDetail(reason string, limits []Limit) string {
 	if len(limits) == 0 {
 		return detail
 	}
-	phrases := make([]string, len(limits))
-	for i, l := range limits {
+	shown := limits
+	if len(shown) > withheldDetailLimits {
+		shown = shown[:withheldDetailLimits]
+	}
+	phrases := make([]string, len(shown))
+	for i, l := range shown {
 		phrases[i] = LimitPhrase(l)
 	}
-	return detail + ". It was withheld by: " + strings.Join(phrases, "; ")
+	detail += ". It was withheld by: " + strings.Join(phrases, "; ")
+	if n := len(limits) - len(shown); n > 0 {
+		detail += fmt.Sprintf("; and %d more", n)
+	}
+	return detail
 }

@@ -302,9 +302,11 @@ func restateNotImported(ctx context.Context, res plugin.ReachabilityResult, scan
 // withholdForReflectReach drops a refutation, and every Searched sink, that a call reflection makes
 // may contradict. govulncheck follows no such call, so when what those calls can reach (reflectReach)
 // holds one of the advisory's vulnerable symbols, or that reach is unknown, the search that found no
-// path never covered it. The result then declares reflection:call instead.
+// path never covered it. The result then declares reflection:call instead. A refutation that rests on
+// the build importing none of the vulnerable packages (restateNotImported) stands whatever the reach:
+// reflection calls only code the build compiles in.
 func withholdForReflectReach(res plugin.ReachabilityResult, scanned vulnScan, reach map[string][]string) plugin.ReachabilityResult {
-	if r := res.Refutation; r != nil {
+	if r := res.Refutation; r != nil && r.Basis != plugin.RefutationAnalyzerPackageNotImported {
 		module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
 		if !ok || reflectMayReach(reach, scanned, module) {
 			res.Refutation = nil

@@ -39,16 +39,13 @@ func withheldBy(store artifact.Store, assessmentID string, pkg *report.Package, 
 		naming = append(naming, false)
 	}
 	root := pkg != nil && pkg.Root
-	admitted, _, resolved := admittedPackage(store, assessmentID, pkg)
-	about, known := admitted, resolved
+	about, _, known := admittedPackage(store, assessmentID, pkg)
 	if !known {
 		about, known = packageKey(pkg)
 	}
-	for _, s := range footprintScoped(store, assessmentID) {
-		if scopedLimitCounts(s, admitted, resolved, root) {
-			declared = append(declared, report.Limit{Reason: s.Reason, Package: s.Package, Path: s.Path, Targets: slices.Clone(s.Targets)})
-			naming = append(naming, known && scopedLimitNames(s, about, root))
-		}
+	for _, s := range countingScoped(store, assessmentID, pkg) {
+		declared = append(declared, report.Limit{Reason: s.Reason, Package: s.Package, Path: s.Path, Targets: slices.Clone(s.Targets)})
+		naming = append(naming, known && scopedLimitNames(s, about, root))
 	}
 	// kept is declared with entries dropped, and a dropped one is always the earliest of its
 	// reason (withoutVersionLimits) or every one of it, so matching from the end pairs each kept

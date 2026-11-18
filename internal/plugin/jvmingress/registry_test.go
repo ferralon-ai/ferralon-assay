@@ -8,7 +8,7 @@ import "testing"
 
 // wantCensus is the behavior-preserving family census from
 // findings/00-registry-schema.md's table: every Name the registry must declare, and the
-// Kind it must carry. Exactly 19 families — no extras, no dupes.
+// Kind it must carry. Exactly 20 families — no extras, no dupes.
 var wantCensus = map[string]string{
 	"spring.request": KindHTTPRoute,
 	"spring.get":     KindHTTPRoute,
@@ -32,6 +32,8 @@ var wantCensus = map[string]string{
 	"msg.rabbit":              KindMessageListener,
 
 	"servlet": KindServlet,
+
+	"validator.constraint": KindConstraintValidator,
 }
 
 // TestFamilies_MatchesBehaviorPreservingCensus is the C1 single-source guard: every expected

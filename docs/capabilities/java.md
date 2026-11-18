@@ -84,7 +84,7 @@ First-party Spring structure is modeled on the lexical side to add edges and par
 
 | Feature | Status | Caveats |
 |---|---|---|
-| Ingress recognition: servlet, route annotations, container entry points (lexical and SCIP recognizers kept in step) | Partial | [JAVA-INGRESS-LIST](#java-ingress-list) |
+| Ingress recognition: servlet, route annotations, container entry points, `ConstraintValidator` `isValid`/`initialize` (lexical and SCIP recognizers kept in step) | Partial | [JAVA-INGRESS-LIST](#java-ingress-list) |
 | Spring bean model and DI edge resolution (unique impl only; `bean_ambiguous` otherwise) | Partial | [JAVA-DI-LEXICAL-ONLY](#java-di-lexical-only) |
 | AOP proxy overlay (`@Async`, `@Transactional`, `@Aspect` add partiality) | Partial | [JAVA-DI-LEXICAL-ONLY](#java-di-lexical-only) |
 | SpEL / placeholder presence | Partial | [JAVA-DI-LEXICAL-ONLY](#java-di-lexical-only) |

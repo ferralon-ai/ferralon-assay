@@ -36,6 +36,7 @@ const (
 	opReturn        = 0xB1
 	accPublic       = 0x0001
 	accPublicSuper  = 0x0021
+	accAbstract     = 0x0400
 	classMajorJava8 = 52
 )
 
@@ -53,6 +54,7 @@ type kclassBuilder struct {
 	// rawClassAnnos are prebuilt class-level annotation structures, emitted after
 	// classAnnos; their constants are interned when they are built.
 	rawClassAnnos [][]byte
+	interfaces    []string // direct superinterfaces, internal names
 }
 
 type kbuiltMethod struct {
@@ -188,6 +190,10 @@ func (b *kclassBuilder) build(thisClass, superClass string) []byte {
 	}
 	thisIdx := b.class(thisClass)
 	superIdx := b.class(superClass)
+	ifaceIdx := make([]uint16, len(b.interfaces))
+	for i, n := range b.interfaces {
+		ifaceIdx[i] = b.class(n)
+	}
 
 	var buf bytes.Buffer
 	buf.Write(be4(0xCAFEBABE))
@@ -200,7 +206,10 @@ func (b *kclassBuilder) build(thisClass, superClass string) []byte {
 	buf.Write(be2(accPublicSuper))
 	buf.Write(be2(thisIdx))
 	buf.Write(be2(superIdx))
-	buf.Write(be2(0)) // interfaces_count
+	buf.Write(be2(uint16(len(ifaceIdx)))) // interfaces_count
+	for _, i := range ifaceIdx {
+		buf.Write(be2(i))
+	}
 	buf.Write(be2(0)) // fields_count
 	buf.Write(be2(uint16(len(b.methods))))
 	for _, m := range b.methods {
@@ -219,6 +228,10 @@ func (b *kclassBuilder) build(thisClass, superClass string) []byte {
 		buf.Write(be2(access))
 		buf.Write(be2(m.nameIdx))
 		buf.Write(be2(m.descIdx))
+		if access&accAbstract != 0 { // an abstract method has no Code attribute
+			buf.Write(be2(0))
+			continue
+		}
 		attrCount := 1
 		if len(m.annos) > 0 {
 			attrCount = 2

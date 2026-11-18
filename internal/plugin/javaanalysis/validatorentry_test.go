@@ -676,7 +676,7 @@ public class Outer {
     }
 }`,
 			wantCalls: []string{"[Outer Ann V]#isValid -> helper"},
-			wantDecls: []string{"Outer@[]","V@[Outer Ann]", "isValid@[Outer Ann V]", "helper@[Outer Ann V]"},
+			wantDecls: []string{"Outer@[]", "V@[Outer Ann]", "isValid@[Outer Ann V]", "helper@[Outer Ann V]"},
 		},
 		{
 			name: "elements with defaults produce no calls or declarations",

@@ -102,6 +102,7 @@ func loadProgram(buildDir string) (*program, error) {
 
 	prog := &program{methodsByKey: map[string][]string{}, concreteByKey: map[string][]string{}}
 	var srcClasses []sourceClass
+	var validatedBy []string
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
@@ -113,6 +114,7 @@ func loadProgram(buildDir string) (*program, error) {
 		if pr.skipped {
 			prog.skipped = true
 		}
+		validatedBy = append(validatedBy, pr.validatedBy...)
 		fp := fileParse{path: f, pkg: pr.pkg, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses}
 		prog.files = append(prog.files, fp)
 		for _, d := range pr.decls {
@@ -132,6 +134,9 @@ func loadProgram(buildDir string) (*program, error) {
 		srcClasses = append(srcClasses, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
 	}
 	rootConstraintValidators(prog.files, srcClasses)
+	if !constraintValidatorsRooted(validatedBy, srcClasses) {
+		prog.skipped = true
+	}
 	prog.beanData = buildSourceBeanData(srcClasses)
 	// #6: legacy XML <bean> definitions under the build tree are an additive bean source
 	// (beanconfig.go). Their Satisfies is enriched with the first-party supertype map so

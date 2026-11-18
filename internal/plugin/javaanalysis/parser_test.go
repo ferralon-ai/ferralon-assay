@@ -94,6 +94,7 @@ import java.lang.annotation.Target;
 import java.lang.annotation.Documented;
 import java.lang.annotation.Inherited;
 import java.lang.annotation.Repeatable;
+import jakarta.validation.Constraint;
 `
 
 func TestParseFile_AnnotationTypeBody(t *testing.T) {
@@ -119,7 +120,7 @@ public @interface PetAgeValidation {
 @Documented @Inherited @Repeatable(Tags.class) @java.lang.annotation.Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.TYPE)
 @interface Tag { String value(); }`, false},
-		{"petclinic constraint shape stays skipped", `
+		{"petclinic constraint shape is admitted at parse level", `
 @Target({ElementType.FIELD, ElementType.METHOD, ElementType.PARAMETER})
 @Retention(RetentionPolicy.RUNTIME)
 @Constraint(validatedBy = PetAgeValidator.class)
@@ -127,7 +128,7 @@ public @interface PetAgeValidation {
 public @interface PetAgeValidation {
     String message() default "Pet age is invalid";
     Class<?>[] groups() default {};
-}`, true},
+}`, false},
 		{"empty body", `@interface Marker {}`, false},
 		{"stray semicolons", `@interface Marker { ; ; }`, false},
 		{"literals of every kind", `@interface A {

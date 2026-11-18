@@ -40,9 +40,10 @@ func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest) (plugin.Sym
 	}
 
 	var (
-		syms       []plugin.Symbol
-		readFailed bool
-		skipped    bool
+		syms        []plugin.Symbol
+		readFailed  bool
+		skipped     bool
+		validatedBy []string
 	)
 	for _, f := range files {
 		data, err := os.ReadFile(f)
@@ -55,6 +56,12 @@ func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest) (plugin.Sym
 			skipped = true
 		}
 		syms = append(syms, symbolsFromParse(pr)...)
+		if len(pr.validatedBy) > 0 {
+			validatedBy = append(validatedBy, pr.validatedBy...)
+		}
+	}
+	if len(validatedBy) > 0 && !constraintValidatorsRooted(validatedBy, firstPartyClasses(files)) {
+		skipped = true
 	}
 
 	sort.Slice(syms, func(i, j int) bool { return syms[i].SCIP < syms[j].SCIP })
@@ -164,4 +171,20 @@ func skipDir(name string) bool {
 		return true
 	}
 	return strings.HasPrefix(name, ".")
+}
+
+// firstPartyClasses re-reads files for the bean scan's class table, which the
+// validatedBy check needs only when an admitted @Constraint names a validator. An
+// unreadable file contributes none, so a validator declared there fails the check.
+func firstPartyClasses(files []string) []sourceClass {
+	var out []sourceClass
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		src := string(data)
+		out = append(out, scanSourceClasses([]rune(stripJava(src)), []rune(src), parseFile(src).pkg)...)
+	}
+	return out
 }

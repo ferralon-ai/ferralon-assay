@@ -27,27 +27,7 @@ func rootConstraintValidators(files []fileParse, classes []sourceClass) {
 	if validatorSuper == "" {
 		return
 	}
-	supers := map[string][]string{}
-	firstParty := map[string]bool{}
-	for _, sc := range classes {
-		firstParty[sc.name] = true
-		supers[sc.name] = append(supers[sc.name], sc.supers...)
-	}
-	memo := map[string]bool{}
-	isValidator := func(name string) bool {
-		if v, ok := memo[name]; ok {
-			return v
-		}
-		v := false
-		for _, s := range supertypeClosureNames(name, supers) {
-			if s != name && (s == validatorSuper || (!firstParty[s] && !jdkSupertypeNames[s])) {
-				v = true
-				break
-			}
-		}
-		memo[name] = v
-		return v
-	}
+	isValidator := validatorClassifier(classes)
 	owners := map[string]bool{}
 	for _, sc := range classes {
 		if isValidator(sc.name) {
@@ -152,4 +132,60 @@ func scipValidatorMethods(idx scipIndex, defs [][]scipDefSpan) []string {
 		}
 	}
 	return out
+}
+
+// validatorClassifier returns the lexical pass's test for "this first-party class is a
+// ConstraintValidator": its supertype closure reaches the family supertype, or reaches a
+// type that is neither first-party nor a known JDK name (a dependency class may extend it).
+func validatorClassifier(classes []sourceClass) func(name string) bool {
+	supers := map[string][]string{}
+	firstParty := map[string]bool{}
+	for _, sc := range classes {
+		firstParty[sc.name] = true
+		supers[sc.name] = append(supers[sc.name], sc.supers...)
+	}
+	memo := map[string]bool{}
+	return func(name string) bool {
+		if v, ok := memo[name]; ok {
+			return v
+		}
+		v := false
+		for _, s := range supertypeClosureNames(name, supers) {
+			if s != name && (s == validatorSuper || (!firstParty[s] && !jdkSupertypeNames[s])) {
+				v = true
+				break
+			}
+		}
+		memo[name] = v
+		return v
+	}
+}
+
+// constraintValidatorsRooted reports whether every class an admitted @Constraint names
+// resolves, by a simple name unique among first-party classes, to a class that
+// rootConstraintValidators roots. A name that is unresolved (a dependency class), declared
+// more than once, or not a validator makes the answer false and the run stays partial: the
+// annotation's validatedBy classes would run with no root. Without the family
+// (validatorSuper empty) nothing is rooted, so any name fails.
+func constraintValidatorsRooted(names []string, classes []sourceClass) bool {
+	if len(names) == 0 {
+		return true
+	}
+	if validatorSuper == "" {
+		return false
+	}
+	declared := map[string]map[string]bool{}
+	for _, sc := range classes {
+		if declared[sc.name] == nil {
+			declared[sc.name] = map[string]bool{}
+		}
+		declared[sc.name][ownerKey(sc.pkg, sc.enclosing)] = true
+	}
+	isValidator := validatorClassifier(classes)
+	for _, n := range names {
+		if len(declared[n]) != 1 || !isValidator(n) {
+			return false
+		}
+	}
+	return true
 }

@@ -1,6 +1,7 @@
 package javaanalysis
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -58,6 +59,11 @@ type parseResult struct {
 	calls     []callSite      // method-call expressions inside method bodies
 	ingresses []ingressMarker // annotation/servlet entry-point markers
 	skipped   bool            // a construct was not fully modeled (e.g. an annotation type body that may hold code)
+	// validatedBy holds the simple class names an admitted @Constraint annotation type
+	// names. The file is accepted only if each resolves to a first-party ConstraintValidator
+	// (constraintValidatorsRooted); parseFile cannot see other files, so the program-level
+	// caller makes that check and treats a failure as skipped.
+	validatedBy []string
 }
 
 // stripJava removes comments, string literals, char literals, and text-block
@@ -233,8 +239,9 @@ func parseFile(src string) parseResult {
 			// declares partiality: an annotation type's meta-annotations give it
 			// dispatch or wiring meaning the lane does not model.
 			if word == "interface" && precededByAt(r, i) {
-				if annotationTypeHeaderInert(r, i, imports, len(typeStack) > 0) {
+				if vb, ok := annotationTypeHeaderInert(r, i, imports, len(typeStack) > 0); ok {
 					if end, ok := annotationTypeEnd(r, next); ok {
+						res.validatedBy = append(res.validatedBy, vb...)
 						i = end
 						continue
 					}
@@ -1064,19 +1071,57 @@ func numberEnd(r []rune, pos int) int {
 	return pos
 }
 
-// inertMetaAnnotations are the only annotations an annotation type may carry
-// and still be accepted: the java.lang.annotation meta-annotations, none of
-// which gives the annotated type dispatch or wiring meaning. Any other
-// annotation, including a user-defined one, keeps the file skipped.
-var inertMetaAnnotations = map[string]bool{
-	"Retention": true, "Target": true, "Documented": true, "Inherited": true, "Repeatable": true,
+// inertMetaNames are the only annotations an annotation type may carry and still
+// be accepted, by qualified name: the java.lang.annotation meta-annotations, none of
+// which gives the annotated type dispatch or wiring meaning, and Bean Validation's
+// @Constraint, whose validatedBy classes are container-invoked and so are admitted only
+// when each is a rooted first-party validator (see constraintValidatorsRooted). Any
+// other annotation, including a user-defined one, keeps the file skipped.
+var inertMetaNames = map[string]bool{
+	"java.lang.annotation.Retention":  true,
+	"java.lang.annotation.Target":     true,
+	"java.lang.annotation.Documented": true,
+	"java.lang.annotation.Inherited":  true,
+	"java.lang.annotation.Repeatable": true,
+	"jakarta.validation.Constraint":   true,
+	"javax.validation.Constraint":     true,
 }
 
-const inertMetaPackage = "java.lang.annotation."
+// constraintNames are the qualified names among inertMetaNames that carry validatedBy.
+var constraintNames = map[string]bool{
+	"jakarta.validation.Constraint": true,
+	"javax.validation.Constraint":   true,
+}
+
+// validatedByArg matches the whole of a @Constraint use, whitespace removed: a lone
+// validatedBy element holding one class literal or a braced list of them. Anything else
+// (no argument, an empty array, a call, a constant) does not match and stays skipped.
+var validatedByArg = regexp.MustCompile(`^@[\w.$]+\(validatedBy=(?:(` + classLit + `)|\{(` + classLit + `(?:,` + classLit + `)*),?\})\)$`)
+
+const classLit = `[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.class`
+
+// constraintValidatedBy returns the simple class names in the @Constraint use r[pos:end].
+func constraintValidatedBy(r []rune, pos, end int) ([]string, bool) {
+	text := strings.Join(strings.Fields(string(r[pos:end])), "")
+	m := validatedByArg.FindStringSubmatch(text)
+	if m == nil {
+		return nil, false
+	}
+	list := m[1]
+	if list == "" {
+		list = m[2]
+	}
+	var out []string
+	for _, lit := range strings.Split(list, ",") {
+		lit = strings.TrimSuffix(lit, ".class")
+		out = append(out, lit[strings.LastIndexByte(lit, '.')+1:])
+	}
+	return out, true
+}
 
 // recordImport records an import under its last segment; text is what follows the
 // "import" keyword through the ';'. A static ("statica.B.C") or wildcard ("a.b.*")
-// entry never equals a java.lang.annotation qualified name, so it resolves nothing.
+// entry never equals a qualified name in inertMetaNames, so it resolves nothing.
 func recordImport(imports map[string]string, text []rune) {
 	name := strings.Join(strings.Fields(strings.TrimSuffix(string(text), ";")), "")
 	if name == "" {
@@ -1086,14 +1131,16 @@ func recordImport(imports map[string]string, text []rune) {
 }
 
 // annotationTypeHeaderInert reports whether every annotation on the "@interface"
-// whose '@' precedes the keyword at kw is a java.lang.annotation meta-annotation.
+// whose '@' precedes the keyword at kw is in inertMetaNames, and returns the validatedBy
+// class names of any @Constraint among them.
 // A simple name counts only through a single-type import of the java.lang.annotation
 // type (a wildcard or same-package type could supply a different one) and only
 // at the top level (an enclosing type could declare or inherit a member type of that
 // name); a fully qualified name needs neither. The header is the run of text back
 // to the previous ';', '{' or '}' outside an argument list; it must hold nothing but annotations and the
 // modifiers an annotation type allows.
-func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nested bool) bool {
+func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nested bool) ([]string, bool) {
+	var validatedBy []string
 	at := kw - 1
 	for at > 0 && r[at] != '@' {
 		at--
@@ -1105,7 +1152,7 @@ func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nest
 			depth++
 		} else if c == '(' {
 			if depth == 0 {
-				return false
+				return nil, false
 			}
 			depth--
 		} else if depth == 0 && (c == ';' || c == '{' || c == '}') {
@@ -1122,22 +1169,30 @@ func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nest
 		if r[pos] == '@' {
 			end, ok := annotationUse(r, pos)
 			if !ok {
-				return false
+				return nil, false
 			}
 			name, _ := annotationName(r, pos)
-			if !inertMetaName(name, imports, nested) {
-				return false
+			full, ok := inertMetaName(name, imports, nested)
+			if !ok {
+				return nil, false
+			}
+			if constraintNames[full] {
+				vb, ok := constraintValidatedBy(r, pos, end)
+				if !ok {
+					return nil, false
+				}
+				validatedBy = append(validatedBy, vb...)
 			}
 			pos = end
 			continue
 		}
 		w, nx := readWord(r, pos)
 		if !annotationTypeModifiers[w] {
-			return false
+			return nil, false
 		}
 		pos = nx
 	}
-	return true
+	return validatedBy, true
 }
 
 var annotationTypeModifiers = map[string]bool{
@@ -1160,9 +1215,11 @@ func annotationName(r []rune, pos int) (string, int) {
 	}
 }
 
-func inertMetaName(name string, imports map[string]string, nested bool) bool {
-	if rest, ok := strings.CutPrefix(name, inertMetaPackage); ok {
-		return inertMetaAnnotations[rest]
+// inertMetaName resolves name to its qualified name when that is in inertMetaNames.
+func inertMetaName(name string, imports map[string]string, nested bool) (string, bool) {
+	if strings.Contains(name, ".") {
+		return name, inertMetaNames[name]
 	}
-	return !nested && inertMetaAnnotations[name] && imports[name] == inertMetaPackage+name
+	full := imports[name]
+	return full, !nested && inertMetaNames[full]
 }

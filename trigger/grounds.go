@@ -143,15 +143,46 @@ func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Packa
 // one of the view's binaries. Such a path, as the call-graph fallback finds when govulncheck gives only
 // module-level evidence, is a call the program view's run from those mains did not see, so that run's
 // silence holds for none of them: one path is recorded per sink, and the next binary may be reached the
-// same way.
+// same way. It fails closed: a path whose entry package cannot be read counts as entering.
 func entersBinary(store artifact.Store, assessmentID string, view *plugin.ProgramView) bool {
 	mains := make(map[string]bool, len(view.Binaries))
 	for _, b := range view.Binaries {
 		mains[path.Join(view.Module, b)] = true
 	}
 	return slices.ContainsFunc(append(reachPaths(store, assessmentID), taintPaths(store, assessmentID)...), func(p plugin.ReachPath) bool {
-		return mains[p.Ingress.Package] || len(p.Trace) > 0 && mains[p.Trace[0].Package]
+		entries := make([]plugin.Symbol, 0, 2)
+		if p.Ingress != (plugin.Symbol{}) {
+			entries = append(entries, p.Ingress)
+		}
+		if len(p.Trace) > 0 {
+			entries = append(entries, p.Trace[0])
+		}
+		if len(entries) == 0 {
+			return true
+		}
+		return slices.ContainsFunc(entries, func(s plugin.Symbol) bool {
+			pkg, ok := symbolPackage(s)
+			return !ok || mains[pkg]
+		})
 	})
+}
+
+// symbolPackage is the import path of the package a symbol belongs to. The Go lane records only the
+// SCIP id, so it is read from the id's last field, "<pkgPath>/<descriptor>" (a descriptor holds no
+// slash); Package is used when the lane set it. It refuses an id that does not have that shape.
+func symbolPackage(s plugin.Symbol) (string, bool) {
+	if s.Package != "" {
+		return s.Package, true
+	}
+	fields := strings.Fields(s.SCIP)
+	if len(fields) != 5 || fields[0] != "scip-go" || fields[1] != "gomod" {
+		return "", false
+	}
+	slash := strings.LastIndex(fields[4], "/")
+	if slash <= 0 || slash == len(fields[4])-1 {
+		return "", false
+	}
+	return fields[4][:slash], true
 }
 
 // vettedSymbols reports whether the advisory's symbol set is complete enough for an absence of the

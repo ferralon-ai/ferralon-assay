@@ -45,16 +45,24 @@ func TestFinding_ScopedVerdict(t *testing.T) {
 		fx.footprint = footprint
 		return fx
 	}
-	// entering is a reachable candidate the program view rules out, whose recorded path starts in pkg,
+	// sym is a symbol as the Go lane records it: the SCIP id alone, Package empty.
+	sym := func(pkg, name string) plugin.Symbol {
+		return plugin.Symbol{Name: name, SCIP: "scip-go gomod example.com/m v1.0.0 " + pkg + "/" + name + "()."}
+	}
+	// entering is a reachable candidate the program view rules out, whose recorded path starts in entry,
 	// as the call-graph fallback records one.
-	entering := func(pkg string) groundsFixture {
+	entering := func(entry plugin.Symbol) groundsFixture {
 		fx := candidate(net)
 		fx.reach.Paths = []plugin.ReachPath{{
-			Sink:  plugin.Symbol{Package: "golang.org/x/net/html", Name: "Parse"},
-			Trace: []plugin.Symbol{{Package: pkg, Name: "main"}, {Package: "golang.org/x/net/html", Name: "Parse"}},
+			Sink:  sym("golang.org/x/net/html", "Parse"),
+			Trace: []plugin.Symbol{entry, sym("golang.org/x/net/html", "Parse")},
 		}}
 		return fx
 	}
+	ingressOnly := entering(sym("example.com/m/api", "Serve"))
+	ingressOnly.reach.Paths[0].Ingress = sym("example.com/m/cmd/tool", "main")
+	noEntry := entering(plugin.Symbol{})
+	noEntry.reach.Paths[0].Trace = nil
 	for _, tc := range []struct {
 		name   string
 		fx     groundsFixture
@@ -68,8 +76,11 @@ func TestFinding_ScopedVerdict(t *testing.T) {
 		{"a withheld refutation beside a step that did not run", withheld(net, plugin.PartialReasonToolFailure), report.VerdictUndetermined, report.ReasonAnalysisDidNotRun, false},
 		{"a reachable candidate the program view rules out", candidate(net), report.VerdictReachableCandidate, "", true},
 		{"a reachable candidate beside a step that did not run", candidate(net, plugin.PartialReasonToolFailure), report.VerdictReachableCandidate, "", false},
-		{"a reachable candidate whose path enters at the binary", entering("example.com/m/cmd/tool"), report.VerdictReachableCandidate, "", false},
-		{"a reachable candidate whose path enters elsewhere", entering("example.com/m/api"), report.VerdictReachableCandidate, "", true},
+		{"a reachable candidate whose path enters at the binary", entering(sym("example.com/m/cmd/tool", "main")), report.VerdictReachableCandidate, "", false},
+		{"a reachable candidate whose ingress is the binary", ingressOnly, report.VerdictReachableCandidate, "", false},
+		{"a reachable candidate whose path enters in a library package", entering(sym("example.com/m/api", "Serve")), report.VerdictReachableCandidate, "", true},
+		{"a reachable candidate whose entry id cannot be read", entering(plugin.Symbol{Name: "main", SCIP: "garbled"}), report.VerdictReachableCandidate, "", false},
+		{"a reachable candidate whose path records no entry", noEntry, report.VerdictReachableCandidate, "", false},
 	} {
 		f := tc.fx.finding(t)
 		if f.Verdict != tc.row || f.UndeterminedReason != tc.reason {

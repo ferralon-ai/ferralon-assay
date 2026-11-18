@@ -42,6 +42,28 @@ The program view rules an advisory out only when:
 It leaves out the two checks that ask who imports the build: `library_escape` and `unsearched_methods`.
 A step that cannot be completed leaves the view empty. It never concludes from what it did not run.
 
+### When no scoped verdict is made
+
+Each of these leaves the view empty, or holds the verdict back for every binary:
+
+- the library view already holds a refutation, or has nothing for the program view to rule out;
+- the load is incomplete or its cgo state is unknown, or the build has no shipped `main` package;
+- the shipped mains span more than one module: the view answers for one module's binaries, so it gives
+  no verdict;
+- govulncheck's own findings already trace from one of the mains, or the run over the mains fails;
+- the run over the mains does not match the advisory to the module the library view matched, or finds
+  a call, or declares a limit that says a step did not run;
+- a file the build left out, or a call reflection makes, may reach the module, for any module the
+  advisory was matched to;
+- the row does not pass the grounds below: the admitted package's version unresolved, an advisory that
+  names another package, a refutation of another package, a toolchain axis left undetermined, or a
+  did-not-run limit counting for the package;
+- **a reach or taint path the row records starts in a shipped binary's `main` package.** That path,
+  which the call-graph fallback records when govulncheck gives only module-level evidence, is a call
+  the program view's run did not see, so its silence holds for none of the binaries. The path's entry
+  package is read from the symbol's SCIP id, since the Go lane records no separate package; a path
+  whose entry package cannot be read, or that records no entry, counts as entering a binary.
+
 ## The row
 
 One row, with an added field. Nothing is renamed, and a consumer that ignores `scoped_verdicts` reads

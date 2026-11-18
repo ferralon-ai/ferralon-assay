@@ -126,6 +126,27 @@ func TestFinding_VersionLimitsScopedToInventory(t *testing.T) {
 			wantReason: report.ReasonAnalysisDidNotRun,
 		},
 		{
+			// A module replaced by a fork or a directory resolves no version, so the row has no package.
+			name: "a package-less row whose version limit another axis repeated",
+			base: yamlSearched,
+			mutate: func(fx *groundsFixture) {
+				fx.pkg = nil
+				fx.footprint = []string{failed, plugin.PartialReasonRelationshipUnexpressed + ":unlisted_sites", failed}
+				fx.inventory = []string{failed}
+			},
+			wantReason: report.ReasonPackageVersionUnresolved,
+		},
+		{
+			name: "a package-less row with no version limit",
+			base: yamlSearched,
+			mutate: func(fx *groundsFixture) {
+				fx.pkg = nil
+				fx.footprint = []string{plugin.PartialReasonRelationshipUnexpressed + ":unlisted_sites"}
+				fx.inventory = []string{failed}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
 			// outsideBuildGrounds needs no admitted package, so the limit still holds it.
 			name: "a module search with version resolution failed",
 			base: gogsOutsideBuild,

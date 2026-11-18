@@ -1320,6 +1320,12 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 		return report.ReasonAnalysisDidNotRun, true
 	}
 	reasons, versionHeld := keptDidNotRunReasons(store, assessmentID, pkg)
+	// A row with no package is one whose version never resolved (a module replaced by a
+	// different path or a directory has none), so the limit that held it is the specific
+	// statement, whatever other axes declared.
+	if versionHeld && pkg == nil {
+		return report.ReasonPackageVersionUnresolved, true
+	}
 	switch {
 	case len(reasons) == 0:
 		return "", false

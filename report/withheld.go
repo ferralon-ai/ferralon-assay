@@ -8,12 +8,15 @@ import (
 // Limit is one limit of the analysis that withheld a verdict: its reason code and, for a limit
 // scoped to part of the build, the package holding the code the analysis could not see, the place
 // inside it, and the packages that code could reach. Package and Targets are package URLs without a
-// version. A limit with only a Reason holds for the whole run.
+// version. A limit with only a Reason holds for the whole run. A limit with Others stands for that
+// many scoped limits of its reason that the row does not list one by one; the scan's partiality
+// notes carry the package and path of each.
 type Limit struct {
 	Reason  string   `json:"reason"`
 	Package string   `json:"package,omitempty"`
 	Path    string   `json:"path,omitempty"`
 	Targets []string `json:"targets,omitempty"`
+	Others  int      `json:"others,omitempty"`
 }
 
 // limitPhraseTargets is how many of a limit's targets LimitPhrase names before counting the rest.
@@ -23,6 +26,9 @@ const limitPhraseTargets = 3
 func LimitPhrase(l Limit) string {
 	var b strings.Builder
 	b.WriteString(l.Reason)
+	if l.Others > 0 {
+		fmt.Fprintf(&b, " (%d scoped limits not listed one by one)", l.Others)
+	}
 	if l.Package != "" {
 		b.WriteString(" in " + l.Package)
 	}

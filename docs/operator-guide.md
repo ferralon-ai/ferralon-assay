@@ -88,7 +88,10 @@ An `undetermined` row is an open question, never a clean bill. Its `undetermined
 the scan did not establish. A `refutation_withheld` or `analysis_did_not_run` row also lists, in
 `withheld_by`, the limits that withheld the verdict: each one's reason code and, when the limit is
 scoped to part of the build, the package and path holding the code the analysis could not see and the
-packages that code could reach. The row's detail names the same limits. An `analysis_did_not_run` row
+packages that code could reach. A row lists in full up to eight scoped limits of one reason that name
+its package, and those that count against it without naming it while there are three or fewer. The
+rest of that reason are one entry whose `others` is their number; the scan-level `partiality` notes
+carry the package and path of each, not its targets. The row's detail names the same limits. An `analysis_did_not_run` row
 whose analysis failed or produced no call graph has no limit that says so, so its list can be empty,
 and a limit it does list is not the reason the analysis did not run.
 

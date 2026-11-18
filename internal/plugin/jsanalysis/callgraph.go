@@ -238,6 +238,7 @@ type partialFlags struct {
 	uninspectable bool // a bare specifier into a package this cycle cannot open (uninspectable_package)
 	dynImport     bool // a runtime-computed ESM target import(expr) (dynamic_import_specifier)
 	computedReq   bool // a runtime-computed CJS target require(var) (computed_require_specifier)
+	loaderEscape  bool // a loader handed on or reached where its calls are not judged; reported as computedReq
 	unreadModule  bool // a relative specifier naming no in-tree source module, or process.dlopen (unresolved_module)
 	evaluated     bool // eval or the Function constructor (evaluated_code)
 	stylesheet    bool // a stylesheet import whose only code is the loader runtime (scoped uninspectable_package)
@@ -289,6 +290,8 @@ type graphBuild struct {
 	// A computed read accepted for its literal receiver holds only while no module of the
 	// build may set a prototype the lane does not see.
 	anyExempt, anyProto bool
+	// prefixes are the first-party prefix loads, for the load closure.
+	prefixes []prefixSite
 	// pkgLoads and pkgCalls are the first-party sites declined only because a bare specifier
 	// names a package the build has not read; dependency code read afterwards may cover them
 	// (coverReadPackages). entered marks a call into a package-boundary node outside pkgCalls,
@@ -408,6 +411,10 @@ func buildGraph(prog *program) *graphBuild {
 			// The evaluated code's own calls and loads are never read, so no entry lists them.
 			load("eval", plugin.PartialReasonEvaluatedCode)
 			flags.unlisted = true
+		}
+		flags.loaderEscape = flags.loaderEscape || f.bindings.loaderEscape
+		for _, p := range f.bindings.prefixes {
+			g.prefixes = append(g.prefixes, prefixSite{module: f.module, prefix: p})
 		}
 		g.anyExempt = g.anyExempt || f.bindings.literalExempt
 		g.anyProto = g.anyProto || f.bindings.protoWrite

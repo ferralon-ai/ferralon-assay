@@ -215,7 +215,9 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           : > fixtures.jsonl
-          for f in floor-observations/*/summary.json; do
+          # download-artifact extracts a lone matching artifact straight into the path, with no
+          # per-artifact directory, so a one-fixture dispatch leaves summary.json at the top level.
+          for f in floor-observations/summary.json floor-observations/*/summary.json; do
             if jq -c '.fixtures[]' "$f" > one.jsonl; then
               cat one.jsonl >> fixtures.jsonl
             else

@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
 // fakeRunner stands in for git and the scanner: each fixture's scan writes the report given for its
@@ -643,5 +644,31 @@ func TestScanEnvPathWithoutInheritedPath(t *testing.T) {
 		if p != "/scanner" {
 			t.Errorf("base %q: PATH %q, want only the scanner directory (an empty entry puts the working directory on PATH)", base, p)
 		}
+	}
+}
+
+func TestSummarizeRunRegressedLine(t *testing.T) {
+	absent := &Observed{Verdict: report.VerdictNotExploitable, Basis: verdict.BasisSymbolAbsent}
+	tests := []struct {
+		name string
+		e    ExpectResult
+		want string
+	}{
+		{"basis mismatch names both bases",
+			ExpectResult{Advisory: "GO-1", Package: "p@v1", Floor: report.VerdictNotExploitable, Basis: verdict.BasisSymbolUnreachable,
+				Outcome: OutcomeRegressed, Reason: ReasonBasisMismatch, Compared: absent},
+			"GO-1 p@v1: floor not_exploitable (vulnerable_symbol_unreachable), observed not_exploitable (vulnerable_symbol_absent) [basis_mismatch]"},
+		{"below floor stays verdict-only",
+			ExpectResult{Advisory: "GO-2", Package: "p@v1", Floor: report.VerdictNotExploitable, Basis: verdict.BasisSymbolUnreachable,
+				Outcome: OutcomeRegressed, Reason: ReasonBelowFloor, Compared: &Observed{Verdict: report.VerdictUndetermined}},
+			"GO-2 p@v1: floor not_exploitable, observed undetermined [below_floor]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := summarizeRun([]FixtureResult{{Fixture: "f", Outcome: OutcomeRegressed, Expectations: []ExpectResult{tt.e}}})
+			if got := s.Fixtures[0].Regressed; len(got) != 1 || got[0] != tt.want {
+				t.Fatalf("Regressed = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

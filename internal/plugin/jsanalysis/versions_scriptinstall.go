@@ -835,7 +835,7 @@ func laneReadOnly(words []string) bool {
 
 // laneNpmrcWrite reports whether a command is an echo or printf of literal lines onto an
 // .npmrc, each line setting only what an .npmrc may set and leave the install to the lock
-// (npmrcTextSetsOnly with npmrcLockSafeKeys: a registry, its credentials): the write CI makes
+// (npmrcTextSetsOnly with npmrcLockSafeKeys: where packages come from and how): the write CI makes
 // before an install from a private registry. The one redirect is > or >> and comes last. No
 // word holds a command substitution, and no key an expansion, so only a value varies. A
 // printf writes its format alone.

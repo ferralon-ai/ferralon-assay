@@ -693,7 +693,6 @@ func evidenceResult(findings []vulnFinding, cg plugin.CallGraphResult, env []str
 // refutes the others, and the gate matches each against the packages the advisory names.
 func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 	var module, version string
-	imported := false
 	for _, f := range findings {
 		if len(f.Trace) == 0 {
 			continue
@@ -705,13 +704,13 @@ func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 		if module == "" || fr.Module < module {
 			module, version = fr.Module, fr.Version
 		}
-		if fr.Package != "" {
-			imported = true
-		}
 	}
 	if module == "" {
 		return nil
 	}
+	imported := slices.ContainsFunc(findings, func(f vulnFinding) bool {
+		return len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Package != ""
+	})
 	use := "a vulnerable package is not imported"
 	if imported {
 		use = "a vulnerable package is imported"

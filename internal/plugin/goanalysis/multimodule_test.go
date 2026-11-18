@@ -12,7 +12,8 @@ import (
 )
 
 // TestResultPerModule is an advisory govulncheck matched to two modules of the build at module
-// level. Each module is refuted on its own findings; a symbol finding in either refutes neither.
+// level. Each module is refuted on its own findings; a symbol finding in either refutes neither, and
+// a module whose refutation is withheld is not refuted beside the first.
 func TestResultPerModule(t *testing.T) {
 	files := map[string]string{
 		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/amod v0.0.0\n\texample.com/bmod v0.0.0\n)\n\n" +
@@ -42,6 +43,9 @@ func TestResultPerModule(t *testing.T) {
 		{"two modules, path order", []vulnFinding{at(b, ""), at(a, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false},
 		{"two modules, another platform's file calls the second", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b},
 			map[string]string{"main_windows.go": "package main\n\nimport \"example.com/bmod\"\n\nfunc init() { bmod.Bad() }\n"}, true},
+		{"two modules, a linkname file of another platform calls the second", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil,
+			map[string]string{"main_windows.go": "package main\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/bmod\"\n)\n\n//go:linkname x example.com/bmod.Bad\nfunc x()\n\nfunc init() { bmod.Bad(); x() }\n"}, false},
+		{"two modules, only the second's package imported", []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: a, Version: "v0.0.0"}}}, at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false},
 		{"two modules, a symbol finding in the first", []vulnFinding{at(a, "Bad"), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false},
 		{"two modules, a symbol finding in the second", []vulnFinding{at(a, ""), at(b, "Bad")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false},
 	}
@@ -80,6 +84,16 @@ func TestResultPerModule(t *testing.T) {
 			}
 			if res.Refutation != nil && strings.Contains(res.Refutation.Detail, "scope:") {
 				t.Errorf("the first module's refutation states a scope no file of its own gave it: %q", res.Refutation.Detail)
+			}
+			if res.Refutation != nil {
+				imported := !strings.Contains(res.Refutation.Detail, "is not imported")
+				if want := tt.findings[0].Trace[0].Package != "" || tt.findings[0].Trace[0].Module != a; imported != want {
+					t.Errorf("the first module's refutation says its package is imported = %v, want %v (detail %q)", imported, want, res.Refutation.Detail)
+				}
+			}
+			const scope = plugin.PartialReasonExcludedFilesBuildConstraint
+			if declared := slices.Contains(res.Partiality.Reasons, scope); declared != tt.scoped || declared && res.Partiality.Complete {
+				t.Errorf("result declares %s = %v (complete %v), want %v: %+v", scope, declared, res.Partiality.Complete, tt.scoped, res.Partiality)
 			}
 			if !slices.Equal(beside, tt.beside) {
 				t.Errorf("Refutations name %q, want %q", beside, tt.beside)

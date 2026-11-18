@@ -67,11 +67,11 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 				unvetted = true
 			} else if len(absent) == 0 {
 				return fmt.Sprintf("no path from any entry point reaches %s in %s",
-					strings.Join(symbols, ", "), label), "", verdict.BasisSymbolUnreachable, refutationAssumptions(reach), true
+					strings.Join(symbols, ", "), label), "", verdict.BasisSymbolUnreachable, refutationAssumptions(reach, admitted, root), true
 			} else {
 				present := slices.DeleteFunc(slices.Clone(symbols), func(s string) bool { return slices.Contains(absent, s) })
 				return fmt.Sprintf("no path from any entry point reaches %s in %s, whose build target does not define %s",
-					strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", verdict.BasisSymbolUnreachable, refutationAssumptions(reach), true
+					strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", verdict.BasisSymbolUnreachable, refutationAssumptions(reach, admitted, root), true
 			}
 		}
 	}
@@ -465,12 +465,14 @@ func normalizePackageName(typ, name string) string {
 	}
 }
 
-// refutationAssumptions are the assumptions the lane's refutation rests on, none without one.
-func refutationAssumptions(reach plugin.ReachabilityResult) []string {
-	if reach.Refutation == nil {
+// refutationAssumptions are the assumptions the lane's refutation of the admitted package rests on,
+// none without one.
+func refutationAssumptions(reach plugin.ReachabilityResult, admitted pkgKey, root bool) []string {
+	r := admittedRefutation(reach, admitted, root)
+	if r == nil {
 		return nil
 	}
-	return reach.Refutation.Assumptions
+	return r.Assumptions
 }
 
 // libraryEntrypoints reads the library entry points the lane resolved for the assessment, none when

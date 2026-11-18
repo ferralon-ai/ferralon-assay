@@ -10,8 +10,9 @@ import (
 // resultPerModule is resultFromGraph for an advisory govulncheck matched to several of the build's
 // modules. resultFromGraph refutes the first module in path order. Each other module is then judged
 // the same way on its own findings, and a refutation that survives every withhold joins
-// Refutations. A module whose refutation is withheld is absent from it, and what the result declares
-// stays what the first module's judgement declared.
+// Refutations. A module whose refutation is withheld is absent from it. A refutation kept for the
+// scanned platform alone brings its excluded_files:build_constraint limit to the result, so the scan
+// still discloses it; everything else the result declares is the first module's judgement.
 func resultPerModule(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
 	res, err := resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
 	if err != nil {
@@ -31,14 +32,20 @@ func resultPerModule(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 		if err != nil {
 			return plugin.ReachabilityResult{}, err
 		}
-		if other.Refutation != nil {
-			res.Refutations = append(res.Refutations, *other.Refutation)
+		if other.Refutation == nil {
+			continue
+		}
+		res.Refutations = append(res.Refutations, *other.Refutation)
+		const scope = plugin.PartialReasonExcludedFilesBuildConstraint
+		if slices.Contains(other.Partiality.Reasons, scope) && !slices.Contains(res.Partiality.Reasons, scope) {
+			res.Partiality.Complete = false
+			res.Partiality.Reasons = append(slices.Clone(res.Partiality.Reasons), scope)
 		}
 	}
 	return res, nil
 }
 
-// findingModules returns the modules the findings name, in path order: the first is the one
+// findingModules returns the modules the findings name, sorted by module path: the first is the one
 // moduleRefutation refutes.
 func findingModules(findings []vulnFinding) []string {
 	var modules []string

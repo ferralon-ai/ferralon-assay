@@ -22,6 +22,7 @@ func TestFinding_RefutedBeside(t *testing.T) {
 	const (
 		xnet   = "pkg:golang/golang.org/x/net"
 		stdlib = "pkg:golang/stdlib"
+		tools  = "pkg:golang/toolchain"
 		v3     = "pkg:golang/github.com/distribution/distribution/v3"
 		docker = "pkg:golang/github.com/docker/distribution"
 	)
@@ -40,6 +41,7 @@ func TestFinding_RefutedBeside(t *testing.T) {
 		scoped     []artifact.ScopedPartialityFlag
 		wantReason string // "" = not_exploitable
 		wantDetail []string
+		wantExact  string
 		wantAssume []string
 	}{
 		{
@@ -81,11 +83,41 @@ func TestFinding_RefutedBeside(t *testing.T) {
 			name: "admitted package is the later module", pkg: dockerPkg, affected: []string{v3, docker},
 			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
 			reach: plugin.ReachabilityResult{
-				Refutation:  ptr(unreached(v3, "v3 unreached")),
-				Refutations: []plugin.Refutation{unreached(docker, "docker unreached")},
+				Refutation:  ptr(unreached(v3, "v3 unreached", "a1")),
+				Refutations: []plugin.Refutation{unreached(docker, "docker unreached", "a2")},
 			},
 			toolchain: exact, scanned: true,
-			wantDetail: []string{"docker unreached", "also github.com/distribution/distribution/v3: v3 unreached"},
+			wantExact:  "github.com/docker/distribution@v2.8.1: docker unreached (analyzer_symbol_not_reached); also github.com/distribution/distribution/v3: v3 unreached (analyzer_symbol_not_reached)",
+			wantAssume: []string{"a2", "a1"},
+		},
+		{
+			name: "a refutation of a package the advisory does not name", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true, "golang.org/x/net": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(v3, "v3 unreached")),
+				Refutations: []plugin.Refutation{unreached(docker, "docker unreached"), unreached(xnet, "x/net unreached", "a3")},
+			},
+			toolchain: exact, scanned: true,
+			wantExact:  "github.com/docker/distribution@v2.8.1: docker unreached (analyzer_symbol_not_reached); also github.com/distribution/distribution/v3: v3 unreached (analyzer_symbol_not_reached)",
+			wantAssume: []string{},
+		},
+		{
+			name: "toolchain refuted beside, scan not under the subject toolchain", pkg: xnetPkg, affected: []string{xnet, tools},
+			mods: goModules{"golang.org/x/net": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(xnet, "d")),
+				Refutations: []plugin.Refutation{unreached(tools, "d")},
+			},
+			toolchain: exact, scanned: false, wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "toolchain refuted beside, subject toolchain scanned", pkg: xnetPkg, affected: []string{xnet, tools},
+			mods: goModules{"golang.org/x/net": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(xnet, "d")),
+				Refutations: []plugin.Refutation{unreached(tools, "d")},
+			},
+			toolchain: exact, scanned: true,
 		},
 		{
 			name: "other package refuted on a basis this gate does not weigh", pkg: dockerPkg, affected: []string{v3, docker},
@@ -155,6 +187,9 @@ func TestFinding_RefutedBeside(t *testing.T) {
 				if !strings.Contains(f.Evidence.Detail, want) {
 					t.Errorf("detail %q lacks %q", f.Evidence.Detail, want)
 				}
+			}
+			if tt.wantExact != "" && f.Evidence.Detail != tt.wantExact {
+				t.Errorf("detail = %q, want %q", f.Evidence.Detail, tt.wantExact)
 			}
 			if tt.wantAssume != nil && !slices.Equal(f.Evidence.Assumptions, tt.wantAssume) {
 				t.Errorf("assumptions = %q, want %q", f.Evidence.Assumptions, tt.wantAssume)

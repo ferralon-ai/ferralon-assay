@@ -29,8 +29,9 @@ func admittedRefutation(reach plugin.ReachabilityResult, admitted pkgKey, root b
 // the admitted package's own gate. Each rests on the analyzer's own search of that module
 // (analyzer_symbol_not_reached), so three things hold one back:
 //
-//   - a refutation of the standard library, unless reachability ran under the subject's exact Go
-//     toolchain (toolchainUndetermined's rule for a stdlib advisory);
+//   - a refutation of the standard library or of the Go toolchain's own commands, unless
+//     reachability ran under the subject's exact Go toolchain (toolchainUndetermined's rule for a
+//     stdlib advisory);
 //   - a scoped did-not-run limit that counts for the module (scopedLimitCounts), which the
 //     admitted package's own gate never weighs;
 //   - any other basis, which this version does not know how to weigh beside the admitted package.
@@ -46,7 +47,7 @@ func refutedBeside(store artifact.Store, assessmentID string, reach plugin.Reach
 		if !ok || key.typ != "golang" || r.Basis != plugin.RefutationAnalyzerSymbolNotReached {
 			continue
 		}
-		if key.name == goStdlib && !subjectToolchainExactAndScanned(store, assessmentID) {
+		if (key.name == goStdlib || key.name == goToolchain) && !subjectToolchainExactAndScanned(store, assessmentID) {
 			continue
 		}
 		if slices.ContainsFunc(scoped, func(f artifact.ScopedPartialityFlag) bool {
@@ -58,6 +59,9 @@ func refutedBeside(store artifact.Store, assessmentID string, reach plugin.Reach
 	}
 	return out
 }
+
+// goToolchain is govulncheck's module for cmd/go and the toolchain's other commands.
+const goToolchain = "toolchain"
 
 // subjectToolchainExactAndScanned reports whether the subject's Go toolchain is known exactly and
 // reachability ran under it: the condition toolchainUndetermined lifts on.

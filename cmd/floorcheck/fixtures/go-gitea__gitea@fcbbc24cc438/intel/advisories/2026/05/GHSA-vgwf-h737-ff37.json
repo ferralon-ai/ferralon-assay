@@ -1,0 +1,69 @@
+{
+  "affected": [
+    {
+      "coordinate": "golang.org/x/crypto",
+      "fixed_versions": [
+        "0.52.0"
+      ],
+      "purl": "pkg:golang/golang.org/x/crypto",
+      "ranges": [
+        {
+          "fixed": "0.52.0",
+          "upper_exclusive": "0.52.0"
+        }
+      ],
+      "version_scheme": "gomod"
+    },
+    {
+      "coordinate": "golang.org/x/crypto/ssh",
+      "purl": "pkg:golang/golang.org/x/crypto/ssh",
+      "version_scheme": "honest-absent"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "0.52.0",
+      "fixed_version": "0.52.0"
+    }
+  ],
+  "aliases": [
+    "CVE-2026-39830",
+    "GO-2026-5017"
+  ],
+  "coordinate": "golang.org/x/crypto",
+  "purl": "pkg:golang/golang.org/x/crypto",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "A malicious SSH peer could send unsolicited global request responses to fill an internal buffer, blocking the connection's read loop. The blocked goroutine could not be released by calling Close(), resulting in a resource leak per connection. Unsolicited global responses are now discarded.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "golang.org/x/crypto/ssh.Client.Listen",
+    "golang.org/x/crypto/ssh.Client.ListenTCP",
+    "golang.org/x/crypto/ssh.Client.ListenUnix",
+    "golang.org/x/crypto/ssh.Dial",
+    "golang.org/x/crypto/ssh.NewClientConn",
+    "golang.org/x/crypto/ssh.NewServerConn",
+    "golang.org/x/crypto/ssh.Session.CombinedOutput",
+    "golang.org/x/crypto/ssh.Session.Output",
+    "golang.org/x/crypto/ssh.Session.RequestPty",
+    "golang.org/x/crypto/ssh.Session.RequestSubsystem",
+    "golang.org/x/crypto/ssh.Session.Run",
+    "golang.org/x/crypto/ssh.Session.SendRequest",
+    "golang.org/x/crypto/ssh.Session.Setenv",
+    "golang.org/x/crypto/ssh.Session.Shell",
+    "golang.org/x/crypto/ssh.Session.Signal",
+    "golang.org/x/crypto/ssh.Session.Start",
+    "golang.org/x/crypto/ssh.Session.WindowChange",
+    "golang.org/x/crypto/ssh.channel.SendRequest",
+    "golang.org/x/crypto/ssh.channel.handlePacket",
+    "golang.org/x/crypto/ssh.mux.SendRequest",
+    "golang.org/x/crypto/ssh.mux.handleGlobalPacket",
+    "golang.org/x/crypto/ssh.tcpListener.Close",
+    "golang.org/x/crypto/ssh.unixListener.Close"
+  ],
+  "version_scheme": "gomod",
+  "vuln_id": "GHSA-vgwf-h737-ff37",
+  "withdrawn": false
+}

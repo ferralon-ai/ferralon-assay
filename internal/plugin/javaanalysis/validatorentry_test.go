@@ -2,6 +2,7 @@ package javaanalysis
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sort"
 	"testing"
@@ -146,6 +147,95 @@ public class Child extends Base implements Comparable<Child> {
 }`,
 			},
 			want: nil,
+		},
+		{
+			name: "test-source validator is not rooted",
+			files: map[string]string{"src/test/java/com/acme/TV.java": `package com.acme;
+public class TV implements jakarta.validation.ConstraintValidator<Ann, String> {
+    public boolean isValid(String v, Object ctx) { return true; }
+}`},
+			want: nil,
+		},
+		{
+			name: "test-source class with a library ancestor is not rooted",
+			files: map[string]string{"src/test/java/com/acme/AppTest.java": `package com.acme;
+public class AppTest extends junit.framework.TestCase { public void initialize() {} }`},
+			want: nil,
+		},
+		{
+			name: "local class is not rooted",
+			files: map[string]string{"com/acme/P.java": `package com.acme;
+public class P {
+    void m() {
+        class L implements jakarta.validation.ConstraintValidator<Ann, String> {
+            public boolean isValid(String v, Object ctx) { return true; }
+        }
+    }
+}`},
+			want: nil,
+		},
+		{
+			name: "enum validator",
+			files: map[string]string{"com/acme/E.java": `package com.acme;
+public enum E implements jakarta.validation.ConstraintValidator<Ann, String> {
+    INSTANCE;
+    public boolean isValid(String v, Object ctx) { return true; }
+}`},
+			want: []string{id("E", "isValid", 2)},
+		},
+		{
+			name: "record validator",
+			files: map[string]string{"com/acme/R.java": `package com.acme;
+public record R(int n) implements jakarta.validation.ConstraintValidator<Ann, String> {
+    public boolean isValid(String v, Object ctx) { return true; }
+}`},
+			want: []string{id("R", "isValid", 2)},
+		},
+		{
+			name: "dependency base, helper-only override: nothing to root",
+			files: map[string]string{"com/acme/X.java": `package com.acme;
+public class X extends org.lib.AbstractLibValidator {
+    protected boolean helper(String v) { return true; }
+}`},
+			want: nil,
+		},
+		{
+			name: "first-party class named like the dependency base",
+			files: map[string]string{
+				"com/acme/AbstractLibValidator.java": `package com.acme;
+public class AbstractLibValidator {}`,
+				"com/acme/X.java": `package com.acme;
+public class X extends AbstractLibValidator {
+    protected boolean helper(String v) { return true; }
+}`,
+			},
+			want: nil,
+		},
+		{
+			name: "arity: RuntimeException subclass with initialize() is not rooted",
+			files: map[string]string{"com/acme/X.java": `package com.acme;
+public class X extends RuntimeException { public void initialize() {} }`},
+			want: nil,
+		},
+		{
+			name: "arity: InitializingBean with isValid() and static initialize()",
+			files: map[string]string{"com/acme/C.java": `package com.acme;
+public class C implements org.springframework.beans.factory.InitializingBean {
+    private static void initialize() {}
+    public boolean isValid() { return true; }
+    public void initialize(int a, int b) {}
+}`},
+			want: nil,
+		},
+		{
+			name: "arity: validator overloads of the wrong arity are not rooted",
+			files: map[string]string{"com/acme/V.java": `package com.acme;
+public class V implements jakarta.validation.ConstraintValidator<Ann, String> {
+    public boolean isValid(String v) { return true; }
+    public boolean isValid(String v, Object ctx) { return true; }
+    public void initialize() {}
+}`},
+			want: []string{id("V", "isValid", 2)},
 		},
 		{
 			name: "abstract-only validator declares nothing",
@@ -391,5 +481,89 @@ func TestConstraintValidatorNeedleIsNotAnAnnotation(t *testing.T) {
 	}
 	if validatorSupertypeNeedle == "" || validatorSuper == "" || len(validatorEntryMethods) != 2 {
 		t.Errorf("registry projection empty: needle %q super %q methods %v", validatorSupertypeNeedle, validatorSuper, validatorEntryMethods)
+	}
+}
+
+// The family must only add roots. A marker with no compiled main-source counterpart is
+// unmapped, and an unmapped marker withholds Searched for the whole run, so a test-source
+// class and a local class (compiled as P$1L, scanned as P$L) must produce none.
+func TestBytecodeReach_ValidatorMarkersNeverWithholdSearched(t *testing.T) {
+	cases := []struct {
+		name  string
+		path  string
+		src   string
+		class string
+	}{
+		{"test-source library-ancestor initialize", "src/test/java/com/acme/AppTest.java",
+			"package com.acme;\npublic class AppTest extends junit.framework.TestCase { public void initialize(Object a) {} }\n", ""},
+		{"test-source validator", "src/test/java/com/acme/TV.java",
+			"package com.acme;\npublic class TV implements jakarta.validation.ConstraintValidator<Object, Object> {\n    public boolean isValid(Object v, Object c) { return true; }\n}\n", ""},
+		{"local class validator", "src/main/java/com/acme/P.java",
+			"package com.acme;\npublic class P {\n    void m() {\n        class L implements jakarta.validation.ConstraintValidator<Object, Object> {\n            public boolean isValid(Object v, Object c) { return true; }\n        }\n    }\n}\n", "com/acme/P"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.source("src/main/java/com/acme/App.java", appSource)
+			a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+			a.source(tc.path, tc.src)
+			if tc.class != "" {
+				a.class("target/classes", tc.class, func(*cpb) []xmethod { return nil })
+				a.classI("target/classes", "com/acme/P$1L", "java/lang/Object", nil, 0x0020, validatorMethodsCalling(justReturn))
+			}
+			res := a.reach(netkitSinkID)
+			if !slices.Equal(res.Searched, []string{netkitSinkID}) || hasReason(res.Partiality, plugin.PartialReasonReachabilityUndetermined) {
+				t.Errorf("Searched = %v, partiality %+v; want the no-validator baseline (Searched, no reachability_undetermined)", res.Searched, res.Partiality)
+			}
+		})
+	}
+}
+
+// rootedConstraintValidator is the predicate the annotation-type check consults: true only
+// for a unique first-party class with a concrete isValid(2) rooted on it or a first-party
+// ancestor.
+func TestRootedConstraintValidator(t *testing.T) {
+	const v = `public class %s implements jakarta.validation.ConstraintValidator<Ann, String> {
+    public boolean isValid(String v, Object ctx) { return true; }
+}`
+	cases := []struct {
+		name  string
+		files map[string]string
+		class string
+		want  bool
+	}{
+		{"direct", map[string]string{"com/acme/V.java": "package com.acme;\n" + fmt.Sprintf(v, "V")}, "V", true},
+		{"inherited from a first-party ancestor", map[string]string{
+			"com/acme/Base.java": "package com.acme;\n" + fmt.Sprintf(v, "Base"),
+			"com/acme/Leaf.java": "package com.acme;\npublic class Leaf extends Base {}",
+		}, "Leaf", true},
+		{"dependency base, helper-only", map[string]string{"com/acme/X.java": "package com.acme;\npublic class X extends org.lib.AbstractLibValidator { boolean helper(String v) { return true; } }"}, "X", false},
+		{"simple-name collision with the dependency base", map[string]string{
+			"com/acme/AbstractLibValidator.java": "package com.acme;\npublic class AbstractLibValidator {}",
+			"com/acme/X.java":                    "package com.acme;\npublic class X extends AbstractLibValidator { boolean helper(String v) { return true; } }",
+		}, "X", false},
+		{"simple name declared twice", map[string]string{
+			"com/acme/V.java":  "package com.acme;\n" + fmt.Sprintf(v, "V"),
+			"com/other/V.java": "package com.other;\npublic class V {}",
+		}, "V", false},
+		{"validator on a name two classes share via an ancestor", map[string]string{
+			"com/acme/Base.java":  "package com.acme;\n" + fmt.Sprintf(v, "Base"),
+			"com/other/Base.java": "package com.other;\npublic class Base {}",
+			"com/acme/Leaf.java":  "package com.acme;\npublic class Leaf extends Base {}",
+		}, "Leaf", false},
+		{"unresolved name", map[string]string{"com/acme/V.java": "package com.acme;\n" + fmt.Sprintf(v, "V")}, "Missing", false},
+		{"test-source validator", map[string]string{"src/test/java/com/acme/V.java": "package com.acme;\n" + fmt.Sprintf(v, "V")}, "V", false},
+		{"abstract isValid only", map[string]string{"com/acme/A.java": "package com.acme;\npublic abstract class A implements jakarta.validation.ConstraintValidator<Ann, String> { public abstract boolean isValid(String v, Object c); }"}, "A", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := loadProgram(writeProgram(t, tc.files))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := rootedConstraintValidator(prog, tc.class); got != tc.want {
+				t.Errorf("rootedConstraintValidator(%q) = %v, want %v", tc.class, got, tc.want)
+			}
+		})
 	}
 }

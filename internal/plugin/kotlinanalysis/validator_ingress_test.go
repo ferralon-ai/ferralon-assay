@@ -128,6 +128,37 @@ func TestFindIngresses_ConstraintValidator(t *testing.T) {
 			},
 		},
 		{
+			name: "arity: wrong-arity isValid and initialize are not rooted",
+			classes: []validatorClass{{"com/acme/V", obj, []string{jak}, []validatorMethod{
+				{"isValid", "()Z", false},
+				{"isValid", "(Ljava/lang/String;)Z", false},
+				{"initialize", "()V", false},
+				{"initialize", "(II)V", false},
+			}}},
+		},
+		{
+			name:    "arity: library ancestor with initialize() is not rooted",
+			classes: []validatorClass{{"com/acme/X", "java/lang/RuntimeException", nil, []validatorMethod{{"initialize", "()V", false}}}},
+		},
+		{
+			name:    "arity: array and primitive parameters are counted",
+			classes: []validatorClass{{"com/acme/V", obj, []string{jak}, []validatorMethod{{"isValid", "([JILjava/lang/Object;)Z", false}, {"isValid", "([[JLjava/lang/Object;)Z", false}}}},
+			want:    []string{"com.acme.V.isValid"},
+		},
+		{
+			name:    "Kotlin object validator",
+			classes: []validatorClass{{"com/acme/Obj", obj, []string{jak}, []validatorMethod{{"isValid", isV, false}}}},
+			want:    []string{"com.acme.Obj.isValid"},
+		},
+		{
+			name: "companion object validator",
+			classes: []validatorClass{
+				{"com/acme/Outer", obj, nil, nil},
+				{"com/acme/Outer$Companion", obj, []string{jak}, []validatorMethod{{"isValid", isV, false}}},
+			},
+			want: []string{"com.acme.Outer$Companion.isValid"},
+		},
+		{
 			name:    "abstract-only validator is not rooted",
 			classes: []validatorClass{{"com/acme/Checker", obj, []string{jak}, []validatorMethod{{"isValid", isV, true}}}},
 		},

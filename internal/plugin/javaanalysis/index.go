@@ -66,7 +66,7 @@ func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest) (plugin.Sym
 	if !wc.ok() {
 		skipped = true
 	}
-	if len(validatedBy) > 0 && !constraintValidatorsRooted(validatedBy, firstPartyClasses(files)) {
+	if len(validatedBy) > 0 && !validatedByRooted(&program{rootedValidators: rootedValidatorsOf(req.BuildDir, files)}, validatedBy) {
 		skipped = true
 	}
 
@@ -177,20 +177,4 @@ func skipDir(name string) bool {
 		return true
 	}
 	return strings.HasPrefix(name, ".")
-}
-
-// firstPartyClasses re-reads files for the bean scan's class table, which the
-// validatedBy check needs only when an admitted @Constraint names a validator. An
-// unreadable file contributes none, so a validator declared there fails the check.
-func firstPartyClasses(files []string) []sourceClass {
-	var out []sourceClass
-	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			continue
-		}
-		src := string(data)
-		out = append(out, scanSourceClasses([]rune(stripJava(src)), []rune(src), parseFile(src).pkg)...)
-	}
-	return out
 }

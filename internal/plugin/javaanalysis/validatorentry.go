@@ -1,6 +1,7 @@
 package javaanalysis
 
 import (
+	"os"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jvmingress"
@@ -16,31 +17,63 @@ var jdkSupertypeNames = map[string]bool{
 }
 
 // rootConstraintValidators adds a constraint_validator ingress marker to files for every
-// concrete isValid and initialize method of a first-party class that is a ConstraintValidator
-// by direct or inherited supertype (a first-party base class, or an interface extending it).
+// concrete isValid(2) and initialize(1) method of a first-party main-source class that is a
+// ConstraintValidator by direct or inherited supertype (a first-party base class, or an
+// interface extending it). The bean provider calls those two signatures only.
+//
 // A class with an inherited supertype that is neither first-party nor a known JDK name may
-// inherit ConstraintValidator from a dependency, so its methods are rooted too: the pass only
-// adds roots. A method without a body gets no marker, since the bytecode mapping
-// (ingressRoots) withholds Searched run-wide for a marker it cannot map to a compiled method.
+// inherit ConstraintValidator from a dependency, so its methods are rooted too: the pass
+// errs toward more roots. classes must hold the main-source classes only. A marker needs a
+// compiled counterpart to map to (ingressRoots withholds Searched run-wide for one it cannot
+// map), so a test-source file, a local class and a method without a body get none.
 // Matching is by simple name, like every other family here.
-func rootConstraintValidators(files []fileParse, classes []sourceClass) {
+//
+// The result lists the simple names for which rootedConstraintValidator holds.
+func rootConstraintValidators(buildDir string, files []fileParse, classes []sourceClass) map[string]bool {
 	if validatorSuper == "" {
-		return
+		return nil
 	}
-	isValidator := validatorClassifier(classes)
+	supers := map[string][]string{}
+	firstParty := map[string]bool{}
+	declared := map[string]int{}
+	for _, sc := range classes {
+		firstParty[sc.name] = true
+		declared[sc.name]++
+		supers[sc.name] = append(supers[sc.name], sc.supers...)
+	}
+	memo := map[string]bool{}
+	isValidator := func(name string) bool {
+		if v, ok := memo[name]; ok {
+			return v
+		}
+		v := false
+		for _, s := range supertypeClosureNames(name, supers) {
+			if s != name && (s == validatorSuper || (!firstParty[s] && !jdkSupertypeNames[s])) {
+				v = true
+				break
+			}
+		}
+		memo[name] = v
+		return v
+	}
 	owners := map[string]bool{}
 	for _, sc := range classes {
-		if isValidator(sc.name) {
+		if !sc.local && isValidator(sc.name) {
 			owners[ownerKey(sc.pkg, sc.enclosing)] = true
 		}
 	}
 	if len(owners) == 0 {
-		return
+		return nil
 	}
+	rooted := map[string]bool{} // owner keys holding a rooted isValid(2)
 	for i := range files {
 		fp := &files[i]
+		if !isMainSource(buildDir, fp.path) {
+			continue
+		}
 		for _, d := range fp.decls {
-			if d.kind != kindMethod || d.abstract || !validatorEntryMethods[d.name] || !owners[ownerKey(fp.pkg, d.enclosing)] {
+			arity, entry := validatorEntryArity[d.name]
+			if d.kind != kindMethod || d.abstract || !validatorEntryMethods[d.name] || (entry && d.arity != arity) || !owners[ownerKey(fp.pkg, d.enclosing)] {
 				continue
 			}
 			fp.ingresses = append(fp.ingresses, ingressMarker{
@@ -49,8 +82,87 @@ func rootConstraintValidators(files []fileParse, classes []sourceClass) {
 				arity:     d.arity,
 				kind:      jvmingress.KindConstraintValidator,
 			})
+			if d.name == "isValid" {
+				rooted[ownerKey(fp.pkg, d.enclosing)] = true
+			}
 		}
 	}
+	byName := map[string]sourceClass{}
+	for _, sc := range classes {
+		byName[sc.name] = sc
+	}
+	out := map[string]bool{}
+	for name := range byName {
+		if rootedConstraintValidatorIn(name, supers, firstParty, declared, byName, rooted) {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// rootedConstraintValidatorIn reports whether name is a first-party class with a concrete
+// isValid(2) rooted on it or on a first-party ancestor. It answers false whenever the
+// answer would rest on a simple name two first-party classes share, or on an ancestor the
+// scan cannot see: a validator whose isValid is inherited from a dependency class, and a
+// first-party class named like such a dependency class, are not claimed.
+func rootedConstraintValidatorIn(name string, supers map[string][]string, firstParty map[string]bool, declared map[string]int, byName map[string]sourceClass, rooted map[string]bool) bool {
+	for _, c := range supertypeClosureNames(name, supers) {
+		if !firstParty[c] {
+			continue
+		}
+		if declared[c] != 1 {
+			return false
+		}
+	}
+	for _, c := range supertypeClosureNames(name, supers) {
+		sc, ok := byName[c]
+		if ok && !sc.local && rooted[ownerKey(sc.pkg, sc.enclosing)] {
+			return true
+		}
+	}
+	return false
+}
+
+// rootedConstraintValidator is the question the annotation-type check asks about the class
+// named by a constraint annotation's validatedBy: is it a first-party class whose concrete
+// isValid(2) this family roots, on the class itself or on a first-party ancestor? It is false
+// for a class that is not first-party, a simple name more than one first-party class holds,
+// an isValid inherited only from a dependency class, and anything unresolved.
+func rootedConstraintValidator(prog *program, name string) bool {
+	return prog != nil && prog.rootedValidators[name]
+}
+
+// validatedByRooted reports whether every class an admitted @Constraint names is a class
+// rootedConstraintValidator accepts. An empty list holds trivially; any name that is
+// unresolved, ambiguous, dependency-backed or without a rooted isValid(2) makes it false
+// and the run stays partial: the annotation's validatedBy class would run with no root.
+func validatedByRooted(prog *program, names []string) bool {
+	for _, n := range names {
+		if !rootedConstraintValidator(prog, n) {
+			return false
+		}
+	}
+	return true
+}
+
+// rootedValidatorsOf runs the validator rooting over the given source files and returns
+// its rooted-name set, for callers (the symbol index) that have no program.
+func rootedValidatorsOf(buildDir string, files []string) map[string]bool {
+	var parsed []fileParse
+	var main []sourceClass
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		src := string(data)
+		pr := parseFile(src)
+		parsed = append(parsed, fileParse{path: f, pkg: pr.pkg, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses})
+		if isMainSource(buildDir, f) {
+			main = append(main, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
+		}
+	}
+	return rootConstraintValidators(buildDir, parsed, main)
 }
 
 // scipValidatorMethods returns the isValid and initialize method symbols the SCIP index
@@ -132,62 +244,6 @@ func scipValidatorMethods(idx scipIndex, defs [][]scipDefSpan) []string {
 		}
 	}
 	return out
-}
-
-// validatorClassifier returns the lexical pass's test for "this first-party class is a
-// ConstraintValidator": its supertype closure reaches the family supertype, or reaches a
-// type that is neither first-party nor a known JDK name (a dependency class may extend it).
-func validatorClassifier(classes []sourceClass) func(name string) bool {
-	supers := map[string][]string{}
-	firstParty := map[string]bool{}
-	for _, sc := range classes {
-		firstParty[sc.name] = true
-		supers[sc.name] = append(supers[sc.name], sc.supers...)
-	}
-	memo := map[string]bool{}
-	return func(name string) bool {
-		if v, ok := memo[name]; ok {
-			return v
-		}
-		v := false
-		for _, s := range supertypeClosureNames(name, supers) {
-			if s != name && (s == validatorSuper || (!firstParty[s] && !jdkSupertypeNames[s])) {
-				v = true
-				break
-			}
-		}
-		memo[name] = v
-		return v
-	}
-}
-
-// constraintValidatorsRooted reports whether every class an admitted @Constraint names
-// resolves, by a simple name unique among first-party classes, to a class that
-// rootConstraintValidators roots. A name that is unresolved (a dependency class: it has no
-// supertypes here, so it is not a validator), declared more than once, or not a validator makes the answer false and the run stays partial: the
-// annotation's validatedBy classes would run with no root. Without the family
-// (validatorSuper empty) nothing is rooted, so any name fails.
-func constraintValidatorsRooted(names []string, classes []sourceClass) bool {
-	if len(names) == 0 {
-		return true
-	}
-	if validatorSuper == "" {
-		return false
-	}
-	declared := map[string]map[string]bool{}
-	for _, sc := range classes {
-		if declared[sc.name] == nil {
-			declared[sc.name] = map[string]bool{}
-		}
-		declared[sc.name][ownerKey(sc.pkg, sc.enclosing)] = true
-	}
-	isValidator := validatorClassifier(classes)
-	for _, n := range names {
-		if len(declared[n]) > 1 || !isValidator(n) {
-			return false
-		}
-	}
-	return true
 }
 
 // wildcardCheck is the program-level half of resolving a meta-annotation through

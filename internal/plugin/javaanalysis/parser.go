@@ -60,8 +60,8 @@ type parseResult struct {
 	ingresses []ingressMarker // annotation/servlet entry-point markers
 	skipped   bool            // a construct was not fully modeled (e.g. an annotation type body that may hold code)
 	// validatedBy holds the simple class names an admitted @Constraint annotation type
-	// names. The file is accepted only if each resolves to a first-party ConstraintValidator
-	// (constraintValidatorsRooted); parseFile cannot see other files, so the program-level
+	// names. The file is accepted only if each is a class the validator entry family roots
+	// (rootedConstraintValidator); parseFile cannot see other files, so the program-level
 	// caller makes that check and treats a failure as skipped.
 	validatedBy []string
 	// wildcardNames are the java.lang.annotation meta-annotation simple names an admitted
@@ -1102,7 +1102,7 @@ func numberEnd(r []rune, pos int) int {
 // be accepted, by qualified name: the java.lang.annotation meta-annotations, none of
 // which gives the annotated type dispatch or wiring meaning, and Bean Validation's
 // @Constraint, whose validatedBy classes are container-invoked and so are admitted only
-// when each is a rooted first-party validator (see constraintValidatorsRooted). Any
+// when each is a rooted first-party validator (see rootedConstraintValidator). Any
 // other annotation, including a user-defined one, keeps the file skipped.
 var inertMetaNames = map[string]bool{
 	"java.lang.annotation.Retention":  true,

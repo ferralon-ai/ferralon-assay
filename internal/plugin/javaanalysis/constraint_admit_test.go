@@ -108,43 +108,29 @@ import jakarta.validation.Constraint;
 	}
 }
 
-func TestConstraintValidatorsRooted(t *testing.T) {
-	old := validatorSuper
-	validatorSuper = "ConstraintValidator"
-	defer func() { validatorSuper = old }()
-	cls := func(pkg, name string, supers ...string) sourceClass {
-		return sourceClass{pkg: pkg, enclosing: []string{name}, name: name, supers: supers}
-	}
+func TestValidatedByRooted(t *testing.T) {
+	// The program-level half asks #522's rootedConstraintValidator about every named class.
+	prog := &program{rootedValidators: map[string]bool{"A": true, "B": true}}
 	tests := []struct {
-		name    string
-		names   []string
-		classes []sourceClass
-		want    bool
+		name  string
+		prog  *program
+		names []string
+		want  bool
 	}{
-		{"no constraint", nil, nil, true},
-		{"direct implementer", []string{"V"}, []sourceClass{cls("p", "V", "ConstraintValidator")}, true},
-		{"inherited through a first-party base", []string{"V"}, []sourceClass{cls("p", "Base", "ConstraintValidator"), cls("p", "V", "Base")}, true},
-		{"every name resolves", []string{"A", "B"}, []sourceClass{cls("p", "A", "ConstraintValidator"), cls("p", "B", "ConstraintValidator")}, true},
-		{"one of two is a validator", []string{"A", "B"}, []sourceClass{cls("p", "A", "ConstraintValidator"), cls("p", "B")}, false},
-		{"unresolved, a dependency class", []string{"V"}, []sourceClass{cls("p", "Other", "ConstraintValidator")}, false},
-		{"present but not a validator", []string{"V"}, []sourceClass{cls("p", "V", "Serializable")}, false},
-		{"no supertype at all", []string{"V"}, []sourceClass{cls("p", "V")}, false},
-		{"ambiguous simple name", []string{"V"}, []sourceClass{cls("p", "V", "ConstraintValidator"), cls("q", "V", "ConstraintValidator")}, false},
+		{"no constraint", prog, nil, true},
+		{"every name rooted", prog, []string{"A", "B"}, true},
+		{"one of two not rooted", prog, []string{"A", "C"}, false},
+		{"none rooted", prog, []string{"C"}, false},
+		{"family absent: no rooted set", &program{}, []string{"A"}, false},
+		{"no program", nil, []string{"A"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := constraintValidatorsRooted(tt.names, tt.classes); got != tt.want {
-				t.Errorf("rooted = %v, want %v", got, tt.want)
+			if got := validatedByRooted(tt.prog, tt.names); got != tt.want {
+				t.Errorf("validatedByRooted = %v, want %v", got, tt.want)
 			}
 		})
 	}
-	t.Run("family absent", func(t *testing.T) {
-		validatorSuper = ""
-		defer func() { validatorSuper = "ConstraintValidator" }()
-		if constraintValidatorsRooted([]string{"V"}, []sourceClass{cls("p", "V", "ConstraintValidator")}) {
-			t.Error("rooted with no validator family")
-		}
-	})
 }
 
 func TestConstraintAdmission_Program(t *testing.T) {
@@ -167,6 +153,10 @@ public class AgeValidator implements ConstraintValidator<Age, Integer> {
 		{"named class is not a validator", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AgeValidator.java": "package com.acme; public class AgeValidator { boolean isValid(Integer v) { return true; } }"}, true},
 		{"validator declared twice", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AgeValidator.java": validator, "com/other/AgeValidator.java": "package com.other;\n" + validator[len("package com.acme;\n"):]}, true},
 		{"unreadable unrelated file does not fail the validator check", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AgeValidator.java": validator, "com/acme/Bad.java": "package com.acme; class Bad {}"}, false},
+		{"validator extends a dependency base and overrides only a helper", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AgeValidator.java": "package com.acme;\npublic class AgeValidator extends org.lib.AbstractLibValidator { boolean helper(Integer v) { return true; } }"}, true},
+		{"validator named like a dependency base it extends", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AbstractLibValidator.java": "package com.acme;\npublic class AbstractLibValidator {}", "com/acme/AgeValidator.java": "package com.acme;\npublic class AgeValidator extends AbstractLibValidator { boolean helper(Integer v) { return true; } }"}, true},
+		{"validator without a concrete isValid", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AgeValidator.java": "package com.acme;\npublic abstract class AgeValidator implements jakarta.validation.ConstraintValidator<Age, Integer> { public abstract boolean isValid(Integer v, Object c); }"}, true},
+		{"validator in test sources", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "src/test/java/com/acme/AgeValidator.java": validator}, true},
 		{"no constraint, nothing skipped", map[string]string{"com/acme/A.java": "package com.acme; public @interface A {}"}, false},
 	}
 	for _, tt := range tests {

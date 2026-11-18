@@ -56,26 +56,34 @@ func TestCgoLimits(t *testing.T) {
 	limit := func(pkg, path string, targets ...string) []plugin.ScopedReason {
 		return []plugin.ScopedReason{{Reason: plugin.PartialReasonCgo, Package: pkg, Path: path, Targets: targets}}
 	}
+	droppedLimit := func(pkg, path string, targets ...string) []plugin.ScopedReason {
+		return []plugin.ScopedReason{{Reason: plugin.PartialReasonCgoFilesDropped, Package: pkg, Path: path, Targets: targets}}
+	}
 	cases := []struct {
 		name        string
+		env         []string
 		pkgs        []*packages.Package
 		wantBounded bool
 		want        []plugin.ScopedReason
 	}{
-		{"a dependency module's cgo, C cannot call back", graph(depPkg([]string{plain}, nil, nil, true)), true, limit(dep, "example.com/dep/c", dep)},
-		{"a prebuilt object lets C call back", graph(depPkg([]string{plain}, []string{filepath.Join(dir, "blob.syso")}, nil, true)), true, limit(dep, "example.com/dep/c", every...)},
-		{"a SWIG interface lets C call back", graph(depPkg([]string{plain}, []string{filepath.Join(dir, "api.swig")}, nil, true)), true, limit(dep, "example.com/dep/c", every...)},
-		{"a cgo file that does not parse may export", graph(depPkg([]string{broken}, nil, nil, true)), true, limit(dep, "example.com/dep/c", every...)},
-		{"a dropped file's limit names the standard library", graph(depPkg(nil, nil, []string{plain}, false)), true, limit(dep, "example.com/dep/c", "", dep, stdlibPURL)},
-		{"a dropped file that cannot be read bounds nothing", graph(depPkg(nil, nil, []string{missing}, false)), false, nil},
-		{"the compiled plugin package is no cgo module", graph(std("plugin", []string{plain})), true, nil},
-		{"the standard library's own cgo is no cgo module", with(graph(depPkg([]string{plain}, nil, nil, true)), std("net", []string{plain})), true, limit(dep, "example.com/dep/c", dep)},
-		{"standard-library cgo that exports is", graph(std("net", []string{exported})), true, limit(stdlibPURL, "net", "", stdlibPURL)},
-		{"a package outside any module is no standard library", graph(std("example.com/gopath/c", []string{plain})), true, limit(stdlibPURL, "example.com/gopath/c", stdlibPURL)},
+		{"a dependency module's cgo, C cannot call back", nil, graph(depPkg([]string{plain}, nil, nil, true)), true, limit(dep, "example.com/dep/c", dep)},
+		{"a prebuilt object lets C call back", nil, graph(depPkg([]string{plain}, []string{filepath.Join(dir, "blob.syso")}, nil, true)), true, limit(dep, "example.com/dep/c", every...)},
+		{"a SWIG interface lets C call back", nil, graph(depPkg([]string{plain}, []string{filepath.Join(dir, "api.swig")}, nil, true)), true, limit(dep, "example.com/dep/c", every...)},
+		{"a cgo file that does not parse may export", nil, graph(depPkg([]string{broken}, nil, nil, true)), true, limit(dep, "example.com/dep/c", every...)},
+		{"a dropped file's limit names the standard library", []string{"CGO_ENABLED=1", "CGO_ENABLED=0"}, graph(depPkg(nil, nil, []string{plain}, false)), true, droppedLimit(dep, "example.com/dep/c", "", dep, stdlibPURL)},
+		{"a dropped file with cgo on stays cgo", []string{"CGO_ENABLED=0", "CGO_ENABLED=1"}, graph(depPkg(nil, nil, []string{plain}, false)), true, limit(dep, "example.com/dep/c", "", dep, stdlibPURL)},
+		{"a dropped file with cgo set to no value stays cgo", []string{"CGO_ENABLED="}, graph(depPkg(nil, nil, []string{plain}, false)), true, limit(dep, "example.com/dep/c", "", dep, stdlibPURL)},
+		{"a dropped file with cgo unset stays cgo", nil, graph(depPkg(nil, nil, []string{plain}, false)), true, limit(dep, "example.com/dep/c", "", dep, stdlibPURL)},
+		{"a dropped file beside compiled cgo stays cgo", []string{"CGO_ENABLED=1", "CGO_ENABLED=0"}, graph(depPkg([]string{plain}, nil, []string{exported}, true)), true, limit(dep, "example.com/dep/c", every...)},
+		{"a dropped file that cannot be read bounds nothing", []string{"CGO_ENABLED=1", "CGO_ENABLED=0"}, graph(depPkg(nil, nil, []string{missing}, false)), false, nil},
+		{"the compiled plugin package is no cgo module", nil, graph(std("plugin", []string{plain})), true, nil},
+		{"the standard library's own cgo is no cgo module", nil, with(graph(depPkg([]string{plain}, nil, nil, true)), std("net", []string{plain})), true, limit(dep, "example.com/dep/c", dep)},
+		{"standard-library cgo that exports is", nil, graph(std("net", []string{exported})), true, limit(stdlibPURL, "net", "", stdlibPURL)},
+		{"a package outside any module is no standard library", nil, graph(std("example.com/gopath/c", []string{plain})), true, limit(stdlibPURL, "example.com/gopath/c", stdlibPURL)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			scoped, _, bounded := cgoLimits(tc.pkgs, nil)
+			scoped, _, bounded := cgoLimits(tc.pkgs, tc.env)
 			if bounded != tc.wantBounded {
 				t.Fatalf("bounded = %v, want %v (scoped %+v)", bounded, tc.wantBounded, scoped)
 			}

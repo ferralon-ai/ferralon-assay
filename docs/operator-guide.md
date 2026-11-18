@@ -58,6 +58,11 @@ assumptions:
   not checked. On a platform that has no plugins nothing is declared;
 - the analyzed program has the same packages and build configuration as the one govulncheck loads.
 
+A build with cgo off compiles none of its cgo files. Each one is read for calls into the advisory's
+module, and a file that may make one leaves the row `undetermined` (`excluded_files`). When none
+does, the scan-level notes carry `cgo:files_dropped`, and a `not_exploitable` row says in its detail
+that it holds for `CGO_ENABLED=0` and that a build with cgo on was not checked.
+
 ### `undetermined` reasons
 
 An `undetermined` row is an open question, never a clean bill. Its `undetermined_reason` names what

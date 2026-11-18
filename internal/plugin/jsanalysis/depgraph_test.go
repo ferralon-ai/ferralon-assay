@@ -465,7 +465,7 @@ func TestDepGraph_NoNewNotExploitable(t *testing.T) {
 			}
 			for _, r := range base.Partiality.Reasons {
 				// An unread package that loads keeps the limit, bounded to what it may reach.
-				bounded := r == plugin.PartialReasonUninspectablePackage && slices.ContainsFunc(head.Partiality.Scoped, func(s plugin.ScopedReason) bool { return s.Reason == r && s.Package != "" })
+				bounded := r == plugin.PartialReasonUninspectablePackage && slices.ContainsFunc(head.Partiality.Scoped, func(s plugin.ScopedReason) bool { return s.Reason == r && s.Package == "pkg:npm/dep@1.0.0" && len(s.Targets) > 0 })
 				if !hasReason(head.Partiality, r) && !(read && r == plugin.PartialReasonUninspectablePackage) && !bounded {
 					t.Errorf("fixture %d: head dropped limit %s", i, r)
 				}

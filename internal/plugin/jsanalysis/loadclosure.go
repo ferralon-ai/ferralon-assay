@@ -230,6 +230,8 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 			lr.veto(true, "package "+e.name+" loads, its code is not all read and its declared dependencies are not known")
 			return
 		}
+		// The hidden code may run any module of its own package.
+		admit(e)
 		for _, x := range resolveDeclared(d, e.path, h.declared) {
 			admit(x)
 		}
@@ -642,35 +644,41 @@ type launchText struct {
 var installerWords = map[string]bool{
 	"npm": true, "npx": true, "pnpm": true, "pnpx": true, "yarn": true, "yarnpkg": true,
 	"bun": true, "bunx": true, "corepack": true, "patch-package": true,
+	"npm_execpath": true, // $npm_execpath: whichever package manager is running
 }
 
 // namesFile reports whether an install-script word reads as a file path rather than a command,
 // a flag or a package name.
 func namesFile(w string) bool {
-	if strings.HasPrefix(w, "//") || strings.HasPrefix(w, "@") {
+	if strings.HasPrefix(w, "//") || strings.HasPrefix(w, "@") || strings.HasPrefix(w, "/dev/") {
 		return false
 	}
 	switch path.Ext(w) {
 	case ".js", ".cjs", ".mjs", ".ts", ".json", ".node", ".sh", ".bash", ".py", ".gyp", ".cmd", ".bat", ".ps1":
 		return true
 	}
-	return strings.HasPrefix(w, ".") || strings.Contains(w, "/")
+	return w == "." || w == ".." || strings.HasPrefix(w, "./") || strings.HasPrefix(w, "../") || strings.Contains(w, "/")
 }
 
 // scriptFile returns the module of pkg that the install-script word w runs as `node <w>`, and
-// whether w names a file of the package at all: Node tries the path as written, then with an
-// extension, then as a directory.
-func scriptFile(pkg *depPackage, w string) (module string, file string, named bool) {
-	rel := path.Clean(w)
-	for _, f := range []string{rel, rel + ".js", rel + ".json", rel + ".node", rel + ".mjs", rel + ".cjs", path.Join(rel, "index.js")} {
-		if m, ok := pkg.modules[f]; ok {
+// whether w names a file of the package at all, resolved as Node does: the path as written, with
+// an extension, then as a directory (its package.json main, else its index). file is the
+// package-relative path of the module, or the word when the file is one the lane does not parse.
+func (rs *resolver) scriptFile(pkg *depPackage, w string) (module string, file string, named bool) {
+	rel, inside := pkgJoin("", w)
+	if !inside {
+		return "", "", false
+	}
+	m, found := rs.nodePath(pkg, rel)
+	if !found {
+		return "", "", false
+	}
+	for f, id := range pkg.modules {
+		if m != "" && pkg.entry.path+"/"+id == m {
 			return m, f, true
 		}
-		if pkg.files[f] {
-			return "", f, true
-		}
 	}
-	return "", "", false
+	return "", w, true
 }
 
 // maxLaunchText bounds one launch file; a larger one is not read and vetoes.
@@ -963,11 +971,16 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 			if s := lt.dep; s != nil {
 				lr.veto(installerWords[w], origin+" runs "+w+", which can install code no lockfile names")
 				// A patched package's files are not what runs: its hidden bound stands in.
-				if m, file, ok := scriptFile(s.pkg, w); strings.HasPrefix(w, "-") || d.pkgs[s.e.path] == nil {
+				// A directory change moves what every later path names, and a path that ends in
+				// a slash is the start of a computed one: neither is a file the lane can name.
+				lr.veto(w == "cd" || w == "pushd", origin+" changes directory, so the files it names are not placed")
+				if m, file, ok := rs.scriptFile(s.pkg, w); strings.HasPrefix(w, "-") || d.pkgs[s.e.path] == nil {
+				} else if strings.HasSuffix(w, "/") && w != "./" {
+					lr.veto(true, origin+" names "+w+", the start of a path it completes when it runs")
 				} else if ok {
 					lr.veto(m == "", origin+" names "+file+", a file the lane does not parse")
 					if m != "" {
-						add(entryRoot{Lane: "js", Kind: "script", Selector: "npm:" + s.e.name + "/" + file, Name: w, Origin: origin, module: s.e.path + "/" + m}, s.e)
+						add(entryRoot{Lane: "js", Kind: "script", Selector: "npm:" + s.e.name + "/" + file, Name: w, Origin: origin, module: m}, s.e)
 					}
 				} else if e, _ := rs.depTargets(rel, w, true); e == nil && namesFile(w) {
 					lr.veto(true, origin+" names "+w+", which is not a file of its package")

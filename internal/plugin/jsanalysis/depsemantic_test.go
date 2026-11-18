@@ -625,7 +625,7 @@ func TestSemantic_G8PnpmPatched(t *testing.T) {
 	}
 	cg := patched(patchHead, "q@1.0.0", "q@1.0.0")
 	if runWide(cg) || reaches(cg, "q", "1.0.0") || !hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, makePURL("q", "1.0.0")) {
-		t.Fatalf("scoped patch: q limited alone, unread; got %+v edges %+v", cg.Partiality, cg.Edges)
+		t.Fatalf("scoped patch: q carries its own limit, bounded to what loads, and is unread; got %+v edges %+v", cg.Partiality, cg.Edges)
 	}
 	for name, tc := range map[string]struct{ patch, cfg, lock string }{
 		"package_json":    {strings.ReplaceAll(patchHead, "lib/x.js", "package.json"), "q@1.0.0", "q@1.0.0"},

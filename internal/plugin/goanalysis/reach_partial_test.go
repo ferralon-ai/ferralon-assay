@@ -690,6 +690,61 @@ func TestUnversionedOnPartialRun(t *testing.T) {
 	}
 }
 
+// TestReachability_PartialRunDeclaresUnversioned pins that the declaration reaches the lane's answer:
+// Reachability over a seeded partial run declares partial_run_unversioned for a request that names
+// no package, and the same request over the same stream as a full run does not.
+func TestReachability_PartialRunDeclaresUnversioned(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n",
+	})
+	stream := []byte(`{"finding":{"osv":"GO-1","trace":[{"module":"example.com/vulnmod","version":"v0.0.0","package":"example.com/vulnmod"}]}}` + "\n")
+	for _, tc := range []struct {
+		name    string
+		partial bool
+		pkg     string
+		want    bool
+	}{
+		{name: "partial run, no package", partial: true, want: true},
+		{name: "partial run, versioned package", partial: true, pkg: "pkg:golang/example.com/vulnmod@v0.0.0"},
+		{name: "whole build, no package"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := t.TempDir()
+			ctx := WithRunCacheDir(context.Background(), cache)
+			key := append([]string{dir}, reachBaseEnv(ctx)...)
+			seed := func(kind string, v any) {
+				t.Helper()
+				b, ok := v.([]byte)
+				if !ok {
+					var err error
+					if b, err = json.Marshal(v); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.WriteFile(runCachePath(cache, kind, key), b, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.partial {
+				seed(govulncheckFailureKind, govulncheckFailureRecord{Marker: govulncheckFailureMarker, Cause: "exit status 1", Stderr: "could not import C", PackageErrors: []recordedPackageError{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}})
+				seed(govulncheckPartialKind, partialRun{Marker: govulncheckPartialMarker, Unloadable: []string{"example.com/m/c"}, Excluded: []string{"example.com/m/cmd/a"}, Stream: stream})
+			} else {
+				seed("govulncheck", stream)
+			}
+			res, err := Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, VulnID: "GO-1", Package: tc.pkg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPartialRunUnversioned); got != tc.want {
+				t.Fatalf("declared = %v, want %v (reasons %v)", got, tc.want, res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
 // TestOnlyEmbedPatternMisses pins which `go list` package errors leave a load failure settled: only
 // a //go:embed pattern that names no file to embed. A module the go command may not fetch, a
 // command-line pattern it could not match, and an error that merely mentions an embed miss do not.

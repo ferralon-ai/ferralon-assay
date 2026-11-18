@@ -1540,14 +1540,11 @@ func moduleVersionFromGoMod(buildDir, module string) (version string, pinned, ma
 			continue
 		}
 		t, ok := gomod.Replacement(mf, module, r.Mod.Version)
-		switch {
-		case !ok:
+		if !ok {
 			return r.Mod.Version, true, true
-		case t.Filesystem || t.Path != module:
-			return "", false, true
-		default:
-			return t.Version, true, true
 		}
+		v, pinned := t.Pinned(module)
+		return v, pinned, true
 	}
 	return "", true, true
 }

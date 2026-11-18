@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -647,6 +648,14 @@ var installerWords = map[string]bool{
 	"npm_execpath": true, // $npm_execpath: whichever package manager is running
 }
 
+// nodeEvalFlags are Node's options that run their argument as code.
+var nodeEvalFlags = map[string]bool{"-e": true, "--eval": true, "-p": true, "--print": true, "-pe": true, "-ep": true}
+
+// inlineRequires matches an install script that is one `node -e` whose code only requires files
+// of its own package by literal relative path, the form a package uses to make its install step
+// optional (`node -e "try{require('./postinstall')}catch(e){}"`). The word scan roots each file.
+var inlineRequires = regexp.MustCompile(`^\s*node\s+(?:-e|--eval)\s+"\s*(?:try\s*\{\s*)?(?:require\('\./[A-Za-z0-9_./-]+'\)\s*;?\s*)+(?:\}\s*catch\s*\(\s*\w*\s*\)\s*\{\s*\}\s*;?\s*)?"\s*(?:\|\|\s*(?:exit\s+0|true)\s*)?$`)
+
 // namesFile reports whether an install-script word reads as a file path rather than a command,
 // a flag or a package name.
 func namesFile(w string) bool {
@@ -969,13 +978,15 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 			}
 			manager = w == "npm" || w == "pnpm" || w == "yarn" || w == "bun"
 			if s := lt.dep; s != nil {
-				lr.veto(installerWords[w], origin+" runs "+w+", which can install code no lockfile names")
+				lr.veto(installerWords[w] || strings.HasSuffix(w, ".npm_execpath"), origin+" runs "+w+", which can install code no lockfile names")
+				// Code given on the command line is JavaScript the lane does not parse.
+				lr.veto(nodeEvalFlags[w] && !inlineRequires.MatchString(lt.text), origin+" runs inline code that is more than a require of its package's own files")
 				// A patched package's files are not what runs: its hidden bound stands in.
 				// A directory change moves what every later path names, and a path that ends in
 				// a slash is the start of a computed one: neither is a file the lane can name.
 				lr.veto(w == "cd" || w == "pushd", origin+" changes directory, so the files it names are not placed")
 				if m, file, ok := rs.scriptFile(s.pkg, w); strings.HasPrefix(w, "-") || d.pkgs[s.e.path] == nil {
-				} else if strings.HasSuffix(w, "/") && w != "./" {
+				} else if strings.HasSuffix(w, "/") {
 					lr.veto(true, origin+" names "+w+", the start of a path it completes when it runs")
 				} else if ok {
 					lr.veto(m == "", origin+" names "+file+", a file the lane does not parse")

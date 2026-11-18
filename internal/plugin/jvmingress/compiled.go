@@ -45,49 +45,86 @@ func init() {
 // parameter count, a method on a transitive supertype that carries one. Name and parameter
 // count, not the descriptor, so a generic interface method (erased to Object) roots the
 // override whether or not the compiler emitted a bridge; an overload of the same arity is
-// rooted too, which can only raise reachability. lookup resolves a binary name to a loaded
+// rooted too, which can only raise reachability. A concrete method that a dependency
+// supertype (one outside classes) declares as an entry, or inherits as one, is rooted on that
+// supertype when the class does not override it by name and parameter count. lookup resolves a binary name to a loaded
 // class; a supertype it cannot resolve contributes nothing here (see UnresolvedSupertype).
 // Servlet methods are not read: that family is supertype-based, not annotation-based.
 func Compiled(classes []classfile.Class, lookup func(string) (*classfile.Class, bool)) []Entry {
 	var out []Entry
 	seen := map[string]bool{}
+	firstParty := make(map[string]bool, len(classes))
+	for i := range classes {
+		firstParty[classes[i].Name] = true
+	}
+	add := func(m classfile.Method, supers []*classfile.Class, base string) {
+		if m.Abstract {
+			return
+		}
+		kind, anno, ok := classify(m.Annotations)
+		if !ok && overridable(m) {
+			for _, s := range supers {
+				for _, sm := range s.Methods {
+					if sm.Ref.Name != m.Ref.Name || sm.Ref.ParamCount() != m.Ref.ParamCount() {
+						continue
+					}
+					if kind, anno, ok = classify(sm.Annotations); ok {
+						break
+					}
+				}
+				if ok {
+					break
+				}
+			}
+		}
+		if !ok || seen[m.Ref.String()] {
+			return
+		}
+		seen[m.Ref.String()] = true
+		e := Entry{Ref: m.Ref, Kind: kind}
+		if kind == KindHTTPRoute {
+			e.Selector = selector(annoVerb[simpleName(anno.Type)], base, path(anno))
+		}
+		out = append(out, e)
+	}
 	for i := range classes {
 		c := &classes[i]
 		supers := ancestors(c, lookup)
 		base := basePath(c, supers)
 		for _, m := range c.Methods {
-			if m.Abstract {
+			add(m, supers, base)
+		}
+		// A method a dependency supertype declares and c does not override is c's handler too,
+		// and no class file in classes names it. First-party supertypes are visited as classes
+		// of their own.
+		for _, s := range supers {
+			if firstParty[s.Name] {
 				continue
 			}
-			kind, anno, ok := classify(m.Annotations)
-			if !ok && overridable(m) {
-				for _, s := range supers {
-					for _, sm := range s.Methods {
-						if sm.Ref.Name != m.Ref.Name || sm.Ref.ParamCount() != m.Ref.ParamCount() {
-							continue
-						}
-						if kind, anno, ok = classify(sm.Annotations); ok {
-							break
-						}
-					}
-					if ok {
-						break
-					}
+			ssupers := ancestors(s, lookup)
+			for _, m := range s.Methods {
+				if overridden(c, m) {
+					continue
 				}
+				add(m, ssupers, base)
 			}
-			if !ok || seen[m.Ref.String()] {
-				continue
-			}
-			seen[m.Ref.String()] = true
-			e := Entry{Ref: m.Ref, Kind: kind}
-			if kind == KindHTTPRoute {
-				e.Selector = selector(annoVerb[simpleName(anno.Type)], base, path(anno))
-			}
-			out = append(out, e)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Ref.String() < out[j].Ref.String() })
 	return out
+}
+
+// overridden reports whether c declares an instance method with m's name and parameter count.
+func overridden(c *classfile.Class, m classfile.Method) bool {
+	if !overridable(m) {
+		return true
+	}
+	for _, cm := range c.Methods {
+		if overridable(cm) && cm.Ref.Name == m.Ref.Name && cm.Ref.ParamCount() == m.Ref.ParamCount() {
+			return true
+		}
+	}
+	return false
 }
 
 // UnresolvedSupertype reports whether c has a concrete instance method and a transitive

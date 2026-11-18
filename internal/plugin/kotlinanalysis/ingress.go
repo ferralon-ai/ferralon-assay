@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jvmingress"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -24,7 +25,7 @@ import (
 // supertype yields no ingress, and a malformed annotation table fails the class parse
 // upstream (declared partiality via loadProgram) — never a silently fabricated or dropped
 // root.
-func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
+func FindIngresses(_ context.Context, req plugin.FindIngressesRequest, opts ...javaanalysis.Option) (plugin.IngressResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
 		return plugin.IngressResult{}, err
@@ -37,7 +38,7 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 			Symbol: SymbolFromMethodRef(ref),
 		})
 	}
-	ingresses = append(ingresses, registerFrameworkIngresses(prog)...)
+	ingresses = append(ingresses, registerFrameworkIngresses(prog, req.BuildDir, opts...)...)
 
 	return plugin.IngressResult{
 		Partiality: prog.partiality(),
@@ -51,9 +52,26 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 // recognized annotation is an ingress, and a servlet method on an HttpServlet subclass is
 // an ingress — matching Java, no class-level stereotype is required. The emitted list is
 // sorted by canonical symbol (then Kind) for determinism.
-func registerFrameworkIngresses(prog *program) []plugin.Ingress {
+func registerFrameworkIngresses(prog *program, buildDir string, opts ...javaanalysis.Option) []plugin.Ingress {
+	// Supertypes resolve through the dependency closure, as the search's roots do, so a route
+	// inherited from a dependency JAR is listed. Without a build graph that closure is empty.
+	firstParty := make(map[string]bool, len(prog.classes))
+	for _, c := range prog.classes {
+		firstParty[c.Name] = true
+	}
+	deps := loadDependencyClosure(buildDir, firstParty, opts...)
+	byName := make(map[string]*classfile.Class, len(prog.classes)+len(deps.classes))
+	for i := range prog.classes {
+		byName[prog.classes[i].Name] = &prog.classes[i]
+	}
+	for i := range deps.classes {
+		if _, dup := byName[deps.classes[i].Name]; !dup {
+			byName[deps.classes[i].Name] = &deps.classes[i]
+		}
+	}
+	lookup := func(n string) (*classfile.Class, bool) { c, ok := byName[n]; return c, ok }
 	var ingresses []plugin.Ingress
-	for _, fi := range frameworkIngresses(prog.classes, nil) {
+	for _, fi := range frameworkIngresses(prog.classes, lookup) {
 		ingresses = append(ingresses, plugin.Ingress{
 			Kind:     fi.kind,
 			Symbol:   SymbolFromMethodRef(fi.ref),

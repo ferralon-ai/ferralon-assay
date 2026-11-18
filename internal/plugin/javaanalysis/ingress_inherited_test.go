@@ -384,3 +384,56 @@ func TestInheritedRoutes_ReactorUnit(t *testing.T) {
 		t.Fatalf("want one path from %q, got %+v (partiality %+v)", want, res.Paths, res.Partiality)
 	}
 }
+
+// A route declared on a concrete method of a dependency superclass, or on a default method of a
+// dependency interface, that the first-party class does not override is the class's handler.
+// The class file names no such method, so the search roots it on the dependency's method, and
+// the listing, which resolves supertypes through the same closure, names it.
+func TestInheritedRoutes_NotOverriddenFromDependency(t *testing.T) {
+	tests := []struct {
+		name  string
+		libFl uint16 // the dependency type's access flags
+		super string // the first-party class's superclass
+		ifc   []string
+	}{
+		{"superclass concrete method", 0x0021, "com/lib/Base", nil},
+		{"interface default method", accIface, objectClass, []string{"com/lib/Base"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.source("src/main/java/com/acme/App.java", appSource)
+			a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+			b := &cpb{}
+			lib := emitClassR(b, "com/lib/Base", objectClass, nil, tt.libFl,
+				methodsOf(route("list", springGet, "/pets", callFetch, accPublic))(b), "", "")
+			jar := filepath.Join(a.build, ".m2", "repository", "com", "lib", "routes", "1.0.0", "routes-1.0.0.jar")
+			writeJar(t, jar, "com/lib/Base.class", lib)
+			writeFileT(t, filepath.Join(a.build, ".m2", "repository", "com", "lib", "routes", "1.0.0", "routes-1.0.0.pom"),
+				`<project><modelVersion>4.0.0</modelVersion><groupId>com.lib</groupId><artifactId>routes</artifactId><version>1.0.0</version></project>`)
+			a.dep(graphDep{group: "com.lib", artifact: "routes", version: "1.0.0", jar: jar})
+			a.routed("com/acme/Impl", tt.super, tt.ifc, 0x0021, "", "", methodsOf())
+
+			want := methodSCIP("com.lib", []string{"Base"}, "list", 0)
+			res := a.reach(netkitSinkID)
+			if len(res.Paths) != 1 || res.Paths[0].Ingress.SCIP != want {
+				t.Fatalf("want one path from %q, got %+v (partiality %+v)", want, res.Paths, res.Partiality)
+			}
+
+			graph := graphOption(t, a.tool, testModule(t, ".", "app", a.deps...))
+			ing, err := FindIngresses(context.Background(), plugin.FindIngressesRequest{BuildDir: a.build}, graph)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, in := range ing.Ingresses {
+				if in.Symbol.SCIP == want {
+					if in.Selector != "GET /pets" {
+						t.Errorf("selector = %q, want GET /pets", in.Selector)
+					}
+					return
+				}
+			}
+			t.Errorf("listing lacks %q: %+v", want, ing.Ingresses)
+		})
+	}
+}

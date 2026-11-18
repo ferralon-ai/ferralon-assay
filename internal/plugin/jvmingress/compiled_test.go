@@ -121,6 +121,74 @@ func TestCompiled(t *testing.T) {
 	}
 }
 
+// A route a dependency supertype declares is the first-party subclass's route: the subclass's
+// class file does not name the method, so Compiled reads it off the supertype.
+func TestCompiledDependencySupertype(t *testing.T) {
+	const obj = "java/lang/Object"
+	get := func(p string) classfile.Annotation { return anno("GetMapping", p) }
+	tests := []struct {
+		name    string
+		classes []classfile.Class // first-party
+		deps    []classfile.Class // loaded by lookup, not first-party
+		want    map[string]string
+	}{
+		{"superclass concrete route from a dependency", []classfile.Class{
+			cls("a/Impl", "lib/Base", nil, nil),
+		}, []classfile.Class{
+			cls("lib/Base", obj, nil, []classfile.Annotation{anno("RequestMapping", "/v1")}, meth("list", "()V", get("/pets"))),
+		}, map[string]string{"lib/Base.list()V": "GET /v1/pets"}},
+		{"interface default route from a dependency", []classfile.Class{
+			cls("a/Impl", obj, []string{"lib/Api"}, nil),
+		}, []classfile.Class{
+			cls("lib/Api", obj, nil, nil, meth("list", "()V", get("/pets"))),
+		}, map[string]string{"lib/Api.list()V": "GET /pets"}},
+		{"dependency route reached through a first-party mid class", []classfile.Class{
+			cls("a/Mid", "lib/Base", nil, nil),
+			cls("a/Impl", "a/Mid", nil, nil),
+		}, []classfile.Class{
+			cls("lib/Base", obj, nil, nil, meth("list", "()V", get("/pets"))),
+		}, map[string]string{"lib/Base.list()V": "GET /pets"}},
+		{"dependency route overridden by the class is rooted on the class", []classfile.Class{
+			cls("a/Impl", "lib/Base", nil, nil, meth("list", "()V")),
+		}, []classfile.Class{
+			cls("lib/Base", obj, nil, nil, meth("list", "()V", get("/pets"))),
+		}, map[string]string{"a/Impl.list()V": "GET /pets"}},
+		{"dependency method inheriting its route from a farther dependency", []classfile.Class{
+			cls("a/Impl", "lib/Mid", nil, nil),
+		}, []classfile.Class{
+			cls("lib/Mid", "lib/Root", nil, nil, meth("list", "()V")),
+			cls("lib/Root", obj, nil, nil, abstract(meth("list", "()V", get("/pets")))),
+		}, map[string]string{"lib/Mid.list()V": "GET /pets"}},
+		{"unannotated dependency method is not rooted", []classfile.Class{
+			cls("a/Impl", "lib/Base", nil, nil),
+		}, []classfile.Class{
+			cls("lib/Base", obj, nil, nil, meth("helper", "()V")),
+		}, map[string]string{}},
+		{"static dependency method with a route is not rooted", []classfile.Class{
+			cls("a/Impl", "lib/Base", nil, nil),
+		}, []classfile.Class{
+			cls("lib/Base", obj, nil, nil, func() classfile.Method { m := meth("list", "()V", get("/pets")); m.Static = true; return m }()),
+		}, map[string]string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			all := append(append([]classfile.Class{}, tt.classes...), tt.deps...)
+			got := map[string]string{}
+			for _, e := range Compiled(tt.classes, lookupOf(all)) {
+				got[e.Ref.Owner+"."+e.Ref.Name+e.Ref.Descriptor] = e.Selector
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for k, v := range tt.want {
+				if g, ok := got[k]; !ok || g != v {
+					t.Errorf("%s = %q (present %v), want %q; all %v", k, g, ok, v, got)
+				}
+			}
+		})
+	}
+}
+
 func TestUnresolvedSupertype(t *testing.T) {
 	const obj = "java/lang/Object"
 	tests := []struct {

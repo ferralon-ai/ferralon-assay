@@ -39,18 +39,14 @@ func compiledIngressRoots(classes []classfile.Class, lookup func(string) (*class
 }
 
 // compiledIngresses lists the compiled entry points as ingresses, skipping any whose (kind,
-// symbol) the lexical listing already holds.
-func compiledIngresses(classes []classfile.Class, have []plugin.Ingress) []plugin.Ingress {
-	byName := make(map[string]*classfile.Class, len(classes))
-	for i := range classes {
-		byName[classes[i].Name] = &classes[i]
-	}
+// symbol) the lexical listing already holds. lookup resolves supertypes as the roots do.
+func compiledIngresses(classes []classfile.Class, lookup func(string) (*classfile.Class, bool), have []plugin.Ingress) []plugin.Ingress {
 	seen := map[string]bool{}
 	for _, in := range have {
 		seen[in.Kind+"\x00"+in.Symbol.SCIP] = true
 	}
 	var out []plugin.Ingress
-	for _, e := range jvmingress.Compiled(classes, func(n string) (*classfile.Class, bool) { c, ok := byName[n]; return c, ok }) {
+	for _, e := range jvmingress.Compiled(classes, lookup) {
 		id := refSCIP(e.Ref)
 		if seen[e.Kind+"\x00"+id] {
 			continue

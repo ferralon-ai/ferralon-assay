@@ -1017,6 +1017,9 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 	return read.leave(lines, starts, later, envs)
 }
 
+// unquoted drops the quotes and backslashes a Dockerfile word may be spelled with.
+var unquoted = strings.NewReplacer(`\`, "", `"`, "", "'", "")
+
 // dockerLater is a command at its 1-based line; runtime marks a CMD or ENTRYPOINT.
 type dockerLater struct {
 	at      int
@@ -1025,16 +1028,17 @@ type dockerLater struct {
 }
 
 // leave withholds when a build output's packages may reach the scanned project, or another
-// command may write into it: a line that holds NODE_PATH, --from= or a --mount= with from=
-// (a copy or mount from another stage, in whatever instruction form), an ENV or ARG naming
-// node_modules, or a command, before the install or after it, that may name a build output. A RUN passes when onlyWrites allows it or none of its words can
-// name an output, and a CMD or ENTRYPOINT when none names node_modules or holds an expansion.
+// command may write into it: a line that, quotes and backslashes aside, holds NODE_PATH,
+// --from= or a --mount= with from= (a copy or mount from another stage), an ENV or ARG naming
+// node_modules, or a command, before the install or after it, that may name a build output.
+// A RUN passes when onlyWrites allows it or none of its words can name an output, and a CMD
+// or ENTRYPOINT when none names node_modules or holds an expansion.
 func (r *dockerRead) leave(lines []string, starts []int, later []dockerLater, envs []int) (string, int) {
 	if len(r.outputs) == 0 {
 		return "", 0
 	}
 	for i, l := range lines {
-		low := strings.ToLower(l)
+		low := unquoted.Replace(strings.ToLower(l))
 		if strings.Contains(low, "node_path") {
 			return "NODE_PATH beside an install into a build output", starts[i] + 1
 		}

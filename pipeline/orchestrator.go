@@ -27,6 +27,9 @@ type Orchestrator struct {
 	assessments assessment.Store
 	store       artifact.Store
 	logf        func(format string, args ...any)
+	// resumed marks a run that continues an assessment another Orchestrator already began, so it
+	// does not count a second scan attempt.
+	resumed bool
 }
 
 // OrchestratorOption configures an Orchestrator at construction.
@@ -37,6 +40,12 @@ type OrchestratorOption func(*Orchestrator)
 // stay quiet by default; a long-running host opts in to give an operator real-time lifecycle visibility.
 func WithProgressLog(logf func(format string, args ...any)) OrchestratorOption {
 	return func(o *Orchestrator) { o.logf = logf }
+}
+
+// ResumingRun makes the orchestrator continue an assessment an earlier Orchestrator began over the
+// same stores: the scan counter, which counts one attempt per assessment, is left to that first run.
+func ResumingRun() OrchestratorOption {
+	return func(o *Orchestrator) { o.resumed = true }
 }
 
 // NewOrchestrator wires the assessment store, artifact store, and ordered stages together.
@@ -67,7 +76,9 @@ func (o *Orchestrator) Run(ctx context.Context, assessmentID string) error {
 	}
 	// tegron.scan.count: one increment per scan attempt, unconditional on
 	// stage outcome — a failed scan still consumed a scan's worth of compute.
-	scanCounter.Add(ctx, 1)
+	if !o.resumed {
+		scanCounter.Add(ctx, 1)
+	}
 
 	timer := stageTimerFrom(ctx)
 	o.log("assessment=%s starting (%d stages)", assessmentID, len(o.stages))

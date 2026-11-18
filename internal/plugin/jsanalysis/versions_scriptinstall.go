@@ -72,6 +72,8 @@ func scriptSpec(root string, locks map[string]lockInfo, assumed *bool) scriptsur
 		ReadOnly:    laneReadOnly,
 		Library:     gitShellLibrary,
 		Concurrent:  laneConcurrent,
+		Code:        laneCode,
+		Inert:       laneNpmrcWrite,
 		ReadRegular: readRegular,
 		Absent:      absent,
 	}
@@ -465,8 +467,9 @@ func settingFileHolds(root, f, name, kind string) bool {
 // resolutions, pnpm.overrides) pins a package to a range that a version held for it, in a lock
 // beside the manifest, falls outside: an install would then replace that version. Only an
 // override of a bare package name with a version range can be compared. Any other (a nested
-// or selector key, a git, file or alias value) does not hold, except a "$name" reference to
-// the manifest's own range for that package.
+// or selector key, a file or alias value) does not hold, except a "$name" reference to the
+// manifest's own range for that package, and a GitHub repository the lock already installs
+// the package from (gitOverrideHolds).
 func overridesHold(manifest string, held []lockInfo) bool {
 	data, err := readRegular(manifest)
 	if err != nil {
@@ -495,10 +498,13 @@ func overridesHold(manifest string, held []lockInfo) bool {
 			if strings.HasPrefix(spec, "$") {
 				continue
 			}
-			if _, ok := parseRange(spec); !ok {
-				return false
-			}
 			name = normalizeNPMCoordinate(name)
+			if _, ok := parseRange(spec); !ok {
+				if !gitOverrideHolds(spec, name, held) {
+					return false
+				}
+				continue
+			}
 			for _, l := range held {
 				for _, dep := range l.deps {
 					if dep.Version != "" && normalizeNPMCoordinate(dep.Coordinate) == name && !rangeSatisfied(dep.Version, spec) {
@@ -506,6 +512,70 @@ func overridesHold(manifest string, held []lockInfo) bool {
 					}
 				}
 			}
+		}
+	}
+	return true
+}
+
+// gitOverrideHolds reports whether the override spec names a GitHub repository that every
+// held lock already installs name from, at a commit. npm keeps a locked git copy when the
+// requested repository is the one it was resolved from, spelled the same, and the request
+// either names that full commit or names no committish while the lock records none for the
+// package on any dependent (npm re-resolves a request whose ref differs from the recorded
+// one). Only an npm v2/v3 lock records where a copy came from.
+func gitOverrideHolds(spec, name string, held []lockInfo) bool {
+	repo, commit, ok := githubSpec(spec)
+	if !ok || commit != "" && !isCommitID(commit) {
+		return false
+	}
+	for _, l := range held {
+		if l.kind != lockNPM || commit == "" && l.refSpecs[name] {
+			return false
+		}
+		for _, src := range l.sources[name] {
+			from, at, ok := githubSpec(src)
+			if !ok || from != repo || !isCommitID(at) || commit != "" && commit != at {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// githubSpec splits a git dependency spec that names a github.com repository into
+// "owner/repo" and the committish after "#": the "github:owner/repo" shorthand,
+// or a git+ssh, git+https, ssh, https or git URL. Any other spec is not one.
+func githubSpec(spec string) (repo, committish string, ok bool) {
+	spec, committish, _ = strings.Cut(spec, "#")
+	rest, short := strings.CutPrefix(spec, "github:")
+	if !short {
+		found := false
+		for _, p := range []string{"git+ssh://git@github.com/", "ssh://git@github.com/", "git+https://github.com/", "https://github.com/", "git://github.com/"} {
+			if r, has := strings.CutPrefix(spec, p); has {
+				rest, found = r, true
+				break
+			}
+		}
+		if !found {
+			return "", "", false
+		}
+	}
+	rest = strings.TrimSuffix(rest, ".git")
+	owner, name, two := strings.Cut(rest, "/")
+	if !two || owner == "" || name == "" || strings.ContainsAny(rest, "@:?# ") || strings.Contains(name, "/") {
+		return "", "", false
+	}
+	return rest, committish, true
+}
+
+// isCommitID reports whether s is a full 40-digit hexadecimal commit id.
+func isCommitID(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
 		}
 	}
 	return true
@@ -762,6 +832,74 @@ func laneReadOnly(words []string) bool {
 	head, ok := scriptsurface.CommandName(words[0])
 	return ok && readOnlyCommands[head]
 }
+
+// laneNpmrcWrite reports whether a command is an echo or printf of literal lines onto an
+// .npmrc, each line setting only what an .npmrc may set and leave the install to the lock
+// (npmrcTextSetsOnly with npmrcLockSafeKeys: where packages come from and how): the write CI makes
+// before an install from a private registry. The one redirect is > or >> and comes last. No
+// word holds a command substitution, and no key an expansion, so only a value varies. A
+// printf writes its format alone.
+func laneNpmrcWrite(words []string) bool {
+	n := len(words)
+	if n < 4 || words[0] != "echo" && words[0] != "printf" || words[n-2] != ">" && words[n-2] != ">>" || filepath.Base(words[n-1]) != ".npmrc" {
+		return false
+	}
+	args := words[1 : n-2]
+	if words[0] == "echo" && (args[0] == "-e" || args[0] == "-n") {
+		args = args[1:]
+	}
+	if len(args) == 0 || words[0] == "printf" && len(args) != 1 {
+		return false
+	}
+	text := strings.ReplaceAll(strings.Join(args, " "), `\n`, "\n")
+	if strings.ContainsAny(text, "`<>%\\") || strings.Contains(text, "$(") || strings.ContainsAny(words[n-1], "$`") {
+		return false
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if key, _, _ := strings.Cut(line, "="); strings.Contains(key, "$") {
+			return false
+		}
+	}
+	return npmrcTextSetsOnly([]byte(text), npmrcLockSafeKeys)
+}
+
+// codeInterpreters are the programs whose arguments may be code they run: node -e, python -c.
+var codeInterpreters = map[string]bool{
+	"node": true, "nodejs": true, "ts-node": true, "tsx": true,
+	"python": true, "python3": true, "ruby": true, "perl": true, "php": true,
+}
+
+// requireReadRE matches code that only loads a file and reads a property of it, optionally
+// printed: require('./package.json').version.
+var requireReadRE = regexp.MustCompile(`^(?:console\.log\()?require\(["'][^"'()]+["']\)(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\)?;?$`)
+
+// laneCode returns the arguments of a command an interpreter runs, past a leading cross-env
+// and its NAME=VALUE words: each may be code. An argument that only reads a property of a
+// required file (requireReadRE) writes nothing, so is left out.
+func laneCode(words []string) []string {
+	if len(words) > 0 && (words[0] == "cross-env" || words[0] == "cross-env-shell") {
+		words = words[1:]
+		for len(words) > 0 && assignmentRE.MatchString(words[0]) {
+			words = words[1:]
+		}
+	}
+	if len(words) < 2 {
+		return nil
+	}
+	if head, ok := scriptsurface.CommandName(words[0]); !ok || !codeInterpreters[head] {
+		return nil
+	}
+	var code []string
+	for _, w := range words[1:] {
+		if !requireReadRE.MatchString(strings.TrimSpace(w)) {
+			code = append(code, w)
+		}
+	}
+	return code
+}
+
+// assignmentRE matches a NAME=VALUE word before a command.
+var assignmentRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 
 // yarnBuiltins covers the first words yarn 1 (1.22) and yarn 2+ (4.5, its bundled plugins
 // included) take as one of their own commands, aliases and the camelCase spellings yarn 1

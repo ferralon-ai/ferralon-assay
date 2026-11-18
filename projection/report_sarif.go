@@ -480,7 +480,7 @@ func reportSARIFMessage(f report.AdvisoryFinding) string {
 		return fmt.Sprintf(
 			"%s: NOT ASSESSED. %s established no verdict for this advisory — %s. "+
 				"This is not a statement that the codebase is unaffected.",
-			f.Advisory.ID, brand.Name, report.UndeterminedDetail(f.UndeterminedReason))
+			f.Advisory.ID, brand.Name, report.WithheldDetail(f.UndeterminedReason, f.WithheldBy))
 	default:
 		return f.Advisory.ID
 	}

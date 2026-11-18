@@ -29,11 +29,16 @@ import (
 //     Arm A carries them too, since the lane's search started from the same entry points.
 //
 // Both arms show the code present and unreached, so the basis is BasisSymbolUnreachable. That holds
-// for package_not_loaded too: the package is installed, and nothing loaded imports it.
+// for package_not_loaded too: the package is installed, and nothing loaded imports it. The one
+// exception is analyzer_package_not_imported: no non-test file of the scanned module that `./...`
+// covers, under any build constraint other than `ignore` or a Go release the build cannot compile
+// under, imports any of the advisory's vulnerable packages of the module, so the basis is
+// BasisSymbolAbsent.
 //
 // Both arms speak for the admitted package only, so neither grounds an advisory that also names
-// another package: that package's symbols were never resolved or searched, and it may be installed
-// beside the admitted one.
+// another package that may be installed beside the admitted one, unless the lane refuted that
+// package too on its own evidence (refutedBeside). The ground then states each such refutation, and
+// its basis is BasisSymbolAbsent only when every one of them is analyzer_package_not_imported too.
 //
 // A leaf-name hit in first-party code never counts toward arm A: its origin is not the package.
 func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) (detail, reason string, basis verdict.NonExploitableBasis, assumptions []string, ok bool) {
@@ -44,12 +49,19 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	root := pkg != nil && pkg.Root
 	reach, _ := reachabilityResult(store, assessmentID)
 	symbols := pipeline.AdvisorySymbols(store, assessmentID)
-	if namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted, mods) {
+	purls := pipeline.AdvisoryPackagePURLs(store, assessmentID)
+	beside := refutedBeside(store, assessmentID, reach)
+	if namesOtherPackage(purls, admitted, mods, beside) {
 		if len(symbols) == 0 {
 			return "", report.ReasonAdvisorySymbolAbsent, "", nil, false
 		}
 		return "", report.ReasonVulnerableSymbolUnresolved, "", nil, false
 	}
+	defer func() {
+		if ok {
+			detail, basis, assumptions = withRefutedBeside(detail, basis, assumptions, purls, admitted, mods, beside)
+		}
+	}()
 
 	unvetted := false
 	if len(symbols) > 0 {
@@ -60,20 +72,23 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 				unvetted = true
 			} else if len(absent) == 0 {
 				return fmt.Sprintf("no path from any entry point reaches %s in %s",
-					strings.Join(symbols, ", "), label), "", verdict.BasisSymbolUnreachable, refutationAssumptions(reach), true
+					strings.Join(symbols, ", "), label), "", verdict.BasisSymbolUnreachable, refutationAssumptions(reach, admitted, root), true
 			} else {
 				present := slices.DeleteFunc(slices.Clone(symbols), func(s string) bool { return slices.Contains(absent, s) })
 				return fmt.Sprintf("no path from any entry point reaches %s in %s, whose build target does not define %s",
-					strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", verdict.BasisSymbolUnreachable, refutationAssumptions(reach), true
+					strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", verdict.BasisSymbolUnreachable, refutationAssumptions(reach, admitted, root), true
 			}
 		}
 	}
 	// package_not_loaded speaks for one package, so it grounds only an advisory whose record lists
 	// every package it affects, and never the scanned project, whose own code always loads.
-	if r := reach.Refutation; r != nil && (r.Basis != plugin.RefutationPackageNotLoaded ||
+	if r := admittedRefutation(reach, admitted, root); r != nil && (r.Basis != plugin.RefutationPackageNotLoaded ||
 		!root && pipeline.AdvisoryListsAffectedPackages(store, assessmentID)) {
 		if r.Package != "" && inAdmitted(r.Package, admitted, root) {
 			basis := verdict.BasisSymbolUnreachable
+			if r.Basis == plugin.RefutationAnalyzerPackageNotImported {
+				basis = verdict.BasisSymbolAbsent
+			}
 			if r.Detail == "" {
 				return fmt.Sprintf("%s: %s", label, r.Basis), "", basis, r.Assumptions, true
 			}
@@ -164,12 +179,12 @@ func outsideBuildGrounds(store artifact.Store, assessmentID string, pkg *report.
 }
 
 // namesOtherPackage reports whether the advisory names a package other than the admitted one that
-// may be in the build. A package URL that does not parse cannot be shown to be the admitted
-// package, so it counts as other.
-func namesOtherPackage(purls []string, admitted pkgKey, mods goModules) bool {
+// may be in the build and that none of beside (refutedBeside) refutes. A package URL that does not
+// parse cannot be shown to be the admitted package, so it counts as other.
+func namesOtherPackage(purls []string, admitted pkgKey, mods goModules, beside []plugin.Refutation) bool {
 	for _, p := range purls {
 		key, ok := purlKey(p)
-		if !ok || !(samePackage(key, admitted, mods) || outsideBuild(key, mods)) {
+		if !ok || !(samePackage(key, admitted, mods) || outsideBuild(key, mods) || refutes(beside, key, mods)) {
 			return true
 		}
 	}
@@ -458,12 +473,14 @@ func normalizePackageName(typ, name string) string {
 	}
 }
 
-// refutationAssumptions are the assumptions the lane's refutation rests on, none without one.
-func refutationAssumptions(reach plugin.ReachabilityResult) []string {
-	if reach.Refutation == nil {
+// refutationAssumptions are the assumptions the lane's refutation of the admitted package rests on,
+// none without one.
+func refutationAssumptions(reach plugin.ReachabilityResult, admitted pkgKey, root bool) []string {
+	r := admittedRefutation(reach, admitted, root)
+	if r == nil {
 		return nil
 	}
-	return reach.Refutation.Assumptions
+	return r.Assumptions
 }
 
 // libraryEntrypoints reads the library entry points the lane resolved for the assessment, none when

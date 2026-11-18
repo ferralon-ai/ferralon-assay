@@ -158,7 +158,7 @@ The Kotlin lane produces the build manifest and symbol evidence the paid tier co
 
 **Trigger.** Build output not under `build/classes/kotlin/main`, `build/classes/java/main`, `target/classes`, `out/production/classes`: KMP JVM targets, Android variants, custom source sets.
 
-**Effect.** `tool_failure:no_build_output`; no program loaded, no clear.
+**Effect.** `tool_failure:no_build_output`; no program loaded, no clear. When the checkout holds no compiled main classes at all, the scan first compiles them with the project's own Gradle (`gradle classes`) or Maven (`mvn compile`), so this applies only when that run fails or the output lands elsewhere; the scan logs the command and the cause of a failure to stderr, and the [operator guide](../operator-guide.md#compiling-the-first-party-classes) lists what runs.
 
 ### KOTLIN-UNLOADED-DEP
 

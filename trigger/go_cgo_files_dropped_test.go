@@ -39,6 +39,23 @@ func TestFinding_GoCgoFilesDropped(t *testing.T) {
 			wantVerdict: report.VerdictNotExploitable,
 		},
 		{
+			name: "beside a refutation restated as not imported it clears",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation.Basis = plugin.RefutationAnalyzerPackageNotImported
+				fx.scoped = scoped(plugin.PartialReasonCgoFilesDropped)
+			},
+			wantVerdict: report.VerdictNotExploitable,
+		},
+		{
+			name: "beside a refutation on another basis it stays undetermined",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation.Basis = plugin.RefutationPackageNotLoaded
+				fx.scoped = scoped(plugin.PartialReasonCgoFilesDropped)
+			},
+			wantVerdict: report.VerdictUndetermined,
+			wantReason:  report.ReasonAnalysisDidNotRun,
+		},
+		{
 			name: "without a refutation it stays undetermined",
 			mutate: func(fx *groundsFixture) {
 				fx.reach.Refutation = nil

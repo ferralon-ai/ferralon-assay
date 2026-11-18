@@ -63,6 +63,8 @@ const (
 	envSubjectJavaVersion = brand.EnvPrefix + "_SUBJECT_JAVA_VERSION"
 	// envSubjectMavenProfiles is the env channel for -subject-maven-profiles.
 	envSubjectMavenProfiles = brand.EnvPrefix + "_SUBJECT_MAVEN_PROFILES"
+	// envEntrypoints is the env channel for -entrypoints.
+	envEntrypoints = brand.EnvPrefix + "_ENTRYPOINTS"
 	// envLibraryEntrypoints is the env channel for -library-entrypoints.
 	envLibraryEntrypoints = brand.EnvPrefix + "_LIBRARY_ENTRYPOINTS"
 	// envBuildGraphTool is the env channel for -build-graph-tool.
@@ -515,6 +517,7 @@ type runFlags struct {
 	subjectJava      *string
 	subjectMvnProf   *string
 	libEntrypoints   *string
+	entrypoints      *string
 	buildGraph       *string
 	buildGraphTool   *string
 	depCode          *string
@@ -596,7 +599,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to choose the advisory work set, unless -advisory-corpus-policy defines it; an id is admitted only when -advisory-corpus (or an included house canary) holds its facts (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
 		// subjectGoWork is the GOWORK the build runs under; a caller statement, never the scanner's own.
 		subjectGoWork: fs.String("subject-gowork", "", "the GOWORK the SCANNED repository's Go build runs under: off, auto (find the go.work as when unset), or the path of its go.work relative to the scanned directory (-target). A go.work that does not exist, does not parse or does not use the scanned module withholds every verdict. Overrides "+envSubjectGoWork+" (default: the go.work the go command finds from the module, searched no higher than the repository; one that does not use the module is not the build's)"),
-		subjectGo:     fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
+		subjectGo:     fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true)"),
 
 		// subjectJava is the JDK the build graph must be resolved on; a caller statement, never looked up.
 		subjectJava: fs.String("subject-java-version", "", "the java.version of the JDK the SCANNED repository's program runs on, which must be the major version its build runs on (what `mvn -v` or `gradle -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target). Leave it unstated when the program runs on another JDK than the build. A toolchain the build graph records on another major version withholds the JDK's own method table from bytecode reachability. With -build-graph auto, a build tool running on another major version fails the run; with a graph file, the file must record the same statement; with off it is unused. Overrides "+envSubjectJavaVersion+" (default: unstated, and the graph records the JVM the tool ran on)"),
@@ -609,6 +612,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		buildGraphTool: fs.String("build-graph-tool", "", "which build tool the build graph comes from: auto, maven or gradle. auto takes the one whose build files are at the repository root, and when both are it resolves both and reads their union, keeping one tool's graph, marked partial, when the other fails; with a graph file, a stated tool must be the one that resolved it; with off it is unused. Overrides "+envBuildGraphTool+" (default: auto)"),
 
 		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\". With -build-graph auto it is passed to Maven as -P, and stating one for a Gradle build fails the run; with a graph file, the file must record the same selection; with off it is unused. Overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
+		entrypoints:    fs.String("entrypoints", "", "which entry points the SCANNED repository's analysis starts from, per lane: auto (inferred), or clauses of the form <lane>:<selector>, <lane>:none, !<lane>:<selector> and <lane>:<kind>=<selector>, separated by commas or whitespace, e.g. \"go:library=none\" or \"go:library=pkg/api,!go:library=pkg/api/internal\". Today only the go lane takes a clause, and only for its library entry points; any other clause that asks for something fails the run, and one that says auto changes nothing. A refutation a declaration lets stand carries it on the report as an assumption. -library-entrypoints is the alias for go:library=. Overrides "+envEntrypoints+" (default: auto)"),
 		libEntrypoints: fs.String("library-entrypoints", "", "which of the SCANNED repository's packages code outside the build may import: auto (inferred; a package under cmd/, examples/ or a test directory is not one), none (the build ships programs only), or paths relative to the repository root, e.g. \"pkg/api,!pkg/api/internal\", where !path takes a path out and naming no path keeps auto for the rest. A refutation a declaration lets stand carries it on the report as an assumption. Overrides "+envLibraryEntrypoints+" (default: auto)"),
 
 		depCode:        fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: fetch, which fetches each lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; offline, which reads only an operator-seeded -dependency-cache; or off. A package whose fetch fails is not read: when its registry served this build other packages the scan reads those and withholds each one it could not fetch, otherwise it reads no dependency code and says so on the report. A registry that refuses a token the scan sent (an expired or wrong token, or a curation proxy blocking a package) fails the run. On cve-watch, a registry answering a transient error, or one that has served this repository and now serves nothing, holds the advisory cursor, and the run fails once that hold has lasted "+fmt.Sprintf("%d runs and %d hours", stallRuns, int(stallAge.Hours()))+". A cve-watch run that read less than the lock pins reports each disqualified or not_exploitable verdict it reached on an advisory affecting a package it could not fetch, or one it cannot tie to the packages it fetched, as undetermined (dependency_not_fetched), and the next cve-watch run assesses those advisories again, along with any it left undetermined; a run with off stops that. Overrides "+envDependencyCode+" (default: fetch)"),
@@ -1069,57 +1073,70 @@ func (f *runFlags) subjectMavenProfiles() string {
 	return strings.TrimSpace(os.Getenv(envSubjectMavenProfiles))
 }
 
-// libraryEntrypointsOption is -library-entrypoints, then envLibraryEntrypoints, as an AssessOption,
-// or nil when neither is set. A statement that does not parse fails the run: it bounds what the scan
-// may refute.
-func (f *runFlags) libraryEntrypointsOption() (pipeline.AssessOption, error) {
-	v := strings.TrimSpace(*f.libEntrypoints)
-	if v == "" {
-		v = strings.TrimSpace(os.Getenv(envLibraryEntrypoints))
+// entrypointsOptions is the entry-point statement of the run as AssessOptions, or nil when none is
+// stated: -entrypoints, then envEntrypoints, and the alias -library-entrypoints, then
+// envLibraryEntrypoints, which says exactly go:library=<its value>. language is the language the
+// scan runs. A statement that does not parse, or that no lane can honour yet (pipeline.RouteEntrypoints),
+// fails the run: it bounds what the scan may refute. The values are handed in, never fetched.
+//
+// The two inputs agree when they state the same go library scope: the same mode and the same paths in
+// any order. An input that states auto (the Action's default for library-entrypoints) states
+// nothing, so it never conflicts. Both stating a different scope fails the run, naming both.
+func (f *runFlags) entrypointsOptions(language string) ([]pipeline.AssessOption, error) {
+	var opts []pipeline.AssessOption
+	var routed *plugin.LibraryEntrypoints
+	raw := stated(*f.entrypoints, os.Getenv(envEntrypoints))
+	if v := raw; v != "" {
+		overrides, err := plugin.ParseEntryOverrides(v)
+		if err != nil {
+			return nil, err
+		}
+		if routed, err = pipeline.RouteEntrypoints(overrides, language); err != nil {
+			return nil, err
+		}
+		if len(overrides) > 0 {
+			opts = append(opts, pipeline.WithEntrypoints(overrides))
+		}
 	}
-	if v == "" {
-		return nil, nil
+	if v := stated(*f.libEntrypoints, os.Getenv(envLibraryEntrypoints)); v != "" {
+		alias, err := plugin.ParseLibraryEntrypoints(v)
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case routed == nil || !routed.Declared():
+			routed = &alias
+		case alias.Declared() && !pipeline.SameLibraryStatement(alias, *routed):
+			return nil, fmt.Errorf("entrypoints %q and library-entrypoints %q state different go library entry points; library-entrypoints is the alias for go:library=, so give one of them", raw, v)
+		}
 	}
-	e, err := plugin.ParseLibraryEntrypoints(v)
-	if err != nil {
-		return nil, err
-	}
-	return pipeline.WithLibraryEntrypoints(e), nil
-}
-
-// baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
-// corpus. The subject Go toolchain and its reachability gate
-// stay out of baseline, deliberately: changing what baseline measures for Go is its own change.
-func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
-	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
-	opt, err := f.advisoryCorpusOption()
-	if err != nil {
-		return nil, err
-	}
-	if opt != nil {
-		opts = append(opts, opt)
-	}
-	depOpt, err := f.dependencyCodeOption()
-	if err != nil {
-		return nil, err
-	}
-	if depOpt != nil {
-		opts = append(opts, depOpt)
-	}
-	entryOpt, err := f.libraryEntrypointsOption()
-	if err != nil {
-		return nil, err
-	}
-	if entryOpt != nil {
-		opts = append(opts, entryOpt)
+	if routed != nil {
+		opts = append(opts, pipeline.WithLibraryEntrypoints(*routed))
 	}
 	return opts, nil
 }
 
-// runAssessOptions assembles the run path's Assess options after the plugin seam: the advisory
-// corpus, the subject Go toolchain, and the subject-toolchain
-// reachability gate.
-func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
+// checkEntrypoints refuses an entry-point statement that is malformed, that no lane can honour, or
+// whose two inputs disagree. It needs no scan, so it runs before the target is acquired: a bad
+// value stops the run before any clone, dependency resolution or published Report, whatever
+// language the tree turns out to be. Only a bare "none" depends on the detected language, and
+// entrypointsOptions checks that once the language is known.
+func (f *runFlags) checkEntrypoints() error {
+	_, err := f.entrypointsOptions("")
+	return err
+}
+
+// stated is the trimmed flag value, else the trimmed environment value.
+func stated(flagValue, envValue string) string {
+	if v := strings.TrimSpace(flagValue); v != "" {
+		return v
+	}
+	return strings.TrimSpace(envValue)
+}
+
+// baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
+// corpus, the subject Go toolchain, and the subject-toolchain reachability gate.
+func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption, language string) ([]pipeline.AssessOption, error) {
 	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
 	opt, err := f.advisoryCorpusOption()
 	if err != nil {
@@ -1141,13 +1158,44 @@ func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipelin
 	if depOpt != nil {
 		opts = append(opts, depOpt)
 	}
-	entryOpt, err := f.libraryEntrypointsOption()
+	entryOpts, err := f.entrypointsOptions(language)
 	if err != nil {
 		return nil, err
 	}
-	if entryOpt != nil {
-		opts = append(opts, entryOpt)
+	opts = append(opts, entryOpts...)
+	return opts, nil
+}
+
+// runAssessOptions assembles the run path's Assess options after the plugin seam: the advisory
+// corpus, the subject Go toolchain, and the subject-toolchain
+// reachability gate.
+func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption, language string) ([]pipeline.AssessOption, error) {
+	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
+	opt, err := f.advisoryCorpusOption()
+	if err != nil {
+		return nil, err
 	}
+	if opt != nil {
+		opts = append(opts, opt)
+	}
+	if opt := f.subjectToolchainOption(); opt != nil {
+		opts = append(opts, opt)
+	}
+	if opt := subjectToolchainReachOption(); opt != nil {
+		opts = append(opts, opt)
+	}
+	depOpt, err := f.dependencyCodeOption()
+	if err != nil {
+		return nil, err
+	}
+	if depOpt != nil {
+		opts = append(opts, depOpt)
+	}
+	entryOpts, err := f.entrypointsOptions(language)
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, entryOpts...)
 	return opts, nil
 }
 
@@ -1197,6 +1245,9 @@ func envDisabled(v string) bool {
 // OSV query against the stored SBOM and must be left alone).
 // ctx is the run's analysis context.
 func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) {
+	if err := f.checkEntrypoints(); err != nil {
+		return nil, err
+	}
 	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	if err != nil {
 		return nil, err
@@ -1209,7 +1260,7 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		return nil, err
 	}
 
-	assessOptions, err := f.runAssessOptions(pipeline.WithPlugin(acq.plugin))
+	assessOptions, err := f.runAssessOptions(pipeline.WithPlugin(acq.plugin), acq.language)
 	if err != nil {
 		acq.cleanup()
 		return nil, err

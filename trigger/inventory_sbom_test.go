@@ -3,6 +3,7 @@ package trigger
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
@@ -168,8 +169,8 @@ func TestWithInventoryLimits_PackageLessAbsentRow(t *testing.T) {
 				}
 				return
 			}
-			if got.UndeterminedReason != report.ReasonAnalysisDidNotRun || got.Evidence.Basis != "" || got.Evidence.Detail != report.UndeterminedDetail(report.ReasonAnalysisDidNotRun) {
-				t.Fatalf("got reason %q, evidence %+v; want %s with its own detail and no basis", got.UndeterminedReason, got.Evidence, report.ReasonAnalysisDidNotRun)
+			if got.UndeterminedReason != report.ReasonAnalysisDidNotRun || got.Evidence.Basis != "" || !strings.HasPrefix(got.Evidence.Detail, report.UndeterminedDetail(report.ReasonAnalysisDidNotRun)) || len(got.WithheldBy) == 0 {
+				t.Fatalf("got reason %q, evidence %+v; want %s with its own detail, the limit that held it and no basis", got.UndeterminedReason, got.Evidence, report.ReasonAnalysisDidNotRun)
 			}
 		})
 	}

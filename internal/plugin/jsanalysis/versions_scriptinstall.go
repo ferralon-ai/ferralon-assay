@@ -1152,7 +1152,6 @@ func laneLockPreserving(b scriptsurface.Binder, dir, root string, locks map[stri
 			return false
 		}
 	}
-	b.Bind(".npmrc") // read above: a command that writes one may turn the lock off
 	return true
 }
 

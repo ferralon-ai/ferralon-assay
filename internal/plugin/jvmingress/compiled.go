@@ -47,7 +47,7 @@ func init() {
 // override whether or not the compiler emitted a bridge; an overload of the same arity is
 // rooted too, which can only raise reachability. A concrete method that a dependency
 // supertype (one outside classes) declares as an entry, or inherits as one, is rooted on that
-// supertype when the class does not override it by name and parameter count. lookup resolves a binary name to a loaded
+// supertype when the class does not override it by name and descriptor. lookup resolves a binary name to a loaded
 // class; a supertype it cannot resolve contributes nothing here (see UnresolvedSupertype).
 // Servlet methods are not read: that family is supertype-based, not annotation-based.
 func Compiled(classes []classfile.Class, lookup func(string) (*classfile.Class, bool)) []Entry {

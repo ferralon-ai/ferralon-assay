@@ -217,7 +217,7 @@ func TestStateCgoOffScope(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			before := tc.in.Refutation.Detail
-			if got := stateCgoOffScope(tc.in).Refutation.Detail; got != tc.want {
+			if got := statePluginScope(tc.in).Refutation.Detail; got != tc.want {
 				t.Errorf("detail = %q, want %q", got, tc.want)
 			}
 			if tc.in.Refutation.Detail != before {
@@ -226,7 +226,7 @@ func TestStateCgoOffScope(t *testing.T) {
 		})
 	}
 	none := plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonPluginLoadCgoOff)}
-	if got := stateCgoOffScope(none); got.Refutation != nil {
+	if got := statePluginScope(none); got.Refutation != nil {
 		t.Errorf("a result with no refutation gained one: %+v", got.Refutation)
 	}
 }

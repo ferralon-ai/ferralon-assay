@@ -224,7 +224,7 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 	if err != nil {
 		return res, err
 	}
-	return stateCgoOffScope(res), nil
+	return statePluginScope(res), nil
 }
 
 // resultFromGraph is reconciledResult over the reconcile graph g.

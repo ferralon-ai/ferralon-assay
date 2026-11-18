@@ -95,12 +95,12 @@ func (s *ssaProgram) runTimeReason(name string) (string, bool) {
 	return r, ok
 }
 
-// stateCgoOffScope says, in the detail of a refutation kept beside a limit that holds only because
+// statePluginScope says, in the detail of a refutation kept beside a limit that holds only because
 // the scanned build has cgo off, the build setting the refutation holds for. plugin_load:cgo_off:
 // the program reaches plugin.Open, which loads nothing with cgo off. cgo:files_dropped: the build
 // left out cgo files, none of which was found to call into the advisory's module. Either way the
 // same program built with cgo on was not checked.
-func stateCgoOffScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
+func statePluginScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
 		return res
@@ -126,7 +126,7 @@ func stateCgoOffScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
 	return res
 }
 
-// pluginScopeDetail and cgoFilesScopeDetail are what stateCgoOffScope adds to a refutation's detail.
+// pluginScopeDetail and cgoFilesScopeDetail are what statePluginScope adds to a refutation's detail.
 const (
 	pluginScopeDetail   = "holds for CGO_ENABLED=0, where the plugin.Open call the program reaches loads nothing; a build with cgo on was not checked"
 	cgoFilesScopeDetail = "holds for CGO_ENABLED=0, which leaves the build's cgo files out; a build with cgo on was not checked"

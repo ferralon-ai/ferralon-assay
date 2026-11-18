@@ -171,6 +171,8 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"build output install after cd into it", out("", "cd api && npm --prefix . install", nil), withheld},
 		{"build output install in a stage built on another", map[string]string{"package.json": pkg(""), "package-lock.json": lock, "Dockerfile": "FROM node:20 AS base\nRUN echo hi\nFROM base\nWORKDIR /app\nCOPY dist/api api\nRUN npm --prefix api install\n"}, withheld},
 		{"build output install, then a command names package.json", out("", prefixed+"\nRUN sed -i s/4.19/4.18/ api/package.json", nil), withheld},
+		{"build output install, then a command inside the output names the lock", out("", prefixed+"\nWORKDIR /app/api\nRUN rm -f package-lock.json", nil), withheld},
+		{"build output install under a secret mounted as the home .npmrc", out("", "--mount=type=secret,id=npmrc,target=/root/.npmrc "+prefixed, nil), withheld},
 		{"build output install, then a command names the lock", out("", prefixed+"\nRUN rm -f api/package-lock.json", nil), withheld},
 		{"build output install beside an install of a package", out("", prefixed+"\nRUN npm install left-pad", nil), withheld},
 		{"build output install into another directory than the output", out("", "npm --prefix web install", nil), withheld},

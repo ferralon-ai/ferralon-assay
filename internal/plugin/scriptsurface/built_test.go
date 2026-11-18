@@ -47,6 +47,7 @@ func TestDockerCursorBuilt(t *testing.T) {
 		{"under a mount inside it", "api", []dockerEvent{out}, []string{"/app/api/node_modules"}, true, false},
 		{"under a mount above it", "x/api", []dockerEvent{{dst: "/app/x/api", dir: true, taint: true, built: true}}, []string{"/app/x"}, true, false},
 		{"after a write to everything", "api", []dockerEvent{out, {all: true}}, nil, true, false},
+		{"in a stage that wrote everywhere first", "api", []dockerEvent{{all: true}, out}, nil, true, false},
 		{"refilled after", "api", []dockerEvent{out, {dst: "/app/api", dir: true, taint: true}}, nil, true, false},
 		{"written into after", "api", []dockerEvent{out, {dst: "/app/api/package.json", hosts: []string{filepath.Join(root, "file")}}}, nil, true, false},
 		{"below a tainted directory", "api", []dockerEvent{{dst: "/app", dir: true, taint: true}, out}, nil, true, false},

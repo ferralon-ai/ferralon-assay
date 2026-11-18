@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,6 +185,48 @@ func TestModuleVersionFromBuild_WorkspaceReplace(t *testing.T) {
 				if v, pinned, read := moduleVersionFromBuild(context.Background(), buildDir, GoWorkspace{}, "example.com/m"); v != tc.want || pinned != tc.wantPinned || !read {
 					t.Fatalf("with GOWORK=off: moduleVersionFromBuild = %q, %v, %v; want %q, %v, true", v, pinned, read, tc.want, tc.wantPinned)
 				}
+			}
+		})
+	}
+}
+
+// TestGoWorkspaceReplacedVersions runs the real go command over a workspace member that requires
+// example.com/m v1.0.0 and replaces it, in the go.mod and in the go.work. A fork and a local
+// directory are queried at the release the build list selected before the replacement; a replacement
+// by the same module at a version is pinned, so it is not here, and an unreplaced module is not.
+func TestGoWorkspaceReplacedVersions(t *testing.T) {
+	proxy := offlineProxy(t)
+	for _, v := range []string{"v1.0.0", "v1.1.0"} {
+		publish(t, proxy, "example.com/m", v, map[string]string{"go.mod": "module example.com/m\n\ngo 1.21\n", "m.go": "package m\n"})
+	}
+	publish(t, proxy, "example.com/fork", "v1.2.0", map[string]string{"go.mod": "module example.com/fork\n\ngo 1.21\n", "m.go": "package m\n"})
+	sum := download(t, proxy, "example.com/m@v1.0.0", "example.com/m@v1.1.0", "example.com/fork@v1.2.0")
+	const memberHead = "module example.com/mono/a\n\ngo 1.21\n\nrequire example.com/m v1.0.0\n"
+	for _, tc := range []struct {
+		name        string
+		work, goMod string
+		want        map[string]string
+	}{
+		{"no replace", "", "", map[string]string{}},
+		{"same-module replace", "", "replace example.com/m => example.com/m v1.1.0\n", map[string]string{}},
+		{"fork replace in the go.mod", "", "replace example.com/m => example.com/fork v1.2.0\n", map[string]string{"example.com/m": "v1.0.0"}},
+		{"fork replace in the go.work", "replace example.com/m => example.com/fork v1.2.0\n", "", map[string]string{"example.com/m": "v1.0.0"}},
+		{"directory replace in the go.mod", "", "replace example.com/m => ../m\n", map[string]string{"example.com/m": "v1.0.0"}},
+		{"directory replace in the go.work", "replace example.com/m => ./m\n", "", map[string]string{"example.com/m": "v1.0.0"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetBuildLists(t)
+			tree := writeTree(t, map[string]string{
+				"go.work":  "go 1.21\n\nuse ./a\n\n" + tc.work,
+				"a/go.mod": memberHead + "\n" + tc.goMod,
+				"a/go.sum": sum,
+				"a/a.go":   "package a\n\nimport _ \"example.com/m\"\n",
+				"m/go.mod": "module example.com/m\n\ngo 1.21\n",
+				"m/m.go":   "package m\n",
+			})
+			got := GoWorkspaceReplacedVersions(context.Background(), filepath.Join(tree, "a"), GoWorkspace{File: filepath.Join(tree, "go.work")})
+			if !maps.Equal(got, tc.want) {
+				t.Fatalf("GoWorkspaceReplacedVersions = %v, want %v", got, tc.want)
 			}
 		})
 	}

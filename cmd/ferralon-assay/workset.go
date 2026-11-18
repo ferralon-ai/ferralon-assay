@@ -12,6 +12,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/gomod"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -757,15 +758,19 @@ func versionlessPURL(purlType, name string) string {
 // The module is the one at the module root (manifestDir), the module the pipeline analyzes, under
 // the go.work its build runs under (goWorkspace), as codebase_inventory resolves both. Under a
 // go.work no go.mod states what the build holds, so the build list decides instead
-// (pipeline.GoWorkspaceModules): each module at the version the build selects, and unresolved, so
-// admitted by name but never queried by version, every module the workspace uses or replaces with a fork or a
-// directory, and every module when the go command cannot compute the list. When the workspace cannot be read at
+// (pipeline.GoWorkspaceModules): each module at the version the build selects, a module replaced by
+// a fork or a directory at the version the build list selects before the replacement, the closest
+// named release, with its version axis left open downstream; and unresolved, so admitted by name but
+// never queried by version, every module the workspace uses, and every module when the go command
+// cannot compute the list. When the workspace cannot be read at
 // all, go.mod's requires are unresolved too: under a workspace's MVS a require is a lower bound,
 // not the version built. When the build's workspace cannot be resolved (a declared go.work that is
 // missing, does not parse or does not use the module), nothing says what the build holds or which
 // go lines bind its toolchain, so go.mod's requires and the standard library are all unresolved.
-// Without a go.work, go.mod's requires are read; a tree with no go.mod within that search gets a
-// no_manifest note.
+// Without a go.work, go.mod's requires are read, each at the version the build holds: a same-module
+// replace names it, and a fork or directory replace keeps the require version as a query point, the
+// closest named release, with the module's version axis left open downstream. A tree with no go.mod
+// within that search gets a no_manifest note.
 func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
 	dir := manifestDir(acq)
 	ws, wsOK := goWorkspace(ctx, acq, dir)
@@ -793,7 +798,15 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 		for name, version := range pinned {
 			resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: name, Version: version})
 		}
+		var forked map[string]string
+		if listed {
+			forked = pipeline.GoWorkspaceReplacedVersions(ctx, dir, ws)
+		}
 		for _, name := range unpinned {
+			if version, ok := forked[name]; ok {
+				resolved = append(resolved, report.Package{Ecosystem: ecosystemGo, Name: name, Version: version})
+				continue
+			}
 			unresolved = append(unresolved, report.Package{Ecosystem: ecosystemGo, Name: name})
 		}
 		stdlib := ""
@@ -831,7 +844,19 @@ func goDependencyInventory(ctx context.Context, acq *acquired) (resolved, unreso
 		if r == nil {
 			continue
 		}
-		add(r.Mod.Path, r.Mod.Version)
+		t, replaced := gomod.Replacement(mf, r.Mod.Path, r.Mod.Version)
+		if !replaced {
+			add(r.Mod.Path, r.Mod.Version)
+			continue
+		}
+		// The build holds the replacement's version, not the require's. A fork or a directory holds
+		// no release's source, so the require version is only the closest named release: it is
+		// queried, and the pipeline holds the module's rows to an open version axis (source_unpinned).
+		if v, ok := t.Pinned(r.Mod.Path); ok {
+			add(r.Mod.Path, v)
+		} else {
+			add(r.Mod.Path, r.Mod.Version)
+		}
 	}
 	if v := stdlibVersion(ctx, acq, dir, ws); v != "" {
 		add(goStdlibPackage, v)

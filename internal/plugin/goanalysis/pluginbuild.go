@@ -94,3 +94,23 @@ func (s *ssaProgram) runTimeReason(name string) (string, bool) {
 	}
 	return r, ok
 }
+
+// statePluginScope says, in the detail of a refutation kept beside plugin_load:cgo_off, the build
+// setting it holds for: the program reaches plugin.Open, which loads nothing with cgo off, and the
+// same program built with cgo on was not checked.
+func statePluginScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoadCgoOff) {
+		return res
+	}
+	stated := *r
+	stated.Detail = pluginScopeDetail
+	if r.Detail != "" {
+		stated.Detail = r.Detail + "; " + pluginScopeDetail
+	}
+	res.Refutation = &stated
+	return res
+}
+
+// pluginScopeDetail is what statePluginScope adds to a refutation's detail.
+const pluginScopeDetail = "holds for CGO_ENABLED=0, where the plugin.Open call the program reaches loads nothing; a build with cgo on was not checked"

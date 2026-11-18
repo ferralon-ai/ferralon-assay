@@ -220,7 +220,11 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	return resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
+	res, err := resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
+	if err != nil {
+		return res, err
+	}
+	return statePluginScope(res), nil
 }
 
 // resultFromGraph is reconciledResult over the reconcile graph g.
@@ -242,28 +246,8 @@ func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 	}
 	// Every result passes here: the call graph this lane searches omits reflection's calls, so no
 	// refutation and no Searched sink stands that those calls may contradict.
-	return statePluginScope(withholdForReflectReach(res, scanned, g.ReflectReach)), nil
+	return withholdForReflectReach(res, scanned, g.ReflectReach), nil
 }
-
-// statePluginScope says, in the detail of a refutation kept beside plugin_load:cgo_off, the build
-// setting it holds for: the program reaches plugin.Open, which loads nothing with cgo off, and the
-// same program built with cgo on was not checked.
-func statePluginScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
-	r := res.Refutation
-	if r == nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoadCgoOff) {
-		return res
-	}
-	stated := *r
-	stated.Detail = pluginScopeDetail
-	if r.Detail != "" {
-		stated.Detail = r.Detail + "; " + pluginScopeDetail
-	}
-	res.Refutation = &stated
-	return res
-}
-
-// pluginScopeDetail is what statePluginScope adds to a refutation's detail.
-const pluginScopeDetail = "holds for CGO_ENABLED=0, where the plugin.Open call the program reaches loads nothing; a build with cgo on was not checked"
 
 // withholdForReflectReach drops a refutation, and every Searched sink, that a call reflection makes
 // may contradict. govulncheck follows no such call, so when what those calls can reach (reflectReach)

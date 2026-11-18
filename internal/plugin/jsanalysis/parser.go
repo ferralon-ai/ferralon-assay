@@ -472,8 +472,10 @@ func parseFile(module, src string) parseResult {
 // declares (clean) still apply to it. Text that the reading blanks in turn is read the
 // same way, one layer at a time. The reading adds no binding or edge, so text that really
 // was a comment or template can only over-declare; proseLoaders drops the two shapes
-// that cannot be code to keep that cost down.
+// that cannot be code to keep that cost down, and dropCertainComments drops the block
+// comments no misread opener can have formed.
 func hiddenLoads(clean, raw []rune, hidden []span) moduleBindings {
+	hidden = dropCertainComments(raw, hidden)
 	loads := newModuleBindings()
 	req, cr := loaderNames(clean)
 	seedReq, seedCr := loaderNames(nil)
@@ -523,6 +525,156 @@ func hiddenLoads(clean, raw []rune, hidden []span) moduleBindings {
 
 // maxHiddenLayers bounds how deep hiddenLoads lexes text nested in blanked text.
 const maxHiddenLayers = 8
+
+// dropCertainComments returns hidden without the block comments that are certainly
+// comments: in a file with no JSX element (jsxMarked), a block comment whose "/*" is the
+// first non-blank of a line that every earlier line leaves in code.
+//
+// Lines here end at '\n' or '\r'. Every earlier line is walked in order, starting in code
+// at the top of the file. A line whose first non-blank opens a block comment is a comment
+// up to the first "*/", under the lexer and under JS alike; the rest of that line, or
+// the whole of any other line, is code under both. That code leaves both readings in code
+// at the next line unless it holds a '`' (a template may open), a "/*" (a comment may
+// open, or a regex or string the lexer misreads may hold one), or ends in '\' (a string
+// may continue): nothing else spans a line break. A string or regex closes on its line
+// or not at all, a line, hashbang or HTML-like comment ends at the break, and the JSX text
+// and attribute strings that do span lines need an element jsxMarked rules out. Whatever
+// the lexer misreads on such a line (a regex read as a division, a division read as a
+// regex, a quote inside either) is undone at the break, so the walk stops trusting lines
+// at the first that holds one of the three.
+func dropCertainComments(raw []rune, hidden []span) []span {
+	if len(hidden) == 0 || jsxMarked(raw) {
+		return hidden
+	}
+	n := len(raw)
+	last := 0
+	for _, h := range hidden {
+		last = max(last, h.from)
+	}
+	exempt := map[int]bool{}
+	for i := 0; i < n && i < last; {
+		k := i
+		for k < n && jsBlank(raw[k]) {
+			k++
+		}
+		code := i
+		if k+1 < n && raw[k] == '/' && raw[k+1] == '*' {
+			e := commentEnd(raw, k+2)
+			if e < 0 {
+				break
+			}
+			exempt[k+2] = true
+			code = e + 2
+		}
+		b := code
+		for b < n && raw[b] != '\n' && raw[b] != '\r' {
+			if raw[b] == '`' || raw[b] == '/' && b+1 < n && raw[b+1] == '*' {
+				b = -1
+				break
+			}
+			b++
+		}
+		if b < 0 || b > code && raw[b-1] == '\\' {
+			break
+		}
+		i = b + 1
+	}
+	if len(exempt) == 0 {
+		return hidden
+	}
+	kept := make([]span, 0, len(hidden))
+	for _, h := range hidden {
+		if !exempt[h.from] {
+			kept = append(kept, h)
+		}
+	}
+	return kept
+}
+
+// commentEnd returns the index of the first "*/" at or after from, or -1.
+func commentEnd(raw []rune, from int) int {
+	for j := from; j+1 < len(raw); j++ {
+		if raw[j] == '*' && raw[j+1] == '/' {
+			return j
+		}
+	}
+	return -1
+}
+
+// jsxMarked reports whether src may hold a JSX element. Every element either closes with
+// '<' then '/' or ends with '/' then '>', with only white space and comments between the
+// two, so a file with neither pair holds no JSX text or attribute string. Every "/*" and
+// "//" is taken for a comment between the two, and none hides a pair inside it, which can
+// only find more pairs than the source holds. A closing '/' is never followed by '*' or '/'
+// (that would open a comment) nor preceded by '*' (in a tag, a '*' is inside a string, a
+// {} expression or a comment, and none of those ends just before it), so no other '/' is
+// looked past.
+func jsxMarked(src []rune) bool {
+	n := len(src)
+	// Past the last "*/" no comment closes, so skipGap need not look for one there.
+	closeBy := -1
+	for j := n - 2; j >= 0; j-- {
+		if src[j] == '*' && src[j+1] == '/' {
+			closeBy = j
+			break
+		}
+	}
+	for i := 0; i < n; i++ {
+		switch src[i] {
+		case '<':
+			j := i + 1
+			for j < n && (jsBlank(src[j]) || isLineTerminator(src[j])) {
+				j++
+			}
+			if j < n && src[j] == '/' {
+				return true
+			}
+		case '/':
+			if i > 0 && src[i-1] == '*' || i+1 < n && (src[i+1] == '*' || src[i+1] == '/') {
+				continue
+			}
+			if j := skipGap(src, i+1, closeBy); j < n && src[j] == '>' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// skipGap returns the index of the first rune at or after i that is neither white space,
+// a line break, nor inside a comment; closeBy is the index of the last "*/" in src.
+func skipGap(src []rune, i, closeBy int) int {
+	n := len(src)
+	for i < n {
+		switch {
+		case jsBlank(src[i]) || isLineTerminator(src[i]):
+			i++
+		case src[i] == '/' && i+1 < n && src[i+1] == '*':
+			if i+2 > closeBy {
+				return i
+			}
+			e := commentEnd(src, i+2)
+			i = e + 2
+		case src[i] == '/' && i+1 < n && src[i+1] == '/':
+			for i < n && !isLineTerminator(src[i]) {
+				i++
+			}
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+// jsBlank reports whether c is JS white space within a line, or LS or PS, neither of
+// which can change what kind of text follows them.
+func jsBlank(c rune) bool {
+	switch c {
+	case '\t', '\v', '\f', ' ', '\uFEFF', '\u2028', '\u2029':
+		return true
+	}
+	return unicode.Is(unicode.Zs, c)
+}
 
 // proseLoaders blanks, in a view of blanked text, the loader names that cannot be code
 // there: a JSDoc type expression on its tag's line (`@param {Function} f`,

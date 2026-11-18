@@ -82,7 +82,7 @@ func TestRunAssessOptions(t *testing.T) {
 	})
 	t.Run("subject-toolchain reachability turned off", func(t *testing.T) {
 		t.Setenv(envSubjectToolchainReach, "false")
-		opts, err := runFlagsFor(t).runAssessOptions(func(*pipeline.AssessConfig) {})
+		opts, err := runFlagsFor(t).runAssessOptions(func(*pipeline.AssessConfig) {}, "go")
 		if err != nil {
 			t.Fatalf("runAssessOptions: %v", err)
 		}

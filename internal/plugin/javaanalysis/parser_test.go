@@ -386,6 +386,7 @@ class K { @java.lang.annotation.Target(ElementType.METHOD) @interface A {} }`, f
 		{"meta-annotation argument holds code", `package p;
 import java.lang.annotation.Target;
 @Target(foo()) @interface A {}`, true},
+		{"qualified meta-annotation argument holds code", `package p; @java.lang.annotation.Target(foo()) @interface A {}`, true},
 		{"inside an open argument list", `package p;
 class K { void m() { make( @java.lang.annotation.Target @interface A {} ); } }`, true},
 		{"words that are not modifiers before the annotation", `package p;

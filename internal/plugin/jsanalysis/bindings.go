@@ -49,8 +49,13 @@ type moduleBindings struct {
 	prefixLoads   []prefixLoad       // require/import() whose specifier is a literal prefix plus a runtime value
 	dynImport     bool               // saw a runtime-computed ESM target `import(expr)` with no static prefix
 	computedReq   bool               // saw a runtime-computed CJS target `require(var)` with no static prefix
-	nativeLoad    bool               // saw dlopen, getBuiltinModule, _linkedBinding or binding, which load code this lane never reads
-	evaluated     bool               // saw eval or the Function constructor, which run code built at run time
+	// loaderEscape: a loader is handed on, or reached by a route whose calls this lane does not
+	// judge, so the names it loads are chosen by code other than this module's load sites.
+	loaderEscape bool
+	// prefixes are the literal prefixes of every prefix load, the ones addLoads folds in included.
+	prefixes   []string
+	nativeLoad bool // saw dlopen, getBuiltinModule, _linkedBinding or binding, which load code this lane never reads
+	evaluated  bool // saw eval or the Function constructor, which run code built at run time
 	// literalExempt: a computed read that may be a constructor key was accepted only because
 	// its receiver is a literal receiver, which holds only while no module rewrites a
 	// prototype (protoWrite).
@@ -77,6 +82,13 @@ type prefixLoad struct {
 	caller frameRef // the frame the load runs in (set by parseFile from the call scan)
 }
 
+// escape records a loader that leaves this module's load sites: it counts as a computed load,
+// and as one no bound describes.
+func (mb *moduleBindings) escape() {
+	mb.computedReq = true
+	mb.loaderEscape = true
+}
+
 // addLoads records the loads o found (its literal specifiers and runtime-computed, native
 // and evaluated loads) without its bindings. A prefix load in o counts as runtime-computed,
 // since nothing judges it against the files its prefix names.
@@ -84,6 +96,8 @@ func (mb *moduleBindings) addLoads(o moduleBindings) {
 	mb.specifiers = append(mb.specifiers, o.specifiers...)
 	mb.dynImport = mb.dynImport || o.dynImport
 	mb.computedReq = mb.computedReq || o.computedReq
+	mb.loaderEscape = mb.loaderEscape || o.loaderEscape
+	mb.prefixes = append(mb.prefixes, o.prefixes...)
 	for _, pl := range o.prefixLoads {
 		if pl.dyn {
 			mb.dynImport = true
@@ -768,6 +782,7 @@ func recordLoad(clean, src []rune, at, a int, dyn bool, mb *moduleBindings) {
 		mb.specifiers = append(mb.specifiers, loadSpec{spec: text, viaRequire: !dyn, dynImport: dyn})
 	case loadArgPrefix:
 		mb.prefixLoads = append(mb.prefixLoads, prefixLoad{prefix: text, dyn: dyn, pos: at})
+		mb.prefixes = append(mb.prefixes, text)
 	case loadArgComputed:
 		if dyn {
 			mb.dynImport = true

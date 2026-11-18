@@ -227,12 +227,14 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			}
 		}
 		if undetermined {
+			limits := withheldBy(store, assessmentID, pkg, reason)
 			f = report.AdvisoryFinding{
 				Advisory:           adv,
 				Package:            pkg,
 				Verdict:            report.VerdictUndetermined,
 				UndeterminedReason: reason,
-				Evidence:           report.EvidenceSummary{Detail: report.UndeterminedDetail(reason)},
+				WithheldBy:         limits,
+				Evidence:           report.EvidenceSummary{Detail: report.WithheldDetail(reason, limits)},
 			}
 			if pipeline.OwnAdvisoryHeldForPartialRun(store, assessmentID) {
 				f.Evidence.Detail = ownAdvisoryPartialRunDetail
@@ -1320,20 +1322,13 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	if emptyGraphUncalledComplete(store, assessmentID) {
 		return report.ReasonAnalysisDidNotRun, true
 	}
-	reasons := didNotRunReasons(store, assessmentID, pkg)
-	versionHeld := false
-	if _, _, admitted := admittedPackage(store, assessmentID, pkg); !admitted {
-		kept := withoutVersionLimits(store, assessmentID, reasons)
-		versionHeld = len(kept) < len(reasons)
-		reasons = kept
-		// A row with no package is one whose version never resolved (a module replaced by a
-		// different path or a directory has none), so the limit that held it is the specific
-		// statement, whatever other axes declared.
-		if versionHeld && pkg == nil {
-			return report.ReasonPackageVersionUnresolved, true
-		}
+	reasons, versionHeld := keptDidNotRunReasons(store, assessmentID, pkg)
+	// A row with no package is one whose version never resolved (a module replaced by a
+	// different path or a directory has none), so the limit that held it is the specific
+	// statement, whatever other axes declared.
+	if versionHeld && pkg == nil {
+		return report.ReasonPackageVersionUnresolved, true
 	}
-	reasons = withoutBuildConstraintLimit(store, assessmentID, pkg, reasons)
 	switch {
 	case len(reasons) == 0:
 		return "", false
@@ -1350,15 +1345,30 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	return report.ReasonAnalysisDidNotRun, true
 }
 
+// keptDidNotRunReasons returns the did-not-run limits that hold against this advisory once the ones
+// another statement covers are dropped (withoutVersionLimits, withoutBuildConstraintLimit).
+// versionHeld reports that a version limit was among those dropped.
+func keptDidNotRunReasons(store artifact.Store, assessmentID string, pkg *report.Package) (reasons []string, versionHeld bool) {
+	reasons = didNotRunReasons(store, assessmentID, pkg)
+	if _, _, admitted := admittedPackage(store, assessmentID, pkg); !admitted {
+		kept := withoutVersionLimits(store, assessmentID, reasons)
+		versionHeld = len(kept) < len(reasons)
+		reasons = kept
+	}
+	return withoutBuildConstraintLimit(store, assessmentID, pkg, reasons), versionHeld
+}
+
 // scopeStatedLimits are the limits the Go lane declares beside a refutation it kept for the scanned
 // build alone, each stated in that refutation's detail. excluded_files:build_constraint: every file
 // the build left out that may call into the module was left out by its build constraints alone, and
 // the detail names the platform and tags. plugin_load:cgo_off: the program reaches plugin.Open in a
 // build with cgo off, where it loads nothing, and the detail says the refutation holds for
-// CGO_ENABLED=0.
+// CGO_ENABLED=0. cgo:files_dropped: the build has cgo off and left its cgo files out, and the detail
+// says the same.
 var scopeStatedLimits = map[string]bool{
 	plugin.PartialReasonExcludedFilesBuildConstraint: true,
 	plugin.PartialReasonPluginLoadCgoOff:             true,
+	plugin.PartialReasonCgoFilesDropped:              true,
 }
 
 // withoutBuildConstraintLimit drops, from the limits a refutation would be withheld by, the

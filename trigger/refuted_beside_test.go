@@ -15,6 +15,10 @@ func unreached(purl, detail string, assumptions ...string) plugin.Refutation {
 	return plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: purl, Detail: detail, Assumptions: assumptions}
 }
 
+func notImported(purl, detail string, assumptions ...string) plugin.Refutation {
+	return plugin.Refutation{Basis: plugin.RefutationAnalyzerPackageNotImported, Package: purl, Detail: detail, Assumptions: assumptions}
+}
+
 // TestFinding_RefutedBeside is an advisory that names two packages of the build: the admitted
 // package's refutation grounds only when the lane refuted the other package too, on a basis and
 // under conditions that hold for that package.
@@ -39,6 +43,7 @@ func TestFinding_RefutedBeside(t *testing.T) {
 		toolchain  pipeline.ToolchainFact
 		scanned    bool
 		scoped     []artifact.ScopedPartialityFlag
+		flags      []string
 		wantReason string // "" = not_exploitable
 		wantDetail []string
 		wantExact  string
@@ -129,6 +134,37 @@ func TestFinding_RefutedBeside(t *testing.T) {
 			toolchain: exact, scanned: true, wantReason: report.ReasonVulnerableSymbolUnresolved,
 		},
 		{
+			name: "other package refuted as not imported", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(notImported(v3, "v3 not imported", "a1")),
+				Refutations: []plugin.Refutation{unreached(docker, "docker unreached", "a2")},
+			},
+			toolchain: exact, scanned: true,
+			wantExact:  "github.com/docker/distribution@v2.8.1: docker unreached (analyzer_symbol_not_reached); also github.com/distribution/distribution/v3: v3 not imported (analyzer_package_not_imported)",
+			wantAssume: []string{"a2", "a1"},
+		},
+		{
+			name: "other package refuted as not imported, beside a file another platform builds", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(notImported(v3, "d")),
+				Refutations: []plugin.Refutation{unreached(docker, "d")},
+			},
+			flags:     []string{plugin.PartialReasonExcludedFilesBuildConstraint},
+			toolchain: exact, scanned: true, wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "other package unreached, beside a file another platform builds", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(v3, "d")),
+				Refutations: []plugin.Refutation{unreached(docker, "d")},
+			},
+			flags:     []string{plugin.PartialReasonExcludedFilesBuildConstraint},
+			toolchain: exact, scanned: true,
+		},
+		{
 			name: "a did-not-run limit scoped to the other package", pkg: dockerPkg, affected: []string{v3, docker},
 			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
 			reach: plugin.ReachabilityResult{
@@ -180,8 +216,8 @@ func TestFinding_RefutedBeside(t *testing.T) {
 				"toolchain_scan": pipeline.ToolchainScan{Requested: "go1.22.1", Actual: "go1.22.1", Subject: tt.scanned},
 			})
 			putJSON(t, store, aid, artifact.TypeInventory, map[string]any{"toolchain": tt.toolchain})
-			if tt.scoped != nil {
-				putJSON(t, store, aid, artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{ScopedPartiality: tt.scoped})
+			if tt.scoped != nil || tt.flags != nil {
+				putJSON(t, store, aid, artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{ScopedPartiality: tt.scoped, PartialityFlags: tt.flags})
 			}
 			f := findingInBuild(store, aid, report.Advisory{ID: "GO-test", Source: "corpus"}, tt.pkg, tt.mods)
 			if tt.wantReason != "" {

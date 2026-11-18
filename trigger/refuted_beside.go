@@ -27,13 +27,17 @@ func admittedRefutation(reach plugin.ReachabilityResult, admitted pkgKey, root b
 
 // refutedBeside returns the lane's refutations of Go modules that stand on this assessment beside
 // the admitted package's own gate. Each rests on the analyzer's own search of that module
-// (analyzer_symbol_not_reached), so three things hold one back:
+// (analyzer_symbol_not_reached, or analyzer_package_not_imported where the build imports none of the
+// module's vulnerable packages), so four things hold one back:
 //
 //   - a refutation of the standard library or of the Go toolchain's own commands, unless
 //     reachability ran under the subject's exact Go toolchain (toolchainUndetermined's rule for a
 //     stdlib advisory);
 //   - a scoped did-not-run limit that counts for the module (scopedLimitCounts), which the
 //     admitted package's own gate never weighs;
+//   - analyzer_package_not_imported beside excluded_files:build_constraint: the limit is run-wide,
+//     so the file another platform builds may be one that calls into this module
+//     (withoutBuildConstraintLimit's rule for the admitted package);
 //   - any other basis, which this version does not know how to weigh beside the admitted package.
 func refutedBeside(store artifact.Store, assessmentID string, reach plugin.ReachabilityResult) []plugin.Refutation {
 	all := slices.Clone(reach.Refutations)
@@ -41,10 +45,20 @@ func refutedBeside(store artifact.Store, assessmentID string, reach plugin.Reach
 		all = append(all, *reach.Refutation)
 	}
 	scoped := footprintScoped(store, assessmentID)
+	constrained := slices.Contains(footprintPartialityFlags(store, assessmentID), plugin.PartialReasonExcludedFilesBuildConstraint)
 	var out []plugin.Refutation
 	for _, r := range all {
 		key, ok := purlKey(r.Package)
-		if !ok || key.typ != "golang" || r.Basis != plugin.RefutationAnalyzerSymbolNotReached {
+		if !ok || key.typ != "golang" {
+			continue
+		}
+		switch r.Basis {
+		case plugin.RefutationAnalyzerSymbolNotReached:
+		case plugin.RefutationAnalyzerPackageNotImported:
+			if constrained {
+				continue
+			}
+		default:
 			continue
 		}
 		if (key.name == goStdlib || key.name == goToolchain) && !subjectToolchainExactAndScanned(store, assessmentID) {

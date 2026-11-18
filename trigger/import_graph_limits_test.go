@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -148,6 +149,55 @@ func TestFinding_NotImportedAgainstCgo(t *testing.T) {
 			}
 			if tc.wantLimits != nil && !reflect.DeepEqual(f.WithheldBy, tc.wantLimits) {
 				t.Errorf("withheld_by = %+v, want %+v", f.WithheldBy, tc.wantLimits)
+			}
+		})
+	}
+}
+
+// TestFinding_BoundedCgoHoldsRefutedBeside: the bounded cgo limit the admitted module's
+// not-imported refutation holds against still counts for another module the advisory names when
+// that one is only unreached, so the row stays undetermined.
+func TestFinding_BoundedCgoHoldsRefutedBeside(t *testing.T) {
+	const (
+		v3     = "pkg:golang/github.com/distribution/distribution/v3"
+		docker = "pkg:golang/github.com/docker/distribution"
+	)
+	pkg := &report.Package{Ecosystem: "Go", Name: "github.com/docker/distribution", Version: "v2.8.1", PURL: docker + "@v2.8.1"}
+	mods := goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true}
+	exact := pipeline.ToolchainFact{Version: "go1.22.1", Bound: pipeline.ToolchainBoundExact, Source: pipeline.ToolchainSourceCIObserved}
+	tests := []struct {
+		name        string
+		targets     []string
+		wantVerdict report.Verdict
+	}{
+		{name: "targets name both modules", targets: []string{docker, v3}, wantVerdict: report.VerdictUndetermined},
+		{name: "targets name the admitted module only", targets: []string{docker}, wantVerdict: report.VerdictNotExploitable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			const aid = "beside-cgo"
+			putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, map[string]any{
+				"purl": docker, "affected_packages": []map[string]string{{"purl": v3}, {"purl": docker}},
+				"symbol_provenance": "osv-declared", "advisory_symbols": []string{"example.Symbol"},
+			})
+			putJSON(t, store, aid, artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{Partiality: plugin.Complete()})
+			putJSON(t, store, aid, artifact.TypeReachability, map[string]any{
+				"reachability": plugin.ReachabilityResult{
+					Partiality:  plugin.Complete(),
+					Refutation:  ptr(notImported(docker, "d")),
+					Refutations: []plugin.Refutation{unreached(v3, "d")},
+				},
+				"call_graph":     plugin.CallGraphResult{Partiality: plugin.Complete(), Edges: []plugin.CallEdge{depEdge("main", "lib")}},
+				"toolchain_scan": pipeline.ToolchainScan{Requested: "go1.22.1", Actual: "go1.22.1", Subject: true},
+			})
+			putJSON(t, store, aid, artifact.TypeInventory, map[string]any{"toolchain": exact})
+			putJSON(t, store, aid, artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{ScopedPartiality: []artifact.ScopedPartialityFlag{
+				{Reason: plugin.PartialReasonCgo, Path: "example.com/app", Targets: tt.targets},
+			}})
+			f := findingInBuild(store, aid, report.Advisory{ID: "GO-test", Source: "corpus"}, pkg, mods)
+			if f.Verdict != tt.wantVerdict {
+				t.Errorf("verdict = %s (%s), want %s", f.Verdict, f.UndeterminedReason, tt.wantVerdict)
 			}
 		})
 	}

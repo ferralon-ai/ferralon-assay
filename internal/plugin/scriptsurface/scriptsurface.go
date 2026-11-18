@@ -143,8 +143,9 @@ type Spec struct {
 	// sources a helper a tool writes outside the repository and that installs nothing. at, when
 	// not "", is the helper's path from where the command runs, and it is one only where the
 	// build holds nothing there and nothing from the repository may have been put there. Every
-	// literal element of its path is bound, so a command anywhere in the build naming one, as
-	// it would to write the helper or its directory, withholds (Rebound). nil means none is.
+	// literal element of its path is bound, and for a path from $(dirname …) the sourcing
+	// file's directory too, so a command anywhere in the build naming one, as it would to write
+	// the helper or its directory, withholds (Rebound). nil means none is.
 	Helper func(path string, words []string) (at string, ok bool)
 	// Code returns the words of a command holding no token, past its leading assignments and
 	// launchers (sudo, env), that are code an interpreter runs
@@ -1280,7 +1281,14 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		}
 		if v.spec.Helper != nil {
 			if at, ok := v.spec.Helper(v.file, words); ok && (at == "" || cur.foreign(at)) {
-				for _, part := range strings.Split(words[1], "/") {
+				parts := strings.Split(words[1], "/")
+				if strings.HasPrefix(words[1], "$(dirname") {
+					// The path runs from the sourcing file's directory, which a command may write whole.
+					if d, err := filepath.Rel(v.root, filepath.Dir(v.file)); err == nil && d != "." {
+						parts = append(parts, filepath.Base(d))
+					}
+				}
+				for _, part := range parts {
 					if part != "" && part != "." && part != ".." && !strings.ContainsAny(part, "$`~") {
 						v.bind(part)
 					}

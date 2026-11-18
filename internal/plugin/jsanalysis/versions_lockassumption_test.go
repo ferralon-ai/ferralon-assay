@@ -268,6 +268,12 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"husky helper the build writes", npm(map[string]string{".husky/pre-commit": "#!/bin/sh\n. \"$(dirname -- \"$0\")/_/husky.sh\"\nnpm test\n", "tools/helper.txt": "npm install left-pad\n", ".github/workflows/ci.yml": ci("cp tools/helper.txt .husky/_/husky.sh")}), withheld},
 		{"nvm.sh the build writes", npm(map[string]string{"tools/helper.txt": "npm install left-pad\n", ".github/workflows/ci.yml": ci("cp tools/helper.txt .nvm/nvm.sh && . .nvm/nvm.sh")}), withheld},
 		{"husky helper the repository holds that only moves the hook", npm(map[string]string{".husky/pre-commit": "#!/bin/sh\n. \"$(dirname -- \"$0\")/_/husky.sh\"\nnpm install\n", ".husky/_/husky.sh": "cd sub\n", "sub/package.json": api}), withheld},
+		{"husky hook beside husky install", npm(map[string]string{"package.json": pkg(`,"devDependencies":{"husky":"^8.0.0"},"scripts":{"prepare":"husky install"}`), ".husky/pre-commit": "#!/bin/sh\n. \"$(dirname -- \"$0\")/_/husky.sh\"\nnpm test\n"}), plain},
+		{"husky helper directory the build extracts into", npm(map[string]string{".husky/pre-commit": "#!/bin/sh\n. \"$(dirname -- \"$0\")/_/husky.sh\"\nnpm test\n", "tools/hk.tar": "x", ".github/workflows/ci.yml": ci("tar -xf tools/hk.tar -C .husky")}), withheld},
+		{"husky helper directory the build checks out", npm(map[string]string{".husky/pre-commit": "#!/bin/sh\n. \"$(dirname -- \"$0\")/_/husky.sh\"\nnpm test\n", ".github/workflows/ci.yml": ci("git checkout origin/tooling -- .husky")}), withheld},
+		{"Dockerfile heredoc elsewhere, then nvm", npm(map[string]string{"Dockerfile": "FROM node:20\nCOPY <<EOF /x/a.txt\nhello\nEOF\nRUN . .nvm/nvm.sh\n"}), withheld},
+		{"Dockerfile sources nvm where the image runs", npm(map[string]string{"Dockerfile": "FROM node:20\nCMD . .nvm/nvm.sh && npm start\n"}), withheld},
+		{"npm run at a --prefix spelled as a flag", npm(map[string]string{"package.json": pkg(`,"scripts":{"setup":"npm install"}`), "-x/package.json": `{"name":"x","version":"1.0.0","scripts":{"setup":"echo hi"}}`, ".github/workflows/ci.yml": ci("npm run setup --prefix -x -- --no-package-lock")}), withheld},
 		{"Dockerfile writes nvm.sh from a heredoc", npm(map[string]string{"Dockerfile": "FROM node:20\nCOPY <<EOF .nvm/nvm.sh\nexport npm_config_package_lock=false\nEOF\nRUN . .nvm/nvm.sh && npm install\n"}), withheld},
 	}
 	for _, tt := range tests {

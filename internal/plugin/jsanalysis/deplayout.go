@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -681,9 +682,10 @@ const tarSlack = (maxPackageFiles + 2) * 1024
 
 // unpackDepPackage lists the tarball's regular files, keeping source text, and reads the
 // manifest facts. Any entry path that could escape the package, or that the tarball holds twice
-// (also as two names differing only in case, one file on a case-insensitive filesystem), fails
-// the whole package: extraction keeps the last copy of a duplicate, and which copy the lane read
-// would be a guess.
+// with different bytes the lane reads (also as two names differing only in case, one file on a
+// case-insensitive filesystem), fails the whole package: extraction keeps the last copy of a
+// duplicate, and which copy the lane read would be a guess. A second copy of one path is no
+// guess when the lane reads neither copy's bytes, or when the two are the same bytes.
 func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage, error) {
 	zr, err := gzip.NewReader(bytes.NewReader(tgz))
 	if err != nil {
@@ -695,6 +697,7 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 	byStem := map[string][]depFile{}
 	var manifest []byte
 	var unpacked int64
+	read := map[string][sha256.Size]byte{}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -716,7 +719,8 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 		if !hdr.FileInfo().Mode().IsRegular() || rel == "" {
 			continue
 		}
-		if pkg.files[rel] || folded[strings.ToLower(rel)] || len(pkg.files) >= maxPackageFiles {
+		again := pkg.files[rel]
+		if !again && (folded[strings.ToLower(rel)] || len(pkg.files) >= maxPackageFiles) {
 			return nil, errPackageUnread
 		}
 		pkg.files[rel] = true
@@ -743,6 +747,14 @@ func unpackDepPackage(ctx context.Context, e *depEntry, tgz []byte) (*depPackage
 		if err != nil || int64(len(body)) > maxSourceBytes {
 			return nil, errPackageUnread
 		}
+		sum := sha256.Sum256(body)
+		if again {
+			if read[rel] != sum {
+				return nil, errPackageUnread
+			}
+			continue
+		}
+		read[rel] = sum
 		if rel == "package.json" {
 			manifest = body
 			continue

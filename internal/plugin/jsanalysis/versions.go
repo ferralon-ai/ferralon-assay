@@ -488,13 +488,13 @@ func parsePackageLock(data []byte) (lockInfo, bool) {
 			if key := packageLockName(installPath, ""); key != "" {
 				info.names[normalizeNPMCoordinate(key)] = true // the folder name: an alias key when "name" differs
 				info.installed[installPath] = installedVersion(pl.Packages, key, pkg)
+				info.sources[normalizeNPMCoordinate(key)] = append(info.sources[normalizeNPMCoordinate(key)], pkg.Resolved)
 			}
 			name := packageLockName(installPath, pkg.Name)
 			if name == "" {
 				continue
 			}
 			info.add(name, pkg.Version)
-			info.sources[normalizeNPMCoordinate(name)] = append(info.sources[normalizeNPMCoordinate(name)], pkg.Resolved)
 		}
 		return info, true
 	}

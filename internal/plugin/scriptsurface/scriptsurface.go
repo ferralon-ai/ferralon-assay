@@ -128,10 +128,11 @@ type Spec struct {
 	// with no slash, names a shell library the lane knows installs nothing. A word that may name
 	// a file the build holds where the command runs is never one. nil means none is.
 	Library func(word string) bool
-	// CodeWords makes a word that holds code (a quote or a parenthesis inside it, as the
-	// argument of node -e does) name every file name written in it, so inline code that
-	// removes or rewrites a bound file withholds as a command naming the file does.
-	CodeWords bool
+	// Code returns the words of a command holding no token that are code an interpreter runs
+	// (the argument of node -e). Every file name written in one is named as an argument is, so
+	// inline code that removes or rewrites a bound file withholds as a command naming the file
+	// does. nil means the lane reads no inline code.
+	Code func(words []string) []string
 }
 
 func (s Spec) complete() bool {
@@ -720,10 +721,17 @@ func (v *Veto) mention(args []string) {
 				}
 			}
 		}
-		if v.spec.CodeWords && strings.ContainsAny(w, "\"'`(") {
-			for _, name := range strings.FieldsFunc(strings.ToLower(w), notFileNameRune) {
-				v.mentioned[name] = true
-			}
+	}
+}
+
+// mentionCode records every file name written in the inline code among a command's words.
+func (v *Veto) mentionCode(words []string) {
+	if v.spec.Code == nil {
+		return
+	}
+	for _, code := range v.spec.Code(words) {
+		for _, name := range strings.FieldsFunc(strings.ToLower(code), notFileNameRune) {
+			v.mentioned[name] = true
 		}
 	}
 }
@@ -1271,6 +1279,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	if !v.segmentHasToken(words) {
 		if !v.readsOnly(words) {
 			v.mention(words) // a leading NAME=VALUE, or a command run by its path, names one too
+			v.mentionCode(words)
 		}
 		switch dir, ok := venvWrites(seg, cur); {
 		case ok:

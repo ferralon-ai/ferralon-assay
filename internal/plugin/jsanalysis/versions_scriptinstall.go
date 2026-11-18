@@ -72,7 +72,7 @@ func scriptSpec(root string, locks map[string]lockInfo, assumed *bool) scriptsur
 		ReadOnly:    laneReadOnly,
 		Library:     gitShellLibrary,
 		Concurrent:  laneConcurrent,
-		CodeWords:   true,
+		Code:        laneCode,
 		ReadRegular: readRegular,
 		Absent:      absent,
 	}
@@ -548,10 +548,9 @@ func githubSpec(spec string) (repo, committish string, ok bool) {
 	spec, committish, _ = strings.Cut(spec, "#")
 	rest, short := strings.CutPrefix(spec, "github:")
 	if !short {
-		rest = strings.TrimPrefix(spec, "git+")
 		found := false
-		for _, p := range []string{"ssh://git@github.com/", "https://github.com/", "git://github.com/"} {
-			if r, has := strings.CutPrefix(rest, p); has {
+		for _, p := range []string{"git+ssh://git@github.com/", "ssh://git@github.com/", "git+https://github.com/", "https://github.com/", "git://github.com/"} {
+			if r, has := strings.CutPrefix(spec, p); has {
 				rest, found = r, true
 				break
 			}
@@ -559,8 +558,8 @@ func githubSpec(spec string) (repo, committish string, ok bool) {
 		if !found {
 			return "", "", false
 		}
-		rest = strings.TrimSuffix(rest, ".git")
 	}
+	rest = strings.TrimSuffix(rest, ".git")
 	owner, name, two := strings.Cut(rest, "/")
 	if !two || owner == "" || name == "" || strings.ContainsAny(rest, "@:?# ") || strings.Contains(name, "/") {
 		return "", "", false
@@ -833,6 +832,41 @@ func laneReadOnly(words []string) bool {
 	return ok && readOnlyCommands[head]
 }
 
+// codeInterpreters are the programs whose arguments may be code they run: node -e, python -c.
+var codeInterpreters = map[string]bool{
+	"node": true, "nodejs": true, "ts-node": true, "tsx": true,
+	"python": true, "python3": true, "ruby": true, "perl": true, "php": true,
+}
+
+// requireReadRE matches code that only loads a file and reads a property of it, optionally
+// printed: require('./package.json').version.
+var requireReadRE = regexp.MustCompile(`^(?:console\.log\()?require\(["'][^"'()]+["']\)(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\)?;?$`)
+
+// laneCode returns the arguments of a command an interpreter runs, past any leading
+// NAME=VALUE: each may be code. An argument that only reads a property of a required file
+// (requireReadRE) writes nothing, so is left out.
+func laneCode(words []string) []string {
+	for len(words) > 0 && assignmentRE.MatchString(words[0]) {
+		words = words[1:]
+	}
+	if len(words) < 2 {
+		return nil
+	}
+	if head, ok := scriptsurface.CommandName(words[0]); !ok || !codeInterpreters[head] {
+		return nil
+	}
+	var code []string
+	for _, w := range words[1:] {
+		if !requireReadRE.MatchString(strings.TrimSpace(w)) {
+			code = append(code, w)
+		}
+	}
+	return code
+}
+
+// assignmentRE matches a NAME=VALUE word before a command.
+var assignmentRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+
 // yarnBuiltins covers the first words yarn 1 (1.22) and yarn 2+ (4.5, its bundled plugins
 // included) take as one of their own commands, aliases and the camelCase spellings yarn 1
 // also accepts among them. yarn runs any other first word as "yarn run <word>".
@@ -1084,6 +1118,7 @@ func laneLockPreserving(b scriptsurface.Binder, dir, root string, locks map[stri
 			return false
 		}
 	}
+	b.Bind(".npmrc") // read above: a command that writes one may turn the lock off
 	return true
 }
 

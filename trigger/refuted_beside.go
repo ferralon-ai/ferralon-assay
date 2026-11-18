@@ -25,8 +25,8 @@ func admittedRefutation(reach plugin.ReachabilityResult, admitted pkgKey, root b
 	return reach.Refutation
 }
 
-// refutedBeside returns the lane's refutations of Go modules other than the admitted package that
-// stand on this assessment. Each rests on the analyzer's own search of that module
+// refutedBeside returns the lane's refutations of Go modules that stand on this assessment beside
+// the admitted package's own gate. Each rests on the analyzer's own search of that module
 // (analyzer_symbol_not_reached), so three things hold one back:
 //
 //   - a refutation of the standard library, unless reachability ran under the subject's exact Go
@@ -34,7 +34,7 @@ func admittedRefutation(reach plugin.ReachabilityResult, admitted pkgKey, root b
 //   - a scoped did-not-run limit that counts for the module (scopedLimitCounts), which the
 //     admitted package's own gate never weighs;
 //   - any other basis, which this version does not know how to weigh beside the admitted package.
-func refutedBeside(store artifact.Store, assessmentID string, reach plugin.ReachabilityResult, admitted pkgKey) []plugin.Refutation {
+func refutedBeside(store artifact.Store, assessmentID string, reach plugin.ReachabilityResult) []plugin.Refutation {
 	all := slices.Clone(reach.Refutations)
 	if reach.Refutation != nil {
 		all = append(all, *reach.Refutation)
@@ -43,7 +43,7 @@ func refutedBeside(store artifact.Store, assessmentID string, reach plugin.Reach
 	var out []plugin.Refutation
 	for _, r := range all {
 		key, ok := purlKey(r.Package)
-		if !ok || key == admitted || key.typ != "golang" || r.Basis != plugin.RefutationAnalyzerSymbolNotReached {
+		if !ok || key.typ != "golang" || r.Basis != plugin.RefutationAnalyzerSymbolNotReached {
 			continue
 		}
 		if key.name == goStdlib && !subjectToolchainExactAndScanned(store, assessmentID) {

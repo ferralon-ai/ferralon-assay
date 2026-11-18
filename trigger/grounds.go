@@ -45,7 +45,7 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	reach, _ := reachabilityResult(store, assessmentID)
 	symbols := pipeline.AdvisorySymbols(store, assessmentID)
 	purls := pipeline.AdvisoryPackagePURLs(store, assessmentID)
-	beside := refutedBeside(store, assessmentID, reach, admitted)
+	beside := refutedBeside(store, assessmentID, reach)
 	if namesOtherPackage(purls, admitted, mods, beside) {
 		if len(symbols) == 0 {
 			return "", report.ReasonAdvisorySymbolAbsent, "", nil, false

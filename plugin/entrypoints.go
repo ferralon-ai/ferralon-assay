@@ -546,3 +546,36 @@ func SummarizeEntryRoots(inferred, denied, added []EntryRoot, unmatched []string
 	slices.Sort(s.Unmatched)
 	return s
 }
+
+// EntryRootRecord is the run-level disclosure of one lane's entry points, as the report states it.
+type EntryRootRecord struct {
+	// Lane is the analysis lane the record describes.
+	Lane string `json:"lane"`
+	// Source is LibraryEntrypointsSourceAuto when the lane inferred the set with nothing declared,
+	// LibraryEntrypointsSourceDeclared when it rests on the caller's declaration.
+	Source string `json:"source"`
+	// Input is the statement the set was resolved from, in the entrypoints input's syntax.
+	Input string `json:"input"`
+	// Effective is the set of roots the lane analysed, by kind, in the lane's own naming (a Go
+	// import path for a library), sorted. A kind with an empty list has no roots; a kind the lane
+	// did not report is absent.
+	Effective map[string][]string `json:"effective"`
+	// Unmatched are the declared selectors, "!" kept on a deny, that matched nothing the lane
+	// holds. An unmatched allow leaves the set unknown, and the lane withholds what rests on it.
+	Unmatched []string `json:"unmatched,omitempty"`
+}
+
+// EntryRootRecordOf renders the library set a lane resolved as that lane's record. It reports false
+// for an ecosystem whose lane does not report an entry-point set.
+func EntryRootRecordOf(r ResolvedLibraryEntrypoints) (EntryRootRecord, bool) {
+	if r.Ecosystem != "golang" {
+		return EntryRootRecord{}, false
+	}
+	return EntryRootRecord{
+		Lane:      EntryLaneGo,
+		Source:    r.Source,
+		Input:     r.Input,
+		Effective: map[string][]string{EntryKindLibrary: append([]string{}, r.Packages...)},
+		Unmatched: slices.Clone(r.Unmatched),
+	}, true
+}

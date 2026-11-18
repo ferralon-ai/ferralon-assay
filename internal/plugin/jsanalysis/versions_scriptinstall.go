@@ -187,17 +187,19 @@ const lockAssumption = "install commands honour the committed lockfile"
 const AnnotationInstallHonoursLock = plugin.AnnotationAssumptionPrefix + "install_honours_lockfile"
 
 // buildOutputAssumption is the assumption a result rests on when the build runs an npm install
-// into a build output the tree does not hold (laneBuildOutputInstall).
-const buildOutputAssumption = "installs into a build output the tree does not hold honour the committed lockfile"
+// into a build output the tree does not hold (laneBuildOutputInstall): that install reads a
+// manifest and lock generated outside the tree, so the committed lockfile's pins standing for it
+// is an assumption about the build tool, not a reading.
+const buildOutputAssumption = "an install into a build output the repository does not hold is assumed to install the versions the committed lockfile pins"
 
 // AnnotationBuildOutputInstall is the reason for buildOutputAssumption on a versions result.
 const AnnotationBuildOutputInstall = plugin.AnnotationAssumptionPrefix + "build_output_install_honours_lockfile"
 
 // laneAllowed reports whether a command holding a package-manager token, already free of
 // expansions and redirects, is one of the allowed forms. A form that installs binds to files
-// read here or sets assumed (laneAssumesLock) or built (laneBuildOutputInstall); a form that only runs a script withholds only
-// when it is told to run somewhere else (--prefix) that is not read here, since every
-// package.json script in the tree is gated where it is written.
+// read here or sets assumed (laneAssumesLock) or built (laneBuildOutputInstall); a form that
+// only runs a script withholds only when it is told to run somewhere else (--prefix) that is
+// not read here, since every package.json script in the tree is gated where it is written.
 func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[string]lockInfo, assumed, built *bool) bool {
 	for len(words) > 0 && laneKeptAssignment(words[0]) {
 		words = words[1:]

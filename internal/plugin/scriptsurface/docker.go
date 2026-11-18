@@ -13,7 +13,8 @@ import (
 // build context (hosts, the host files or directories copied), or a taint at dst, under dst
 // when dir, or everywhere when all; cmd when a command whose words were mentioned made it.
 // venv marks the taint a virtual environment's creation at dst left; built marks the taint a
-// plain COPY left at dst from sources no build context holds, a build output.
+// plain COPY left at dst from sources no build context holds, a build output; words are the
+// command a cmd taint came from, when it tokenised.
 type dockerEvent struct {
 	dst   string
 	hosts []string
@@ -23,6 +24,7 @@ type dockerEvent struct {
 	cmd   bool
 	venv  bool
 	built bool
+	words []string
 }
 
 // covers reports whether the event changes the container path f.
@@ -36,6 +38,24 @@ type dockerStage struct {
 	wdKnown bool
 	shell   bool // a SHELL instruction changed what runs a RUN's command line
 	volume  bool // a VOLUME instruction may discard what a later RUN writes under it
+	read    *dockerRead
+}
+
+// dockerRead is what one reading of a Dockerfile shares across its stages: the container
+// paths of the build outputs an install was read into, which no other command may name.
+type dockerRead struct {
+	outputs []string
+}
+
+// writeOnly are the commands that, with no redirect or expansion, change only accounts and
+// file modes, and so bring no manifest, lockfile or node_modules into a build output.
+var writeOnly = map[string]bool{
+	"chown": true, "chmod": true, "adduser": true, "addgroup": true, "useradd": true, "groupadd": true,
+}
+
+// onlyWrites reports whether a command is one writeOnly allows.
+func onlyWrites(words []string) bool {
+	return len(words) > 0 && writeOnly[path.Base(words[0])] && !hasRedirect(words) && !hasExpansion(words)
 }
 
 const (
@@ -493,7 +513,8 @@ func (c *dockerCursor) fork() cursor {
 func (c *dockerCursor) Prefixed(string, string, ...string) []string { return nil }
 
 // Built reads dir as a build output when the newest change to it is a plain COPY of sources no
-// build context holds, and no mount, later write or copy above it can put anything there.
+// build context holds, and no mount, later write or copy above it can put anything there: a
+// command after the COPY must be one onlyWrites allows.
 func (c *dockerCursor) Built(dir string, names ...string) bool {
 	if !c.mountsKnown || path.IsAbs(dir) || strings.ContainsAny(dir, `{\`) {
 		return false
@@ -516,7 +537,7 @@ func (c *dockerCursor) Built(dir string, names ...string) bool {
 	for _, e := range c.st.events {
 		switch {
 		case e.all:
-			if !e.cmd {
+			if !e.cmd || built && !onlyWrites(e.words) {
 				return false
 			}
 		case e.dst == dest && e.built:
@@ -538,6 +559,9 @@ func (c *dockerCursor) Built(dir string, names ...string) bool {
 	}
 	if built {
 		c.Bind(names...)
+		if c.st.read != nil {
+			c.st.read.outputs = append(c.st.read.outputs, dest)
+		}
 	}
 	return built
 }
@@ -835,13 +859,33 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 		return "install command in an unjoined continuation", starts[len(starts)-1] + 1
 	}
 	names := map[string]bool{}
-	st := &dockerStage{}
+	read := &dockerRead{}
+	st := &dockerStage{read: read}
+	var later, pulls []dockerLater
+	var envs []int
+	// run reads one command, ties the taints it leaves to its words, and keeps it for leave
+	// unless it is the npm install into a build output Built just read.
+	run := func(seg segment, cur *dockerCursor, at int, runtime bool) string {
+		n, outs := len(st.events), len(read.outputs)
+		if why := v.command(seg, cur, 0); why != "" {
+			return why
+		}
+		for k := n; k < len(st.events); k++ {
+			if st.events[k].cmd {
+				st.events[k].words = seg.words
+			}
+		}
+		if len(read.outputs) == outs || path.Base(seg.words[0]) != "npm" {
+			later = append(later, dockerLater{at: at, words: seg.words, runtime: runtime})
+		}
+		return ""
+	}
 	var deferred []segment
 	var deferredAt []int
 	flush := func() (string, int) {
 		for k, seg := range deferred {
 			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown, mountsKnown: true}
-			if why := v.command(seg, cur, 0); why != "" {
+			if why := run(seg, cur, deferredAt[k], true); why != "" {
 				return why, deferredAt[k]
 			}
 		}
@@ -875,6 +919,7 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 			}
 			v.mention(strings.Fields(body))
 			st.taintCmd()
+			later = append(later, dockerLater{at: at, words: strings.Fields(body)})
 			continue
 		}
 		hasTok := v.hasToken(rest)
@@ -883,7 +928,7 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 			if why, line := flush(); why != "" {
 				return why, line
 			}
-			st = &dockerStage{}
+			st = &dockerStage{read: read}
 			f := strings.Fields(rest)
 			for len(f) > 0 && strings.HasPrefix(f[0], "--") {
 				f = f[1:]
@@ -908,6 +953,9 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 			}
 		case instr == "COPY" || instr == "ADD":
 			st.copyInstr(v, ctxs, rest, instr == "ADD", earth)
+			if f := strings.Fields(rest); slices.ContainsFunc(f, func(a string) bool { return strings.HasPrefix(strings.ToLower(a), "--from=") }) {
+				pulls = append(pulls, dockerLater{at: at, words: f})
+			}
 		case instr == "RUN" || instr == "CMD" || instr == "ENTRYPOINT":
 			var mounts []string
 			mountsKnown := true
@@ -916,6 +964,9 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 				flag, rest, _ = strings.Cut(rest, " ")
 				rest = strings.TrimSpace(rest)
 				if m, ok := strings.CutPrefix(flag, "--mount="); ok {
+					if strings.Contains(strings.ToLower(m), "from=") {
+						pulls = append(pulls, dockerLater{at: at, words: []string{"/"}})
+					}
 					if t, ok := st.mountTarget(m); ok {
 						mounts = append(mounts, t)
 					} else {
@@ -938,6 +989,7 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 				if instr == "RUN" {
 					st.taintCmd()
 				}
+				later = append(later, dockerLater{at: at, words: strings.Fields(rest), runtime: instr != "RUN"})
 				continue
 			}
 			if instr != "RUN" {
@@ -949,12 +1001,15 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 			}
 			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown, mounts: mounts, mountsKnown: mountsKnown}
 			for _, seg := range segs {
-				if why := v.command(seg, cur, 0); why != "" {
+				if why := run(seg, cur, at, false); why != "" {
 					return why, at
 				}
 			}
 		case instr == "ENV" || instr == "ARG":
 			v.mention(strings.Fields(rest)) // a later command may reach a path through the value
+			if strings.Contains(strings.ToLower(rest), "node_modules") {
+				envs = append(envs, at)
+			}
 		case dockerPlain[instr]:
 		default: // ONBUILD, HEALTHCHECK and anything unknown run elsewhere or not at all
 			if v.hasToken(line) { // the whole line: a file read as a Dockerfile may be a script
@@ -962,7 +1017,84 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 			}
 		}
 	}
-	return flush()
+	if why, line := flush(); why != "" {
+		return why, line
+	}
+	return read.leave(lines, starts, later, pulls, envs)
+}
+
+// dockerLater is a command, or the words of a COPY or mount from another stage, at its
+// 1-based line; runtime marks a CMD or ENTRYPOINT.
+type dockerLater struct {
+	at      int
+	words   []string
+	runtime bool
+}
+
+// leave withholds when a build output's packages may reach the scanned project, or another
+// command may write into it: NODE_PATH set anywhere, an ENV or ARG naming node_modules, a COPY
+// or mount from another stage that may read an output, or a command, before the install or
+// after it, that may name one. A RUN passes when onlyWrites allows it or none of its words can
+// name an output, and a CMD or ENTRYPOINT when none names node_modules or holds an expansion.
+func (r *dockerRead) leave(lines []string, starts []int, later, pulls []dockerLater, envs []int) (string, int) {
+	if len(r.outputs) == 0 {
+		return "", 0
+	}
+	for i, l := range lines {
+		if strings.Contains(strings.ToUpper(l), "NODE_PATH") {
+			return "NODE_PATH beside an install into a build output", starts[i] + 1
+		}
+	}
+	if len(envs) > 0 {
+		return "node_modules named in ENV or ARG beside an install into a build output", envs[0]
+	}
+	for _, p := range pulls {
+		for _, w := range p.words {
+			if !strings.HasPrefix(w, "--") && r.reaches(strings.Trim(w, `[]",`)) {
+				return "copy from another stage that may read a build output", p.at
+			}
+		}
+	}
+	runtime := func(w string) bool {
+		return strings.Contains(strings.ToLower(w), "node_modules") || strings.ContainsAny(w, "$`")
+	}
+	for _, c := range later {
+		switch {
+		case c.runtime:
+			if slices.ContainsFunc(c.words, runtime) {
+				return "command that may move a build output's packages", c.at
+			}
+		case !onlyWrites(c.words) && slices.ContainsFunc(c.words, r.reaches):
+			return "command that may name a build output", c.at
+		}
+	}
+	return "", 0
+}
+
+// reaches reports whether a word may name a build output, what it holds or a directory above
+// it: it names node_modules, holds an expansion or a glob, or a part of it, split at = and /,
+// is ., .., the root, or a part of an output's container path.
+func (r *dockerRead) reaches(w string) bool {
+	if strings.Contains(strings.ToLower(w), "node_modules") || strings.ContainsAny(w, "$`*?[{") {
+		return true
+	}
+	parts := map[string]bool{".": true, "..": true}
+	for _, o := range r.outputs {
+		for _, p := range strings.Split(o, "/") {
+			parts[p] = p != ""
+		}
+	}
+	for _, f := range strings.Split(w, "=") {
+		if strings.HasPrefix(f, "/") && path.Clean(f) == "/" {
+			return true
+		}
+		for _, p := range strings.Split(f, "/") {
+			if parts[p] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // shellHides reports whether text, read as a shell script, holds an installer that only its

@@ -8,10 +8,10 @@ import (
 )
 
 // A Dockerfile cursor's Built holds only for a literal relative directory that a plain COPY of
-// a build output filled last, that no mount, other write or copy above it reaches, and that
-// sits in no node_modules.
+// a build output filled last, that no mount, other write, copy above it or command after it
+// beyond one onlyWrites allows reaches, and that sits in no node_modules.
 func TestDockerCursorBuilt(t *testing.T) {
-	root := writeTree(t, map[string]string{"ctx/api/x.txt": "x\n", "ctx/web/x.txt": "x\n", "file": "x\n"})
+	root := writeTree(t, map[string]string{"ctx/api/x.txt": "x\n", "ctx/web/x.txt": "x\n", "img/app/api/x.txt": "x\n", "file": "x\n"})
 	spec := testSpec
 	spec.Absent = func(err error) bool { return errors.Is(err, fs.ErrNotExist) }
 	out := dockerEvent{dst: "/app/api", dir: true, taint: true, built: true}
@@ -24,7 +24,15 @@ func TestDockerCursorBuilt(t *testing.T) {
 		want   bool
 	}{
 		{"a build output", "api", []dockerEvent{out}, nil, true, true},
-		{"after a command whose words were mentioned", "api", []dockerEvent{out, {all: true, cmd: true}}, nil, true, true},
+		{"before a command that changes only owners", "api", []dockerEvent{out, {all: true, cmd: true, words: []string{"chown", "-R", "api:api", "."}}}, nil, true, true},
+		{"after a command whose words were mentioned", "api", []dockerEvent{{all: true, cmd: true}, out}, nil, true, true},
+		{"before a command that may write into it", "api", []dockerEvent{out, {all: true, cmd: true, words: []string{"git", "clone", "https://example.test/x.git", "api"}}}, nil, true, false},
+		{"before a command whose words are unknown", "api", []dockerEvent{out, {all: true, cmd: true}}, nil, true, false},
+		{"before an owner change that redirects", "api", []dockerEvent{out, {all: true, cmd: true, words: []string{"chown", "api", ".", ">api/package.json"}}}, nil, true, false},
+		{"before an owner change that expands", "api", []dockerEvent{out, {all: true, cmd: true, words: []string{"chown", "$(cp -r x api)", "."}}}, nil, true, false},
+		{"a build output elsewhere", "api", []dockerEvent{{dst: "/app/web", dir: true, taint: true, built: true}}, nil, true, false},
+		{"below the root copied from a context that holds it", "api", []dockerEvent{{dst: "/", dir: true, hosts: []string{filepath.Join(root, "img")}}, out}, nil, true, false},
+		{"below a tainted root", "api", []dockerEvent{{dst: "/", dir: true, taint: true}, out}, nil, true, false},
 		{"below a copy that holds none of it", "api", []dockerEvent{{dst: "/app", dir: true, hosts: []string{filepath.Join(root, "ctx", "web")}}, out}, nil, true, true},
 		{"under a mount elsewhere", "api", []dockerEvent{out}, []string{"/root/.npm"}, true, true},
 		{"nothing built there", "api", nil, nil, true, false},

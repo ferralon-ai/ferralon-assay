@@ -1033,8 +1033,8 @@ type dockerLater struct {
 
 // leave withholds when a build output's packages may reach the scanned project, or another
 // command may write into it: NODE_PATH set anywhere, an ENV or ARG naming node_modules, a COPY
-// or mount from another stage that may read an output, or a command, before the install or
-// after it, that may name one. A RUN passes when onlyWrites allows it or none of its words can
+// or mount from another stage that may read an output (an escape in its words may spell one),
+// or a command, before the install or after it, that may name one. A RUN passes when onlyWrites allows it or none of its words can
 // name an output, and a CMD or ENTRYPOINT when none names node_modules or holds an expansion.
 func (r *dockerRead) leave(lines []string, starts []int, later, pulls []dockerLater, envs []int) (string, int) {
 	if len(r.outputs) == 0 {
@@ -1050,7 +1050,7 @@ func (r *dockerRead) leave(lines []string, starts []int, later, pulls []dockerLa
 	}
 	for _, p := range pulls {
 		for _, w := range p.words {
-			if !strings.HasPrefix(w, "--") && r.reaches(strings.Trim(w, `[]",`)) {
+			if !strings.HasPrefix(w, "--") && (strings.Contains(w, `\`) || r.reaches(strings.Trim(w, `[]",`))) {
 				return "copy from another stage that may read a build output", p.at
 			}
 		}

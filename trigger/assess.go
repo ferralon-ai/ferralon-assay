@@ -236,6 +236,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				WithheldBy:         limits,
 				Evidence:           report.EvidenceSummary{Detail: report.WithheldDetail(reason, limits)},
 			}
+			if pipeline.OwnAdvisoryHeldForPartialRun(store, assessmentID) {
+				f.Evidence.Detail = ownAdvisoryPartialRunDetail
+			}
 			break
 		}
 		f = report.AdvisoryFinding{
@@ -1379,7 +1382,7 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
 	admitted, _, ok := admittedPackage(store, assessmentID, pkg)
-	r := reach.Refutation
+	r := admittedRefutation(reach, admitted, pkg != nil && pkg.Root)
 	if !ok || r == nil || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
 		return reasons
 	}

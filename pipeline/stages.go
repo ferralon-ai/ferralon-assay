@@ -67,6 +67,9 @@ type AssessConfig struct {
 	// LibraryEntrypoints is the caller's statement of which of the build's packages code outside
 	// the build may import; nil is auto. See WithLibraryEntrypoints.
 	LibraryEntrypoints *plugin.LibraryEntrypoints
+	// Entrypoints is the caller's parsed entrypoints input, one override per lane it addresses; nil
+	// is auto in every lane. See WithEntrypoints.
+	Entrypoints map[string]plugin.EntryOverride
 	// InventoryMemo is the scan's memo of codebase_inventory's checkout-constant reads; nil repeats
 	// them per advisory. See WithInventoryMemo.
 	InventoryMemo *InventoryMemo
@@ -179,6 +182,15 @@ func WithLibraryEntrypoints(e plugin.LibraryEntrypoints) AssessOption {
 	return func(c *AssessConfig) { c.LibraryEntrypoints = &e }
 }
 
+// WithEntrypoints hands the run the caller's entrypoints input, parsed by plugin.ParseEntryOverrides.
+// reachability_ingress routes it with RouteEntrypoints: the go lane's library clauses become its
+// LibraryEntrypoints statement, and a clause no lane can honour yet fails the stage. A
+// WithLibraryEntrypoints statement, when also given, is the one the go lane gets; a caller that
+// states both reconciles them first.
+func WithEntrypoints(o map[string]plugin.EntryOverride) AssessOption {
+	return func(c *AssessConfig) { c.Entrypoints = o }
+}
+
 // WithSkipDisqualifiedAnalysis lets S4 symbol_mapping and S5 reachability_ingress skip their plugin
 // work for an advisory S3 disqualified, leaving no vulnerable_symbol / reachability / ingress_map /
 // candidate_pair artifact behind. It is only sound for a caller whose verdict for a disqualified
@@ -208,7 +220,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 	}
 	return append(stages,
 		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition, libraryEntrypoints: cfg.LibraryEntrypoints},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition, libraryEntrypoints: cfg.LibraryEntrypoints, entrypoints: cfg.Entrypoints},
 		exposureFootprintStage{},
 	)
 }
@@ -2899,6 +2911,8 @@ type reachabilityIngress struct {
 	deps             *dependencyAcquirer
 	// libraryEntrypoints is handed to the plugin as is; nil is auto.
 	libraryEntrypoints *plugin.LibraryEntrypoints
+	// entrypoints is the parsed entrypoints input; see entrypointsFor.
+	entrypoints map[string]plugin.EntryOverride
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
@@ -2997,15 +3011,28 @@ func (s reachabilityIngress) toolchainFloor(store artifact.Store, caseID string)
 // entrypointsFor is the run's library-entrypoints statement with its paths based at the checkout
 // root, which for a nested module lies above the build directory. A record with no checkout root
 // leaves Base empty, so the lane reads the paths from the build directory.
+//
+// The statement is the run's libraryEntrypoints, else the one the entrypoints input routes to the
+// go lane (RouteEntrypoints). An input no lane can honour fails the stage.
 func (s reachabilityIngress) entrypointsFor(store artifact.Store, caseID string) (*plugin.LibraryEntrypoints, error) {
-	if s.libraryEntrypoints == nil {
+	declared := s.libraryEntrypoints
+	if len(s.entrypoints) > 0 {
+		routed, err := RouteEntrypoints(s.entrypoints, s.plugin.Language())
+		if err != nil {
+			return nil, err
+		}
+		if declared == nil {
+			declared = routed
+		}
+	}
+	if declared == nil {
 		return nil, nil
 	}
 	root, err := InventoryCheckoutRoot(store, caseID)
 	if err != nil {
 		return nil, err
 	}
-	e := *s.libraryEntrypoints
+	e := *declared
 	e.Base = root
 	return &e, nil
 }
@@ -3217,7 +3244,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// back from THIS advisory's sink), so it is the only per-advisory entry-point signal.
 	paths := reach.Paths
 	firstParty := false
-	if len(paths) == 0 {
+	if len(paths) == 0 && !ownAdvisoryOnPartialRun(store, c.ID, reach.Partiality) {
 		for _, sink := range sinks {
 			paths = append(paths, firstPartyReachPaths(cg, ingresses, sink)...)
 		}

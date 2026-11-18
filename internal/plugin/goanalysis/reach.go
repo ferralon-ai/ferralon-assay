@@ -199,7 +199,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		return plugin.ReachabilityResult{}, err
 	}
 	res.ScanToolchain = scanToolchain
-	return res, nil
+	return unversionedOnPartialRun(res, scanned, req.Package), nil
 }
 
 // reconciledResult turns one govulncheck run into the reachability result: it reconciles the
@@ -220,14 +220,15 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	res, err := resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
+	res, err := resultPerModule(ctx, scanned, g, buildDir, env, load, entry)
 	if err != nil {
 		return res, err
 	}
 	return statePluginScope(res), nil
 }
 
-// resultFromGraph is reconciledResult over the reconcile graph g.
+// resultFromGraph is reconciledResult over the reconcile graph g, for the first module the findings
+// name (resultPerModule judges the others).
 func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
 	res := withholdForPartialRun(evidenceResult(scanned.findings, g.CallGraph, env), scanned)
 	if res.Refutation != nil {
@@ -743,11 +744,10 @@ func evidenceResult(findings []vulnFinding, cg plugin.CallGraphResult, env []str
 }
 
 // moduleRefutation states govulncheck's module-level evidence as a refutation of the module it
-// matched. An advisory spanning several modules refutes the first in path order; the gate
-// matches it against the admitted package and ignores a refutation of any other.
+// matched. An advisory spanning several modules refutes the first in path order; resultPerModule
+// refutes the others, and the gate matches each against the packages the advisory names.
 func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 	var module, version string
-	imported := false
 	for _, f := range findings {
 		if len(f.Trace) == 0 {
 			continue
@@ -759,13 +759,13 @@ func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 		if module == "" || fr.Module < module {
 			module, version = fr.Module, fr.Version
 		}
-		if fr.Package != "" {
-			imported = true
-		}
 	}
 	if module == "" {
 		return nil
 	}
+	imported := slices.ContainsFunc(findings, func(f vulnFinding) bool {
+		return len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Package != ""
+	})
 	use := "a vulnerable package is not imported"
 	if imported {
 		use = "a vulnerable package is imported"
@@ -1231,13 +1231,15 @@ func loadPackageErrors(err error) []packages.Error {
 // packagesResolveOffline reports whether every package a govulncheck load of buildDir reads
 // resolves from local files: `go list` of the same packages under env, with module fetching turned
 // off, reports no error. A package error of the failed load then cannot be a module fetch that a
-// later run might complete; what remains (cgo, type checking) reads only files already on disk.
+// later run might complete; what remains (cgo, type checking) reads only files already on disk. An
+// error that only says a //go:embed pattern matched no file is not one a fetch completes either
+// (onlyEmbedPatternMisses).
 func packagesResolveOffline(ctx context.Context, buildDir string, env []string) bool {
 	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-f", "{{with .Error}}{{.Err}}{{end}}", "./...")
 	cmd.Dir = buildDir
 	cmd.Env = append(slices.Clone(env), "GOPROXY=off")
 	out, err := cmd.Output()
-	return err == nil && len(bytes.TrimSpace(out)) == 0
+	return err == nil && onlyEmbedPatternMisses(out)
 }
 
 // reconcileGraph is the call graph Reachability reconciles paths against, with what reflection's

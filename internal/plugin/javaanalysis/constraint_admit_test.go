@@ -128,7 +128,8 @@ func TestLiteralQualifiedNames(t *testing.T) {
 		{"member path of a first-party type", "Ann.V", false, []string{"Ann.V", "com.acme.Ann.V"}},
 		{"member path of an imported type", "Holder.V", false, []string{"org.lib.Holder.V"}},
 		{"simple name in a nested annotation type", "V", true, nil},
-		{"simple name through an import in a nested annotation type", "X", true, []string{"org.lib.X"}},
+		{"simple name through an import in a nested annotation type", "X", true, nil},
+		{"dotted literal in a nested annotation type", "Outer.V", true, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -198,11 +199,23 @@ public class Holder {
         public boolean isValid(Integer v, Object c) { return v > 0; }
     }
 }`
+	outerV := func(pkg string) string {
+		return "package " + pkg + `;
+import jakarta.validation.ConstraintValidator;
+public class Outer {
+    public static class V implements ConstraintValidator<Object, Integer> {
+        public boolean isValid(Integer v, Object c) { return v > 0; }
+    }
+}`
+	}
 	tests := []struct {
 		name        string
 		files       map[string]string
 		wantPartial bool
 	}{
+		{"nested annotation type, dotted literal, enclosing class extends a dependency base", map[string]string{"com/acme/Holder.java": "package com.acme;\nclass Holder extends org.lib.Base { @jakarta.validation.Constraint(validatedBy = Outer.V.class) @interface Age {} }", "com/acme/Outer.java": outerV("com.acme")}, true},
+		{"nested annotation type, imported simple literal, enclosing class extends a dependency base", map[string]string{"com/acme/Holder.java": "package com.acme;\nimport com.other.Outer.V;\nclass Holder extends org.lib.Base { @jakarta.validation.Constraint(validatedBy = V.class) @interface Age {} }", "com/other/Outer.java": outerV("com.other")}, true},
+		{"local class named by a member path of a class with a dependency base", map[string]string{"com/acme/Age.java": annImp("", "Outer.L"), "com/acme/AgeValidator.java": validator, "com/acme/Outer.java": "package com.acme;\npublic class Outer extends org.lib.Base { void m() { class L extends AgeValidator {} } }"}, true},
 		{"imported dependency class, first-party class of the same simple name elsewhere", map[string]string{"com/acme/Age.java": annImp("import org.lib.AgeValidator;", "AgeValidator"), "com/other/AgeValidator.java": other}, true},
 		{"qualified dependency class, first-party class of the same simple name in the package", map[string]string{"com/acme/Age.java": annImp("", "org.lib.AgeValidator"), "com/acme/AgeValidator.java": validator}, true},
 		{"qualified first-party class", map[string]string{"com/acme/Age.java": annImp("", "com.other.AgeValidator"), "com/other/AgeValidator.java": other}, false},
@@ -435,6 +448,13 @@ import java.lang.annotation.*;
 			}
 			if got := hasReason(fi.Partiality, plugin.PartialReasonUnsupported); got != tt.wantPartial {
 				t.Errorf("FindIngresses unsupported = %v, want %v (%+v)", got, tt.wantPartial, fi.Partiality)
+			}
+			rs, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{BuildDir: build}, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hasReason(rs.Partiality, plugin.PartialReasonUnsupported); got != tt.wantPartial {
+				t.Errorf("ResolveSymbols unsupported = %v, want %v (%+v)", got, tt.wantPartial, rs.Partiality)
 			}
 		})
 	}

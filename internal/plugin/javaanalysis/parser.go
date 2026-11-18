@@ -1170,9 +1170,14 @@ func constraintValidatedBy(r []rune, pos, end int, imports importScope, pkg stri
 // resolves nothing). Otherwise a dotted literal is read as written, and also as a
 // member-type path rooted in the annotation's own package ("Ann.V"); a simple name binds
 // in the annotation's own package, which shadows an on-demand import, so a name only an
-// on-demand import could supply never matches a first-party declaration. A nested
-// annotation type's simple name could be an enclosing type's member, so it resolves nothing.
+// on-demand import could supply never matches a first-party declaration. Inside a nested
+// annotation type, a member type the enclosing class inherits from a dependency shadows
+// both a single-type import and a package type (JLS 6.4.1), so a literal there resolves
+// nothing.
 func literalQualifiedNames(lit string, imports importScope, pkg string, nested bool) []string {
+	if nested {
+		return nil
+	}
 	first, rest, dotted := strings.Cut(lit, ".")
 	if target := imports.single[first]; target != "" {
 		if strings.HasPrefix(target, "static") {
@@ -1184,9 +1189,6 @@ func literalQualifiedNames(lit string, imports importScope, pkg string, nested b
 		return []string{target}
 	}
 	if !dotted {
-		if nested {
-			return nil
-		}
 		return []string{qualify(pkg, lit)}
 	}
 	return []string{lit, qualify(pkg, lit)}

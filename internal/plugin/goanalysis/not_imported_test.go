@@ -17,7 +17,23 @@ func TestRestateNotImported(t *testing.T) {
 		importsBlake = "package main\n\nimport \"example.com/vulnmod/blake\"\n\nfunc main() { blake.Sum() }\n"
 		importsSSH   = "package main\n\nimport \"example.com/vulnmod/ssh\"\n\nfunc main() { _ = ssh.Client{} }\n"
 		importsWrap  = "package main\n\nimport \"example.com/vulnmod/wrap\"\n\nfunc main() { _ = wrap.Get }\n"
+
+		importsBlakeAndLib = "package main\n\nimport (\n\t_ \"example.com/lib/base\"\n\t\"example.com/vulnmod/blake\"\n)\n\nfunc main() { blake.Sum() }\n"
 	)
+	// libModule is a dependency replaced by a local directory, whose package win imports the
+	// vulnerable package. Its go.mod requires the vulnerable module only when asked to.
+	libModule := func(requires bool) map[string]string {
+		libmod := "module example.com/lib\n\ngo 1.22\n"
+		if requires {
+			libmod += "\nrequire example.com/vulnmod v0.0.0\n"
+		}
+		return map[string]string{
+			"go.mod":          "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/lib v0.0.0\n\texample.com/vulnmod v0.0.0\n)\n\nreplace example.com/vulnmod => ./_vulnmod\n\nreplace example.com/lib => ./_lib\n",
+			"_lib/go.mod":     libmod,
+			"_lib/base/b.go":  "package base\n\nfunc F() {}\n",
+			"_lib/win/win.go": "package win\n\nimport _ \"example.com/vulnmod/ssh\"\n",
+		}
+	}
 	s := narrowedScans
 	moduleFinding := vulnScan{
 		imports:  s.narrow.imports,
@@ -50,9 +66,30 @@ func TestRestateNotImported(t *testing.T) {
 			"tagged.go": "//go:build sshsupport\n\npackage main\n\nimport _ \"example.com/vulnmod/ssh\"\n",
 		}},
 		{"a package the build does not load imports the vulnerable package", importsBlake, moduleFinding, false, map[string]string{
-			"extra/extra.go": "package extra\n\nimport \"example.com/vulnmod/ssh\"\n\nvar V = ssh.Client{}\n",
-			"use_windows.go": "package main\n\nimport _ \"example.com/m/extra\"\n",
+			"extra/extra_windows.go": "package extra\n\nimport \"example.com/vulnmod/ssh\"\n\nvar V = ssh.Client{}\n",
+			"use_windows.go":         "package main\n\nimport _ \"example.com/m/extra\"\n",
 		}},
+		{"a directory built only for another platform, imported by nothing, imports the vulnerable package", importsBlake, moduleFinding, false, map[string]string{
+			"cmd/w/w_windows.go": "package main\n\nimport _ \"example.com/vulnmod/ssh\"\n\nfunc main() {}\n",
+		}},
+		{"a file for another platform imports an unloaded package of the module that imports the vulnerable one there", importsBlake, moduleFinding, false, map[string]string{
+			"_vulnmod/agent/a.go":         "package agent\n",
+			"_vulnmod/agent/a_windows.go": "package agent\n\nimport _ \"example.com/vulnmod/ssh\"\n",
+			"main_windows.go":             "package main\n\nimport _ \"example.com/vulnmod/agent\"\n",
+		}},
+		{"a file for another platform reaches the vulnerable package through a dependency that requires the module", importsBlakeAndLib, moduleFinding, false, merge(libModule(true), map[string]string{
+			"main_windows.go": "package main\n\nimport _ \"example.com/lib/win\"\n",
+		})},
+		{"a loaded dependency package's file for another platform imports the vulnerable package", importsBlakeAndLib, moduleFinding, false, merge(libModule(true), map[string]string{
+			"_lib/base/b_windows.go": "package base\n\nimport _ \"example.com/vulnmod/ssh\"\n",
+		})},
+		{"a file for another platform imports a package no module holds", importsBlake, moduleFinding, false, map[string]string{
+			"main_windows.go": "package main\n\nimport _ \"example.com/nowhere/x\"\n",
+		}},
+		{"a file for another platform reaches the vulnerable package through a dependency whose go.mod does not require the module", importsBlakeAndLib, moduleFinding, false, merge(libModule(false), map[string]string{
+			"main_windows.go": "package main\n\nimport _ \"example.com/lib/win\"\n",
+		})},
+		{"a dependency holds an unloaded package importing the vulnerable one, and nothing imports it", importsBlakeAndLib, moduleFinding, true, libModule(false)},
 		{"a file for another platform imports another package of the module", importsBlake, moduleFinding, true, map[string]string{
 			"main_windows.go": "package main\n\nimport \"example.com/vulnmod/blake\"\n\nfunc init() { blake.Sum() }\n",
 		}},

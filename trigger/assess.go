@@ -1502,7 +1502,7 @@ func countingScoped(store artifact.Store, assessmentID string, pkg *report.Packa
 // (plugin.RefutationAnalyzerPackageNotImported).
 func refutedNotImported(store artifact.Store, assessmentID string, admitted pkgKey, root bool) bool {
 	reach, _ := reachabilityResult(store, assessmentID)
-	r := reach.Refutation
+	r := admittedRefutation(reach, admitted, root)
 	return r != nil && r.Basis == plugin.RefutationAnalyzerPackageNotImported && inAdmitted(r.Package, admitted, root)
 }
 

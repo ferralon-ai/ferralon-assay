@@ -58,6 +58,29 @@ func TestFinding_NotImportedAgainstCgo(t *testing.T) {
 			wantReason:  report.ReasonAnalysisDidNotRun,
 		},
 		{
+			name: "the not-imported refutation of the admitted module is not the lane's first",
+			mutate: func(fx *groundsFixture) {
+				first := *fx.reach.Refutation
+				first.Package = "pkg:golang/golang.org/x/text"
+				fx.reach.Refutations = []plugin.Refutation{*fx.reach.Refutation}
+				fx.reach.Refutation = &first
+				fx.scoped = []artifact.ScopedPartialityFlag{bounded}
+			},
+			wantVerdict: report.VerdictNotExploitable,
+		},
+		{
+			name: "a not-reached refutation of the admitted module beside another's not-imported one withholds",
+			mutate: func(fx *groundsFixture) {
+				other := *fx.reach.Refutation
+				other.Package = "pkg:golang/golang.org/x/text"
+				fx.reach.Refutation.Basis = plugin.RefutationAnalyzerSymbolNotReached
+				fx.reach.Refutations = []plugin.Refutation{other}
+				fx.scoped = []artifact.ScopedPartialityFlag{bounded}
+			},
+			wantVerdict: report.VerdictUndetermined,
+			wantReason:  report.ReasonAnalysisDidNotRun,
+		},
+		{
 			name: "a cgo limit with no targets withholds",
 			mutate: func(fx *groundsFixture) {
 				unbounded := bounded

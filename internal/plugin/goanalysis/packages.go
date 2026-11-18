@@ -532,8 +532,9 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 // leftOutImporters reports whether a non-test Go file the build left out imports, directly or
 // through other packages, one of module's packages that count, whatever the file's declarations
 // reach and whatever left it out: some build configuration of this source compiles that package in.
-// It walks the files leftOutCallers walks, so test files, nested modules and files marked
-// `//go:build ignore` are outside it, and follows every import of a package the build did not load,
+// It walks the files leftOutCallers walks, so test files, nested modules, testdata, directories
+// whose name begins with `_` or `.`, files marked `//go:build ignore` and files a Go release the
+// build cannot compile under selects are outside it, and follows every import of a package the build did not load,
 // whatever that package's module requires. failed reports the same.
 func leftOutImporters(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, release *releaseBound, buildDir string, env []string) (found, failed bool) {
 	found, _, failed, _ = leftOutWalk(ctx, pkgs, module, vulnerable, nil, release, buildDir, env, true)

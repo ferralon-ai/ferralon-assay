@@ -247,8 +247,10 @@ func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 }
 
 // restateNotImported restates a module refutation the withholds kept as
-// analyzer_package_not_imported when no non-test file of the scanned module, under any build
-// constraint other than `ignore`, imports any of the advisory's vulnerable packages of that module:
+// analyzer_package_not_imported when no non-test file of the scanned module that `./...` covers (so
+// not testdata, nor a directory whose name begins with `_` or `.`), under any build constraint other
+// than `ignore` or a Go release the build cannot compile under, imports any of the advisory's
+// vulnerable packages of that module:
 // govulncheck matched the module alone, the advisory's entries list the module's vulnerable
 // packages, the load is complete and holds none of them, and no file the build left out imports one
 // (leftOutImporters). With no listed package, a package-level

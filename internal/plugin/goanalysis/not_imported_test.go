@@ -80,6 +80,12 @@ func TestRestateNotImported(t *testing.T) {
 		{"a file for another platform reaches the vulnerable package through a dependency that requires the module", importsBlakeAndLib, moduleFinding, false, merge(libModule(true), map[string]string{
 			"main_windows.go": "package main\n\nimport _ \"example.com/lib/win\"\n",
 		})},
+		{"a loaded dependency package's file for another platform imports the vulnerable package", importsBlakeAndLib, moduleFinding, false, merge(libModule(true), map[string]string{
+			"_lib/base/b_windows.go": "package base\n\nimport _ \"example.com/vulnmod/ssh\"\n",
+		})},
+		{"a file for another platform imports a package no module holds", importsBlake, moduleFinding, false, map[string]string{
+			"main_windows.go": "package main\n\nimport _ \"example.com/nowhere/x\"\n",
+		}},
 		{"a file for another platform reaches the vulnerable package through a dependency whose go.mod does not require the module", importsBlakeAndLib, moduleFinding, false, merge(libModule(false), map[string]string{
 			"main_windows.go": "package main\n\nimport _ \"example.com/lib/win\"\n",
 		})},

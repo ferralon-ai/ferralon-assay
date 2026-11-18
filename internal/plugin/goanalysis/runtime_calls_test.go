@@ -187,9 +187,9 @@ func TestReflectReach_PluginLoadByBuild(t *testing.T) {
 	}
 }
 
-// TestStateCgoOffScope: a refutation kept beside plugin_load:cgo_off or a scoped cgo:files_dropped
+// TestStatePluginScope: a refutation kept beside plugin_load:cgo_off or a scoped cgo:files_dropped
 // says in its detail that it holds for CGO_ENABLED=0. Any other result is unchanged.
-func TestStateCgoOffScope(t *testing.T) {
+func TestStatePluginScope(t *testing.T) {
 	scoped := func(res plugin.ReachabilityResult, reason string) plugin.ReachabilityResult {
 		res.Partiality.Complete = false
 		res.Partiality.Scoped = []plugin.ScopedReason{{Reason: reason, Path: "example.com/app/native", Targets: []string{"", "pkg:golang/example.com/vulnmod"}}}

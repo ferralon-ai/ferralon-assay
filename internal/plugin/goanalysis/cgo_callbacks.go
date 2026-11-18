@@ -31,6 +31,9 @@ import (
 // can call on it (handedType): its type is returned in handed, and its exported methods are entry
 // roots of the call graph. top are the loaded packages (the load's roots).
 //
+// A context.Context is not such a value where the build's contexts are the standard library's own
+// (contextsAreStdlib); ctx then holds the modules of the cb packages whose API takes one.
+//
 // Every "cannot tell" is false: a package with no type information, a package that failed to
 // type-check and reaches a cb package, a left-out file importing a cb package, a method that lets
 // database/sql install its own value converter (driver.NamedValueChecker, driver.ColumnConverter),
@@ -41,14 +44,114 @@ import (
 // what that variant declares. A call that type-checks against it cannot pass a function value to a
 // parameter the variant types without one, whatever the dropped file's signature; a call the variant
 // does not declare fails to type-check, which is a "cannot tell" above.
-func cgoCallbackTargets(top, cb, roots []*packages.Package, droppedFiles map[string][]string, tags []string) (mods map[string]bool, handed map[string][]*types.Named, ok bool) {
-	handed, ok = handedValues(top, cb, cbReflects(roots, droppedFiles), droppedFiles, tags)
+func cgoCallbackTargets(top, cb, roots []*packages.Package, droppedFiles map[string][]string, tags []string) (mods map[string]bool, handed map[string][]*types.Named, ctx map[string]bool, ok bool) {
+	ctxOK := contextsAreStdlib(top, roots, droppedFiles)
+	handed, ctx, ok = handedValues(top, cb, cbReflects(roots, droppedFiles), ctxOK, droppedFiles, tags)
 	if !ok {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	mods = map[string]bool{}
 	packages.Visit(roots, nil, func(p *packages.Package) { mods[modulePURL(p)] = true })
-	return mods, handed, true
+	return mods, handed, ctx, true
+}
+
+// contextMethods are the methods of context.Context.
+var contextMethods = [...]string{"Deadline", "Done", "Err", "Value"}
+
+// contextsAreStdlib reports whether a context.Context handed to the cb packages can run only
+// standard-library code, which is always a target. It holds per build, on two grounds.
+//
+// Every type in the build that has the methods of context.Context is the standard library's: a
+// type declared at package level or in a function, generic or not, or an unnamed struct, with the
+// four methods declared or promoted from an embedded field. Interfaces are not counted: they hold
+// no code, and every type behind one is. Then Deadline, Done and Err run the standard library.
+//
+// No package on the C side (roots' import closure, the standard library included, package context
+// apart, and the dropped files) reads a value out of a context: what Value returns is whatever the
+// build stored, a function among it (net/http reads its trace hooks this way).
+//
+// Every "cannot tell" is false: a package anywhere in the build with an error, without type
+// information or without syntax, or an unreadable dropped file.
+func contextsAreStdlib(top, roots []*packages.Package, droppedFiles map[string][]string) bool {
+	ok := true
+	implements := func(t types.Type) bool {
+		if t == nil || types.IsInterface(t) {
+			return false
+		}
+		for _, name := range contextMethods {
+			obj, _, _ := types.LookupFieldOrMethod(t, true, nil, name)
+			if _, isFunc := obj.(*types.Func); !isFunc {
+				return false
+			}
+		}
+		return true
+	}
+	packages.Visit(top, nil, func(p *packages.Package) {
+		if !ok || p.PkgPath == "unsafe" {
+			return
+		}
+		if len(p.Errors) > 0 || (len(p.GoFiles) > 0 && (p.Types == nil || p.TypesInfo == nil || len(p.Syntax) == 0)) {
+			ok = false
+			return
+		}
+		if p.TypesInfo == nil || modulePURL(p) == stdlibPURL {
+			return
+		}
+		for _, obj := range p.TypesInfo.Defs {
+			if tn, isType := obj.(*types.TypeName); isType && implements(tn.Type()) {
+				ok = false
+				return
+			}
+		}
+		for expr, tv := range p.TypesInfo.Types {
+			if _, isStruct := expr.(*ast.StructType); isStruct && implements(tv.Type) {
+				ok = false
+				return
+			}
+		}
+	})
+	if !ok {
+		return false
+	}
+	packages.Visit(roots, nil, func(p *packages.Package) {
+		if p.PkgPath == "context" || p.TypesInfo == nil {
+			return
+		}
+		for _, obj := range p.TypesInfo.Uses {
+			if f, isFunc := obj.(*types.Func); isFunc && f.Name() == "Value" && f.Pkg() != nil && f.Pkg().Path() == "context" {
+				ok = false
+				return
+			}
+		}
+	})
+	for _, files := range droppedFiles {
+		for _, f := range files {
+			if callsValue(f) {
+				return false
+			}
+		}
+	}
+	return ok
+}
+
+// callsValue reports whether the Go file calls a method named Value with one argument, as reading
+// a value out of a context does. The file is not type-checked, so any receiver counts, and so does
+// an unreadable file.
+func callsValue(path string) bool {
+	f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		return true
+	}
+	found := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		if call, isCall := n.(*ast.CallExpr); isCall && len(call.Args) == 1 {
+			if sel, isSel := ast.Unparen(call.Fun).(*ast.SelectorExpr); isSel && sel.Sel.Name == "Value" {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // cbReflects reports whether Go code on the C side of the boundary (a package of roots' import
@@ -104,7 +207,7 @@ func handedType(t types.Type, top map[*types.Package]bool, reflects bool) (*type
 	if _, isFunc := named.Underlying().(*types.Signature); isFunc {
 		return nil, false
 	}
-	if reflects && carries(named.Underlying(), map[types.Type]bool{}) {
+	if reflects && carries(named.Underlying(), map[types.Type]bool{}, false) {
 		return nil, false
 	}
 	for _, mt := range []types.Type{named, types.NewPointer(named)} {
@@ -124,7 +227,7 @@ func handedType(t types.Type, top map[*types.Package]bool, reflects bool) (*type
 // results spread over the parameters among them), the parameter is not a plain interface (a
 // function, or a composite holding one), or fn is generic: its parameters are then whatever the
 // call instantiates them with.
-func handedAt(info *types.Info, fn *types.Func, call *ast.CallExpr, top map[*types.Package]bool, reflects bool) (handed []*types.Named, ok bool) {
+func handedAt(info *types.Info, fn *types.Func, call *ast.CallExpr, top map[*types.Package]bool, reflects, ctxOK bool) (handed []*types.Named, ok bool) {
 	if decl := fn.Signature(); decl.TypeParams().Len() > 0 || decl.RecvTypeParams().Len() > 0 {
 		return nil, false
 	}
@@ -150,7 +253,7 @@ func handedAt(info *types.Info, fn *types.Func, call *ast.CallExpr, top map[*typ
 		default:
 			return nil, false
 		}
-		if !carries(pt, map[types.Type]bool{}) {
+		if !carries(pt, map[types.Type]bool{}, ctxOK) {
 			continue
 		}
 		if _, isIface := pt.Underlying().(*types.Interface); !isIface {
@@ -224,8 +327,8 @@ func typeName(t types.Type) string {
 // carries reports whether a value of type t may hold a function: it is one, an interface, a type
 // parameter, or a composite of those. database/sql's driver.Value and driver.NamedValue are exempt:
 // database/sql's default converter admits no function there, and a driver that installs its own
-// converter is refused separately.
-func carries(t types.Type, seen map[types.Type]bool) bool {
+// converter is refused separately. So is context.Context when ctxOK (contextsAreStdlib).
+func carries(t types.Type, seen map[types.Type]bool, ctxOK bool) bool {
 	t = types.Unalias(t)
 	if seen[t] {
 		return false
@@ -241,20 +344,23 @@ func carries(t types.Type, seen map[types.Type]bool) bool {
 		if o := t.Obj(); o.Pkg() != nil && o.Pkg().Path() == "database/sql/driver" && (o.Name() == "Value" || o.Name() == "NamedValue") {
 			return false
 		}
-		return carries(t.Underlying(), seen)
+		if o := t.Obj(); ctxOK && o.Pkg() != nil && o.Pkg().Path() == "context" && o.Name() == "Context" {
+			return false
+		}
+		return carries(t.Underlying(), seen, ctxOK)
 	case *types.Pointer:
-		return carries(t.Elem(), seen)
+		return carries(t.Elem(), seen, ctxOK)
 	case *types.Slice:
-		return carries(t.Elem(), seen)
+		return carries(t.Elem(), seen, ctxOK)
 	case *types.Array:
-		return carries(t.Elem(), seen)
+		return carries(t.Elem(), seen, ctxOK)
 	case *types.Chan:
-		return carries(t.Elem(), seen)
+		return carries(t.Elem(), seen, ctxOK)
 	case *types.Map:
-		return carries(t.Key(), seen) || carries(t.Elem(), seen)
+		return carries(t.Key(), seen, ctxOK) || carries(t.Elem(), seen, ctxOK)
 	case *types.Struct:
 		for i := 0; i < t.NumFields(); i++ {
-			if carries(t.Field(i).Type(), seen) {
+			if carries(t.Field(i).Type(), seen, ctxOK) {
 				return true
 			}
 		}
@@ -262,9 +368,9 @@ func carries(t types.Type, seen map[types.Type]bool) bool {
 	return false
 }
 
-func sigCarries(s *types.Signature) bool {
+func sigCarries(s *types.Signature, ctxOK bool) bool {
 	for i := 0; i < s.Params().Len(); i++ {
-		if carries(s.Params().At(i).Type(), map[types.Type]bool{}) {
+		if carries(s.Params().At(i).Type(), map[types.Type]bool{}, ctxOK) {
 			return true
 		}
 	}
@@ -275,16 +381,32 @@ func sigCarries(s *types.Signature) bool {
 // value: exported functions and methods (of any type, exported or not, and of interfaces the package
 // declares) with such a parameter, and exported variables and struct fields of such a type. It
 // reports false when a package has no type information or declares a method that installs a
-// value converter.
-func callbackAPI(cb []*packages.Package) (members map[memberKey]bool, sigs map[string][]*types.Signature, ok bool) {
+// value converter. ctx holds the modules of the packages with an exported function, method,
+// variable or field that is no member only because a context.Context is exempt (ctxOK).
+func callbackAPI(cb []*packages.Package, ctxOK bool) (members map[memberKey]bool, sigs map[string][]*types.Signature, ctx map[string]bool, ok bool) {
 	members = map[memberKey]bool{}
 	sigs = map[string][]*types.Signature{}
+	ctx = map[string]bool{}
+	mod := ""
+	// holds applies the exemption to one exported declaration and records where it decided.
+	holds := func(carries func(ctxOK bool) bool) bool {
+		if carries(ctxOK) {
+			return true
+		}
+		if ctxOK && carries(false) {
+			ctx[mod] = true
+		}
+		return false
+	}
+	typeHolds := func(t types.Type) bool {
+		return holds(func(ctxOK bool) bool { return carries(t, map[types.Type]bool{}, ctxOK) })
+	}
 	addFunc := func(f *types.Func) {
 		if !f.Exported() {
 			return
 		}
 		s := f.Type().(*types.Signature)
-		if !sigCarries(s) {
+		if !holds(func(ctxOK bool) bool { return sigCarries(s, ctxOK) }) {
 			return
 		}
 		if k, kok := keyOf(f); kok {
@@ -294,15 +416,16 @@ func callbackAPI(cb []*packages.Package) (members map[memberKey]bool, sigs map[s
 	}
 	for _, p := range cb {
 		if p.Types == nil {
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
+		mod = modulePURL(p)
 		scope := p.Types.Scope()
 		for _, name := range scope.Names() {
 			switch o := scope.Lookup(name).(type) {
 			case *types.Func:
 				addFunc(o)
 			case *types.Var:
-				if o.Exported() && carries(o.Type(), map[types.Type]bool{}) {
+				if o.Exported() && typeHolds(o.Type()) {
 					members[memberKey{pkg: p.PkgPath, name: o.Name()}] = true
 				}
 			case *types.TypeName:
@@ -313,7 +436,7 @@ func callbackAPI(cb []*packages.Package) (members map[memberKey]bool, sigs map[s
 				for i := 0; i < named.NumMethods(); i++ {
 					m := named.Method(i)
 					if m.Name() == "CheckNamedValue" || m.Name() == "ColumnConverter" {
-						return nil, nil, false
+						return nil, nil, nil, false
 					}
 					addFunc(m)
 				}
@@ -324,7 +447,7 @@ func callbackAPI(cb []*packages.Package) (members map[memberKey]bool, sigs map[s
 					}
 				case *types.Struct:
 					for i := 0; i < u.NumFields(); i++ {
-						if f := u.Field(i); f.Exported() && carries(f.Type(), map[types.Type]bool{}) {
+						if f := u.Field(i); f.Exported() && typeHolds(f.Type()) {
 							members[memberKey{pkg: p.PkgPath, owner: "\x00field", name: f.Name()}] = true
 						}
 					}
@@ -332,22 +455,22 @@ func callbackAPI(cb []*packages.Package) (members map[memberKey]bool, sigs map[s
 			}
 		}
 	}
-	return members, sigs, true
+	return members, sigs, ctx, true
 }
 
 // handedValues returns the types (handedType) of the values the build hands the cb packages, by
 // plain calls passing one where the package takes an interface, keyed by the module of the package
 // that receives them. ok is false when the build may hand them a function or interface value any
-// other way, or cannot be shown not to.
-func handedValues(top, cb []*packages.Package, reflects bool, droppedFiles map[string][]string, tags []string) (handed map[string][]*types.Named, ok bool) {
-	members, sigs, ok := callbackAPI(cb)
+// other way, or cannot be shown not to. ctxOK and ctx are callbackAPI's.
+func handedValues(top, cb []*packages.Package, reflects, ctxOK bool, droppedFiles map[string][]string, tags []string) (handed map[string][]*types.Named, ctx map[string]bool, ok bool) {
+	members, sigs, ctx, ok := callbackAPI(cb, ctxOK)
 	if !ok {
-		return nil, false
+		return nil, nil, false
 	}
 	for _, files := range droppedFiles {
 		for _, f := range files {
 			if declaresConverter(f) {
-				return nil, false
+				return nil, nil, false
 			}
 		}
 	}
@@ -381,9 +504,9 @@ func handedValues(top, cb []*packages.Package, reflects bool, droppedFiles map[s
 		reaches[p] = v
 		return v
 	}
-	ctx := build.Default
-	ctx.CgoEnabled = true
-	ctx.BuildTags = tags
+	bctx := build.Default
+	bctx.CgoEnabled = true
+	bctx.BuildTags = tags
 	failed := false
 	set := map[string]map[*types.Named]bool{}
 	packages.Visit(top, nil, func(p *packages.Package) {
@@ -399,7 +522,7 @@ func handedValues(top, cb []*packages.Package, reflects bool, droppedFiles map[s
 			return
 		}
 		for _, path := range p.IgnoredFiles {
-			if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") && importsCb(path, isCb, ctx) {
+			if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") && importsCb(path, isCb, bctx) {
 				failed = true
 				return
 			}
@@ -427,7 +550,7 @@ func handedValues(top, cb []*packages.Package, reflects bool, droppedFiles map[s
 				if !isFunc || !isMember(fn) {
 					return true
 				}
-				if ts, cok := handedAt(p.TypesInfo, fn, call, searched, reflects); cok {
+				if ts, cok := handedAt(p.TypesInfo, fn, call, searched, reflects, ctxOK); cok {
 					classified[id] = true
 					mod := cbMod[fn.Pkg().Path()]
 					if set[mod] == nil {
@@ -474,13 +597,13 @@ func handedValues(top, cb []*packages.Package, reflects bool, droppedFiles map[s
 		}
 	})
 	if failed {
-		return nil, false
+		return nil, nil, false
 	}
 	handed = map[string][]*types.Named{}
 	for mod, ts := range set {
 		handed[mod] = sortedHanded(ts)
 	}
-	return handed, true
+	return handed, ctx, true
 }
 
 // sortedHanded lists a set of handed types in the order of their names.

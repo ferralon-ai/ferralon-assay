@@ -367,6 +367,8 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 	narrowed := false
 	// received: the handed types by the module of the cgo package the build hands them to.
 	var received map[string][]*types.Named
+	// ctx: the modules whose cgo packages take a context.Context the bound rests on.
+	var ctx map[string]bool
 	if callbacks {
 		loaded := map[string]*packages.Package{}
 		packages.Visit(pkgs, nil, func(p *packages.Package) { loaded[p.PkgPath] = p })
@@ -383,7 +385,7 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 			}
 		}
 		var mods map[string]bool
-		if mods, received, narrowed = cgoCallbackTargets(pkgs, cbPkgs, closure, droppedFiles, tags); narrowed {
+		if mods, received, ctx, narrowed = cgoCallbackTargets(pkgs, cbPkgs, closure, droppedFiles, tags); narrowed {
 			for mod := range mods {
 				targets[mod] = true
 			}
@@ -411,7 +413,7 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 	for _, mod := range sortedKeys(mapKeys(cgoMods)) {
 		path := cgoMods[mod]
 		if narrowed {
-			path = cgoNarrowing(path, len(list), received[mod])
+			path = cgoNarrowing(path, len(list), received[mod], ctx[mod])
 		}
 		scoped = append(scoped, plugin.ScopedReason{
 			Reason:  reason,
@@ -425,17 +427,22 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 
 // cgoNarrowing is the Path of a cgo limit whose targets are narrowed to the cgo packages' import
 // closure: it states the ground the narrowing rests on. handed are the types the build hands that
-// limit's own cgo packages; the targets and the call-graph roots cover every limit's.
-func cgoNarrowing(pkg string, modules int, handed []*types.Named) string {
+// limit's own cgo packages; the targets and the call-graph roots cover every limit's. ctx adds the
+// ground a context.Context the package takes is left out on.
+func cgoNarrowing(pkg string, modules int, handed []*types.Named, ctx bool) string {
+	also := ""
+	if ctx {
+		also = "; a context.Context it is handed runs only the standard library, as no other type in this build implements one and nothing its C code can reach reads a value out of one"
+	}
 	if len(handed) == 0 {
-		return fmt.Sprintf("no call in this build hands %s a Go function or interface value, so its C code can reach only %d modules", pkg, modules)
+		return fmt.Sprintf("no call in this build hands %s a Go function or interface value, so its C code can reach only %d modules", pkg, modules) + also
 	}
 	names := make([]string, len(handed))
 	for i, t := range handed {
 		names[i] = handedName(t)
 	}
 	list := strings.Join(names, ", ")
-	return fmt.Sprintf("no call in this build hands %s a Go function or interface value other than %s, so its C code can reach only %d modules and the methods of %s", pkg, list, modules, list)
+	return fmt.Sprintf("no call in this build hands %s a Go function or interface value other than %s, so its C code can reach only %d modules and the methods of %s", pkg, list, modules, list) + also
 }
 
 // cgoOff reports whether env sets CGO_ENABLED=0, by its last setting as the go command reads it.

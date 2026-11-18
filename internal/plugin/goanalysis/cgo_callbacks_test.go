@@ -261,3 +261,105 @@ func TestCallGraph_HandedValueMethodsAreRoots(t *testing.T) {
 		})
 	}
 }
+
+const (
+	// cbCtx gives the cgo package a method taking a context, which it only waits on.
+	cbCtx = "package cgolib\n\nimport \"context\"\n\nfunc (c *Conn) ExecContext(ctx context.Context, q string) error {\n\t<-ctx.Done()\n\treturn ctx.Err()\n}\n"
+	// cbCtxReads is cbCtx reading a value out of the context.
+	cbCtxReads = "package cgolib\n\nimport \"context\"\n\nfunc (c *Conn) ExecContext(ctx context.Context, q string) error {\n\t_ = ctx.Value(\"k\")\n\treturn ctx.Err()\n}\n"
+	// cbPureCtx is cbCtx for the cgo-off variant of the package.
+	cbPureCtx = "//go:build !cgo\n\npackage cgolib\n\nimport \"context\"\n\nfunc (c *Conn) ExecContext(ctx context.Context, q string) error { return ctx.Err() }\n"
+	// cbDroppedReads is a cgo file, dropped with cgo off, reading a value out of a context.
+	cbDroppedReads = "//go:build cgo\n\npackage cgolib\n\nimport \"C\"\n\nimport \"context\"\n\nfunc read(ctx context.Context) any { return ctx.Value(1) }\n"
+	libaUse        = "package main\n\nimport \"example.com/liba\"\n\nfunc libaUse() { liba.Do() }\n"
+)
+
+// customCtx declares a type Ctx with the methods of context.Context in package pkg; recv is its
+// receiver, "Ctx" or "*Ctx".
+func customCtx(pkg, recv string) string {
+	return "package " + pkg + "\n\nimport \"time\"\n\nfunc Do() {}\n\ntype Ctx struct{}\n\n" +
+		"func (c " + recv + ") Deadline() (time.Time, bool) { return time.Time{}, false }\n" +
+		"func (c " + recv + ") Done() <-chan struct{}       { return nil }\n" +
+		"func (c " + recv + ") Err() error                  { return nil }\n" +
+		"func (c " + recv + ") Value(any) any               { return nil }\n"
+}
+
+// ctxMain is a main package that hands the cgo package a context; imports, body and decls extend it.
+func ctxMain(imports, body, decls string) string {
+	return "package main\n\nimport (\n\t\"context\"\n\n\t\"example.com/cgolib\"\n\t\"example.com/libb\"\n" + imports + ")\n\n" +
+		"func main() {\n\tlibb.Do()\n\tc := &cgolib.Conn{}\n\tc.ExecContext(context.Background(), \"q\")\n" + body + "}\n" + decls
+}
+
+// TestLoadProgram_CgoContextParameter: a context.Context the cgo package takes is not a function
+// value handed to it when every type in the build with the methods of one is the standard
+// library's and nothing on the C side reads a value out of one; the limit's Path says so. Any
+// other build keeps every module as the target.
+func TestLoadProgram_CgoContextParameter(t *testing.T) {
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("no C compiler")
+	}
+	every := []string{"", cbLib, cbLibA, cbLibB, stdlibPURL}
+	bounded := []string{cbLib, cbLibA, stdlibPURL}
+	on := func(files map[string]string) map[string]string {
+		for name, body := range map[string]string{"cgolib/c.go": cbCompiled, "cgolib/hook.go": cbExport, "cgolib/ctx.go": cbCtx} {
+			if files[name] == "" {
+				files[name] = body
+			}
+		}
+		return files
+	}
+	off := func(files map[string]string) map[string]string {
+		for name, body := range map[string]string{"cgolib/pure.go": cbPure, "cgolib/purectx.go": cbPureCtx, "cgolib/dropped.go": cbDropped, "app/a.go": libaUse} {
+			files[name] = body
+		}
+		return files
+	}
+	cases := []struct {
+		name        string
+		files       map[string]string
+		cgoEnabled  string
+		wantTargets []string
+		wantCtx     bool
+	}{
+		{"only the standard library's contexts", on(map[string]string{"app/main.go": ctxMain("", "", "")}), "1", bounded, true},
+		{"a first-party context type", on(map[string]string{"app/own/c.go": customCtx("own", "Ctx"), "app/main.go": ctxMain("\t\"example.com/app/own\"\n", "\town.Do()\n", "")}), "1", every, false},
+		{"a first-party context type with pointer receivers", on(map[string]string{"app/own/c.go": customCtx("own", "*Ctx"), "app/main.go": ctxMain("\t\"example.com/app/own\"\n", "\town.Do()\n", "")}), "1", every, false},
+		{"a dependency's context type", on(map[string]string{"libb/b.go": customCtx("libb", "Ctx"), "app/main.go": ctxMain("", "", "")}), "1", every, false},
+		{"a struct embedding a context", on(map[string]string{"app/main.go": ctxMain("", "", "\ntype wrapped struct{ context.Context }\n")}), "1", every, false},
+		{"a generic struct embedding a context", on(map[string]string{"app/main.go": ctxMain("", "", "\ntype box[T any] struct {\n\tcontext.Context\n\tv T\n}\n")}), "1", every, false},
+		{"a type declared in a function embedding a context", on(map[string]string{"app/main.go": ctxMain("", "\ttype local struct{ context.Context }\n\t_ = local{}\n", "")}), "1", every, false},
+		{"an unnamed struct embedding a context", on(map[string]string{"app/main.go": ctxMain("", "\t_ = struct{ context.Context }{}\n", "")}), "1", every, false},
+		{"an interface embedding a context", on(map[string]string{"app/main.go": ctxMain("", "", "\ntype scoped interface {\n\tcontext.Context\n\tScope() string\n}\n")}), "1", bounded, true},
+		{"a type with three of the four methods", on(map[string]string{"app/main.go": ctxMain("", "", "\ntype partial struct{}\n\nfunc (partial) Done() <-chan struct{} { return nil }\nfunc (partial) Err() error             { return nil }\nfunc (partial) Value(any) any          { return nil }\n")}), "1", bounded, true},
+		{"a package that does not type-check, not importing the cgo package", on(map[string]string{"libb/b.go": "package libb\n\nfunc Do() { _ = undefinedName }\n", "app/main.go": ctxMain("", "", "")}), "1", every, false},
+		{"the cgo package reads a value out of the context", on(map[string]string{"cgolib/ctx.go": cbCtxReads, "app/main.go": ctxMain("", "", "")}), "1", every, false},
+		{"a package the cgo package imports reads a value out of a context", on(map[string]string{"liba/v.go": "package liba\n\nimport \"context\"\n\nfunc Read(ctx context.Context) any { return ctx.Value(\"k\") }\n", "app/main.go": ctxMain("", "", "")}), "1", every, false},
+		{"a context type in the build, the cgo package taking no context", map[string]string{"cgolib/c.go": cbCompiled, "cgolib/hook.go": cbExport, "libb/b.go": customCtx("libb", "Ctx"), "app/main.go": appMain("\tc.Close()\n")}, "1", bounded, false},
+		{"cgo off, only the standard library's contexts", off(map[string]string{"app/main.go": ctxMain("", "\tlibaUse()\n", "")}), "0", bounded, true},
+		{"cgo off, a dependency's context type", off(map[string]string{"libb/b.go": customCtx("libb", "Ctx"), "app/main.go": ctxMain("", "\tlibaUse()\n", "")}), "0", every, false},
+		{"cgo off, a dropped file reads a value out of a context", off(map[string]string{"cgolib/reads.go": cbDroppedReads, "app/main.go": ctxMain("", "\tlibaUse()\n", "")}), "0", every, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CGO_ENABLED", tc.cgoEnabled)
+			t.Setenv("GOFLAGS", "-mod=mod")
+			t.Setenv("GOPROXY", "off")
+			res, err := LoadProgram(context.Background(), writeCbTree(t, tc.files))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var targets []string
+			ctx := false
+			for _, s := range res.cgo {
+				targets = s.Targets
+				ctx = ctx || strings.Contains(s.Path, "a context.Context it is handed runs only the standard library")
+			}
+			if !res.cgoBounded || !reflect.DeepEqual(targets, tc.wantTargets) {
+				t.Errorf("cgo bounded = %v targets = %v, want %v (partiality %+v)", res.cgoBounded, targets, tc.wantTargets, res.Partiality)
+			}
+			if ctx != tc.wantCtx {
+				t.Errorf("limit names the context ground = %v, want %v (limits %+v)", ctx, tc.wantCtx, res.cgo)
+			}
+		})
+	}
+}

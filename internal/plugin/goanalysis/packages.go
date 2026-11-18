@@ -185,7 +185,7 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 
 	return &LoadResult{
 		Packages: pkgs, Partiality: part, members: members, cgo: cgo, cgoBounded: bounded,
-		cgoUnresolved: cgoErr != nil, goVersion: goVersion, plugin: pluginBuildOf(pkgs, cfg.Env),
+		cgoUnresolved: cgoErr != nil, goVersion: goVersion, plugin: pluginBuildOf(ctx, buildDir, pkgs, cfg.Env),
 	}, nil
 }
 

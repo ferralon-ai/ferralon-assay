@@ -3,11 +3,8 @@ package goanalysis
 import (
 	"context"
 	"fmt"
-	"go/build"
 	"go/types"
 	"maps"
-	"path/filepath"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -76,73 +73,6 @@ func buildSSAWith(res *LoadResult, create func([]*packages.Package, ssa.BuilderM
 		}
 	}
 	return &ssaProgram{prog: prog, pkgs: pkgs, typePkg: typePkg, plugin: res.plugin}, nil
-}
-
-// pluginBuild says which package plugin a build compiled.
-type pluginBuild int
-
-const (
-	// pluginLoads: the real package, or no package plugin whose files say otherwise.
-	pluginLoads pluginBuild = iota
-	// pluginCgoOff: the stub, and only because cgo is off. The same build with cgo on loads plugins.
-	pluginCgoOff
-	// pluginNoPlatform: the stub with cgo on too: the GOOS has no plugins.
-	pluginNoPlatform
-)
-
-// pluginBuildOf reports which package plugin the load compiled, read from the files the load
-// resolved for the standard library's plugin package under env. The stub (plugin_stubs.go) has an
-// Open that only returns an error. A build that does not import plugin, or whose files do not say,
-// loads plugins; so does a load holding more than one package plugin unless every one is a stub.
-func pluginBuildOf(loaded []*packages.Package, env []string) pluginBuild {
-	ctxt := build.Default
-	ctxt.GOOS = envOr(env, "GOOS", runtime.GOOS)
-	ctxt.GOARCH = envOr(env, "GOARCH", runtime.GOARCH)
-	ctxt.BuildTags = goflagsTags(env)
-	ctxt.CgoEnabled = true
-	found, least := false, pluginNoPlatform
-	packages.Visit(loaded, nil, func(p *packages.Package) {
-		if p.PkgPath != "plugin" || p.Module != nil {
-			return
-		}
-		found = true
-		has := func(files []string, name string) bool {
-			return slices.ContainsFunc(files, func(f string) bool { return filepath.Base(f) == name })
-		}
-		kind := pluginLoads
-		if has(p.GoFiles, "plugin_stubs.go") && !has(p.GoFiles, "plugin_dlopen.go") {
-			kind = pluginNoPlatform
-			for _, f := range p.IgnoredFiles {
-				if filepath.Base(f) != "plugin_dlopen.go" {
-					continue
-				}
-				if ok, err := ctxt.MatchFile(filepath.Dir(f), filepath.Base(f)); err != nil || ok {
-					kind = pluginCgoOff
-				}
-			}
-		}
-		least = min(least, kind)
-	})
-	if !found {
-		return pluginLoads
-	}
-	return least
-}
-
-// runTimeReason returns the reason runTimeCallees declares for the function named name, and whether
-// it declares one. plugin.Open declares none in a build whose GOOS has no plugins, and
-// plugin_load:cgo_off in one that compiled the stub only because cgo is off.
-func (s *ssaProgram) runTimeReason(name string) (string, bool) {
-	r, ok := runTimeCallees[name]
-	if ok && r == plugin.PartialReasonPluginLoad {
-		switch s.plugin {
-		case pluginNoPlatform:
-			return "", false
-		case pluginCgoOff:
-			return plugin.PartialReasonPluginLoadCgoOff, true
-		}
-	}
-	return r, ok
 }
 
 // scipFunc emits the SCIP id for an SSA function, using the precise

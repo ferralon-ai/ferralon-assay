@@ -124,3 +124,25 @@ func TestScanCounter_TwoRunsIncrementTwice(t *testing.T) {
 		t.Fatalf("tegron.scan.count = %d, want 2 (one per Run call)", got)
 	}
 }
+
+// TestScanCounter_ResumingRunNotCounted: an orchestrator continuing an assessment another one began
+// does not count a second scan.
+func TestScanCounter_ResumingRunNotCounted(t *testing.T) {
+	sumInt64(t, "tegron.scan.count")
+
+	cases := assessment.NewMemStore()
+	store := artifact.NewMemStore()
+	c := newRunCase(t, cases)
+	var ran []string
+	first := NewOrchestrator(cases, store, []Stage{fakeStage{name: "a", status: assessment.StatusInventory, ran: &ran}})
+	rest := NewOrchestrator(cases, store, []Stage{fakeStage{name: "b", status: assessment.StatusAnalysis, ran: &ran}}, ResumingRun())
+	if err := first.Run(context.Background(), c.ID); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if err := rest.Run(context.Background(), c.ID); err != nil {
+		t.Fatalf("resuming Run: %v", err)
+	}
+	if got := sumInt64(t, "tegron.scan.count"); got != 1 {
+		t.Errorf("tegron.scan.count = %d across both runs, want 1", got)
+	}
+}

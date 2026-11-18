@@ -228,11 +228,15 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	b.AddPartiality(invNotes...)
 	mods := goModulesOf(sbom, invNotes)
 
-	cut := 0
+	// cut and rows count the rows the scan stopped before assessing and all rows, sibling
+	// instances included, so the note's count is the number of scan_cut_short rows.
+	cut, rows := 0, len(admitted.Admitted)
 	var assessed []report.Advisory
-	for _, adv := range admitted.Admitted {
+	passes := newAdvisoryPasses(analysis, requestsFor(admitted.Admitted, req.Codebase), assessOpts)
+	defer passes.close()
+	for i, adv := range admitted.Admitted {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
-		st, assessmentID, stopped, err := assessWithin(analysis, areq, assessOpts...)
+		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
 			b.AddFinding(cutShortFinding(adv))
 			cut++
@@ -265,11 +269,15 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 		sibs, sibNotes := siblingInstanceFindings(analysis, areq, st, assessmentID, assessOpts, sbom.Packages, mods, invNotes)
 		for _, sf := range sibs {
 			b.AddFinding(sf)
+			rows++
+			if sf.UndeterminedReason == report.ReasonScanCutShort {
+				cut++
+			}
 		}
 		b.AddPartiality(sibNotes...)
 	}
 	if cut > 0 {
-		b.AddPartiality(cutShortNote(cut, len(admitted.Admitted), stopCause(analysis)))
+		b.AddPartiality(cutShortNote(cut, rows, stopCause(analysis)))
 	}
 
 	b.WithProvenance(withSignals(report.Provenance{

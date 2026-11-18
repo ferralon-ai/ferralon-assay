@@ -139,6 +139,16 @@ func TestFinding_RefutedBeside(t *testing.T) {
 			toolchain: exact, scanned: true, wantReason: report.ReasonVulnerableSymbolUnresolved,
 		},
 		{
+			name: "a limit inherent to the analysis scoped to the other package", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(v3, "d")),
+				Refutations: []plugin.Refutation{unreached(docker, "d")},
+			},
+			scoped:    []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonReflection, Package: "pkg:golang/example.com/app", Targets: []string{v3}}},
+			toolchain: exact, scanned: true,
+		},
+		{
 			name: "a did-not-run limit scoped to a third package", pkg: dockerPkg, affected: []string{v3, docker},
 			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
 			reach: plugin.ReachabilityResult{
@@ -199,3 +209,18 @@ func TestFinding_RefutedBeside(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// TestFinding_SearchedSymbolAssumptions is a symbol search that grounds a package the lane refuted
+// beside another: the row rests on that package's assumptions, not the other's.
+func TestFinding_SearchedSymbolAssumptions(t *testing.T) {
+	fx := yamlSearched()
+	fx.reach.Refutation = ptr(unreached("pkg:pypi/first", "d", "first's assumption"))
+	fx.reach.Refutations = []plugin.Refutation{unreached(fx.advisoryPURL, "d", "yaml's assumption")}
+	f := fx.finding(t)
+	if f.Verdict != report.VerdictNotExploitable {
+		t.Fatalf("got %s/%q, want not_exploitable", f.Verdict, f.UndeterminedReason)
+	}
+	if want := []string{"yaml's assumption"}; !slices.Equal(f.Evidence.Assumptions, want) {
+		t.Errorf("assumptions = %q, want %q", f.Evidence.Assumptions, want)
+	}
+}

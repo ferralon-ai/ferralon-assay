@@ -201,3 +201,30 @@ func TestCompileJVM(t *testing.T) {
 		})
 	}
 }
+
+// A checkout that itself sits under a src/<name> directory (a CI workspace, ~/src/contest) is
+// judged by the paths within it, as the lane judges them, not by where it lives.
+func TestJVMOutputGapRootLocation(t *testing.T) {
+	for _, loc := range []string{"src/contest", "src/test-repo", "src/main/work", "src"} {
+		t.Run(loc, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), filepath.FromSlash(loc))
+			put(t, dir, "pom.xml", "x", time.Now())
+			put(t, dir, "src/main/java/p/App.java", "package p;\npublic class App { }\n", time.Now())
+			if got := jvmOutputGap(dir); !strings.Contains(got, "no compiled main classes for the repository root") {
+				t.Fatalf("gap = %q", got)
+			}
+			var calls []string
+			prev := compileTool
+			defer func() { compileTool = prev }()
+			compileTool = func(_ context.Context, req buildgraph.CompileRequest) (string, *buildgraph.Failure) {
+				calls = append(calls, req.Tool)
+				put(t, dir, "target/classes/p/App.class", "x", time.Now().Add(time.Minute))
+				return "mvn -B compile", nil
+			}
+			var w bytes.Buffer
+			if note := compileJVM(context.Background(), dir, graphRequest{mode: buildGraphAuto}, &w); note != "" || len(calls) != 1 {
+				t.Errorf("note = %q, compile calls = %v", note, calls)
+			}
+		})
+	}
+}

@@ -134,10 +134,13 @@ func jvmProjects(dir string) []jvmProject {
 		if p != dir && (strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules" || d.Name() == "target" || d.Name() == "build") {
 			return filepath.SkipDir
 		}
-		if filepath.Base(filepath.Dir(p)) == "src" && isTestSourceSet(d.Name()) {
+		// src is judged within the scan root, as the lane sees paths: a checkout that itself sits
+		// under a src/<name> directory is not thereby a test source set.
+		underSrc := p != dir && filepath.Dir(p) != dir && filepath.Base(filepath.Dir(p)) == "src"
+		if underSrc && isTestSourceSet(d.Name()) {
 			return filepath.SkipDir
 		}
-		if d.Name() == "main" && filepath.Base(filepath.Dir(p)) == "src" {
+		if d.Name() == "main" && underSrc {
 			for _, lang := range []string{"java", "kotlin"} {
 				src := filepath.Join(p, lang)
 				if hasSource(src) {

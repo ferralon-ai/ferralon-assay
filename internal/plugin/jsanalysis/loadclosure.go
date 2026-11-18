@@ -24,21 +24,13 @@ import (
 // when nothing in it can load code the lane cannot name. A package with no module in a complete
 // closure, and which no closure module names in a load, never runs.
 
-// entryRoot is one inferred entry point of the build.
-type entryRoot struct {
-	Lane string `json:"lane"`
-	// Kind is "module" (a first-party source file's top level), "bin" (an installed package's
-	// binary a launch text names) or "script" (a module a launch text's word loads by
-	// specifier, as in `node -r dotenv/config`).
-	Kind string `json:"kind"`
-	// Selector is the root file: a path relative to the scanned tree, or
-	// "npm:<package>/<path in package>" for a file of an installed package.
-	Selector string `json:"selector"`
-	Name     string `json:"name,omitempty"`
-	// Origin is where the root was inferred from: "<dir>/package.json#scripts.<name>",
-	// "<dir>/package.json#<key>", or the launch file's path.
-	Origin string `json:"origin,omitempty"`
-
+// scriptRoot is an entry point a launch text starts, and the module it starts. Kind is
+// plugin.EntryKindBin (an installed package's binary a launch text names) or
+// plugin.EntryKindScript (a module a launch text's word loads by specifier, as in
+// `node -r dotenv/config`). Origin is "<dir>/package.json#scripts.<name>",
+// "<dir>/package.json#<key>", or the launch file's path.
+type scriptRoot struct {
+	plugin.EntryRoot
 	module string
 }
 
@@ -56,7 +48,7 @@ type loadClosure struct {
 	// hiddenLoaded are the packages with unread code in the closure.
 	hiddenLoaded []plugin.ScopedReason
 	// Roots are the inferred entry points other than first-party modules.
-	Roots []entryRoot `json:"roots,omitempty"`
+	Roots []plugin.EntryRoot `json:"roots,omitempty"`
 
 	modules map[string]bool
 }
@@ -266,7 +258,9 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 		}
 	}
 	roots, rooted := inferScriptRoots(prog, entries, lr)
-	lc.Roots = roots
+	for _, r := range roots {
+		lc.Roots = append(lc.Roots, r.EntryRoot)
+	}
 	for _, e := range rooted {
 		loads(e)
 	}
@@ -875,7 +869,7 @@ func scriptLoadWords(script string) []string {
 // interpret: every word that names an installed package's binary roots that binary, and every
 // word that resolves as a module specifier from the script's directory roots what it loads. A
 // word that may start code the lane cannot name vetoes the closure on lr.
-func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]entryRoot, []*depEntry) {
+func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]scriptRoot, []*depEntry) {
 	d := prog.deps
 	type bin struct {
 		e   *depEntry
@@ -952,10 +946,10 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 	}
 
 	rs := prog.resolver()
-	var roots []entryRoot
+	var roots []scriptRoot
 	var rooted []*depEntry
-	seen := map[entryRoot]bool{}
-	add := func(r entryRoot, e *depEntry) {
+	seen := map[scriptRoot]bool{}
+	add := func(r scriptRoot, e *depEntry) {
 		rooted = append(rooted, e)
 		if r.module != "" && !seen[r] {
 			seen[r] = true
@@ -1005,7 +999,7 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 				} else if ok {
 					lr.veto(m == "", origin+" names "+file+", a file the lane does not parse")
 					if m != "" {
-						add(entryRoot{Lane: "js", Kind: "script", Selector: "npm:" + s.e.name + "/" + file, Name: w, Origin: origin, module: m}, s.e)
+						add(scriptRoot{EntryRoot: plugin.EntryRoot{Lane: plugin.EntryLaneJS, Kind: plugin.EntryKindScript, Selector: "npm:" + s.e.name + "/" + file, Name: w, Origin: origin}, module: m}, s.e)
 					}
 				} else if e, _ := rs.depTargets(rel, w, true); e == nil && namesFile(w) {
 					lr.veto(true, origin+" names "+w+", which is not a file of its package")
@@ -1026,7 +1020,7 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 				name = b
 			}
 			for _, b := range bins[name] {
-				r := entryRoot{Lane: "js", Kind: "bin", Name: name, Origin: origin}
+				r := scriptRoot{EntryRoot: plugin.EntryRoot{Lane: plugin.EntryLaneJS, Kind: plugin.EntryKindBin, Name: name, Origin: origin}}
 				if b.pkg == nil {
 					add(r, b.e)
 					continue
@@ -1060,7 +1054,7 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 					if read[e] {
 						lr.veto(true, "script word "+w+" names package "+e.name+" and selects no module the lane parses")
 					}
-					add(entryRoot{}, e)
+					add(scriptRoot{}, e)
 				}
 				for _, m := range mods {
 					id := strings.TrimPrefix(m, e.path+"/")
@@ -1071,12 +1065,12 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 							break
 						}
 					}
-					add(entryRoot{Lane: "js", Kind: "script", Selector: "npm:" + e.name + "/" + file, Name: w, Origin: origin, module: m}, e)
+					add(scriptRoot{EntryRoot: plugin.EntryRoot{Lane: plugin.EntryLaneJS, Kind: plugin.EntryKindScript, Selector: "npm:" + e.name + "/" + file, Name: w, Origin: origin}, module: m}, e)
 				}
 			}
 		}
 	}
-	slices.SortStableFunc(roots, func(a, b entryRoot) int {
+	slices.SortStableFunc(roots, func(a, b scriptRoot) int {
 		return cmp.Or(strings.Compare(a.Selector, b.Selector), strings.Compare(a.Origin, b.Origin))
 	})
 	return roots, rooted

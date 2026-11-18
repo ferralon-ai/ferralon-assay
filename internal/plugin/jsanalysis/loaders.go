@@ -79,7 +79,7 @@ func (mb *moduleBindings) requireUse(clean, src []rune, i, next int, ls *loaderS
 		return
 	case w == "const", w == "let", w == "var": // the declaration of a createRequire result
 		if kw, _ := wordBefore(clean, skipSpaceBack(clean, s-1)); kw == "export" {
-			mb.computedReq = true // an exported result is called by importers this lane does not judge
+			mb.escape() // an exported result is called by importers this lane does not judge
 		}
 		return
 	case w == "as" && sameLine(clean, s, i): // the exported name of `export { r as require }`, or a type
@@ -97,10 +97,10 @@ func (mb *moduleBindings) requireUse(clean, src []rune, i, next int, ls *loaderS
 		mb.loaderCall(clean, src, i, p, false)
 	case p < n && clean[p] == '.':
 		if w, _ := peekWord(clean, skipSpace(clean, p+1)); w != "resolve" {
-			mb.computedReq = true
+			mb.escape()
 		}
 	default:
-		mb.computedReq = true
+		mb.escape()
 	}
 }
 
@@ -135,7 +135,7 @@ func (mb *moduleBindings) argumentsUse(clean []rune, i, next int, frames *thisFr
 	if !frames.outsideFunctions(i) || memberName(clean, i) || objectKey(clean, skipSpaceBack(clean, i-1), skipSpace(clean, next)) {
 		return
 	}
-	mb.computedReq = true
+	mb.escape()
 }
 
 // createRequireUse records one occurrence of a createRequire-like name. Calling the result
@@ -149,7 +149,7 @@ func (mb *moduleBindings) createRequireUse(clean, src []rune, i, next int) {
 		return
 	}
 	if !call {
-		mb.computedReq = true
+		mb.escape()
 		return
 	}
 	_, end := parseParamArity(clean, p)
@@ -158,7 +158,7 @@ func (mb *moduleBindings) createRequireUse(clean, src []rune, i, next int) {
 		return
 	}
 	if _, ok := declBoundName(clean, i); !ok {
-		mb.computedReq = true
+		mb.escape()
 	}
 }
 
@@ -179,7 +179,7 @@ func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 		return
 	}
 	if word == "_load" {
-		mb.computedReq = true
+		mb.escape()
 		return
 	}
 	if !evaluatorTested(clean, i, i+len(word)) {
@@ -198,7 +198,7 @@ func hazardMember(mb *moduleBindings, name string) bool {
 	case "dlopen", "getBuiltinModule", "_linkedBinding", "binding":
 		mb.nativeLoad = true
 	case "mainModule":
-		mb.computedReq = true
+		mb.escape()
 	default:
 		return false
 	}
@@ -909,7 +909,7 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 	if reflectiveKey(clean, a) {
 		switch specifierAt(src, a) {
 		case "require", "createRequire", "_load", "mainModule":
-			mb.computedReq = true
+			mb.escape()
 		case "dlopen", "process", "getBuiltinModule", "_linkedBinding", "binding":
 			mb.nativeLoad = true
 		case "eval", "Function", "constructor":
@@ -934,11 +934,11 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 	}
 	switch specifierAt(src, a) {
 	case "require", "createRequire", "_load":
-		mb.computedReq = true
+		mb.escape()
 	case "dlopen", "process", "getBuiltinModule", "_linkedBinding", "binding":
 		mb.nativeLoad = true
 	case "mainModule":
-		mb.computedReq = true
+		mb.escape()
 	case "eval", "Function":
 		mb.evaluated = true
 	case "constructor":
@@ -1843,14 +1843,14 @@ func (mb *moduleBindings) objectUse(clean, src []rune, i, next int, obj *loaderO
 			mb.nativeLoad = true
 			return
 		}
-		mb.computedReq = true
+		mb.escape()
 		return
 	} else if objectKey(clean, b, p) && patternKeyUnclassified(clean, i, globals) {
 		if obj.names["process"] {
 			mb.nativeLoad = true
 			return
 		}
-		mb.computedReq = true
+		mb.escape()
 		return
 	} else if obj.tails[i] || bindingSite(clean, i, next, b, p) || objectTested(clean, i, next, b) || negatedGroupTail(clean, i, p) {
 		return
@@ -1893,7 +1893,7 @@ func (mb *moduleBindings) objectUse(clean, src []rune, i, next int, obj *loaderO
 		mb.nativeLoad = true
 		return
 	}
-	mb.computedReq = true
+	mb.escape()
 }
 
 // plainAssignTarget reports whether the token at p is a plain `=`, so the expression before
@@ -2287,7 +2287,7 @@ func (mb *moduleBindings) patternKeys(clean, src []rune, globals *globalScope) {
 			continue
 		}
 		if key == "module" {
-			mb.computedReq = true
+			mb.escape()
 		} else {
 			mb.nativeLoad = true
 		}

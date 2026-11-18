@@ -66,7 +66,12 @@ that it holds for `CGO_ENABLED=0` and that a build with cgo on was not checked.
 ### `undetermined` reasons
 
 An `undetermined` row is an open question, never a clean bill. Its `undetermined_reason` names what
-the scan did not establish:
+the scan did not establish. A `refutation_withheld` or `analysis_did_not_run` row also lists, in
+`withheld_by`, the limits that withheld the verdict: each one's reason code and, when the limit is
+scoped to part of the build, the package and path holding the code the analysis could not see and the
+packages that code could reach. The row's detail names the same limits. An `analysis_did_not_run` row
+whose analysis failed or produced no call graph has no limit that says so, so its list can be empty,
+and a limit it does list is not the reason the analysis did not run.
 
 | Reason | What was missing |
 |---|---|

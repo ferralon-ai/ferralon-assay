@@ -306,3 +306,35 @@ func (w *wildcardCheck) ok() bool {
 	}
 	return true
 }
+
+// wildcardClearOfDependencies is the dependency half of the same-package check: a name
+// admitted through "import java.lang.annotation.*;" binds there only if no dependency
+// class declares a top-level type of that name in the file's package (package scope
+// shadows an on-demand import, JLS 6.4.1; a split package may take types from a jar). It
+// needs the opened classes, so it runs where the dependency graph is built. A graph that
+// is absent or not complete cannot establish the package's contents, so the claim fails
+// closed. Only the call graph has the dependency graph; the other operations do not read
+// jars.
+func wildcardClearOfDependencies(claims []wildcardClaim, dg *dependencyGraph) bool {
+	if len(claims) == 0 {
+		return true
+	}
+	if dg == nil || !dg.Complete {
+		return false
+	}
+	want := map[string]bool{}
+	for _, c := range claims {
+		for _, n := range c.names {
+			want[strings.ReplaceAll(c.pkg, ".", "/")+"/"+n] = true
+			if c.pkg == "" {
+				want[n] = true
+			}
+		}
+	}
+	for _, cl := range dg.Classes {
+		if want[cl.Name] {
+			return false
+		}
+	}
+	return true
+}

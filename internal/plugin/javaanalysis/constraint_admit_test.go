@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -276,7 +277,11 @@ import java.lang.annotation.*;
 					t.Fatal(err)
 				}
 			}
-			cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+			// A complete dependency graph with no relevant type: the dependency half of the
+			// check (TestWildcardAdmission_DependencyClasses) clears, so this row isolates the
+			// first-party half.
+			writeJar(t, netkitJarPath(dir), "org/lib/Util.class", emitClass(&cpb{}, "org/lib/Util", []mspec{{"m", "()V", []byte{0xB1}}}))
+			cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir}, netkitGraph(t, dir))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -306,5 +311,85 @@ func TestWildcardCheck_SkippedPackageIsPerPackage(t *testing.T) {
 	w.add(parseResult{pkg: "a", skipped: true})
 	if w.ok() {
 		t.Error("a skipped file in the claimed package must fail the claim")
+	}
+}
+
+// A name admitted through "import java.lang.annotation.*;" binds there only if no
+// dependency class declares a top-level type of that name in the same package. The call
+// graph, which opens the dependency jars, withholds the file when one does, or when the
+// jars cannot be enumerated.
+func TestWildcardAdmission_DependencyClasses(t *testing.T) {
+	const ann = `package com.acme;
+import java.lang.annotation.*;
+@Retention(RetentionPolicy.RUNTIME) public @interface Flag {}`
+	jarWith := func(t *testing.T, build string, class string) {
+		t.Helper()
+		b := &cpb{}
+		writeJar(t, netkitJarPath(build), class+".class", emitClass(b, class, []mspec{{"m", "()V", []byte{0xB1}}}))
+	}
+	tests := []struct {
+		name        string
+		class       string // class in the dependency jar ("" = no jar written)
+		noGraph     bool
+		wantPartial bool
+	}{
+		{"jar declares no such type", "org/lib/Util", false, false},
+		{"jar declares the type in another package", "org/lib/Retention", false, false},
+		{"jar declares a nested type of that name in the package", "com/acme/Outer$Retention", false, false},
+		{"jar declares the type in the same package", "com/acme/Retention", false, true},
+		{"jar declared by the graph is missing", "", false, true},
+		{"no build graph", "org/lib/Util", true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			build := writeProgram(t, map[string]string{"com/acme/Flag.java": ann})
+			if tt.class != "" {
+				jarWith(t, build, tt.class)
+			}
+			var opts []Option
+			if !tt.noGraph {
+				opts = append(opts, netkitGraph(t, build))
+			}
+			cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: build}, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hasReason(cg.Partiality, plugin.PartialReasonUnsupported); got != tt.wantPartial {
+				t.Errorf("CallGraph unsupported = %v, want %v (%+v)", got, tt.wantPartial, cg.Partiality)
+			}
+		})
+	}
+}
+
+func TestWildcardClearOfDependencies(t *testing.T) {
+	claims := []wildcardClaim{{pkg: "com.acme", names: []string{"Target"}}, {pkg: "", names: []string{"Retention"}}}
+	dg := func(complete bool, names ...string) *dependencyGraph {
+		g := &dependencyGraph{Complete: complete}
+		for _, n := range names {
+			g.Classes = append(g.Classes, classfile.Class{Name: n})
+		}
+		return g
+	}
+	tests := []struct {
+		name   string
+		claims []wildcardClaim
+		dg     *dependencyGraph
+		want   bool
+	}{
+		{"no claim needs no graph", nil, nil, true},
+		{"no dependency class of the name", claims, dg(true, "org/lib/Util"), true},
+		{"same name, other package", claims, dg(true, "org/lib/Target"), true},
+		{"same package, other name", claims, dg(true, "com/acme/Util"), true},
+		{"same package and name", claims, dg(true, "com/acme/Target"), false},
+		{"default package", claims, dg(true, "Retention"), false},
+		{"incomplete graph", claims, dg(false, "org/lib/Util"), false},
+		{"absent graph", claims, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := wildcardClearOfDependencies(tt.claims, tt.dg); got != tt.want {
+				t.Errorf("clear = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

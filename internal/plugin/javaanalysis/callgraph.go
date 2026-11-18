@@ -49,6 +49,10 @@ type program struct {
 	// over the dependency/Kotlin classfiles. Foundation exposes only the type set; the overlay
 	// owns the sink marking + repository_synthesized_sink (edge-seam.md §4).
 	repositoryTypes map[string]bool
+	// wildcardClaims are the meta-annotation names admitted through
+	// "import java.lang.annotation.*;", pending the dependency-class check CallGraph makes
+	// once the dependency graph is open (wildcardClearOfDependencies).
+	wildcardClaims []wildcardClaim
 	// sourceClasses is the first-party source-lexical class model retained for the sink
 	// overlays (edge-seam.md §5): the #2 AOP and #4 SpEL classifiers read a symbol's
 	// declaring class here (its annotations, stereotypes, supers) — data not derivable
@@ -145,6 +149,7 @@ func loadProgram(buildDir string) (*program, error) {
 		}
 	}
 	prog.rootedValidators = rootConstraintValidators(buildDir, prog.files, mainClasses)
+	prog.wildcardClaims = wc.claims
 	if !wc.ok() || !validatedByRooted(prog, validatedBy) {
 		prog.skipped = true
 	}
@@ -250,6 +255,9 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest, opts ...Option)
 	// depreach completeness account surfaces unopened dependencies through reachability
 	// partiality, never a fabricated edge (inv.5).
 	dg, _ := buildDependencyGraph(req.BuildDir, opts...)
+	if !prog.skipped && !wildcardClearOfDependencies(prog.wildcardClaims, dg) {
+		lexical.Partiality = withReasons(lexical.Partiality, []string{plugin.PartialReasonUnsupported})
+	}
 
 	// H2 seam (edge-seam.md §5): resolve the unresolved interface-dispatch call sites
 	// through the DI bean model and fold the resolved interface→impl edges into the

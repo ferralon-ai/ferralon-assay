@@ -117,6 +117,11 @@ type Spec struct {
 	// name, so naming a file an allowed command binds to does not rewrite it. It is asked only
 	// about a command with no redirect and no command substitution. nil means no command is.
 	ReadOnly func(words []string) bool
+	// Inert reports whether a command holding no token, its redirects included, leaves every
+	// file it names meaning what an allowed command read from it: a write of settings the lane
+	// accepts. Such a command names no file. It is not asked about a command whose words lost
+	// a double-quoted escape. nil means no command is.
+	Inert func(words []string) bool
 	// ReadRegular reads a whole regular file, and Absent reports whether a filesystem error
 	// means a path is not there: the lane's own, so every file this reads is read the lane's way.
 	ReadRegular func(path string) ([]byte, error)
@@ -1278,7 +1283,7 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install verb after an expansion: " + strings.Join(words, " ")
 	}
 	if !v.segmentHasToken(words) {
-		if !v.readsOnly(words) {
+		if !v.readsOnly(words) && (v.spec.Inert == nil || seg.escapes || !v.spec.Inert(words)) {
 			v.mention(words) // a leading NAME=VALUE, or a command run by its path, names one too
 			v.mentionCode(words)
 		}

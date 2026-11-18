@@ -73,6 +73,7 @@ func scriptSpec(root string, locks map[string]lockInfo, assumed *bool) scriptsur
 		Library:     gitShellLibrary,
 		Concurrent:  laneConcurrent,
 		Code:        laneCode,
+		Inert:       laneNpmrcWrite,
 		ReadRegular: readRegular,
 		Absent:      absent,
 	}
@@ -830,6 +831,36 @@ var readOnlyCommands = map[string]bool{
 func laneReadOnly(words []string) bool {
 	head, ok := scriptsurface.CommandName(words[0])
 	return ok && readOnlyCommands[head]
+}
+
+// laneNpmrcWrite reports whether a command is an echo or printf of literal lines onto an
+// .npmrc, each line setting only what an .npmrc may set and leave the install to the lock
+// (npmrcTextSetsOnly with npmrcLockSafeKeys: a registry, its credentials): the write CI makes
+// before an install from a private registry. The one redirect is > or >> and comes last. No
+// word holds a command substitution, and no key an expansion, so only a value varies. A
+// printf writes its format alone.
+func laneNpmrcWrite(words []string) bool {
+	n := len(words)
+	if n < 4 || words[0] != "echo" && words[0] != "printf" || words[n-2] != ">" && words[n-2] != ">>" || filepath.Base(words[n-1]) != ".npmrc" {
+		return false
+	}
+	args := words[1 : n-2]
+	if words[0] == "echo" && (args[0] == "-e" || args[0] == "-n") {
+		args = args[1:]
+	}
+	if len(args) == 0 || words[0] == "printf" && len(args) != 1 {
+		return false
+	}
+	text := strings.ReplaceAll(strings.Join(args, " "), `\n`, "\n")
+	if strings.ContainsAny(text, "`<>%\\") || strings.Contains(text, "$(") || strings.ContainsAny(words[n-1], "$`") {
+		return false
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if key, _, _ := strings.Cut(line, "="); strings.Contains(key, "$") {
+			return false
+		}
+	}
+	return npmrcTextSetsOnly([]byte(text), npmrcLockSafeKeys)
 }
 
 // codeInterpreters are the programs whose arguments may be code they run: node -e, python -c.

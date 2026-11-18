@@ -81,8 +81,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	var refutation *plugin.Refutation
 	if notLoaded && len(paths) == 0 {
 		refutation = &plugin.Refutation{
-			Basis:       plugin.RefutationPackageNotLoaded,
-			Package:     req.Package,
+			Basis:   plugin.RefutationPackageNotLoaded,
+			Package: req.Package,
+			// A clear from a closure that holds a computed load rests on its bound.
 			Assumptions: closure.Assumptions,
 			Detail:      "no installed copy of the package is loaded by a parsed first-party module, by a binary or module a package.json script or launch file names, or by anything those load",
 		}

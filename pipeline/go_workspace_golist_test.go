@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -126,6 +127,65 @@ func TestWorkspaceBuildList_ReplaceTargetChange(t *testing.T) {
 	writeProxyFile(t, filepath.Join(tree, "r"), "go.mod", "module example.com/r\n\ngo 1.21\n\nrequire example.com/n v1.0.0\n")
 	if present, known := goModRequires(ctx, buildDir, ws, "example.com/n", noNestedModules); !present || !known {
 		t.Fatalf("after the replace target requires n: goModRequires = %v, %v; want true, true", present, known)
+	}
+}
+
+// TestModuleVersionFromBuild_WorkspaceReplace runs the real go command over a workspace member that
+// requires example.com/m v1.0.0 and replaces it, in the go.mod and in the go.work. A replacement by the
+// same module at a version is the version the build compiles; a fork and a local directory are code no
+// release of m describes. Each reads the same with no go.work, where moduleVersionFromGoMod decides.
+func TestModuleVersionFromBuild_WorkspaceReplace(t *testing.T) {
+	proxy := offlineProxy(t)
+	for _, v := range []string{"v1.0.0", "v1.1.0"} {
+		publish(t, proxy, "example.com/m", v, map[string]string{"go.mod": "module example.com/m\n\ngo 1.21\n", "m.go": "package m\n"})
+	}
+	publish(t, proxy, "example.com/fork", "v1.0.0", map[string]string{"go.mod": "module example.com/fork\n\ngo 1.21\n", "m.go": "package m\n"})
+	sum := download(t, proxy, "example.com/m@v1.0.0", "example.com/m@v1.1.0", "example.com/fork@v1.0.0")
+	const memberHead = "module example.com/mono/a\n\ngo 1.21\n\nrequire example.com/m v1.0.0\n"
+	cases := []struct {
+		name        string
+		work, goMod string
+		want        string
+		wantPinned  bool
+	}{
+		{"version-only replace in the go.mod", "", "replace example.com/m => example.com/m v1.1.0\n", "v1.1.0", true},
+		{"version-only replace in the go.work", "replace example.com/m => example.com/m v1.1.0\n", "", "v1.1.0", true},
+		{"version-specific replace of the required version", "", "replace example.com/m v1.0.0 => example.com/m v1.1.0\n", "v1.1.0", true},
+		{"version-specific replace of another version", "", "replace example.com/m v0.9.0 => example.com/m v1.1.0\n", "v1.0.0", true},
+		{"fork replace in the go.mod", "", "replace example.com/m => example.com/fork v1.0.0\n", "", false},
+		{"fork replace in the go.work", "replace example.com/m => example.com/fork v1.0.0\n", "", "", false},
+		{"local-directory replace in the go.mod", "", "replace example.com/m => ../m\n", "", false},
+		{"local-directory replace in the go.work", "replace example.com/m => ./m\n", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetBuildLists(t)
+			tree := writeTree(t, map[string]string{
+				"go.work":  "go 1.21\n\nuse ./a\n\n" + tc.work,
+				"a/go.mod": memberHead + "\n" + tc.goMod,
+				"a/go.sum": sum,
+				"a/a.go":   "package a\n\nimport _ \"example.com/m\"\n",
+				"m/go.mod": "module example.com/m\n\ngo 1.21\n",
+				"m/m.go":   "package m\n",
+			})
+			ws := GoWorkspace{File: filepath.Join(tree, "go.work")}
+			buildDir := filepath.Join(tree, "a")
+			if v, pinned, read := moduleVersionFromBuild(context.Background(), buildDir, ws, "example.com/m"); v != tc.want || pinned != tc.wantPinned || !read {
+				t.Fatalf("under the go.work: moduleVersionFromBuild = %q, %v, %v; want %q, %v, true", v, pinned, read, tc.want, tc.wantPinned)
+			}
+			pinned, unpinned, err := GoWorkspaceModules(context.Background(), buildDir, ws)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, held := pinned["example.com/m"]; held != tc.wantPinned || got != tc.want || slices.Contains(unpinned, "example.com/m") == tc.wantPinned {
+				t.Fatalf("GoWorkspaceModules = %v, %v; want example.com/m at %q, pinned %v", pinned, unpinned, tc.want, tc.wantPinned)
+			}
+			if tc.work == "" {
+				if v, pinned, read := moduleVersionFromBuild(context.Background(), buildDir, GoWorkspace{}, "example.com/m"); v != tc.want || pinned != tc.wantPinned || !read {
+					t.Fatalf("with GOWORK=off: moduleVersionFromBuild = %q, %v, %v; want %q, %v, true", v, pinned, read, tc.want, tc.wantPinned)
+				}
+			}
+		})
 	}
 }
 

@@ -72,8 +72,22 @@ func TestRunAssessOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runAssessOptions: %v", err)
 		}
-		if cfg := applyAll(opts); cfg.SubjectGoVersion != "" || cfg.SubjectToolchainReachability {
+		cfg := applyAll(opts)
+		if cfg.SubjectGoVersion != "" {
 			t.Errorf("unexpected subject statement: %+v", cfg)
+		}
+		if !cfg.SubjectToolchainReachability {
+			t.Error("subject-toolchain reachability is not on by default")
+		}
+	})
+	t.Run("subject-toolchain reachability turned off", func(t *testing.T) {
+		t.Setenv(envSubjectToolchainReach, "false")
+		opts, err := runFlagsFor(t).runAssessOptions(func(*pipeline.AssessConfig) {})
+		if err != nil {
+			t.Fatalf("runAssessOptions: %v", err)
+		}
+		if applyAll(opts).SubjectToolchainReachability {
+			t.Error("subject-toolchain reachability stayed on after being turned off")
 		}
 	})
 	t.Run("corpus error", func(t *testing.T) {

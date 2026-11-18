@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -168,21 +169,26 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 // assumption on its refutation.
 func TestLoadClosure_LockAssumption(t *testing.T) {
 	sink, pkg := "npm:idle@1.0.0#bad", "pkg:npm/idle@1.0.0"
+	both := map[string]string{"used": "1.0.0", "idle": "1.0.0"}
 	for _, tc := range []struct {
-		name, run string
-		want      []string
+		name, run, src string
+		deps           map[string]string
+		want           []string
 	}{
-		{"npm ci from the copied lock", "COPY package.json package-lock.json ./\nRUN npm ci\n", nil},
-		{"npm install over the whole tree", "COPY . /app\nRUN npm install\n", []string{lockAssumption}},
+		{"npm ci from the copied lock", "COPY package.json package-lock.json ./\nRUN npm ci\n", "", both, nil},
+		{"npm install over the whole tree", "COPY . /app\nRUN npm install\n", "", both, []string{lockAssumption}},
+		// idle is no direct dependency here, so the computed load's bound leaves it out.
+		{"npm install over a tree with a computed load", "COPY . /app\nRUN npm install\n", "module.exports = n => require(n);\n",
+			map[string]string{"used": "1.0.0"}, []string{computedLoadAssumption([]string{"first-party code"}), lockAssumption}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newDepFixture(t, map[string]string{"index.js": "const used = require('used');\nused.run();\n"},
+			f := newDepFixture(t, map[string]string{"index.js": "const used = require('used');\nused.run();\n" + tc.src},
 				closurePkg("used", nil),
 				closurePkg("idle", map[string]string{"index.js": "exports.bad = function bad() {};\n"}),
 			)
 			// The fixture's lock records no root dependencies; an install is held to a lock only
 			// when it covers what package.json declares.
-			deps := map[string]string{"used": "1.0.0", "idle": "1.0.0"}
+			deps := tc.deps
 			var lock map[string]any
 			raw, err := os.ReadFile(filepath.Join(f.dir, "package-lock.json"))
 			if err != nil || json.Unmarshal(raw, &lock) != nil {
@@ -206,7 +212,7 @@ func TestLoadClosure_LockAssumption(t *testing.T) {
 			if res.Refutation == nil || res.Refutation.Basis != plugin.RefutationPackageNotLoaded {
 				t.Fatalf("want a package_not_loaded refutation; got %+v (partiality %+v)", res.Refutation, res.Partiality)
 			}
-			if got := res.Refutation.Assumptions; len(got) != len(tc.want) || len(got) == 1 && got[0] != tc.want[0] {
+			if got := res.Refutation.Assumptions; !slices.Equal(got, tc.want) {
 				t.Fatalf("assumptions = %q, want %q", got, tc.want)
 			}
 		})

@@ -313,10 +313,21 @@ const (
 	// PartialReasonPluginLoad: the program reaches a load of Go code the build never compiled
 	// (plugin.Open), so none of that code's calls were read.
 	PartialReasonPluginLoad = "plugin_load"
+	// PartialReasonPluginLoadCgoOff localises plugin_load: the program reaches plugin.Open in a
+	// build with cgo off, where it loads nothing, on a platform where the same program built with
+	// cgo on would load plugins. A refutation the Go lane keeps beside it says in its detail that
+	// it holds for CGO_ENABLED=0 only.
+	PartialReasonPluginLoadCgoOff = PartialReasonPluginLoad + ":cgo_off"
 	// PartialReasonCgoUnresolved: the go command did not resolve whether cgo is on (`go env
 	// CGO_ENABLED` failed), so which of the build's cgo and non-cgo files the shipped binary
 	// compiles is unknown.
 	PartialReasonCgoUnresolved = PartialReasonCgo + ":env_unresolved"
+	// PartialReasonCgoFilesDropped localises cgo: the build has cgo off and compiles no cgo code,
+	// and it left out cgo files that a build with cgo on would compile. Those files are not in
+	// the scanned build, and the Go lane reads each one for calls into the advisory's module
+	// (excluded_files when one may make them). A refutation the lane keeps beside it says in its
+	// detail that it holds for CGO_ENABLED=0 only.
+	PartialReasonCgoFilesDropped = PartialReasonCgo + ":files_dropped"
 	// PartialReasonIfdefConfigVariance (new base, run-specific/loud): a preprocessor
 	// conditional (#ifdef/#if) gates code the analysis cannot resolve without the build's
 	// actual macro definitions, so the compiled configuration is undetermined. Every

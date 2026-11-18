@@ -372,12 +372,12 @@ func TestDepGraph_Controls(t *testing.T) {
 		}
 	})
 
-	t.Run("dependency_computed_require_run_wide", func(t *testing.T) {
+	t.Run("dependency_computed_require_covers_loaded_code", func(t *testing.T) {
 		f := newDepFixture(t, map[string]string{"index.js": "require('dep');\n"}, plain(map[string]string{
 			"index.js": "const name = process.env.PLUGIN;\nexports.run = function run() { return require(name); };\n",
 		}))
-		if cg := withDeps(t, f.dir, f.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonComputedRequireSpecifier) {
-			t.Errorf("require(variable) in dependency code must stay run-wide; got %+v", cg.Partiality)
+		if cg := withDeps(t, f.dir, f.memStore()); !declares(cg.Partiality, plugin.PartialReasonComputedRequireSpecifier) {
+			t.Errorf("require(variable) in a loaded dependency must be declared over everything that loads; got %+v", cg.Partiality)
 		}
 	})
 

@@ -31,11 +31,11 @@ func writeModule(t *testing.T, files map[string]string) string {
 }
 
 // cgoScope is what a partiality says about cgo: whether it is a run-wide reason, and the targets
-// of its scoped limits (nil when it has none).
+// of its scoped limits (nil when it has none), under either scoped reason.
 func cgoScope(t *testing.T, p plugin.Partiality) (runWide bool, targets []string) {
 	t.Helper()
 	for _, s := range p.Scoped {
-		if s.Reason != plugin.PartialReasonCgo {
+		if s.Reason != plugin.PartialReasonCgo && s.Reason != plugin.PartialReasonCgoFilesDropped {
 			continue
 		}
 		if s.Targets == nil {
@@ -94,6 +94,11 @@ func TestLoadProgram_CgoDisabledBuildDeclaresDroppedCgo(t *testing.T) {
 			if (runWide || targets != nil) == res.Partiality.Complete {
 				t.Errorf("complete = %v with cgo declared = %v", res.Partiality.Complete, runWide || targets != nil)
 			}
+			for _, s := range res.Partiality.Scoped {
+				if s.Reason != plugin.PartialReasonCgoFilesDropped {
+					t.Errorf("scoped reason = %q, want %q: a build with cgo off compiles no cgo code", s.Reason, plugin.PartialReasonCgoFilesDropped)
+				}
+			}
 		})
 	}
 }
@@ -151,6 +156,11 @@ func TestCallGraph_CompiledCgoIsScoped(t *testing.T) {
 			}
 			if cg.Partiality.Complete {
 				t.Error("a graph with a scoped limit must not be complete")
+			}
+			for _, s := range cg.Partiality.Scoped {
+				if s.Reason != plugin.PartialReasonCgo {
+					t.Errorf("scoped reason = %q, want %q: the build compiles cgo code", s.Reason, plugin.PartialReasonCgo)
+				}
 			}
 		})
 	}

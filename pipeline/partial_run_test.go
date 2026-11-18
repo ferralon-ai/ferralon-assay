@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -73,6 +75,77 @@ func TestOwnAdvisoryOnPartialRun(t *testing.T) {
 			}
 			if got := OwnAdvisoryHeldForPartialRun(store, c.ID); got != tc.wantHeld {
 				t.Fatalf("OwnAdvisoryHeldForPartialRun = %v, want %v", got, tc.wantHeld)
+			}
+		})
+	}
+}
+
+// TestPartialRunMarkerReachesOnlyGuardedRow: the lane declares partial_run_unversioned for every
+// request that named no versioned package, but only the scanned project's own advisory with no
+// stated version is held by it. Every other row's stored reachability and exposure footprint carry
+// what they carried before the marker existed, so a refuted row whose package resolved is not read
+// as an analysis that did not run.
+func TestPartialRunMarkerReachesOnlyGuardedRow(t *testing.T) {
+	const sym = "scip-go gomod example.com/app . example.com/app/fetchHandler()."
+	declared := []string{plugin.PartialReasonToolFailure, plugin.PartialReasonPartialRunUnversioned}
+	cases := []struct {
+		name       string
+		inv        map[string]any
+		wantMarker bool
+	}{
+		{name: "own advisory, no version", inv: map[string]any{"root": true}, wantMarker: true},
+		{name: "own advisory, version known", inv: map[string]any{"root": true, "resolved_version": "1.4.0"}},
+		{name: "dependency, version resolved", inv: map[string]any{"resolved_version": "1.4.0"}},
+		{name: "dependency, no version", inv: map[string]any{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := partialRunStubPlugin{
+				firstPartyStubPlugin: firstPartyStubPlugin{sink: sym, ingress: sym, ingressIsKnown: true},
+				reasons:              declared,
+			}
+			store := artifact.NewMemStore()
+			c := &assessment.Assessment{ID: "case-marker"}
+			c.Request.Vulnerability = assessment.VulnRef{ID: "GHSA-marker", Source: "osv"}
+			putJSON(t, store, c.ID, artifact.TypeInventory, tc.inv)
+			if err := (symbolMapping{plugin: p}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("symbol_mapping: %v", err)
+			}
+			if err := (reachabilityIngress{plugin: p}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("reachability_ingress: %v", err)
+			}
+			if err := (exposureFootprintStage{}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("exposure_footprint: %v", err)
+			}
+
+			rec, ok, err := Reachability(store, c.ID)
+			if err != nil || !ok {
+				t.Fatalf("reachability = %v, %v", ok, err)
+			}
+			res, err := rec.Result()
+			if err != nil {
+				t.Fatalf("result: %v", err)
+			}
+			if got := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPartialRunUnversioned); got != tc.wantMarker {
+				t.Fatalf("stored reachability carries the marker = %v, want %v (%v)", got, tc.wantMarker, res.Partiality.Reasons)
+			}
+			if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure) {
+				t.Fatalf("stored reachability lost the run's own tool_failure: %v", res.Partiality.Reasons)
+			}
+
+			arts, err := store.Query(c.ID, artifact.TypeExposureFootprint)
+			if err != nil || len(arts) != 1 {
+				t.Fatalf("footprint = %d, %v", len(arts), err)
+			}
+			var fp artifact.ExposureFootprintPayload
+			if err := json.Unmarshal(arts[0].Payload, &fp); err != nil {
+				t.Fatalf("footprint decode: %v", err)
+			}
+			if got := slices.Contains(fp.PartialityFlags, plugin.PartialReasonPartialRunUnversioned); got != tc.wantMarker {
+				t.Fatalf("footprint carries the marker = %v, want %v (%v)", got, tc.wantMarker, fp.PartialityFlags)
+			}
+			if got := OwnAdvisoryHeldForPartialRun(store, c.ID); got != tc.wantMarker {
+				t.Fatalf("OwnAdvisoryHeldForPartialRun = %v, want %v", got, tc.wantMarker)
 			}
 		})
 	}

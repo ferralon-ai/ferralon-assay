@@ -323,7 +323,8 @@ func TestReconciledResult_ReflectAdmission(t *testing.T) {
 func TestReconciledResult_ReflectivePluginLoad(t *testing.T) {
 	main := "package main\n\nimport (\n\t\"os\"\n\t\"plugin\"\n\t\"text/template\"\n\n\t\"example.com/vulnmod\"\n)\n\ntype D struct{}\n\nfunc (D) Do() string { _, _ = plugin.Open(\"x.so\"); return \"\" }\n\nfunc main() {\n\tvulnmod.Safe()\n\t_ = template.Must(template.New(\"t\").Parse(\"{{ .Do }}\")).Execute(os.Stdout, D{})\n}\n"
 	_, res := reconcileFor(t, map[string]string{"main.go": main}, vulnmodFinding, plugin.LibraryEntrypoints{})
-	if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoad) {
+	// Which of the two the build declares follows its cgo setting.
+	if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoad) && !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoadCgoOff) {
 		t.Errorf("plugin_load not declared (partiality %+v)", res.Partiality)
 	}
 }

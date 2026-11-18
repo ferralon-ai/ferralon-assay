@@ -163,7 +163,7 @@ func (f *reflectFixpoint) drain() {
 func (f *reflectFixpoint) scan(fn *ssa.Function) {
 	if obj, ok := fn.Object().(*types.Func); ok {
 		name := obj.FullName()
-		if r, ok := runTimeCallees[name]; ok {
+		if r, ok := f.s.runTimeReason(name); ok {
 			f.reasons[r] = true
 		}
 		if reflectMethodCallees[name] {

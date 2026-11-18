@@ -3217,7 +3217,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	// back from THIS advisory's sink), so it is the only per-advisory entry-point signal.
 	paths := reach.Paths
 	firstParty := false
-	if len(paths) == 0 {
+	if len(paths) == 0 && !ownAdvisoryOnPartialRun(store, c.ID, reach.Partiality) {
 		for _, sink := range sinks {
 			paths = append(paths, firstPartyReachPaths(cg, ingresses, sink)...)
 		}

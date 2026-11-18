@@ -20,6 +20,9 @@ import (
 // document on the ref is only replaced when a run writes state for its own reasons. A
 // read-only consumer therefore never has to know v1 or v2 existed.
 //
+// Every recognized version also gets entrypoints[] derived from its library_entrypoints when the
+// document carries none, so a report read back states both fields as a fresh build does.
+//
 // Every recognized version also gets backfillDisqualBasis: a disqualification written before
 // every disqualification carried a basis reads with the basis its detail names, at any version.
 //
@@ -30,11 +33,11 @@ import (
 func Upgrade(r Report) (Report, error) {
 	switch r.SchemaVersion {
 	case SchemaVersion:
-		return backfillDisqualBasis(r), nil
+		return backfillEntrypoints(backfillDisqualBasis(r)), nil
 	case SchemaVersionV2:
-		return backfillDisqualBasis(upgradeV2(r)), nil
+		return backfillEntrypoints(backfillDisqualBasis(upgradeV2(r))), nil
 	case SchemaVersionV1:
-		return backfillDisqualBasis(upgradeV2(upgradeV1(r))), nil
+		return backfillEntrypoints(backfillDisqualBasis(upgradeV2(upgradeV1(r)))), nil
 	case "":
 		return Report{}, fmt.Errorf("report: document carries no schema_version (uninterpretable)")
 	default:
@@ -229,6 +232,15 @@ func backfillDisqualBasis(r Report) Report {
 	}
 	if out != nil {
 		r.Advisories = out
+	}
+	return r
+}
+
+// backfillEntrypoints derives entrypoints[] from library_entrypoints when the document carries no
+// entrypoints, by the derivation Build uses.
+func backfillEntrypoints(r Report) Report {
+	if r.Entrypoints == nil {
+		r.Entrypoints = entrypointRecords(r.LibraryEntrypoints)
 	}
 	return r
 }

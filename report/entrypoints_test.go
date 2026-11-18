@@ -120,3 +120,69 @@ func TestEntrypointsDoNotAliasLibraryEntrypoints(t *testing.T) {
 		t.Errorf("library_entrypoints packages = %q after editing entrypoints", got)
 	}
 }
+
+// TestUpgradeDerivesEntrypointsFromStoredLibraryEntrypoints: a stored report that carries
+// library_entrypoints and no entrypoints reads, and so exports, with both, equal to a fresh build.
+func TestUpgradeDerivesEntrypointsFromStoredLibraryEntrypoints(t *testing.T) {
+	set := plugin.ResolvedLibraryEntrypoints{
+		Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "pkg/api,!pkg/gone",
+		Packages: []string{"example.com/m/pkg/api"}, Unmatched: []string{"!pkg/gone"},
+	}
+	fresh := NewBuilder(Subject{ResolvedCommit: "c"}).WithLibraryEntrypoints(set).Build()
+
+	stored := fresh
+	stored.Entrypoints = nil
+	raw, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read Report
+	if err := json.Unmarshal(raw, &read); err != nil {
+		t.Fatal(err)
+	}
+	if read.Entrypoints != nil {
+		t.Fatalf("stored document should carry no entrypoints, got %+v", read.Entrypoints)
+	}
+	got, err := Upgrade(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Entrypoints, fresh.Entrypoints) || !reflect.DeepEqual(got.LibraryEntrypoints, fresh.LibraryEntrypoints) {
+		t.Errorf("upgraded entrypoints %+v / library_entrypoints %+v, want fresh %+v / %+v",
+			got.Entrypoints, got.LibraryEntrypoints, fresh.Entrypoints, fresh.LibraryEntrypoints)
+	}
+	exported, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(exported) != string(want) {
+		t.Errorf("export differs from a fresh build:\n got %s\nwant %s", exported, want)
+	}
+
+	// A report that already states entrypoints keeps them, and one with no set states none.
+	if again, _ := Upgrade(got); !reflect.DeepEqual(again, got) {
+		t.Errorf("Upgrade is not idempotent: %+v vs %+v", again, got)
+	}
+	bare := NewBuilder(Subject{ResolvedCommit: "c"}).Build()
+	if up, _ := Upgrade(bare); up.Entrypoints != nil {
+		t.Errorf("no library set, got entrypoints %+v", up.Entrypoints)
+	}
+}
+
+// TestEntrypointRecordsSortedByLane: records are ordered by lane, not by the ecosystem order the
+// sets arrive in.
+func TestEntrypointRecordsSortedByLane(t *testing.T) {
+	recs := []plugin.EntryRootRecord{{Lane: "js"}, {Lane: "go"}, {Lane: "dotnet"}, {Lane: "java"}}
+	sortRecordsByLane(recs)
+	var lanes []string
+	for _, r := range recs {
+		lanes = append(lanes, r.Lane)
+	}
+	if want := []string{"dotnet", "go", "java", "js"}; !slices.Equal(lanes, want) {
+		t.Errorf("lanes = %v, want %v", lanes, want)
+	}
+}

@@ -133,6 +133,20 @@ func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
 			}
 		}
 	}
+	// A method that inherits its mapping from a supertype's method is an ingress too.
+	byName := make(map[string]*classfile.Class, len(classes))
+	own := map[string]bool{}
+	for i := range classes {
+		byName[classes[i].Name] = &classes[i]
+	}
+	for _, fi := range out {
+		own[fi.ref.String()] = true
+	}
+	for _, e := range jvmingress.Compiled(classes, func(n string) (*classfile.Class, bool) { c, ok := byName[n]; return c, ok }) {
+		if !own[e.Ref.String()] {
+			out = append(out, frameworkIngress{ref: e.Ref, kind: e.Kind, selector: e.Selector})
+		}
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if a, b := out[i].ref.String(), out[j].ref.String(); a != b {
 			return a < b

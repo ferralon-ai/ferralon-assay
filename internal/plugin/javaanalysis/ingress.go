@@ -17,6 +17,13 @@ import (
 // (absence is declared at the reachability layer, never fabricated here). A
 // missing build dir is a hard error (inv.4).
 func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest, opts ...Option) (plugin.IngressResult, error) {
+	return findIngresses(ctx, req, nil, opts...)
+}
+
+// findIngresses is FindIngresses with the first-party bytecode the caller already read, nil to
+// read it here. The compiled entry points (ingress_bytecode.go) are added to the lexical ones
+// before the container-resolved set is merged, so both tracks list them.
+func findIngresses(ctx context.Context, req plugin.FindIngressesRequest, fp *firstPartyBytecode, opts ...Option) (plugin.IngressResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
 		return plugin.IngressResult{}, err
@@ -39,6 +46,11 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest, opts ..
 			})
 		}
 	}
+
+	if fp == nil {
+		fp = loadFirstPartyBytecode(req.BuildDir, prog)
+	}
+	ingresses = append(ingresses, compiledIngresses(fp.classes, ingresses)...)
 
 	// Prove-path enrichment (gated by WithAnalyzerImage). Merge the
 	// container-resolved @RestController/@GetMapping routes — DI-wired ingresses

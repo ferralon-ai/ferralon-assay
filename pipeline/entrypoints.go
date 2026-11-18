@@ -122,11 +122,15 @@ func libraryStatement(o plugin.EntryOverride) (le *plugin.LibraryEntrypoints, wh
 
 // LibraryStatementOf is the go library entry-point statement a run assessed with opts makes: the
 // WithLibraryEntrypoints one, else the one its entrypoints input routes to the go lane, else auto.
-// It is the statement reachability_ingress hands the lane, without the checkout root.
+// A scan of another language states none, since no lane but go reads it. It is the statement
+// reachability_ingress hands the lane, without the checkout root.
 func LibraryStatementOf(opts ...AssessOption) plugin.LibraryEntrypoints {
 	var cfg AssessConfig
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.Plugin != nil && cfg.Plugin.Language() != "go" {
+		return plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}
 	}
 	declared := cfg.LibraryEntrypoints
 	if declared == nil && len(cfg.Entrypoints) > 0 {

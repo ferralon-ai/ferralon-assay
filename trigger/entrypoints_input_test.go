@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +16,8 @@ import (
 )
 
 // requestEntrypointsPlugin is refutingGoPlugin with the lane recording the entry points it resolved
-// from the request it was handed, as the go lane does.
+// from the request it was handed, as the go lane does. The refutation's detail names the statement it
+// was reached under, so a row carries which statement it rests on.
 type requestEntrypointsPlugin struct{ refutingGoPlugin }
 
 func (p requestEntrypointsPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
@@ -25,6 +28,11 @@ func (p requestEntrypointsPlugin) Reachability(ctx context.Context, req plugin.R
 			src = plugin.LibraryEntrypointsSourceDeclared
 		}
 		res.LibraryEntrypoints = &plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: src, Input: le.String(), Packages: []string{}}
+		if res.Refutation != nil {
+			r := *res.Refutation
+			r.Detail += " under " + le.String()
+			res.Refutation = &r
+		}
 	}
 	return res, err
 }
@@ -226,5 +234,105 @@ func TestEntrypointsInput_Restated(t *testing.T) {
 				t.Errorf("Reassessed = %v, report nil = %v; want the stored row assessed again", res.Reassessed, res.Report == nil)
 			}
 		})
+	}
+}
+
+func rowDetail(t *testing.T, rep *report.Report) string {
+	t.Helper()
+	for _, f := range rep.Advisories {
+		if f.Advisory.ID == wiringAdvisory.ID {
+			return f.Evidence.Detail
+		}
+	}
+	t.Fatalf("no %s row in the report", wiringAdvisory.ID)
+	return ""
+}
+
+// TestEntrypointsInput_SliceKeepsNoRowUnderOldStatement: a PR that changes a package the advisory does
+// not touch re-analyses only the slice, and the slice keeps a baseline row only while the statement is
+// the one the row was reached under. Under another statement the row is the fresh finding, which names
+// the statement it rests on; under the same one the baseline's row stands.
+func TestEntrypointsInput_SliceKeepsNoRowUnderOldStatement(t *testing.T) {
+	stored := []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "none", Packages: []string{}}}
+	for _, tc := range []struct {
+		name  string
+		value string
+		fresh bool
+	}{
+		{"statement changed", "pkg/api", true},
+		{"statement unchanged", "none", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, baseline := groundedBaseline()
+			baseline.LibraryEntrypoints = stored
+			le, err := plugin.ParseLibraryEntrypoints(tc.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			unrelated := report.SBOM{Packages: append(slices.Clone(baseline.SBOM.Packages), report.Package{Ecosystem: "Go", Name: "example.com/other", Version: "v1.0.0"})}
+			res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+				Subject:    Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+				Codebase:   assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				PRSBOM:     unrelated,
+				Advisories: []assessment.VulnRef{wiringAdvisory},
+				AssessOptions: []pipeline.AssessOption{
+					pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
+					pipeline.WithPlugin(requestEntrypointsPlugin{refutingGoPlugin{inventory: plugin.Complete()}}),
+					pipeline.WithLibraryEntrypoints(le),
+				},
+			})
+			if err != nil {
+				t.Fatalf("RunPRInherit: %v", err)
+			}
+			if got := strings.Contains(rowDetail(t, res.Report), " under "+tc.value); got != tc.fresh {
+				t.Errorf("row detail %q: fresh finding = %v, want %v", rowDetail(t, res.Report), got, tc.fresh)
+			}
+		})
+	}
+}
+
+// TestEntrypointsInput_NonGoScanStatesNothing: a scan of another language ignores a go library
+// clause, so however it is given it never reads as a restatement of what a go lane recorded.
+func TestEntrypointsInput_NonGoScanStatesNothing(t *testing.T) {
+	statements := map[string]pipeline.AssessOption{}
+	for _, v := range []string{"none", "pkg/api", "auto"} {
+		le, err := plugin.ParseLibraryEntrypoints(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		statements["library "+v] = pipeline.WithLibraryEntrypoints(le)
+	}
+	overrides, err := plugin.ParseEntryOverrides("go:library=none")
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements["clause go:library=none"] = pipeline.WithEntrypoints(overrides)
+	for name, opt := range statements {
+		for _, lang := range []string{"java", "kotlin", "js", "python", "dotnet", "go"} {
+			t.Run(name+"/"+lang, func(t *testing.T) {
+				got := restated(&report.Report{}, []pipeline.AssessOption{pipeline.WithPlugin(fakeInventoryPlugin{lang: lang}), opt})
+				if want := lang == "go" && name != "library auto"; got != want {
+					t.Errorf("restated = %v, want %v", got, want)
+				}
+			})
+		}
+	}
+}
+
+// TestEntrypointsInput_RestatedEdges: a stored statement that does not parse is another statement,
+// and the rows a restated CVE-watch run assesses again leave out the ones withheld as
+// dependency_not_fetched.
+func TestEntrypointsInput_RestatedEdges(t *testing.T) {
+	garbled := &report.Report{LibraryEntrypoints: []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Input: "none,auto"}}}
+	if !restated(garbled, nil) {
+		t.Error("an unparsable recorded statement read as unchanged")
+	}
+	row := func(id string, reason string) report.AdvisoryFinding {
+		return report.AdvisoryFinding{Advisory: report.Advisory{ID: id, Source: "corpus"}, UndeterminedReason: reason}
+	}
+	prior := &report.Report{Advisories: []report.AdvisoryFinding{row("A", ""), row("B", report.ReasonDependencyNotFetched)}}
+	got := restatedRetry(prior, nil, nil)
+	if len(got) != 1 || got[0].Advisory.ID != "A" {
+		t.Errorf("restatedRetry = %+v, want only A", got)
 	}
 }

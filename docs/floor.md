@@ -294,8 +294,8 @@ names the reviewer ([Path review](#path-review), [Comparator and adjudication](#
 edits the file does not review their own change. A changed path or analysis puts the row back to `unreviewed`, and a
 packet is generated again from the new scan. The committed packets under `floor/expect/packets/` are the worked
 example: the five gitea shortlist rows and the traefik one. They were generated from the pinned sources with
-`-verify-links` and no `-report`, so they carry no raw Assay finding and no scanner commit; regenerate them with the
-nightly pinned scan's `report.json` to add both.
+`-verify-links` and the pinned scan's `report.json`, so each carries Assay's raw finding and the scanner commit;
+regenerate them from the next pinned scan's `report.json` whenever the ledger is re-seeded.
 
 ### Incomplete scans
 

@@ -33,6 +33,9 @@ type dockerStage struct {
 	wdKnown bool
 	shell   bool // a SHELL instruction changed what runs a RUN's command line
 	volume  bool // a VOLUME instruction may discard what a later RUN writes under it
+	// repo is set once the repository's content may be anywhere in the stage: a COPY, ADD or
+	// heredoc put some in, an earlier stage it is built on, or a RUN mount; and for an Earthfile.
+	repo bool
 }
 
 const (
@@ -321,6 +324,7 @@ type dockerCursor struct {
 	// is false when one may be anywhere.
 	mounts      []string
 	mountsKnown bool
+	later       bool // a CMD or ENTRYPOINT, run where the image runs, with whatever is mounted there
 }
 
 func (c *dockerCursor) cd(words []string) {
@@ -504,6 +508,12 @@ func (c *dockerCursor) present(p string) bool {
 		}
 	}
 	return false
+}
+
+// foreign holds for any path while no repository content can be in the stage, so it holds where
+// the WORKDIR is not known too.
+func (c *dockerCursor) foreign(string) bool {
+	return !c.st.repo && !c.later
 }
 
 func (c *dockerCursor) venv() *venvMark { return &c.mark }
@@ -763,12 +773,12 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 		return "install command in an unjoined continuation", starts[len(starts)-1] + 1
 	}
 	names := map[string]bool{}
-	st := &dockerStage{}
+	st := &dockerStage{repo: earth}
 	var deferred []segment
 	var deferredAt []int
 	flush := func() (string, int) {
 		for k, seg := range deferred {
-			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown, mountsKnown: true}
+			cur := &dockerCursor{v: v, st: st, dir: st.wd, known: st.wdKnown, mountsKnown: true, later: true}
 			if why := v.command(seg, cur, 0); why != "" {
 				return why, deferredAt[k]
 			}
@@ -803,6 +813,7 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 			}
 			v.mention(strings.Fields(body))
 			st.taintCmd()
+			st.repo = true
 			continue
 		}
 		hasTok := v.hasToken(rest)
@@ -811,13 +822,14 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 			if why, line := flush(); why != "" {
 				return why, line
 			}
-			st = &dockerStage{}
+			st = &dockerStage{repo: earth}
 			f := strings.Fields(rest)
 			for len(f) > 0 && strings.HasPrefix(f[0], "--") {
 				f = f[1:]
 			}
 			if len(f) > 0 && names[strings.ToLower(f[0])] {
 				st.taintAll() // a stage built on an earlier one holds whatever that one wrote
+				st.repo = true
 			}
 			if len(f) >= 3 && strings.EqualFold(f[1], "as") {
 				names[strings.ToLower(f[2])] = true
@@ -836,6 +848,7 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 			}
 		case instr == "COPY" || instr == "ADD":
 			st.copyInstr(v, ctxs, rest, instr == "ADD")
+			st.repo = true
 		case instr == "RUN" || instr == "CMD" || instr == "ENTRYPOINT":
 			var mounts []string
 			mountsKnown := true
@@ -844,6 +857,7 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 				flag, rest, _ = strings.Cut(rest, " ")
 				rest = strings.TrimSpace(rest)
 				if m, ok := strings.CutPrefix(flag, "--mount="); ok {
+					st.repo = true
 					if t, ok := st.mountTarget(m); ok {
 						mounts = append(mounts, t)
 					} else {

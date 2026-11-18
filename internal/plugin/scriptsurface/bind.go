@@ -77,6 +77,9 @@ type cursor interface {
 	// present reports whether a literal path from the directory the command runs in may name
 	// a file the build already holds.
 	present(p string) bool
+	// foreign reports whether a literal path from the directory the command runs in names
+	// nothing the build holds and nothing the repository's content may have been put at.
+	foreign(p string) bool
 	// venv is the state of the venv rule at this command.
 	venv() *venvMark
 	// madeVenv reports whether key, from at, holds the venv a creation in an earlier shell
@@ -240,6 +243,8 @@ func (c *hostCursor) present(p string) bool {
 	_, there, known := c.v.stat(loc)
 	return there || !known
 }
+
+func (c *hostCursor) foreign(p string) bool { return !filepath.IsAbs(p) && !c.present(p) }
 
 // loc is the one place a literal path names from the directory the command runs in.
 func (c *hostCursor) loc(p string) (string, bool) {

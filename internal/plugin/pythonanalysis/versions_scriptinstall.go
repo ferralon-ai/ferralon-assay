@@ -41,9 +41,16 @@ import (
 //	                               --prompt may be added (--seed installs pip into it)
 //	poetry|pdm|pipenv run <argv>   run without syncing; <argv> passes the same gate, and pdm
 //	                               and pipenv run only where no script table can name <argv>
+//	tox [run] [-e <envs>]          runs environments of the tox.ini in the command's directory,
+//	                               read here with its deps (toxDepsRead): tox installs those
+//	                               and the project the manifests read here declare; only -q,
+//	                               -v and -r may be added (toxRun), and a script surface that
+//	                               names a TOX_* variable or tox's user config withholds
+//	                               (toxConfigNamedRE)
 //
 // with only --no-cache-dir, --user and -q added (and, to pip, --no-deps and --require-hashes,
-// which only narrow what it installs; to poetry install, what poetryInstallArgs allows), and
+// which only narrow what it installs, and --upgrade or -U, which installs what the files list
+// at the newest version each line admits; to poetry install, what poetryInstallArgs allows), and
 // with the manifest each binds to (the nearest pyproject.toml or Pipfile at or above the
 // command's directory) and the lock it installs (the nearest at or above that) read here; and,
 // for uv sync, poetry install and pdm sync, with a root project, and every local source the
@@ -1104,6 +1111,8 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, poet
 		}
 		tooling["pip"], tooling["setuptools"] = true, true
 		return true
+	case head == "tox":
+		return toxRun(words[1:], b)
 	case len(words) < 2:
 		return false
 	case head == "uv" && words[1] == "venv":
@@ -1128,6 +1137,42 @@ func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder, poet
 	return false
 }
 
+// toxFlags are the tox flags a tox run may carry: none changes what it installs.
+var toxFlags = map[string]bool{"-q": true, "-qq": true, "-v": true, "-vv": true, "-r": true, "--recreate": true}
+
+// toxEnvsRE is a comma-separated list of tox environment names.
+var toxEnvsRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*$`)
+
+// toxRun reports whether tox's arguments are an optional run (or r), toxFlags and -e with a
+// literal environment list, and whether the tox.ini in the command's directory, which tox reads
+// before any other config, is read here with its deps (toxDepsRead). posargs (after --) are
+// not allowed: a commands line may run whatever they hold.
+func toxRun(args []string, b scriptsurface.Binder) bool {
+	if len(args) > 0 && (args[0] == "run" || args[0] == "r") {
+		args = args[1:]
+	}
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case toxFlags[a]:
+		case a == "-e" && i+1 < len(args) && toxEnvsRE.MatchString(args[i+1]):
+			i++
+		case strings.HasPrefix(a, "-e") && toxEnvsRE.MatchString(a[2:]):
+		default:
+			return false
+		}
+	}
+	hosts := b.Hosts("tox.ini")
+	if hosts == nil {
+		return false
+	}
+	for _, h := range hosts {
+		if !toxDepsRead(h) {
+			return false
+		}
+	}
+	return true
+}
+
 // uvVenv reports whether uv venv's arguments are at most one directory and -p, --python or
 // --prompt with a value: an environment with no packages in it.
 func uvVenv(args []string) bool {
@@ -1150,9 +1195,9 @@ func uvVenv(args []string) bool {
 }
 
 // pip reports whether pip's arguments are install, the shared flags, --no-deps,
-// --require-hashes, and one or more -r naming a requirements file read here, and records the
-// install of each file; or, when tooling is not nil, a self-upgrade (pipSelfUpgrade), recorded
-// in tooling.
+// --require-hashes, --upgrade or -U, and one or more -r naming a requirements file read here,
+// and records the install of each file; or, when tooling is not nil, a self-upgrade
+// (pipSelfUpgrade), recorded in tooling.
 func (installs pipInstalls) pip(args []string, b scriptsurface.Binder, tooling map[string]bool) bool {
 	if len(args) == 0 || args[0] != "install" {
 		return false
@@ -1178,6 +1223,10 @@ func (installs pipInstalls) pip(args []string, b scriptsurface.Binder, tooling m
 			continue
 		case a == "--require-hashes":
 			how.requireHashes = true
+			continue
+		case a == "--upgrade" || a == "-U":
+			// Installs each line at the newest version it admits instead of keeping one already
+			// there: the files still say what is installed. Only beside a -r of a file read here.
 			continue
 		case (a == "-r" || a == "--requirement") && i+1 < len(args):
 			p = args[i+1]

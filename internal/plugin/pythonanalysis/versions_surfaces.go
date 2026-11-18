@@ -21,7 +21,8 @@ import (
 // build dir that names or holds a Python install surface, found by the shared walk
 // (buildtree.Candidates, which enters everything but node_modules and site-packages, .git
 // included), vetoes the pin unless it is one of the few surfaces read here and found to
-// declare nothing (declaresNothing). Classification is by name, case-insensitively, or by
+// declare nothing (declaresNothing), or a tox.ini whose deps are read (toxDepsRead), which is a
+// manifest then. Classification is by name, case-insensitively, or by
 // content, so a surface this lane has no reader for vetoes by default instead of being
 // listed one name at a time.
 
@@ -63,7 +64,10 @@ type runFile struct {
 // scanSurfaces is versionSurfaces, and when runs is not nil it also records there every pip
 // install the script surfaces run that names what it installs (scriptRun).
 func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string, inactive []scriptsurface.Site, configNamed bool) {
-	manifests, walked := manifestFiles(root)
+	// A tox.ini whose deps toxDeps reads in full is a manifest here too (parseToxDeps).
+	manifests, walked := walkManifests(root, func(path string) bool {
+		return isManifest(filepath.Base(path)) || toxDepsRead(path)
+	})
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
 	for _, m := range manifests {
@@ -121,12 +125,14 @@ func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, s
 		return ok
 	}
 	configNamed, mypyInstalls, uvConfigNamed, toolConfigNamed, uvSynced, toolSynced := false, false, false, false, false, false
+	toxConfigNamed, toxRan := false, false
 	spec.Text = func(src string) {
 		configNamed = configNamed || pipConfigNamedRE.MatchString(src)
 		mypyInstalls = mypyInstalls || installTypesTextRE.MatchString(src) ||
 			installTypesAbbrevRE.MatchString(src) && mypyNamedRE.MatchString(src)
 		uvConfigNamed = uvConfigNamed || uvConfigNamedRE.MatchString(src)
 		toolConfigNamed = toolConfigNamed || toolConfigNamedRE.MatchString(src)
+		toxConfigNamed = toxConfigNamed || toxConfigNamedRE.MatchString(src)
 	}
 	allowed := spec.Allowed
 	spec.Allowed = func(words []string, b scriptsurface.Binder) bool {
@@ -134,6 +140,7 @@ func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, s
 		if head, _ := scriptsurface.CommandName(words[0]); ok {
 			uvSynced = uvSynced || head == "uv"
 			toolSynced = toolSynced || (head == "poetry" || head == "pdm") && words[1] != "config"
+			toxRan = toxRan || head == "tox"
 		}
 		return ok
 	}
@@ -176,7 +183,7 @@ func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, s
 	if configNamed && len(tooling) > 0 {
 		scriptWithheld, tooling = true, nil
 	}
-	if uvConfigNamed && uvSynced || toolConfigNamed && toolSynced {
+	if uvConfigNamed && uvSynced || toolConfigNamed && toolSynced || toxConfigNamed && toxRan {
 		scriptWithheld = true
 	}
 	// After the check above: seeding is not a self-upgrade, and must not trip it.
@@ -637,15 +644,143 @@ func declaresNothing(path string) bool {
 	return false
 }
 
-// toxDeclares reports whether a tox.ini sets deps in any section.
+// toxDeclares reports whether a tox.ini sets deps in any section, with either of the INI
+// delimiters, = or :.
 func toxDeclares(src string) bool {
 	for _, line := range strings.Split(src, "\n") {
-		if k, _, ok := strings.Cut(line, "="); ok && strings.TrimSpace(k) == "deps" {
+		if i := strings.IndexAny(line, "=:"); i >= 0 && strings.ToLower(strings.TrimSpace(line[:i])) == "deps" {
 			return true
 		}
 	}
 	return false
 }
+
+// toxForeignKeys are tox.ini keys that make tox install what its deps do not list, or from
+// where nothing here reads: requires and a minimum version provision tox and its plugins,
+// install_command replaces the installer, indexserver names other indexes (tox 3), and
+// setupdir and package_root move the project tox builds.
+var toxForeignKeys = map[string]bool{
+	"requires": true, "minversion": true, "min_version": true, "install_command": true,
+	"indexserver": true, "setupdir": true, "package_root": true,
+}
+
+// toxDepsRead reports whether the file at path is a tox.ini, named exactly so, that sets deps
+// and whose deps toxDeps reads in full.
+func toxDepsRead(path string) bool {
+	if filepath.Base(path) != "tox.ini" || wideMarked(path) {
+		return false
+	}
+	data, err := readRegular(path)
+	if err != nil {
+		return false
+	}
+	_, ok := toxDeps(string(data))
+	return ok
+}
+
+// toxDeps returns the requirement specs the deps keys of a tox.ini list, in every section, one
+// per line of each value, as tox installs them. The file is read as tox's INI parser reads it:
+// a [section] line, a key and value split at the first = or :, a value continued on the lines
+// indented deeper than its key, and full-line # and ; comments; an entry drops a comment after
+// whitespace. ok is false when the file sets no deps, when a line does not parse, when it sets
+// one of toxForeignKeys, or when an entry is not one toxEntry reads.
+func toxDeps(src string) (specs []string, ok bool) {
+	declared := false
+	key, keyIndent := "", -1 // the key a deeper-indented line continues
+	add := func(entry string) bool {
+		if i := strings.Index(entry, "#"); i == 0 || i > 0 && (entry[i-1] == ' ' || entry[i-1] == '\t') {
+			entry = entry[:i]
+		}
+		if entry = strings.TrimSpace(entry); entry == "" {
+			return true
+		}
+		specs = append(specs, entry)
+		return toxEntry(entry)
+	}
+	for _, raw := range strings.Split(src, "\n") {
+		line := strings.TrimRight(raw, "\r")
+		t := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		switch {
+		case t == "", strings.HasPrefix(t, "#"), strings.HasPrefix(t, ";"):
+			continue
+		case key != "" && indent > keyIndent:
+			if key == "deps" && !add(t) {
+				return nil, false
+			}
+			continue
+		case strings.HasPrefix(t, "["):
+			if !strings.HasSuffix(t, "]") {
+				return nil, false
+			}
+			key, keyIndent = "", -1
+			continue
+		}
+		i := strings.IndexAny(t, "=:")
+		if i < 0 {
+			return nil, false
+		}
+		key, keyIndent = strings.ToLower(strings.TrimSpace(t[:i])), indent
+		if toxForeignKeys[key] {
+			return nil, false
+		}
+		if key == "deps" {
+			declared = true
+			if !add(t[i+1:]) {
+				return nil, false
+			}
+		}
+	}
+	return specs, declared
+}
+
+// toxEntry reports whether one deps entry is a requirement this reads: a PEP 508 name with
+// optional extras, version clause and marker. A {substitution}, a factor-conditional prefix
+// (py312: or !py312:), an option (-r, -c, -e, an index), a URL, a path or archive, a direct
+// reference and a continued line are not: what they install is not known here.
+func toxEntry(entry string) bool {
+	if strings.ContainsAny(entry, "{}:@/\\") || strings.HasPrefix(entry, "-") || strings.HasPrefix(entry, ".") || isArchive(entry) {
+		return false
+	}
+	return requirementLineRE.MatchString(entry)
+}
+
+// parseToxDeps parses the deps of a tox.ini toxDepsRead reads, in dir, as requirement lines:
+// an exact == pin is resolved, any other spec is not. ok is false when toxDeps does not read
+// the file.
+func parseToxDeps(data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+	specs, ok := toxDeps(string(data))
+	if !ok {
+		return nil, nil, false
+	}
+	var (
+		out     []plugin.ResolvedDependency
+		origins []manifestOrigin
+	)
+	for _, spec := range specs {
+		if i := strings.IndexByte(spec, ';'); i >= 0 {
+			spec = spec[:i]
+		}
+		spec = strings.TrimSpace(spec)
+		name, version, resolved, _ := parseRequirementSpec(spec)
+		if name == "" {
+			return nil, nil, false
+		}
+		d := pyResolved(name, version, resolved, "tox.ini")
+		if !d.Resolved {
+			d.Constraint = requirementConstraint(spec)
+		}
+		out = append(out, d)
+		origins = append(origins, manifestOrigin{dir: dir})
+	}
+	return out, origins, true
+}
+
+// toxConfigNamedRE matches, in a script surface's text, a TOX_* variable, which tox reads as a
+// command-line option (TOX_OVERRIDE can add deps), tox's user config file, or a variable that
+// moves where tox looks for it. An allowed tox run withholds where a script names one
+// (versionSurfaces).
+var toxConfigNamedRE = regexp.MustCompile(`(?i)\btox_[a-z0-9_]+|tox[\\/]+config\.ini|` + configHomeMoved)
 
 // --- installed copies -------------------------------------------------------------
 

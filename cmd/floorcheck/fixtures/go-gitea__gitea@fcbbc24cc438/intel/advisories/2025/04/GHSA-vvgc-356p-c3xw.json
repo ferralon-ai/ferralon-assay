@@ -1,0 +1,52 @@
+{
+  "affected": [
+    {
+      "coordinate": "golang.org/x/net",
+      "fixed_versions": [
+        "0.38.0"
+      ],
+      "purl": "pkg:golang/golang.org/x/net",
+      "ranges": [
+        {
+          "fixed": "0.38.0",
+          "upper_exclusive": "0.38.0"
+        }
+      ],
+      "version_scheme": "gomod"
+    },
+    {
+      "coordinate": "golang.org/x/net/html",
+      "purl": "pkg:golang/golang.org/x/net/html",
+      "version_scheme": "honest-absent"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "0.38.0",
+      "fixed_version": "0.38.0"
+    }
+  ],
+  "aliases": [
+    "CVE-2025-22872",
+    "GO-2025-3595"
+  ],
+  "coordinate": "golang.org/x/net",
+  "purl": "pkg:golang/golang.org/x/net",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "The tokenizer incorrectly interprets tags with unquoted attribute values that end with a solidus character (/) as self-closing. When directly using Tokenizer, this can result in such tags incorrectly being marked as self-closing, and when using the Parse functions, this can result in content following such tags as being placed in the wrong scope during DOM construction, but only when tags are in foreign content (e.g. <math>, <svg>, etc contexts).",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "golang.org/x/net/html.Parse",
+    "golang.org/x/net/html.ParseFragment",
+    "golang.org/x/net/html.ParseFragmentWithOptions",
+    "golang.org/x/net/html.ParseWithOptions",
+    "golang.org/x/net/html.Tokenizer.Next",
+    "golang.org/x/net/html.Tokenizer.readStartTag"
+  ],
+  "version_scheme": "gomod",
+  "vuln_id": "GHSA-vvgc-356p-c3xw",
+  "withdrawn": false
+}

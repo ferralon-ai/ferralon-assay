@@ -1,0 +1,229 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 43,
+  "records": [
+    {
+      "identifier": "CVE-2025-11065",
+      "path": "2026/01/CVE-2025-11065.json",
+      "output_digest": "sha256:f6c6a43799f3b3d64c39efe91cfc453dd854b2f1799daf466f4122071717089b"
+    },
+    {
+      "identifier": "CVE-2025-29923",
+      "path": "2025/03/CVE-2025-29923.json",
+      "output_digest": "sha256:0ec7be817f8f34a843eedbb4905cb312cf86343c54d3f959a0c746e08ff9c2ed"
+    },
+    {
+      "identifier": "CVE-2025-54799",
+      "path": "2025/08/CVE-2025-54799.json",
+      "output_digest": "sha256:d7436602037186f93add866d16ce1e8345d6e78d7b0b451bfb47b96f4846720a"
+    },
+    {
+      "identifier": "CVE-2025-59530",
+      "path": "2025/10/CVE-2025-59530.json",
+      "output_digest": "sha256:b1f8dcde7cac501dce054c8ab7c739bf192ae3af3acc0964dc56150a6e80c81c"
+    },
+    {
+      "identifier": "CVE-2025-64702",
+      "path": "2025/12/CVE-2025-64702.json",
+      "output_digest": "sha256:ae1da4290c0ab42e75d2f732b64d6064b8fa2a86af627f381aecf29bb95a657f"
+    },
+    {
+      "identifier": "CVE-2026-111497",
+      "path": "2026/10/CVE-2026-111497.json",
+      "output_digest": "sha256:e82d7ce89fd3d1cc115caab19cb19bccfdcf76c1737c0c174d0165bb557b16c1"
+    },
+    {
+      "identifier": "CVE-2026-116591",
+      "path": "2026/10/CVE-2026-116591.json",
+      "output_digest": "sha256:accbb6a99df9f6933814257318415414468cf375941fabec3743f6016df619cc"
+    },
+    {
+      "identifier": "CVE-2026-24051",
+      "path": "2026/02/CVE-2026-24051.json",
+      "output_digest": "sha256:0beb24e9e9b2288feae0691db3123d8ab539120c768f690e154bafea706a8562"
+    },
+    {
+      "identifier": "CVE-2026-33814",
+      "path": "2026/05/CVE-2026-33814.json",
+      "output_digest": "sha256:2dc569acadcbfcf55e0fc96b74b0eba71647753f6b263504c97306881c64ad76"
+    },
+    {
+      "identifier": "CVE-2026-33997",
+      "path": "2026/03/CVE-2026-33997.json",
+      "output_digest": "sha256:14de25d8eb53c8397867232af961f810f16905175b9ac0c2bb34bde81dc8d480"
+    },
+    {
+      "identifier": "CVE-2026-34040",
+      "path": "2026/03/CVE-2026-34040.json",
+      "output_digest": "sha256:a1263e94043c0fc0e7cc7873bf3f639d01831bd684df72c4af9d817f4a107553"
+    },
+    {
+      "identifier": "CVE-2026-39882",
+      "path": "2026/04/CVE-2026-39882.json",
+      "output_digest": "sha256:c9bda5f486f35d33ffb38cadf07e75d396a46affbf189072d8b536d0ec62ed52"
+    },
+    {
+      "identifier": "CVE-2026-39883",
+      "path": "2026/04/CVE-2026-39883.json",
+      "output_digest": "sha256:1be9db44fb3a179b32efc17fc19c3236b61ac80847bfcd4942b77d60bd47c042"
+    },
+    {
+      "identifier": "CVE-2026-40898",
+      "path": "2026/06/CVE-2026-40898.json",
+      "output_digest": "sha256:7717a3cdc2df28025016e95815e923977ee7c48cce7ce082d09cfe7ca657420e"
+    },
+    {
+      "identifier": "CVE-2026-56852",
+      "path": "2026/07/CVE-2026-56852.json",
+      "output_digest": "sha256:234aa0a7193357c0dd92add743d09c8323f65d24b0609937863c537f47d583a9"
+    },
+    {
+      "identifier": "CVE-2026-63209",
+      "path": "2026/09/CVE-2026-63209.json",
+      "output_digest": "sha256:5c6620bf80a38b8cb413f777923dc3c4b9690bc776411849adf2e6fc18077768"
+    },
+    {
+      "identifier": "CVE-2026-78659",
+      "path": "2026/10/CVE-2026-78659.json",
+      "output_digest": "sha256:63e734a9c3f2a0ebcc119a02af4152c1f7748f4aca76baaa40f133c28b290727"
+    },
+    {
+      "identifier": "CVE-2026-78660",
+      "path": "2026/10/CVE-2026-78660.json",
+      "output_digest": "sha256:33ff823a2275375df62437ea0e9b700564fa487ddb218d8154d993c9635451cd"
+    },
+    {
+      "identifier": "CVE-2026-78663",
+      "path": "2026/10/CVE-2026-78663.json",
+      "output_digest": "sha256:6b2523ef656ccb06d15b05c3a803e879d1e5c98f0cd1ba78a8fd1d49903aca32"
+    },
+    {
+      "identifier": "CVE-2026-78669",
+      "path": "2026/10/CVE-2026-78669.json",
+      "output_digest": "sha256:94338fba7da513c1b5aed7234096aac021e07e7e2a4f474ec683251165d08b25"
+    },
+    {
+      "identifier": "CVE-2026-81869",
+      "path": "2026/09/CVE-2026-81869.json",
+      "output_digest": "sha256:ca13e3b98ec83c0a359bd0dbe140ac6be394b4fbf1ca7ebca3b2db34a4e56fe4"
+    },
+    {
+      "identifier": "CVE-2026-81870",
+      "path": "2026/09/CVE-2026-81870.json",
+      "output_digest": "sha256:518af2ee55195edfc8a9355cd2b5f5d495da148f36aefa185ec37336f040fa9e"
+    },
+    {
+      "identifier": "CVE-2026-81871",
+      "path": "2026/09/CVE-2026-81871.json",
+      "output_digest": "sha256:385e89d56130e47287e0e9e57bded8816713db71b02744642b037761a2492791"
+    },
+    {
+      "identifier": "CVE-2026-81872",
+      "path": "2026/09/CVE-2026-81872.json",
+      "output_digest": "sha256:a896f5954dc8f3708e9fba9a3623c7db15d6ba971e1cb089290c1f179edbcc26"
+    },
+    {
+      "identifier": "CVE-2026-84303",
+      "path": "2026/09/CVE-2026-84303.json",
+      "output_digest": "sha256:6d9eba707fd9eeb726547240a7ea4cbd74d3c514298181c6b9debd459ecf6a3a"
+    },
+    {
+      "identifier": "CVE-2026-84304",
+      "path": "2026/09/CVE-2026-84304.json",
+      "output_digest": "sha256:1f6e8cb4f7e6ca529dd3e96806d0ec2665a823c9b020d8c1caa002a9aa7c4fd6"
+    },
+    {
+      "identifier": "CVE-2026-97032",
+      "path": "2026/10/CVE-2026-97032.json",
+      "output_digest": "sha256:c33ed7dc21ab8c7588c43686709fba02fd0b449ccffc917c9ba6ed4e9ed74c73"
+    },
+    {
+      "identifier": "GHSA-78h2-9frx-2jm8",
+      "path": "2026/04/GHSA-78h2-9frx-2jm8.json",
+      "output_digest": "sha256:69d465c66b7266bdece91b82915027e619292bc52ea90f9e141abb5ccb4129fb"
+    },
+    {
+      "identifier": "GHSA-7f33-f4f5-xwgw",
+      "path": "2020/08/GHSA-7f33-f4f5-xwgw.json",
+      "output_digest": "sha256:71b8e153f0752f9d4d7da6421fc720840491e88c73236c936ff7b491dd9b4816"
+    },
+    {
+      "identifier": "GHSA-f5pg-7wfw-84q9",
+      "path": "2020/08/GHSA-f5pg-7wfw-84q9.json",
+      "output_digest": "sha256:ea45edd355f46204a41a1ccdb1ed94a94efa7c9efb2cf7c4a272b2140f05eea1"
+    },
+    {
+      "identifier": "GHSA-fv92-fjc5-jj9h",
+      "path": "2025/06/GHSA-fv92-fjc5-jj9h.json",
+      "output_digest": "sha256:a964fa6d60c17d286c4c1b59dd989fed16f3e0e71d974af1e1536466647228c2"
+    },
+    {
+      "identifier": "GHSA-hrxh-6v49-42gf",
+      "path": "2026/07/GHSA-hrxh-6v49-42gf.json",
+      "output_digest": "sha256:64ab84a088b16ab40f18d40a67984d1beb5a7ffe7a365595f22fee29618ff697"
+    },
+    {
+      "identifier": "GHSA-qxp5-gwg8-xv66",
+      "path": "2025/03/GHSA-qxp5-gwg8-xv66.json",
+      "output_digest": "sha256:ae994378ffdeab83cff2aa83957aa7b5254346001453afe2b4eadd0a33e8786e"
+    },
+    {
+      "identifier": "GO-2022-1037",
+      "path": "2022/10/GO-2022-1037.json",
+      "output_digest": "sha256:7cf64418ea8748806cc3c6706657723401adf96ee7917a3b35aee95120bd8861"
+    },
+    {
+      "identifier": "GO-2023-1568",
+      "path": "2023/02/GO-2023-1568.json",
+      "output_digest": "sha256:965d09531769bb4d9ed511ec104fc622579f7563cc56c614a363606dc74a3484"
+    },
+    {
+      "identifier": "GO-2023-1705",
+      "path": "2023/04/GO-2023-1705.json",
+      "output_digest": "sha256:16008e6d5ff9e8f8bc702f72b0ad52a2113c1b4dbd5168e2102ab782ddef5fc8"
+    },
+    {
+      "identifier": "GO-2023-1839",
+      "path": "2023/06/GO-2023-1839.json",
+      "output_digest": "sha256:7e284c8e25ce84d037d852e84b15afe039395c8cabe6684f106161308c805284"
+    },
+    {
+      "identifier": "GO-2023-2041",
+      "path": "2023/09/GO-2023-2041.json",
+      "output_digest": "sha256:fdcedef26a2fb095be5a3b7ee15d73fdd46496d55b720972e607eb5524ec458f"
+    },
+    {
+      "identifier": "GO-2023-2382",
+      "path": "2023/12/GO-2023-2382.json",
+      "output_digest": "sha256:9006076b8c544b77caad4da7ebd830a64831b4b07fa2a5a7d774c36ad38ff5a4"
+    },
+    {
+      "identifier": "GO-2024-2599",
+      "path": "2024/03/GO-2024-2599.json",
+      "output_digest": "sha256:f22fd224ccca8a37c2d156ff5223cb089957262229cc3e2c5d769b31cf9356c6"
+    },
+    {
+      "identifier": "GO-2024-2888",
+      "path": "2024/06/GO-2024-2888.json",
+      "output_digest": "sha256:021308bdf4a70e5906ff3c0f22a5940b9c0b01d02a2e4e55a21d5c4fc4471c83"
+    },
+    {
+      "identifier": "GO-2026-5026",
+      "path": "2026/05/GO-2026-5026.json",
+      "output_digest": "sha256:aee9a20c3254d5374f983121e116b40efb14000cdd548ee47e1a323e22721d52"
+    },
+    {
+      "identifier": "GO-2026-5932",
+      "path": "2026/07/GO-2026-5932.json",
+      "output_digest": "sha256:27e1d030d5a1df8220968271e89dd808af181c91d54db764bafed2185ac2dd3d"
+    }
+  ],
+  "corpus_digest": "sha256:29635239037c926add87cba675c0739861dfddf781e8a1642de242128170c8d1",
+  "provenance": {
+    "generator": "floor fixture extraction",
+    "policy_id": "floor-fixture",
+    "policy_query": "the records this fixture's adjudicated expectations name",
+    "source_corpus_digest": "sha256:2233ff305c007bbfdd0e88d8e121f26a7699927ce277d87092ed08caab987af0"
+  }
+}

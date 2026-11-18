@@ -1,0 +1,100 @@
+{
+  "affected": [
+    {
+      "coordinate": "golang.org/x/net",
+      "fixed_versions": [
+        "0.55.0"
+      ],
+      "purl": "pkg:golang/golang.org/x/net",
+      "ranges": [
+        {
+          "fixed": "0.55.0",
+          "upper_exclusive": "0.55.0"
+        }
+      ],
+      "version_scheme": "gomod"
+    },
+    {
+      "coordinate": "golang.org/x/net/idna",
+      "purl": "pkg:golang/golang.org/x/net/idna",
+      "version_scheme": "honest-absent"
+    },
+    {
+      "coordinate": "stdlib",
+      "fixed_versions": [
+        "1.25.13",
+        "1.26.6",
+        "1.27.0-rc.3"
+      ],
+      "purl": "pkg:golang/stdlib",
+      "ranges": [
+        {
+          "fixed": "1.25.13",
+          "upper_exclusive": "1.25.13"
+        },
+        {
+          "fixed": "1.26.6",
+          "introduced": "1.26.0-0",
+          "upper_exclusive": "1.26.6"
+        },
+        {
+          "fixed": "1.27.0-rc.3",
+          "introduced": "1.27.0-0",
+          "upper_exclusive": "1.27.0-rc.3"
+        }
+      ],
+      "version_scheme": "go-toolchain"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "0.55.0",
+      "fixed_version": "0.55.0"
+    }
+  ],
+  "aliases": [
+    "CVE-2026-39821"
+  ],
+  "coordinate": "golang.org/x/net",
+  "purl": "pkg:golang/golang.org/x/net",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "The ToASCII and ToUnicode functions incorrectly accept Punycode-encoded labels that decode to an ASCII-only label. For example, ToUnicode(\"xn--example-.com\") incorrectly returns the name \"example.com\" rather than an error. This behavior can lead to privilege escalation in programs using the idna package. For example, a program which performs privilege checks on the ASCII hostname may reject \"example.com\" but permit \"xn--example-.com\". If that program subsequently converts the ASCII hostname to Unicode, it will inadvertently permits access to the Unicode name \"example.com\".",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "golang.org/x/net/idna.Profile.ToASCII",
+    "golang.org/x/net/idna.Profile.ToUnicode",
+    "golang.org/x/net/idna.Profile.process",
+    "golang.org/x/net/idna.ToASCII",
+    "golang.org/x/net/idna.ToUnicode",
+    "net/http.Client.CloseIdleConnections",
+    "net/http.Client.Do",
+    "net/http.Client.Get",
+    "net/http.Client.Head",
+    "net/http.Client.Post",
+    "net/http.Client.PostForm",
+    "net/http.ClientConn.Close",
+    "net/http.ClientConn.RoundTrip",
+    "net/http.Get",
+    "net/http.Head",
+    "net/http.Post",
+    "net/http.PostForm",
+    "net/http.Transport.CloseIdleConnections",
+    "net/http.Transport.NewClientConn",
+    "net/http.Transport.RoundTrip",
+    "net/http.http1ClientConn.Close",
+    "net/http.http1ClientConn.RoundTrip",
+    "net/http.http2ClientConn.RoundTrip",
+    "net/http.http2RoundTripper.RoundTrip",
+    "net/http.idnaASCII",
+    "net/http/internal/http2.Transport.AddConn",
+    "net/http/internal/http2.Transport.RoundTrip",
+    "net/http/internal/http2.Transport.RoundTripOpt",
+    "net/http/internal/http2.authorityAddr"
+  ],
+  "version_scheme": "gomod",
+  "vuln_id": "GO-2026-5026",
+  "withdrawn": false
+}

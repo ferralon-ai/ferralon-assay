@@ -228,14 +228,27 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 }
 
 // resultFromGraph is reconciledResult over the reconcile graph g, for the first module the findings
-// name (resultPerModule judges the others).
+// name (resultPerModule judges the others): the library view, and beside it the program view of the
+// advisory, which rules on every module the findings name.
 func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
-	evidence := withholdForPartialRun(evidenceResult(scanned.findings, g.CallGraph, env), scanned)
-	res := evidence
+	res, evidence, err := libraryView(ctx, scanned, g, buildDir, env, load, entry)
+	if err != nil {
+		return res, err
+	}
+	res.ProgramView = programView(ctx, res, evidence, scanned, g, buildDir, env, load)
+	return res, nil
+}
+
+// libraryView is resultFromGraph without the program view: the result, and the evidence it was
+// withheld from (evidenceResult before the library-entry checks). resultPerModule judges each other
+// module by it alone, so the program view runs once per advisory.
+func libraryView(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (res, evidence plugin.ReachabilityResult, err error) {
+	evidence = withholdForPartialRun(evidenceResult(scanned.findings, g.CallGraph, env), scanned)
+	res = evidence
 	if res.Refutation != nil {
 		loaded, err := load()
 		if err != nil {
-			return plugin.ReachabilityResult{}, fmt.Errorf("load for withholding a refutation: %w", err)
+			return plugin.ReachabilityResult{}, evidence, fmt.Errorf("load for withholding a refutation: %w", err)
 		}
 		if loaded.cgoUnresolved {
 			res.Refutation = nil
@@ -249,9 +262,7 @@ func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 	}
 	// Every result passes here: the call graph this lane searches omits reflection's calls, so no
 	// refutation and no Searched sink stands that those calls may contradict.
-	res = withholdForReflectReach(res, scanned, g.ReflectReach)
-	res.ProgramView = programView(ctx, res, evidence, scanned, g, buildDir, env, load)
-	return res, nil
+	return withholdForReflectReach(res, scanned, g.ReflectReach), evidence, nil
 }
 
 // restateNotImported restates a module refutation the withholds kept as

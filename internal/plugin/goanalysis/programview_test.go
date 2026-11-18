@@ -48,7 +48,8 @@ func TestShippedMains(t *testing.T) {
 // TestProgramView: when the library view withholds its refutation because an importable package
 // reaches the module, the program view, started from the shipped main alone, rules the advisory out
 // and names the binary; the library view's own result is unchanged. Every step the view rests on that
-// is missing, partial or contradicted leaves no view: one row each, against programView itself.
+// is missing, partial or contradicted leaves no view: one row each, against programView itself. For
+// an advisory matched to two modules, the view stands only when its checks rule out both.
 func TestProgramView(t *testing.T) {
 	files := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
@@ -125,6 +126,13 @@ func TestProgramView(t *testing.T) {
 		stream    string
 		streamErr error
 	}
+	// second matches the advisory to a second module beside vulnmod, after it in path order as
+	// resultPerModule judges it, and the program run finds both and no call into either.
+	second := func(in *input) {
+		in.scanned.findings = append(slices.Clone(in.scanned.findings), vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/xmod", Version: "v0.0.0", Package: "example.com/xmod"}}})
+		in.stream = module + "\n" + `{"finding":{"osv":"GO-1","trace":[{"module":"example.com/xmod","version":"v0.0.0","package":"example.com/xmod"}]}}`
+	}
+	secondCalled := `{"finding":{"osv":"GO-1","trace":[{"module":"example.com/xmod","version":"v0.0.0","package":"example.com/xmod","function":"Bad"},{"module":"example.com/m","package":"example.com/m/cmd/tool","function":"main"}]}}`
 	for _, tc := range []struct {
 		name string
 		edit func(*input)
@@ -192,6 +200,19 @@ func TestProgramView(t *testing.T) {
 		{"the program run declares a limit bounded elsewhere", func(in *input) {
 			in.g.CallGraph.Partiality = plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonCgo, Package: "pkg:golang/example.com/othermod", Targets: []string{"pkg:golang/example.com/othermod"}}}}
 		}, true},
+		{"two modules, the programs reach neither", second, true},
+		{"two modules, the programs call the second's vulnerable code", func(in *input) {
+			second(in)
+			in.stream = module + "\n" + secondCalled
+		}, false},
+		{"two modules, a call reflection makes reaches the second", func(in *input) {
+			second(in)
+			in.g.ReflectReach = map[string][]string{"example.com/xmod": {"Bad"}}
+		}, false},
+		{"two modules, the program run declares a limit bounded to the second", func(in *input) {
+			second(in)
+			in.g.CallGraph.Partiality = plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonCgo, Package: "pkg:golang/example.com/xmod", Targets: []string{"pkg:golang/example.com/xmod"}}}}
+		}, false},
 	} {
 		in := input{res: plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonLibraryEscape)}, scanned: scanned, g: g, load: loaded, stream: module}
 		tc.edit(&in)

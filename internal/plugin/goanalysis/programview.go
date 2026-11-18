@@ -45,7 +45,7 @@ func shippedMains(pkgs []*packages.Package) []*packages.Package {
 //
 // The view is a refutation only when govulncheck, run over the shipped mains alone, finds the module
 // and no call to its vulnerable functions, and every check that does not depend on who imports the
-// build still passes: the load is complete and its cgo state known, no file the build left out may
+// build still passes, for each module the advisory was matched to (programRulesOut): the load is complete and its cgo state known, no file the build left out may
 // call into the module, no call reflection makes may reach it, and the run declares no limit that says
 // a step did not run (programRunPartial). The library-entry checks (withholdForLibraryEscape,
 // withholdForUnsearchedMethods) are what the view leaves out, and the scope it reports says so. Any
@@ -94,6 +94,13 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 	if ruled.Refutation == nil {
 		return nil
 	}
+	// The run found no call into any module, but the refutation names the first alone; every other
+	// module the advisory was matched to is ruled out by the same checks, or the view is empty.
+	for _, m := range findingModules(slices.Concat(scanned.findings, prog.findings)) {
+		if other := "pkg:golang/" + m; other != library.Package && !programRulesOut(ctx, ruled, other, scanned, loaded, g, buildDir, env) {
+			return nil
+		}
+	}
 	module := mains[0].Module.Path
 	binaries := make([]string, len(mains))
 	for i, m := range mains {
@@ -106,6 +113,24 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 	refutation.Detail = "started from the main and init of " + strings.Join(binaries, ", ") + " only: " + refutation.Detail
 	refutation.Assumptions = nil
 	return &plugin.ProgramView{Module: module, Binaries: binaries, Refutation: refutation}
+}
+
+// programRulesOut reports whether the program view's checks hold for module, another module the
+// advisory was matched to than the one ruled refutes: the run declares no limit that says a step did
+// not run for it, and neither a file the build left out nor a call reflection makes may reach it. A
+// check that keeps the refutation only with a scope of its own does not rule it out, since the
+// view's detail states the refuted module's scope alone.
+func programRulesOut(ctx context.Context, ruled plugin.ReachabilityResult, module string, scanned vulnScan, loaded *LoadResult, g reconcileGraph, buildDir string, env []string) bool {
+	if programRunPartial(ruled.Partiality, module) {
+		return false
+	}
+	r := *ruled.Refutation
+	r.Package = module
+	one := ruled
+	one.Refutation = &r
+	one = withholdForLeftOutFiles(ctx, one, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env)
+	one = withholdForReflectReach(one, scanned, g.ReflectReach)
+	return one.Refutation != nil && one.Refutation.Detail == r.Detail
 }
 
 // inherentReasons are the run-wide limits the program run may declare and still answer: the call

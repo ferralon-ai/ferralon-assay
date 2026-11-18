@@ -348,6 +348,40 @@ func netNotReached() groundsFixture {
 	}
 }
 
+// TestFinding_ScopedVerdictTwoModules: for an advisory naming golang.org/x/text beside golang.org/x/net,
+// whose library refutation of x/net is withheld, the program view's refutation of x/net grounds a
+// not_exploitable scoped to the binary only when x/text is ruled out too; the row keeps the library
+// view's verdict either way.
+func TestFinding_ScopedVerdictTwoModules(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		textRefuted bool
+		want        bool
+	}{
+		{"the other module not ruled out", false, false},
+		{"both modules ruled out", true, true},
+	} {
+		fx := netNotReached()
+		fx.reach.Refutation = nil
+		fx.footprint = []string{plugin.PartialReasonLibraryEscape}
+		fx.affected = []string{"pkg:golang/golang.org/x/net", "pkg:golang/golang.org/x/text"}
+		fx.reach.ProgramView = &plugin.ProgramView{Module: "example.com/m", Binaries: []string{"cmd/tool"}, Refutation: plugin.Refutation{
+			Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/golang.org/x/net", Detail: "started from the main and init of cmd/tool only: no call path",
+		}}
+		if tc.textRefuted {
+			fx.reach.Refutations = []plugin.Refutation{{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/golang.org/x/text", Detail: "no call path"}}
+		}
+		f := fx.finding(t)
+		if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonRefutationWithheld {
+			t.Errorf("%s: library view = %s/%q, want undetermined/%q", tc.name, f.Verdict, f.UndeterminedReason, report.ReasonRefutationWithheld)
+		}
+		if got := len(f.ScopedVerdicts) == 1 && f.ScopedVerdicts[0].Verdict == report.VerdictNotExploitable &&
+			f.ScopedVerdicts[0].Evidence.Basis == verdict.BasisSymbolUnreachable; got != tc.want || len(f.ScopedVerdicts) > 1 {
+			t.Errorf("%s: scoped verdicts = %+v, want one unreachable not_exploitable: %v", tc.name, f.ScopedVerdicts, tc.want)
+		}
+	}
+}
+
 // TestFinding_GoGovulncheckEvidence: Go not_exploitable rests on govulncheck's own evidence for
 // the advisory (1c), and govulncheck's silence about it is said as such.
 func TestFinding_GoGovulncheckEvidence(t *testing.T) {

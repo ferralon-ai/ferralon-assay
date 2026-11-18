@@ -9,6 +9,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
 func unreached(purl, detail string, assumptions ...string) plugin.Refutation {
@@ -48,6 +49,7 @@ func TestFinding_RefutedBeside(t *testing.T) {
 		wantDetail []string
 		wantExact  string
 		wantAssume []string
+		wantBasis  verdict.NonExploitableBasis
 	}{
 		{
 			name: "stdlib refuted beside, subject toolchain scanned", pkg: xnetPkg, affected: []string{xnet, stdlib},
@@ -143,6 +145,34 @@ func TestFinding_RefutedBeside(t *testing.T) {
 			toolchain: exact, scanned: true,
 			wantExact:  "github.com/docker/distribution@v2.8.1: docker unreached (analyzer_symbol_not_reached); also github.com/distribution/distribution/v3: v3 not imported (analyzer_package_not_imported)",
 			wantAssume: []string{"a2", "a1"},
+			wantBasis:  verdict.BasisSymbolUnreachable,
+		},
+		{
+			name: "admitted package not imported, other package unreached", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(v3, "d")),
+				Refutations: []plugin.Refutation{notImported(docker, "d")},
+			},
+			toolchain: exact, scanned: true, wantBasis: verdict.BasisSymbolUnreachable,
+		},
+		{
+			name: "both packages not imported", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(notImported(v3, "d")),
+				Refutations: []plugin.Refutation{notImported(docker, "d")},
+			},
+			toolchain: exact, scanned: true, wantBasis: verdict.BasisSymbolAbsent,
+		},
+		{
+			name: "admitted package not imported, an unreached package the advisory does not name", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true, "golang.org/x/net": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(notImported(v3, "d")),
+				Refutations: []plugin.Refutation{notImported(docker, "d"), unreached(xnet, "d")},
+			},
+			toolchain: exact, scanned: true, wantBasis: verdict.BasisSymbolAbsent,
 		},
 		{
 			name: "other package refuted as not imported, beside a file another platform builds", pkg: dockerPkg, affected: []string{v3, docker},
@@ -152,6 +182,25 @@ func TestFinding_RefutedBeside(t *testing.T) {
 				Refutations: []plugin.Refutation{unreached(docker, "d")},
 			},
 			flags:     []string{plugin.PartialReasonExcludedFilesBuildConstraint},
+			toolchain: exact, scanned: true, wantBasis: verdict.BasisSymbolUnreachable,
+		},
+		{
+			name: "stdlib refuted as not imported, scan not under the subject toolchain", pkg: xnetPkg, affected: []string{xnet, stdlib},
+			mods: goModules{"golang.org/x/net": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(xnet, "d")),
+				Refutations: []plugin.Refutation{notImported(stdlib, "d")},
+			},
+			toolchain: exact, scanned: false, wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "a did-not-run limit scoped to the other package, refuted as not imported", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(notImported(v3, "d")),
+				Refutations: []plugin.Refutation{unreached(docker, "d")},
+			},
+			scoped:    []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonExcludedFiles, Package: "pkg:golang/example.com/app", Targets: []string{v3}}},
 			toolchain: exact, scanned: true, wantReason: report.ReasonVulnerableSymbolUnresolved,
 		},
 		{
@@ -236,6 +285,9 @@ func TestFinding_RefutedBeside(t *testing.T) {
 			}
 			if tt.wantExact != "" && f.Evidence.Detail != tt.wantExact {
 				t.Errorf("detail = %q, want %q", f.Evidence.Detail, tt.wantExact)
+			}
+			if tt.wantBasis != "" && f.Evidence.Basis != tt.wantBasis {
+				t.Errorf("basis = %q, want %q", f.Evidence.Basis, tt.wantBasis)
 			}
 			if tt.wantAssume != nil && !slices.Equal(f.Evidence.Assumptions, tt.wantAssume) {
 				t.Errorf("assumptions = %q, want %q", f.Evidence.Assumptions, tt.wantAssume)

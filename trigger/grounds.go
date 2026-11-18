@@ -37,7 +37,8 @@ import (
 //
 // Both arms speak for the admitted package only, so neither grounds an advisory that also names
 // another package that may be installed beside the admitted one, unless the lane refuted that
-// package too on its own evidence (refutedBeside). The ground then states each such refutation.
+// package too on its own evidence (refutedBeside). The ground then states each such refutation, and
+// its basis is BasisSymbolAbsent only when every one of them is analyzer_package_not_imported too.
 //
 // A leaf-name hit in first-party code never counts toward arm A: its origin is not the package.
 func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) (detail, reason string, basis verdict.NonExploitableBasis, assumptions []string, ok bool) {
@@ -58,7 +59,7 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	}
 	defer func() {
 		if ok {
-			detail, assumptions = withRefutedBeside(detail, assumptions, purls, admitted, mods, beside)
+			detail, basis, assumptions = withRefutedBeside(detail, basis, assumptions, purls, admitted, mods, beside)
 		}
 	}()
 

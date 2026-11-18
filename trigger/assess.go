@@ -1379,10 +1379,22 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
 	admitted, _, ok := admittedPackage(store, assessmentID, pkg)
-	if r := reach.Refutation; !ok || r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
+	r := reach.Refutation
+	if !ok || r == nil || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
 		return reasons
 	}
-	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return scopeStatedLimits[r] })
+	drops := scopeStatedLimits
+	switch r.Basis {
+	case plugin.RefutationAnalyzerSymbolNotReached:
+	case plugin.RefutationAnalyzerPackageNotImported:
+		// "No build file imports the package" is a claim about every platform, so it does not stand
+		// beside a file another platform builds that may call into the module. It reads the files cgo
+		// off drops too, so the cgo-off limits still clear.
+		drops = map[string]bool{plugin.PartialReasonPluginLoadCgoOff: true, plugin.PartialReasonCgoFilesDropped: true}
+	default:
+		return reasons
+	}
+	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return drops[r] })
 }
 
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a
@@ -1550,8 +1562,8 @@ func goPathWithin(p, root string) bool {
 //   - The subject's toolchain must NOT have been scanned (M4). This is the clause that LIFTS the
 //     undetermined verdict rather than adding to it: once the analysis has actually run under an
 //     exact subject toolchain, the empty path set IS evidence about the subject, and
-//     not_exploitable/vulnerable_symbol_unreachable becomes the established claim it always purported
-//     to be.
+//     not_exploitable, on the basis the refutation states, becomes the established claim it always
+//     purported to be.
 //
 // What is left is the empty path set govulncheck produced against the ANALYZER's Go rather than
 // the subject's.

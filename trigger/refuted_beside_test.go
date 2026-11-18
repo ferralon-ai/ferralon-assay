@@ -1,0 +1,166 @@
+package trigger
+
+import (
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+	"github.com/ferralon-ai/ferralon-assay/report"
+)
+
+func unreached(purl, detail string, assumptions ...string) plugin.Refutation {
+	return plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: purl, Detail: detail, Assumptions: assumptions}
+}
+
+// TestFinding_RefutedBeside is an advisory that names two packages of the build: the admitted
+// package's refutation grounds only when the lane refuted the other package too, on a basis and
+// under conditions that hold for that package.
+func TestFinding_RefutedBeside(t *testing.T) {
+	const (
+		xnet   = "pkg:golang/golang.org/x/net"
+		stdlib = "pkg:golang/stdlib"
+		v3     = "pkg:golang/github.com/distribution/distribution/v3"
+		docker = "pkg:golang/github.com/docker/distribution"
+	)
+	xnetPkg := &report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.15.0", PURL: xnet + "@v0.15.0"}
+	dockerPkg := &report.Package{Ecosystem: "Go", Name: "github.com/docker/distribution", Version: "v2.8.1", PURL: docker + "@v2.8.1"}
+	exact := pipeline.ToolchainFact{Version: "go1.22.1", Bound: pipeline.ToolchainBoundExact, Source: pipeline.ToolchainSourceCIObserved}
+	floor := pipeline.ToolchainFact{Version: "go1.22", Bound: pipeline.ToolchainBoundMinimum, Source: pipeline.ToolchainSourceCIObserved}
+	tests := []struct {
+		name       string
+		pkg        *report.Package
+		affected   []string
+		mods       goModules
+		reach      plugin.ReachabilityResult
+		toolchain  pipeline.ToolchainFact
+		scanned    bool
+		scoped     []artifact.ScopedPartialityFlag
+		wantReason string // "" = not_exploitable
+		wantDetail []string
+		wantAssume []string
+	}{
+		{
+			name: "stdlib refuted beside, subject toolchain scanned", pkg: xnetPkg, affected: []string{xnet, stdlib},
+			mods: goModules{"golang.org/x/net": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(xnet, "x/net imported, no symbol called", "a1")),
+				Refutations: []plugin.Refutation{unreached(stdlib, "stdlib imported, no symbol called", "a1", "a2")},
+			},
+			toolchain: exact, scanned: true,
+			wantDetail: []string{"x/net imported, no symbol called", "also stdlib: stdlib imported, no symbol called"},
+			wantAssume: []string{"a1", "a2"},
+		},
+		{
+			name: "stdlib refuted beside, scan not under the subject toolchain", pkg: xnetPkg, affected: []string{xnet, stdlib},
+			mods: goModules{"golang.org/x/net": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(xnet, "d")),
+				Refutations: []plugin.Refutation{unreached(stdlib, "d")},
+			},
+			toolchain: exact, scanned: false, wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "stdlib refuted beside, toolchain known only as a floor", pkg: xnetPkg, affected: []string{xnet, stdlib},
+			mods: goModules{"golang.org/x/net": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(xnet, "d")),
+				Refutations: []plugin.Refutation{unreached(stdlib, "d")},
+			},
+			toolchain: floor, scanned: true, wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "other package not refuted", pkg: xnetPkg, affected: []string{xnet, stdlib},
+			mods:      goModules{"golang.org/x/net": true},
+			reach:     plugin.ReachabilityResult{Refutation: ptr(unreached(xnet, "d"))},
+			toolchain: exact, scanned: true, wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "admitted package is the later module", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(v3, "v3 unreached")),
+				Refutations: []plugin.Refutation{unreached(docker, "docker unreached")},
+			},
+			toolchain: exact, scanned: true,
+			wantDetail: []string{"docker unreached", "also github.com/distribution/distribution/v3: v3 unreached"},
+		},
+		{
+			name: "other package refuted on a basis this gate does not weigh", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  &plugin.Refutation{Basis: plugin.RefutationPackageNotLoaded, Package: v3, Detail: "d"},
+				Refutations: []plugin.Refutation{unreached(docker, "d")},
+			},
+			toolchain: exact, scanned: true, wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "a did-not-run limit scoped to the other package", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(v3, "d")),
+				Refutations: []plugin.Refutation{unreached(docker, "d")},
+			},
+			scoped:    []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonExcludedFiles, Package: "pkg:golang/example.com/app", Targets: []string{v3}}},
+			toolchain: exact, scanned: true, wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "a did-not-run limit scoped to a third package", pkg: dockerPkg, affected: []string{v3, docker},
+			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true},
+			reach: plugin.ReachabilityResult{
+				Refutation:  ptr(unreached(v3, "d")),
+				Refutations: []plugin.Refutation{unreached(docker, "d")},
+			},
+			scoped:    []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonExcludedFiles, Package: "pkg:golang/example.com/app", Targets: []string{"pkg:golang/example.com/other"}}},
+			toolchain: exact, scanned: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			const aid = "beside"
+			affected := make([]map[string]string, 0, len(tt.affected))
+			for _, p := range tt.affected {
+				affected = append(affected, map[string]string{"purl": p})
+			}
+			purl, _, _ := strings.Cut(tt.pkg.PURL, "@")
+			putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, map[string]any{
+				"purl": purl, "affected_packages": affected, "symbol_provenance": "osv-declared",
+				"advisory_symbols": []string{"example.Symbol"},
+			})
+			putJSON(t, store, aid, artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{Partiality: plugin.Complete()})
+			tt.reach.Partiality = plugin.Complete()
+			putJSON(t, store, aid, artifact.TypeReachability, map[string]any{
+				"reachability":   tt.reach,
+				"call_graph":     plugin.CallGraphResult{Partiality: plugin.Complete(), Edges: []plugin.CallEdge{depEdge("main", "lib")}},
+				"toolchain_scan": pipeline.ToolchainScan{Requested: "go1.22.1", Actual: "go1.22.1", Subject: tt.scanned},
+			})
+			putJSON(t, store, aid, artifact.TypeInventory, map[string]any{"toolchain": tt.toolchain})
+			if tt.scoped != nil {
+				putJSON(t, store, aid, artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{ScopedPartiality: tt.scoped})
+			}
+			f := findingInBuild(store, aid, report.Advisory{ID: "GO-test", Source: "corpus"}, tt.pkg, tt.mods)
+			if tt.wantReason != "" {
+				if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != tt.wantReason {
+					t.Fatalf("got %s/%q, want undetermined/%q", f.Verdict, f.UndeterminedReason, tt.wantReason)
+				}
+				return
+			}
+			if f.Verdict != report.VerdictNotExploitable {
+				t.Fatalf("got %s/%q, want not_exploitable", f.Verdict, f.UndeterminedReason)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(f.Evidence.Detail, want) {
+					t.Errorf("detail %q lacks %q", f.Evidence.Detail, want)
+				}
+			}
+			if tt.wantAssume != nil && !slices.Equal(f.Evidence.Assumptions, tt.wantAssume) {
+				t.Errorf("assumptions = %q, want %q", f.Evidence.Assumptions, tt.wantAssume)
+			}
+		})
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

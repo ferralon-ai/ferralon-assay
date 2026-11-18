@@ -32,8 +32,8 @@ import (
 // for package_not_loaded too: the package is installed, and nothing loaded imports it.
 //
 // Both arms speak for the admitted package only, so neither grounds an advisory that also names
-// another package: that package's symbols were never resolved or searched, and it may be installed
-// beside the admitted one.
+// another package that may be installed beside the admitted one, unless the lane refuted that
+// package too on its own evidence (refutedBeside). The ground then states each such refutation.
 //
 // A leaf-name hit in first-party code never counts toward arm A: its origin is not the package.
 func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) (detail, reason string, basis verdict.NonExploitableBasis, assumptions []string, ok bool) {
@@ -44,12 +44,19 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	root := pkg != nil && pkg.Root
 	reach, _ := reachabilityResult(store, assessmentID)
 	symbols := pipeline.AdvisorySymbols(store, assessmentID)
-	if namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted, mods) {
+	purls := pipeline.AdvisoryPackagePURLs(store, assessmentID)
+	beside := refutedBeside(store, assessmentID, reach, admitted)
+	if namesOtherPackage(purls, admitted, mods, beside) {
 		if len(symbols) == 0 {
 			return "", report.ReasonAdvisorySymbolAbsent, "", nil, false
 		}
 		return "", report.ReasonVulnerableSymbolUnresolved, "", nil, false
 	}
+	defer func() {
+		if ok {
+			detail, assumptions = withRefutedBeside(detail, assumptions, purls, admitted, mods, beside)
+		}
+	}()
 
 	unvetted := false
 	if len(symbols) > 0 {
@@ -70,7 +77,7 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	}
 	// package_not_loaded speaks for one package, so it grounds only an advisory whose record lists
 	// every package it affects, and never the scanned project, whose own code always loads.
-	if r := reach.Refutation; r != nil && (r.Basis != plugin.RefutationPackageNotLoaded ||
+	if r := admittedRefutation(reach, admitted, root); r != nil && (r.Basis != plugin.RefutationPackageNotLoaded ||
 		!root && pipeline.AdvisoryListsAffectedPackages(store, assessmentID)) {
 		if r.Package != "" && inAdmitted(r.Package, admitted, root) {
 			basis := verdict.BasisSymbolUnreachable
@@ -164,12 +171,12 @@ func outsideBuildGrounds(store artifact.Store, assessmentID string, pkg *report.
 }
 
 // namesOtherPackage reports whether the advisory names a package other than the admitted one that
-// may be in the build. A package URL that does not parse cannot be shown to be the admitted
-// package, so it counts as other.
-func namesOtherPackage(purls []string, admitted pkgKey, mods goModules) bool {
+// may be in the build and that none of beside (refutedBeside) refutes. A package URL that does not
+// parse cannot be shown to be the admitted package, so it counts as other.
+func namesOtherPackage(purls []string, admitted pkgKey, mods goModules, beside []plugin.Refutation) bool {
 	for _, p := range purls {
 		key, ok := purlKey(p)
-		if !ok || !(samePackage(key, admitted, mods) || outsideBuild(key, mods)) {
+		if !ok || !(samePackage(key, admitted, mods) || outsideBuild(key, mods) || refutes(beside, key, mods)) {
 			return true
 		}
 	}

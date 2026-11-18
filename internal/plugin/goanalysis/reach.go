@@ -220,10 +220,11 @@ func reconciledResult(ctx context.Context, scanned vulnScan, buildDir string, en
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	return resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
+	return resultPerModule(ctx, scanned, g, buildDir, env, load, entry)
 }
 
-// resultFromGraph is reconciledResult over the reconcile graph g.
+// resultFromGraph is reconciledResult over the reconcile graph g, for the first module the findings
+// name (resultPerModule judges the others).
 func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
 	res := withholdForPartialRun(evidenceResult(scanned.findings, g.CallGraph, env), scanned)
 	if res.Refutation != nil {
@@ -688,8 +689,8 @@ func evidenceResult(findings []vulnFinding, cg plugin.CallGraphResult, env []str
 }
 
 // moduleRefutation states govulncheck's module-level evidence as a refutation of the module it
-// matched. An advisory spanning several modules refutes the first in path order; the gate
-// matches it against the admitted package and ignores a refutation of any other.
+// matched. An advisory spanning several modules refutes the first in path order; resultPerModule
+// refutes the others, and the gate matches each against the packages the advisory names.
 func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 	var module, version string
 	imported := false

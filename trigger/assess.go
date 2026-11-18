@@ -1354,7 +1354,7 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
 	admitted, _, ok := admittedPackage(store, assessmentID, pkg)
-	if r := reach.Refutation; !ok || r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
+	if r := admittedRefutation(reach, admitted, pkg != nil && pkg.Root); !ok || r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
 		return reasons
 	}
 	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return r == plugin.PartialReasonExcludedFilesBuildConstraint })

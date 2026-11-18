@@ -58,8 +58,11 @@ func Compile(ctx context.Context, req CompileRequest) (command string, _ *Failur
 	if err == nil {
 		return command, nil
 	}
-	if ctx.Err() != nil {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return command, &Failure{Kind: KindToolFailed, Detail: "compile", Log: "stopped at its time limit: " + compileCause(out)}
+	case ctx.Err() != nil:
+		return command, &Failure{Kind: KindToolFailed, Detail: "compile", Log: "canceled before it finished: " + compileCause(out)}
 	}
 	f := classify("compile", out)
 	f.Log = compileCause(out)

@@ -48,6 +48,9 @@ func TestJVMOutputGap(t *testing.T) {
 		{"module without output", map[string]time.Time{"a/src/main/java/p/App.java": old, "a/target/classes/p/App.class": now, "b/src/main/java/p/App.java": old}, "no compiled main classes for b"},
 		{"kotlin sources, no output", map[string]time.Time{"src/main/kotlin/p/App.kt": now}, "no compiled main classes"},
 		{"kotlin sources with output", map[string]time.Time{"src/main/kotlin/p/App.kt": old, "build/classes/kotlin/main/p/AppKt.class": now}, ""},
+		{"fixture project under test resources is not held to output", map[string]time.Time{"src/main/java/p/App.java": old, "target/classes/p/App.class": now, "src/test/resources/fx/src/main/java/p/F.java": now}, ""},
+		{"maven-plugin it project is not held to output", map[string]time.Time{"src/main/java/p/App.java": old, "target/classes/p/App.class": now, "src/it/basic/src/main/java/p/I.java": now}, ""},
+		{"integration test source set is not held to output", map[string]time.Time{"src/main/java/p/App.java": old, "target/classes/p/App.class": now, "src/integrationTest/fx/src/main/kotlin/p/K.kt": now}, ""},
 		{"build output dirs are not source", map[string]time.Time{"target/generated/src/main/java/p/App.java": now}, ""},
 	}
 	for _, tc := range tests {

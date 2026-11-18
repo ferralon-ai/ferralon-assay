@@ -134,6 +134,9 @@ func jvmProjects(dir string) []jvmProject {
 		if p != dir && (strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules" || d.Name() == "target" || d.Name() == "build") {
 			return filepath.SkipDir
 		}
+		if filepath.Base(filepath.Dir(p)) == "src" && isTestSourceSet(d.Name()) {
+			return filepath.SkipDir
+		}
 		if d.Name() == "main" && filepath.Base(filepath.Dir(p)) == "src" {
 			for _, lang := range []string{"java", "kotlin"} {
 				src := filepath.Join(p, lang)
@@ -156,6 +159,14 @@ func jvmProjects(dir string) []jvmProject {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].dir < out[j].dir })
 	return out
+}
+
+// isTestSourceSet mirrors the source-set rule of isMainSource in internal/plugin/javaanalysis
+// (bytecode.go): a src/<set> directory named it, or containing "test", is not production code, so
+// a project under it is not one the lane's coverage check holds to a class output.
+func isTestSourceSet(name string) bool {
+	set := strings.ToLower(name)
+	return set == "it" || strings.Contains(set, "test")
 }
 
 // hasSource reports whether dir holds a .java or .kt file.

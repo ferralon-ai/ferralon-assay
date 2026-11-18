@@ -156,6 +156,23 @@ func TestCompileTimeout(t *testing.T) {
 	}
 }
 
+func TestCompileCanceled(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	exe(t, filepath.Join(bin, "mvn"))
+	ctx, cancel := context.WithCancel(context.Background())
+	_, f := Compile(ctx, CompileRequest{
+		Dir: dir, Tool: ToolMaven, Env: []string{"PATH=" + bin}, Timeout: time.Hour,
+		Exec: func(ctx context.Context, _ string, _ []string, _ string, _ []string) ([]byte, error) {
+			cancel()
+			<-ctx.Done()
+			return []byte("[ERROR] Downloading from central\n"), ctx.Err()
+		},
+	})
+	if f == nil || f.Kind != KindToolFailed || strings.Contains(f.Log, "time limit") || !strings.Contains(f.Log, "canceled") || !strings.Contains(f.Log, "Downloading from central") {
+		t.Fatalf("failure = %+v", f)
+	}
+}
+
 func TestCompileCommand(t *testing.T) {
 	dir := t.TempDir()
 	if got := CompileCommand(dir, ToolMaven, Conditions{}); got != "mvn -B compile" {

@@ -319,9 +319,11 @@ before the analysis: `mvn -B compile` (with the stated `-P` profiles and propert
 `gradle classes` for Gradle, with the repository's `mvnw` or `gradlew` when it has one. Tests are not run.
 A job that builds before the scan, so `target/` or `build/` is present and current, is not rebuilt.
 
-The scan logs the command it ran, or why it could not, to stderr. When the output still does not cover the
-sources, the affected results are undetermined with the reason `first_party_bytecode_absent`, and its
-path names the command to run and the end of the tool's error. A scan with `-build-graph off`, or one
+Each build tool's run is bounded at 10 minutes. The scan logs the command it ran, or why it could not, to
+stderr. When the output still does not cover the sources, the affected Java results are undetermined with
+the reason `first_party_bytecode_absent`, and its path names the command to run and the end of the tool's
+error. The affected Kotlin results carry `tool_failure:no_build_output`; the command and the cause are in
+the stderr log only. A scan with `-build-graph off`, or one
 that reads a graph file, does not run the build tool: run that command in a step before the scan.
 
 ## Resolving the JVM build graph

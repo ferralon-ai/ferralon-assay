@@ -50,6 +50,15 @@ func TestFinding_WithheldBy(t *testing.T) {
 			want:       []report.Limit{{Reason: plugin.PartialReasonCgo, Package: here.Package, Path: here.Path, Targets: here.Targets}},
 		},
 		{
+			name: "a scoped limit that cannot reach the package is left out wherever it is declared",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.scoped = []artifact.ScopedPartialityFlag{here, elsewhere}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+			want:       []report.Limit{{Reason: plugin.PartialReasonCgo, Package: here.Package, Path: here.Path, Targets: here.Targets}},
+		},
+		{
 			name: "a limit declared twice is listed once",
 			mutate: func(fx *groundsFixture) {
 				fx.reach.Refutation = nil

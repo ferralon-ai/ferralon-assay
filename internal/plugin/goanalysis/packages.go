@@ -309,11 +309,15 @@ func cgoPinned(ctx context.Context, dir string, env []string) ([]string, error) 
 // stub the build compiles in its place.
 //
 // runtime/cgo itself is not a cgo package here: every cgo package imports it.
+//
+// A build with cgo off (env sets CGO_ENABLED=0, as the pinned load does) that compiles no cgo code
+// and only left cgo files out declares each limit as cgo:files_dropped: nothing in that build crosses into C, and what is unread is the same program
+// built with cgo on.
 func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedReason, handed []*types.Named, dropped, bounded bool) {
 	tags := goflagsTags(env)
 	cgoMods := map[string]string{} // module PURL -> one cgo package path in it
 	every := map[string]bool{"": true}
-	callbacks, unreadable := false, false
+	callbacks, unreadable, compiledAny := false, false, false
 	var droppedImports []string
 	var cbPkgs []*packages.Package // cgo packages C can call back into
 	droppedFiles := map[string][]string{}
@@ -337,6 +341,7 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 		if callsBack || len(files) > 0 {
 			cbPkgs = append(cbPkgs, p)
 		}
+		compiledAny = compiledAny || compiled
 		if len(files) > 0 {
 			dropped, callbacks = true, true
 			droppedFiles[p.PkgPath] = files
@@ -390,6 +395,12 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 			targets[stdlibPURL] = true
 		}
 	}
+	// A cgo module the build compiles no cgo code of, in a load pinned to cgo off, is one it only
+	// dropped files from.
+	reason := plugin.PartialReasonCgo
+	if !compiledAny && cgoOff(env) {
+		reason = plugin.PartialReasonCgoFilesDropped
+	}
 	list := sortedKeys(targets)
 	all := map[*types.Named]bool{}
 	for _, ts := range received {
@@ -403,7 +414,7 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 			path = cgoNarrowing(path, len(list), received[mod])
 		}
 		scoped = append(scoped, plugin.ScopedReason{
-			Reason:  plugin.PartialReasonCgo,
+			Reason:  reason,
 			Package: mod,
 			Path:    path,
 			Targets: list,
@@ -425,6 +436,16 @@ func cgoNarrowing(pkg string, modules int, handed []*types.Named) string {
 	}
 	list := strings.Join(names, ", ")
 	return fmt.Sprintf("no call in this build hands %s a Go function or interface value other than %s, so its C code can reach only %d modules and the methods of %s", pkg, list, modules, list)
+}
+
+// cgoOff reports whether env sets CGO_ENABLED=0, by its last setting as the go command reads it.
+func cgoOff(env []string) bool {
+	for _, kv := range slices.Backward(env) {
+		if v, ok := strings.CutPrefix(kv, "CGO_ENABLED="); ok {
+			return v == "0"
+		}
+	}
+	return false
 }
 
 const stdlibPURL = "pkg:golang/stdlib"

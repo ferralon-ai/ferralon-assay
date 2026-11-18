@@ -3,7 +3,10 @@ package javaanalysis
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -70,6 +73,15 @@ import jakarta.validation.Constraint;
 		{"class literal of an array", `package p;
 import jakarta.validation.Constraint;
 @Constraint(validatedBy = V[].class) @interface Age {}`, true, nil},
+		{"list without braces", `package p;
+import jakarta.validation.Constraint;
+@Constraint(validatedBy = A.class, B.class) @interface Age {}`, true, nil},
+		{"closing brace only", `package p;
+import jakarta.validation.Constraint;
+@Constraint(validatedBy = A.class}) @interface Age {}`, true, nil},
+		{"braces opened and not closed", `package p;
+import jakarta.validation.Constraint;
+@Constraint(validatedBy = {A.class) @interface Age {}`, true, nil},
 		{"another element beside validatedBy", `package p;
 import jakarta.validation.Constraint;
 @Constraint(validatedBy = V.class, other = 1) @interface Age {}`, true, nil},
@@ -154,11 +166,17 @@ public class AgeValidator implements ConstraintValidator<Age, Integer> {
 		{"validator is a dependency class", map[string]string{"com/acme/Age.java": mk("DepValidator"), "com/acme/Other.java": "package com.acme; public class Other {}"}, true},
 		{"named class is not a validator", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AgeValidator.java": "package com.acme; public class AgeValidator { boolean isValid(Integer v) { return true; } }"}, true},
 		{"validator declared twice", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AgeValidator.java": validator, "com/other/AgeValidator.java": "package com.other;\n" + validator[len("package com.acme;\n"):]}, true},
+		{"unreadable unrelated file does not fail the validator check", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AgeValidator.java": validator, "com/acme/Bad.java": "package com.acme; class Bad {}"}, false},
 		{"no constraint, nothing skipped", map[string]string{"com/acme/A.java": "package com.acme; public @interface A {}"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := writeProgram(t, tt.files)
+			if strings.HasPrefix(tt.name, "unreadable") {
+				if err := os.Chmod(filepath.Join(dir, "com/acme/Bad.java"), 0); err != nil {
+					t.Fatal(err)
+				}
+			}
 			cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
 			if err != nil {
 				t.Fatal(err)

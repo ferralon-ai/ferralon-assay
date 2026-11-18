@@ -163,8 +163,8 @@ func validatorClassifier(classes []sourceClass) func(name string) bool {
 
 // constraintValidatorsRooted reports whether every class an admitted @Constraint names
 // resolves, by a simple name unique among first-party classes, to a class that
-// rootConstraintValidators roots. A name that is unresolved (a dependency class), declared
-// more than once, or not a validator makes the answer false and the run stays partial: the
+// rootConstraintValidators roots. A name that is unresolved (a dependency class: it has no
+// supertypes here, so it is not a validator), declared more than once, or not a validator makes the answer false and the run stays partial: the
 // annotation's validatedBy classes would run with no root. Without the family
 // (validatorSuper empty) nothing is rooted, so any name fails.
 func constraintValidatorsRooted(names []string, classes []sourceClass) bool {
@@ -183,7 +183,7 @@ func constraintValidatorsRooted(names []string, classes []sourceClass) bool {
 	}
 	isValidator := validatorClassifier(classes)
 	for _, n := range names {
-		if len(declared[n]) != 1 || !isValidator(n) {
+		if len(declared[n]) > 1 || !isValidator(n) {
 			return false
 		}
 	}

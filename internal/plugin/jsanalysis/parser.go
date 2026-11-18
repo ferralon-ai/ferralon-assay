@@ -652,8 +652,10 @@ type gapScan struct {
 	closeBy int
 	// work counts the runes read.
 	work int
-	// The comment found open at blockFrom closes at blockEnd, and the line read from
-	// lineFrom ends at lineEnd: so does one read from anywhere between the two.
+	// The comment found open at blockFrom closes at the "*/" at blockEnd, and so does one
+	// whose text starts anywhere up to blockEnd: one opened at blockEnd-1 would share its
+	// '*' with that close and does not. The line read from lineFrom ends at lineEnd, and
+	// so does one read from anywhere between the two.
 	blockFrom, blockEnd int
 	lineFrom, lineEnd   int
 	// A scan that met a line break at breakFrom outside a comment ended at breakEnd, and
@@ -691,7 +693,7 @@ func (g *gapScan) skip(i int) int {
 			if block < 0 {
 				block = i
 			}
-			if i < g.blockFrom || i > g.blockEnd {
+			if i < g.blockFrom || i+2 > g.blockEnd {
 				e := commentEnd(src, i+2)
 				g.work += e - i
 				g.blockFrom, g.blockEnd = i, e

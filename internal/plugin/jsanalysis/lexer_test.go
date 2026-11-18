@@ -2,6 +2,7 @@ package jsanalysis
 
 import (
 	"context"
+	"math/rand/v2"
 	"strings"
 	"testing"
 
@@ -171,7 +172,7 @@ func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
 		{"byte order mark then a header comment", "\uFEFF/* eval(x) */\n", false, false, false},
 		{"comment after a block of line comments with empty ones", "'use strict';\n" + strings.Repeat("// Some prose describing the module and its options.\n// More of it.\n//\n", 400) + "var keys = f();\n/**\n * Function#apply, require(x), import(y), eval(z), o[k]\n */\nfunction g() {}\n", false, false, false},
 		{"comment after line comments that hold line comments", strings.Repeat("//   // const a = b / c; // d\n", 2000) + "/* eval(x) */\n", false, false, false},
-		{"comment after a long line of divisions before a line comment", strings.Repeat("x = a / b; ", 4096) + "// c\n/* eval(x) */\n", false, false, false},
+		{"comment after a long line comment full of slashes", "x = a / " + strings.Repeat("// / ", 8192) + "\n1;\n/* eval(x) */\n", false, false, false},
 		// Each shape below can make a line-start "/*" that is not a comment, so its text is
 		// still read.
 		{"comment in JSX text", "a = <p>\n/* {eval(x)} */\n</p>;\n", true, false, false},
@@ -180,6 +181,7 @@ func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
 		{"comment in JSX text closed by a tag spaced with an ideographic space", "a = <p>\n/* {eval(x)} */\n<\u3000/p>;\n", true, false, false},
 		{"comment in a file whose slashes cost too much to tell from tags", strings.Repeat("//\n/* a */\n", 4096) + "/* eval(x) */\n", true, false, false},
 		{"comment in a JSX attribute string of a tag ended past a block comment", "a = <img alt=\"x\n/* eval(x) */\n\" / /* c */>;\n", true, false, false},
+		{"comment in a JSX attribute string of a tag ended past a comment opened on another's last rune", "a = <img alt=\"x\n/* / /*\" src={eval(x)} / /*/*/>;\n", true, false, false},
 		{"comment after code beside one at a line start", "/* a */\nf(); /* eval(x) */\n", true, false, false},
 		{"comment opened in a multi-line JSX attribute string", "a = <img alt=\"x\n/* \" />;\neval(x); // */\n", true, false, false},
 		{"comment opened in a JSX attribute string of a tag ended past a line comment", "a = <img alt=\"x\n/* \" / // c\n>;\neval(x); // */\n", true, false, false},
@@ -214,7 +216,8 @@ func TestJSXMarked_UnclosedCommentAfterSlash(t *testing.T) {
 }
 
 // What the gap scan remembers between slashes changes no answer: every short text over
-// the runes a gap is made of marks as it does when each gap is read afresh.
+// the runes a gap is made of, and a spread of long ones, marks as it does when each gap is
+// read afresh.
 func TestJSXMarked_MatchesAScanThatRemembersNothing(t *testing.T) {
 	fresh := func(src []rune) bool {
 		n := len(src)
@@ -242,21 +245,35 @@ func TestJSXMarked_MatchesAScanThatRemembersNothing(t *testing.T) {
 		}
 		return false
 	}
-	alphabet := []rune("/*\n >x")
+	check := func(src []rune) {
+		if got, want := jsxMarked(src), fresh(src); got != want {
+			t.Fatalf("jsxMarked(%q) = %v, reading each gap afresh gives %v", string(src), got, want)
+		}
+	}
 	const length = 9
 	src := make([]rune, length)
-	var walk func(k int)
-	walk = func(k int) {
+	var walk func(alphabet []rune, k int)
+	walk = func(alphabet []rune, k int) {
 		if k == length {
-			if got, want := jsxMarked(src), fresh(src); got != want {
-				t.Fatalf("jsxMarked(%q) = %v, reading each gap afresh gives %v", string(src), got, want)
-			}
+			check(src)
 			return
 		}
 		for _, c := range alphabet {
 			src[k] = c
-			walk(k + 1)
+			walk(alphabet, k+1)
 		}
 	}
-	walk(0)
+	walk([]rune("/*\n >x"), 0)
+
+	// Texts short enough that the work budget is never spent, so only the memory differs.
+	rng := rand.New(rand.NewPCG(1, 2))
+	for _, alphabet := range [][]rune{[]rune("/*\n>"), []rune("/*\n >"), []rune("//**\n\r\u2028 >x")} {
+		for range 400000 {
+			long := make([]rune, 10+rng.IntN(30))
+			for k := range long {
+				long[k] = alphabet[rng.IntN(len(alphabet))]
+			}
+			check(long)
+		}
+	}
 }

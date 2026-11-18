@@ -94,6 +94,19 @@ public class Leaf extends Mid {
 			want: []string{id("Base", "initialize", 1), id("Leaf", "isValid", 2)},
 		},
 		{
+			name: "validator nested in its own constraint annotation",
+			files: map[string]string{"com/acme/Ann.java": `package com.acme;
+import jakarta.validation.Constraint;
+import jakarta.validation.ConstraintValidator;
+@Constraint(validatedBy = Ann.V.class)
+public @interface Ann {
+    class V implements ConstraintValidator<Ann, String> {
+        public boolean isValid(String v, Object ctx) { return true; }
+    }
+}`},
+			want: []string{nested("Ann", "V", "isValid", 2)},
+		},
+		{
 			name: "interface extends",
 			files: map[string]string{
 				"com/acme/Checker.java": `package com.acme;
@@ -360,7 +373,15 @@ type scipSym struct {
 // scipIndexBytes encodes one document whose definition occurrences are the given method
 // symbols (one per line) and whose SymbolInformation entries are syms.
 func scipIndexBytes(syms []scipSym, methods ...string) []byte {
+	return scipIndexBytesAt("", syms, methods...)
+}
+
+// scipIndexBytesAt is scipIndexBytes for a document with the given relative_path.
+func scipIndexBytesAt(path string, syms []scipSym, methods ...string) []byte {
 	var doc []byte
+	if path != "" {
+		doc = pbBytes(1, []byte(path))
+	}
 	for i, m := range methods {
 		var occ []byte
 		occ = append(occ, pbBytes(1, []byte{byte(i * 10), 4, 9})...)
@@ -474,6 +495,34 @@ func TestConstraintValidatorIngress_SCIP(t *testing.T) {
 
 // The validator needle is a supertype, not an annotation: the annotation registry must not
 // classify a reference to the ConstraintValidator type as an ingress annotation.
+func TestConstraintValidatorIngress_SCIPMainSourceOnly(t *testing.T) {
+	const (
+		pre   = "semanticdb maven maven/com.acme/app 1.0 com/acme/"
+		iface = "semanticdb maven maven/jakarta.validation/jakarta.validation-api 3.0 jakarta/validation/ConstraintValidator#"
+	)
+	cases := []struct {
+		path string
+		want int
+	}{
+		{"src/main/java/com/acme/V.java", 1},
+		{"V.java", 1},
+		{"service/src/test/java/com/acme/V.java", 0},
+		{"src/integrationTest/java/com/acme/V.java", 0},
+		{"src/it/java/com/acme/V.java", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			g, err := readSCIPIndex(scipIndexBytesAt(tc.path, []scipSym{{pre + "V#", []string{iface}}}, pre+"V#isValid()."))
+			if err != nil {
+				t.Fatalf("readSCIPIndex: %v", err)
+			}
+			if len(g.ingresses) != tc.want {
+				t.Errorf("ingresses = %d, want %d: %v", len(g.ingresses), tc.want, g.ingresses)
+			}
+		})
+	}
+}
+
 func TestConstraintValidatorNeedleIsNotAnAnnotation(t *testing.T) {
 	sym := "semanticdb maven maven/jakarta.validation/jakarta.validation-api 3.0 jakarta/validation/ConstraintValidator#"
 	if kind, _, ok := ingressAnnotation(sym); ok {
@@ -553,6 +602,17 @@ func TestRootedConstraintValidator(t *testing.T) {
 		}, "Leaf", false},
 		{"unresolved name", map[string]string{"com/acme/V.java": "package com.acme;\n" + fmt.Sprintf(v, "V")}, "Missing", false},
 		{"test-source validator", map[string]string{"src/test/java/com/acme/V.java": "package com.acme;\n" + fmt.Sprintf(v, "V")}, "V", false},
+		{"initialize only, dependency base", map[string]string{"com/acme/X.java": "package com.acme;\npublic class X extends org.lib.AbstractLibValidator { public void initialize(Ann a) {} }"}, "X", false},
+		{"simple name declared twice, validator sorts later", map[string]string{
+			"com/other/V.java": "package com.other;\npublic class V {}",
+			"com/zzz/V.java":   "package com.zzz;\n" + fmt.Sprintf(v, "V"),
+		}, "V", false},
+		{"validator on a name two classes share via an ancestor, validator sorts later", map[string]string{
+			"com/other/Base.java": "package com.other;\npublic class Base {}",
+			"com/zzz/Base.java":   "package com.zzz;\n" + fmt.Sprintf(v, "Base"),
+			"com/acme/Leaf.java":  "package com.acme;\npublic class Leaf extends Base {}",
+		}, "Leaf", false},
+		{"validator nested in its own constraint annotation", map[string]string{"com/acme/Ann.java": "package com.acme;\npublic @interface Ann {\n    " + fmt.Sprintf(v, "V") + "\n}"}, "V", true},
 		{"abstract isValid only", map[string]string{"com/acme/A.java": "package com.acme;\npublic abstract class A implements jakarta.validation.ConstraintValidator<Ann, String> { public abstract boolean isValid(String v, Object c); }"}, "A", false},
 	}
 	for _, tc := range cases {
@@ -565,5 +625,22 @@ func TestRootedConstraintValidator(t *testing.T) {
 				t.Errorf("rootedConstraintValidator(%q) = %v, want %v", tc.class, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestParseFile_AnnotationTypeBodyDeclaresNestedTypesOnly(t *testing.T) {
+	res := parseFile(`package com.acme;
+public @interface Ann {
+    String message() default "x";
+    int max() default 1;
+    class V { boolean isValid(String s, Object c) { return true; } }
+}`)
+	var got []string
+	for _, d := range res.decls {
+		got = append(got, fmt.Sprintf("%d:%s@%v", d.kind, d.name, d.enclosing))
+	}
+	want := []string{fmt.Sprintf("%d:V@[Ann]", kindType), fmt.Sprintf("%d:isValid@[Ann V]", kindMethod)}
+	if !slices.Equal(got, want) {
+		t.Errorf("decls = %q, want %q", got, want)
 	}
 }

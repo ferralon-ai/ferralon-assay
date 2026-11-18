@@ -196,7 +196,9 @@ func validatorProgramOf(buildDir string, files []string) *program {
 // scipValidatorMethods returns the isValid and initialize method symbols the SCIP index
 // shows to be ConstraintValidator entries: a method whose own relationships name the
 // supertype's method, or a method of a class whose supertype chain, followed through the
-// index's class relationships, reaches ConstraintValidator. A supertype the index neither
+// index's class relationships, reaches ConstraintValidator. A method defined in a document
+// outside the main source (a test source set) is not returned; the relationships it
+// contributes still count. A supertype the index neither
 // defines nor attributes to the JDK may be a dependency class that extends it, so its
 // subclass's methods are returned too. The lexical pass runs beside this one and the
 // results are unioned, so a relationship scip-java does not record only leaves the
@@ -238,7 +240,10 @@ func scipValidatorMethods(idx scipIndex, defs [][]scipDefSpan) []string {
 	}
 	var out []string
 	seenMethod := map[string]bool{}
-	for _, spans := range defs {
+	for di, spans := range defs {
+		if !isMainSource(".", idx.documents[di].relativePath) {
+			continue
+		}
 		for _, d := range spans {
 			m := d.symbol
 			hash := strings.LastIndexByte(m, '#')

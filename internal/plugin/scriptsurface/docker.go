@@ -862,7 +862,7 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 	read := &dockerRead{}
 	st := &dockerStage{read: read}
 	var later []dockerLater
-	var pulls, envs []int
+	var envs []int
 	// run reads one command, ties the taints it leaves to its words, and keeps it for leave
 	// unless it is the npm install into a build output Built just read.
 	run := func(seg segment, cur *dockerCursor, at int, runtime bool) string {
@@ -953,9 +953,6 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 			}
 		case instr == "COPY" || instr == "ADD":
 			st.copyInstr(v, ctxs, rest, instr == "ADD", earth)
-			if slices.ContainsFunc(strings.Fields(rest), func(a string) bool { return strings.HasPrefix(strings.ToLower(a), "--from=") }) {
-				pulls = append(pulls, at)
-			}
 		case instr == "RUN" || instr == "CMD" || instr == "ENTRYPOINT":
 			var mounts []string
 			mountsKnown := true
@@ -964,9 +961,6 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 				flag, rest, _ = strings.Cut(rest, " ")
 				rest = strings.TrimSpace(rest)
 				if m, ok := strings.CutPrefix(flag, "--mount="); ok {
-					if strings.Contains(strings.ToLower(m), "from=") {
-						pulls = append(pulls, at)
-					}
 					if t, ok := st.mountTarget(m); ok {
 						mounts = append(mounts, t)
 					} else {
@@ -1020,7 +1014,7 @@ func (v *Veto) dockerReading(file string, lines []string, starts []int, docs map
 	if why, line := flush(); why != "" {
 		return why, line
 	}
-	return read.leave(lines, starts, later, pulls, envs)
+	return read.leave(lines, starts, later, envs)
 }
 
 // dockerLater is a command at its 1-based line; runtime marks a CMD or ENTRYPOINT.
@@ -1031,24 +1025,25 @@ type dockerLater struct {
 }
 
 // leave withholds when a build output's packages may reach the scanned project, or another
-// command may write into it: NODE_PATH set anywhere, an ENV or ARG naming node_modules, any
-// COPY or mount from another stage (pulls), or a command, before the install or after it,
-// that may name one. A RUN passes when onlyWrites allows it or none of its words can
+// command may write into it: a line that holds NODE_PATH, --from= or a --mount= with from=
+// (a copy or mount from another stage, in whatever instruction form), an ENV or ARG naming
+// node_modules, or a command, before the install or after it, that may name a build output. A RUN passes when onlyWrites allows it or none of its words can
 // name an output, and a CMD or ENTRYPOINT when none names node_modules or holds an expansion.
-func (r *dockerRead) leave(lines []string, starts []int, later []dockerLater, pulls, envs []int) (string, int) {
+func (r *dockerRead) leave(lines []string, starts []int, later []dockerLater, envs []int) (string, int) {
 	if len(r.outputs) == 0 {
 		return "", 0
 	}
 	for i, l := range lines {
-		if strings.Contains(strings.ToUpper(l), "NODE_PATH") {
+		low := strings.ToLower(l)
+		if strings.Contains(low, "node_path") {
 			return "NODE_PATH beside an install into a build output", starts[i] + 1
+		}
+		if strings.Contains(low, "--from=") || strings.Contains(low, "--mount=") && strings.Contains(low, "from=") {
+			return "copy or mount from another stage beside an install into a build output", starts[i] + 1
 		}
 	}
 	if len(envs) > 0 {
 		return "node_modules named in ENV or ARG beside an install into a build output", envs[0]
-	}
-	if len(pulls) > 0 {
-		return "copy or mount from another stage beside an install into a build output", pulls[0]
 	}
 	runtime := func(w string) bool {
 		return strings.Contains(strings.ToLower(w), "node_modules") || strings.ContainsAny(w, "$`")

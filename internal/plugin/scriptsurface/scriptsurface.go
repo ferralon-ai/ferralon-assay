@@ -113,6 +113,12 @@ type Spec struct {
 	// each shell text checked as sh -c would run it, and whether words is one. A runner with no
 	// commands withholds, as does one this cannot read. nil means the lane has none.
 	Concurrent func(words []string) (cmds []string, ok bool)
+	// ScriptRun returns the shell text a command that runs a script with arguments runs (the
+	// script's text with the arguments appended), as written in every manifest the command binds
+	// to through b, each checked as sh -c would run it from where the command runs, and whether
+	// words is one. One with no text withholds, as does one nested too deep. nil means the lane
+	// has none.
+	ScriptRun func(words []string, b Binder) (cmds []string, ok bool)
 	// ReadOnly reports whether a command holding no token only reads the files its arguments
 	// name, so naming a file an allowed command binds to does not rewrite it. It is asked only
 	// about a command with no redirect and no command substitution. nil means no command is.
@@ -133,6 +139,12 @@ type Spec struct {
 	// with no slash, names a shell library the lane knows installs nothing. A word that may name
 	// a file the build holds where the command runs is never one. nil means none is.
 	Library func(word string) bool
+	// Helper, when not nil, reports whether words, a . or source command in the file at path,
+	// sources a helper a tool writes outside the repository and that installs nothing. at, when
+	// not "", is the helper's path from where the command runs, and it is one only where the
+	// build holds nothing there and nothing from the repository may have been put there. nil
+	// means none is.
+	Helper func(path string, words []string) (at string, ok bool)
 	// Code returns the words of a command holding no token, past its leading assignments and
 	// launchers (sudo, env), that are code an interpreter runs
 	// (the argument of node -e). Every file name written in one is named as an argument is, so
@@ -380,6 +392,7 @@ type Veto struct {
 	last         cursor
 	at           andAt
 	backstopping bool
+	file         string // the file Classify is reading
 }
 
 // andAt is the && list a command is part of, and whether the rule follows its order.
@@ -416,6 +429,7 @@ func New(root string, read func(string) bool, spec Spec) *Veto {
 func (v *Veto) Classify(match func(path string, head []byte) (string, bool)) func(string, []byte) (string, bool) {
 	return func(path string, head []byte) (string, bool) {
 		why, ok := "", false
+		v.file = path
 		if _, surface := surfaceOf(path, head); surface {
 			why, ok = v.surface(path, head)
 		} else {
@@ -1263,6 +1277,11 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 			v.spec.Library(words[1]) && !cur.present(words[1]) {
 			return ""
 		}
+		if v.spec.Helper != nil {
+			if at, ok := v.spec.Helper(v.file, words); ok && (at == "" || cur.foreign(at)) {
+				return ""
+			}
+		}
 		if (seg.expands || len(words) < 2 || !cur.sourced(words[1])) && !pathOnly(seg, cur, made) {
 			return "sources a file not read as a script: " + strings.Join(words, " ")
 		}
@@ -1308,6 +1327,11 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 			return v.concurrent(words, cmds, cur, depth)
 		}
 	}
+	if v.spec.ScriptRun != nil {
+		if cmds, ok := v.spec.ScriptRun(words, cur); ok {
+			return v.concurrent(words, cmds, cur, depth)
+		}
+	}
 	if v.spec.RunWrapper != nil {
 		if argv, ok := v.spec.RunWrapper(words); ok {
 			if len(argv) == 0 || depth >= maxRunDepth || v.spec.RunBinds == nil || !v.spec.RunBinds(words, cur) {
@@ -1338,13 +1362,13 @@ func (v *Veto) readsOnly(words []string) bool {
 	return v.spec.ReadOnly(words)
 }
 
-// concurrent applies the rule to the commands a concurrent runner starts, each in a shell of
-// its own from where the runner runs: shell text that does not split into whole commands
+// concurrent applies the rule to the commands a concurrent runner or a script run starts, each
+// in a shell of its own from where it runs: shell text that does not split into whole commands
 // withholds, as does a runner with none or nested too deep.
 func (v *Veto) concurrent(words, cmds []string, cur cursor, depth int) string {
 	why := "install command: " + strings.Join(words, " ")
-	// Each nested command is a strictly shorter string, so the depth bound here is defence in
-	// depth; a run wrapper's script body is not, and needs it.
+	// A concurrent runner's commands are strictly shorter strings; a script's text is not, so
+	// a script run that runs itself again stops here.
 	if len(cmds) == 0 || depth >= maxRunDepth {
 		return why
 	}

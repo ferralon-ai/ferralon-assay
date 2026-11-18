@@ -25,8 +25,10 @@ type depPkg struct {
 	path, name, version string
 	files               map[string]string
 	lockInstallScript   bool
-	lockBin             map[string]string
-	tgz                 []byte
+	// link makes the lock entry a link to a directory the install does not read.
+	link    bool
+	lockBin map[string]string
+	tgz     []byte
 }
 
 // buildTgz packs files under npm's "package/" top directory.
@@ -78,6 +80,9 @@ func newDepFixture(t *testing.T, firstParty map[string]string, pkgs ...*depPkg) 
 		}
 		if p.lockInstallScript {
 			entry["hasInstallScript"] = true
+		}
+		if p.link {
+			entry = map[string]any{"resolved": "packages/" + p.name, "link": true}
 		}
 		if p.lockBin != nil {
 			entry["bin"] = p.lockBin

@@ -54,7 +54,7 @@ type AssessConfig struct {
 	// WithSubjectGoWork.
 	SubjectGoWork string
 	// SubjectToolchainReachability opts reachability_ingress into running the Go analysis under the
-	// SUBJECT's toolchain when that toolchain resolved to an exact version. Off by default. See
+	// SUBJECT's toolchain when that toolchain resolved to an exact version. See
 	// WithSubjectToolchainReachability.
 	SubjectToolchainReachability bool
 	// SkipDisqualifiedAnalysis lets symbol_mapping and reachability_ingress return without calling
@@ -159,9 +159,10 @@ func WithSubjectGoWork(declared string) AssessOption {
 
 // WithSubjectToolchainReachability opts the Go reachability analysis into running under the
 // SUBJECT's Go toolchain instead of the analyzer's, when — and only when — the subject's toolchain
-// resolved to an EXACT bound. It is OFF by default and ships that way for one release
-// (ruling 3), because it is the step that makes findings appear on scans that are green today: a
-// subject on an older toolchain has stdlib symbols the analyzer's newer toolchain does not flag.
+// resolved to an EXACT bound. A caller of this package gets it only by asking; the CLI asks unless
+// its operator turns it off. It is the step that makes findings appear that a scan under the
+// analyzer's toolchain does not show: a subject on an older toolchain has stdlib symbols the
+// analyzer's newer toolchain does not flag.
 //
 // What the option buys when on is not a louder scan, it is a licensed one. With it off, an empty
 // path set for a stdlib advisory is evidence about the ANALYZER's Go, so no verdict may rest on it
@@ -222,6 +223,21 @@ func AssessStages(opts ...AssessOption) []Stage {
 		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition, libraryEntrypoints: cfg.LibraryEntrypoints, entrypoints: cfg.Entrypoints},
 		exposureFootprintStage{},
 	)
+}
+
+// SplitAssessStages is AssessStages cut after disqualification_discovery: settle holds the stages
+// that decide whether the advisory is disqualified and analyze the plugin-backed stages after it.
+// Running settle and then analyze over one assessment and store, the second under ResumingRun, runs
+// every stage once, in AssessStages' order, so a caller may stop between them having settled the
+// advisories that need no analysis.
+func SplitAssessStages(opts ...AssessOption) (settle, analyze []Stage) {
+	stages := AssessStages(opts...)
+	for i, s := range stages {
+		if s.Name() == (disqualificationDiscovery{}).Name() {
+			return stages[: i+1 : i+1], stages[i+1:]
+		}
+	}
+	return stages, nil
 }
 
 // SBOMStages returns ONLY the SBOM-producing stages — S1 advisory_intake + S2
@@ -1536,14 +1552,11 @@ func moduleVersionFromGoMod(buildDir, module string) (version string, pinned, ma
 			continue
 		}
 		t, ok := gomod.Replacement(mf, module, r.Mod.Version)
-		switch {
-		case !ok:
+		if !ok {
 			return r.Mod.Version, true, true
-		case t.Filesystem || t.Path != module:
-			return "", false, true
-		default:
-			return t.Version, true, true
 		}
+		v, pinned := t.Pinned(module)
+		return v, pinned, true
 	}
 	return "", true, true
 }
@@ -2770,6 +2783,13 @@ func settledByDisqualification(store artifact.Store, assessmentID string) (bool,
 	return res.Disqualified, nil
 }
 
+// SettledByDisqualification reports whether disqualification_discovery recorded the assessment as
+// disqualified, so that its verdict reads nothing the later stages write.
+func SettledByDisqualification(store artifact.Store, assessmentID string) bool {
+	settled, err := settledByDisqualification(store, assessmentID)
+	return err == nil && settled
+}
+
 // --- Stage 4: symbol_mapping --------------------------------------------------
 
 type symbolMapping struct {
@@ -2884,7 +2904,7 @@ func govulnMatchID(store artifact.Store, caseID, primary string) string {
 type reachabilityIngress struct {
 	plugin plugin.LanguagePlugin
 	// subjectToolchain opts this stage into asking the analyzer to run under the subject's Go
-	// toolchain when it resolved to an exact version (flag-gated, off by default). See
+	// toolchain when it resolved to an exact version. See
 	// WithSubjectToolchainReachability.
 	subjectToolchain bool
 	skipDisqualified bool
@@ -2947,8 +2967,8 @@ func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, 
 //
 // Four gates, and each is load-bearing rather than defensive:
 //
-//   - The flag. Running under the subject's toolchain changes the meaning of a green scan, so it
-//     ships off by default for one release.
+//   - The option. Running under the subject's toolchain changes the meaning of a green scan, so
+//     the caller can turn it off.
 //   - An inventory fact must exist. No fact means no run resolved one; nothing to request.
 //   - The bound must be EXACT. This is the asymmetry the whole design turns on: reachability's output
 //     is a refutation by ABSENCE, and absence is only evidence about the toolchain the analysis ran
@@ -3291,7 +3311,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 			return err
 		}
 
-		harness, err := s.plugin.GenerateHarness(ctx, plugin.GenerateHarnessRequest{Sink: sink, Kind: "unit"})
+		harness, err := s.plugin.GenerateHarness(ctx, plugin.GenerateHarnessRequest{Sink: sink, Kind: "unit", BuildDir: buildDir, GoWork: goWork.File})
 		if err != nil {
 			return err
 		}

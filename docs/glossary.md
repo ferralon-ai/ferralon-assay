@@ -817,10 +817,10 @@ identity, revision and resolved commit (`subject.repo`, `subject.revision`,
 `auto`, or the path of its `go.work`; the scan uses that `go.work`, never an ambient one. *Source:*
 `action.yml:194`, `docs/capabilities/go.md:47`. *See also:* [subject](#subject).
 
-<a id="subject-toolchain-reachability"></a>**`subject-toolchain-reachability`** — Opt-in setting that,
+<a id="subject-toolchain-reachability"></a>**`subject-toolchain-reachability`** — Setting, on by default, that,
 when the subject's toolchain resolved exactly, runs Go reachability under that Go release, so a
 standard-library advisory can get an ordinary verdict instead of `go_toolchain_not_scanned`.
-*Source:* `docs/operator-guide.md:209`, `docs/operator-guide.md:203`. *See also:*
+*Source:* `docs/operator-guide.md:214`, `docs/operator-guide.md:203`. *See also:*
 [toolchain fact](#toolchain-fact).
 
 <a id="surface"></a>**surface** — **Collision.** (1) A publish surface: where a run's result lands

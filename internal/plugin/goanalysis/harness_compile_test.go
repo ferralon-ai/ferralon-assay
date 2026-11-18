@@ -129,7 +129,9 @@ func TestGenerateHarness_SkeletonsCompile(t *testing.T) {
 	for _, tc := range cases {
 		for _, kind := range []string{"unit", "fuzz"} {
 			req := plugin.GenerateHarnessRequest{Sink: "scip-go gomod example.com/h . example.com/h/" + tc.sink, Kind: kind}
-			resolved, err := generateHarness(ctx, req, dir)
+			inBuild := req
+			inBuild.BuildDir = dir
+			resolved, err := GenerateHarness(ctx, inBuild)
 			if err != nil {
 				t.Fatalf("%s/%s: %v", tc.name, kind, err)
 			}

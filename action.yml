@@ -183,12 +183,13 @@ inputs:
     default: .
   subject-toolchain-reachability:
     description: >-
-      Opt-in (default OFF). Set to 'true' to let a scan that genuinely ran under the subject's own
-      toolchain report a reachability verdict for a stdlib advisory it could adjudicate, instead of
-      withholding it as undetermined. OFF withholds a stdlib advisory whose search found no path as
-      undetermined, because that absence describes the scanner's own toolchain, not yours.
+      On by default. When the scan knows the exact Go release your repository builds with, the Go
+      reachability analysis runs under that release, so a stdlib advisory gets a reachability verdict
+      instead of being withheld as undetermined. Set to 'false' to run the analysis under the
+      scanner's own toolchain; a stdlib advisory whose search found no path is then withheld as
+      undetermined, because that absence describes the scanner's toolchain, not yours.
     required: false
-    default: "false"
+    default: "true"
   subject-gowork:
     description: >-
       The GOWORK your Go build runs under: 'off', 'auto', or the path of its go.work relative to
@@ -810,10 +811,9 @@ runs:
         ASSAY_ISSUE: ${{ inputs.issue != 'false' && '1' || '0' }}
         ASSAY_PR_COMMENT: ${{ inputs.pr-comment != 'false' && '1' || '0' }}
         ASSAY_CODE_SCANNING: ${{ inputs.code-scanning != 'false' && '1' || '0' }}
-        # M4 subject-toolchain-reachability gate (opt-in, default OFF). Read by run.go; only an
-        # explicit affirmative ('true') enables it — the ternary yields the literal 'false'
-        # otherwise, which envEnabled reads as off.
-        ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY: ${{ inputs.subject-toolchain-reachability == 'true' }}
+        # subject-toolchain-reachability (default on). Read by run.go; only an explicit 'false'
+        # turns it off.
+        ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY: ${{ inputs.subject-toolchain-reachability != 'false' }}
         # Read by run.go (-subject-gowork falls back to it); data, never parsed by the shell.
         ASSAY_SUBJECT_GOWORK: ${{ inputs.subject-gowork }}
         # Read by run.go (-entrypoints falls back to it); data, never parsed by the shell.

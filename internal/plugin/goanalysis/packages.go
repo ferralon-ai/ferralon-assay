@@ -369,8 +369,9 @@ func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedRe
 			}
 		}
 	}
+	// A cgo module the build compiles no cgo code of is one it only dropped files from.
 	reason := plugin.PartialReasonCgo
-	if dropped && !compiledAny {
+	if !compiledAny {
 		reason = plugin.PartialReasonCgoFilesDropped
 	}
 	list := sortedKeys(targets)

@@ -644,3 +644,87 @@ public @interface Ann {
 		t.Errorf("decls = %q, want %q", got, want)
 	}
 }
+
+func TestParseFile_AnnotationTypeFrameInCallPass(t *testing.T) {
+	tests := []struct {
+		name      string
+		src       string
+		wantCalls []string
+		wantDecls []string
+	}{
+		{
+			name: "validator nested in its own constraint annotation",
+			src: `package com.acme;
+public @interface Ann {
+    class V {
+        boolean isValid(String s, Object c) { return helper(s); }
+        boolean helper(String s) { return true; }
+    }
+}`,
+			wantCalls: []string{"[Ann V]#isValid -> helper"},
+			wantDecls: []string{"V@[Ann]", "isValid@[Ann V]", "helper@[Ann V]"},
+		},
+		{
+			name: "annotation type nested in a class",
+			src: `package com.acme;
+public class Outer {
+    public @interface Ann {
+        class V {
+            boolean isValid(String s, Object c) { return helper(s); }
+            boolean helper(String s) { return true; }
+        }
+    }
+}`,
+			wantCalls: []string{"[Outer Ann V]#isValid -> helper"},
+			wantDecls: []string{"Outer@[]","V@[Outer Ann]", "isValid@[Outer Ann V]", "helper@[Outer Ann V]"},
+		},
+		{
+			name: "elements with defaults produce no calls or declarations",
+			src: `package com.acme;
+public @interface Ann {
+    String message() default "x";
+    Class<?>[] groups() default {};
+    Object value() default Foo.make();
+    int max() default 1;
+}`,
+		},
+		{
+			name: "class after the annotation type keeps its chain",
+			src: `package com.acme;
+public @interface Ann {
+    String message() default "x";
+}
+class After {
+    void run() { go(); }
+    void go() {}
+}`,
+			wantCalls: []string{"[After]#run -> go"},
+			wantDecls: []string{"After@[]", "run@[After]", "go@[After]"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := parseFile(tc.src)
+			var calls []string
+			for _, c := range res.calls {
+				calls = append(calls, fmt.Sprintf("%v#%s -> %s", c.callerEnclosing, c.callerName, c.calleeName))
+			}
+			var decls []string
+			for _, d := range res.decls {
+				if d.name == "Ann" && len(d.enclosing) == 0 {
+					continue
+				}
+				decls = append(decls, fmt.Sprintf("%s@%v", d.name, d.enclosing))
+			}
+			if !slices.Equal(calls, tc.wantCalls) {
+				t.Errorf("calls = %q, want %q", calls, tc.wantCalls)
+			}
+			if !slices.Equal(decls, tc.wantDecls) {
+				t.Errorf("decls = %q, want %q", decls, tc.wantDecls)
+			}
+			if !res.skipped {
+				t.Error("skipped must stay set for an @interface file")
+			}
+		})
+	}
+}

@@ -292,7 +292,7 @@ func comparePseudoVersion(a, b string) (int, bool) {
 	}
 	arev, _ := module.PseudoVersionRev(a)
 	brev, _ := module.PseudoVersionRev(b)
-	return 0, arev != "" && arev == brev
+	return 0, arev == brev
 }
 
 // withDisagreeingLegacyRanges adds the advisory-level legacy ranges to the element they describe when

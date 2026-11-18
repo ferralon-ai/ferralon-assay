@@ -12,6 +12,7 @@ func TestLimitPhrase(t *testing.T) {
 		want  string
 	}{
 		{"run-wide", Limit{Reason: "reflection:call"}, "reflection:call"},
+		{"standing for others", Limit{Reason: "cgo", Others: 318}, "cgo (318 scoped limits not listed one by one)"},
 		{"scoped to a place", Limit{Reason: "cgo", Package: "pkg:golang/example.com/c", Path: "bridge.go"}, "cgo in pkg:golang/example.com/c at bridge.go"},
 		{"with targets", Limit{Reason: "cgo", Package: "pkg:golang/example.com/c", Targets: []string{"pkg:golang/a", "pkg:golang/b"}},
 			"cgo in pkg:golang/example.com/c, which could reach pkg:golang/a, pkg:golang/b"},

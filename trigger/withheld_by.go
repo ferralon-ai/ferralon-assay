@@ -11,11 +11,11 @@ import (
 // withheldBy returns the limits behind an undetermined row whose reason is refutation_withheld or
 // analysis_did_not_run: the did-not-run limits analysisDidNotRun kept for this advisory, in the
 // order the run declared them, each once. A run-wide limit carries its reason alone; a scoped one
-// carries the package, path and targets it was declared with when it names this row's package, or
-// when few of its reason count. Past maxLimitsElsewhere, the scoped limits of one reason that count
-// without naming the package are listed as that reason once: they are the run's limits, which the
-// report's partiality lists in full, and repeating them on every row grows the report by rows times
-// limits. Any other reason has none.
+// carries the package, path and targets it was declared with. A row lists in full up to
+// maxLimitsNaming scoped limits of one reason that name its package, and the ones that count without
+// naming it while there are no more than maxLimitsElsewhere; the rest of that reason are one entry
+// carrying their number, because repeating a run's scoped limits on every row grows the report by
+// rows times limits. Any other reason has none.
 func withheldBy(store artifact.Store, assessmentID string, pkg *report.Package, reason string) []report.Limit {
 	if reason != report.ReasonRefutationWithheld && reason != report.ReasonAnalysisDidNotRun {
 		return nil
@@ -27,7 +27,7 @@ func withheldBy(store artifact.Store, assessmentID string, pkg *report.Package, 
 	// The declared limits in the order didNotRunReasons weighs them: run-wide, then the scoped ones
 	// that count against this package.
 	var declared []report.Limit
-	var elsewhere []bool
+	var naming []bool
 	runWide := footprintPartialityFlags(store, assessmentID)
 	if len(runWide) == 0 {
 		if inv, ok := inventory(store, assessmentID); ok {
@@ -36,14 +36,18 @@ func withheldBy(store artifact.Store, assessmentID string, pkg *report.Package, 
 	}
 	for _, r := range runWide {
 		declared = append(declared, report.Limit{Reason: r})
-		elsewhere = append(elsewhere, false)
+		naming = append(naming, false)
 	}
 	root := pkg != nil && pkg.Root
 	admitted, _, resolved := admittedPackage(store, assessmentID, pkg)
+	about, known := admitted, resolved
+	if !known {
+		about, known = packageKey(pkg)
+	}
 	for _, s := range footprintScoped(store, assessmentID) {
 		if scopedLimitCounts(s, admitted, resolved, root) {
 			declared = append(declared, report.Limit{Reason: s.Reason, Package: s.Package, Path: s.Path, Targets: slices.Clone(s.Targets)})
-			elsewhere = append(elsewhere, !resolved || !scopedLimitNames(s, admitted, root))
+			naming = append(naming, known && scopedLimitNames(s, about, root))
 		}
 	}
 	// kept is declared with entries dropped, and a dropped one is always the earliest of its
@@ -57,7 +61,7 @@ func withheldBy(store artifact.Store, assessmentID string, pkg *report.Package, 
 		}
 	}
 	seen := map[string]bool{}
-	perReason := map[string]int{}
+	elsewhere := map[string]int{}
 	for i, l := range declared {
 		if !held[i] {
 			continue
@@ -68,30 +72,60 @@ func withheldBy(store artifact.Store, assessmentID string, pkg *report.Package, 
 		} else {
 			seen[key] = true
 		}
-		if elsewhere[i] {
-			perReason[l.Reason]++
+		if l.Package+l.Path != "" || len(l.Targets) > 0 {
+			if !naming[i] {
+				elsewhere[l.Reason]++
+			}
 		}
 	}
+	// A reason's count entry takes the place of the first scoped limit it stands for.
 	var limits []report.Limit
-	listed := map[string]bool{}
+	listed := map[string]int{}
+	counted := map[string]int{}
 	for i, l := range declared {
 		if !held[i] {
 			continue
 		}
-		if elsewhere[i] && perReason[l.Reason] > maxLimitsElsewhere {
-			l = report.Limit{Reason: l.Reason}
+		scoped := l.Package+l.Path != "" || len(l.Targets) > 0
+		switch {
+		case !scoped:
+		case naming[i] && listed[l.Reason] < maxLimitsNaming:
+			listed[l.Reason]++
+		case !naming[i] && elsewhere[l.Reason] <= maxLimitsElsewhere:
+		default:
+			if at, ok := counted[l.Reason]; ok {
+				limits[at].Others++
+			} else {
+				counted[l.Reason] = len(limits)
+				limits = append(limits, report.Limit{Reason: l.Reason, Others: 1})
+			}
+			continue
 		}
-		if key := limitKey(l); !listed[key] {
-			listed[key] = true
-			limits = append(limits, l)
-		}
+		limits = append(limits, l)
 	}
 	return limits
 }
 
-// maxLimitsElsewhere is how many scoped limits of one reason a row lists in full when they count
-// against it without naming its package.
-const maxLimitsElsewhere = 3
+// maxLimitsNaming is how many scoped limits of one reason a row lists in full when they name its
+// package; maxLimitsElsewhere is how many when they count against it without naming it.
+const (
+	maxLimitsNaming    = 8
+	maxLimitsElsewhere = 3
+)
+
+// packageKey is the package a row is about when no version of it was admitted.
+func packageKey(pkg *report.Package) (pkgKey, bool) {
+	if pkg == nil {
+		return pkgKey{}, false
+	}
+	if key, ok := purlKey(pkg.PURL); ok {
+		return key, true
+	}
+	if typ, ok := purlTypeFor[pkg.Ecosystem]; ok && pkg.Name != "" {
+		return pkgKey{typ: typ, name: normalizePackageName(typ, pkg.Name)}, true
+	}
+	return pkgKey{}, false
+}
 
 // scopedLimitNames reports whether a scoped limit names the admitted package, as the package it
 // was declared in or as one of its targets.

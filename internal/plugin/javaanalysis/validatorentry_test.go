@@ -627,3 +627,20 @@ func TestRootedConstraintValidator(t *testing.T) {
 		})
 	}
 }
+
+func TestParseFile_AnnotationTypeBodyDeclaresNestedTypesOnly(t *testing.T) {
+	res := parseFile(`package com.acme;
+public @interface Ann {
+    String message() default "x";
+    int max() default 1;
+    class V { boolean isValid(String s, Object c) { return true; } }
+}`)
+	var got []string
+	for _, d := range res.decls {
+		got = append(got, fmt.Sprintf("%d:%s@%v", d.kind, d.name, d.enclosing))
+	}
+	want := []string{fmt.Sprintf("%d:V@[Ann]", kindType), fmt.Sprintf("%d:isValid@[Ann V]", kindMethod)}
+	if !slices.Equal(got, want) {
+		t.Errorf("decls = %q, want %q", got, want)
+	}
+}

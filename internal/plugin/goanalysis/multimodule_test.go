@@ -120,10 +120,14 @@ func TestStatePluginScope_OtherModules(t *testing.T) {
 		{"beside plugin_load:cgo_off", []string{plugin.PartialReasonPluginLoadCgoOff}, first, []string{"no call path; " + pluginScopeDetail, pluginScopeDetail}},
 		{"with the first module withheld", []string{plugin.PartialReasonPluginLoadCgoOff}, nil, []string{"no call path; " + pluginScopeDetail, pluginScopeDetail}},
 		{"beside plugin_load", []string{plugin.PartialReasonPluginLoad}, first, []string{"no call path", ""}},
+		{"beside dropped cgo files", nil, first, []string{"no call path; " + cgoFilesScopeDetail, cgoFilesScopeDetail}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			in := plugin.ReachabilityResult{Partiality: plugin.Partial(tc.reasons...), Refutation: tc.first, Refutations: slices.Clone(other)}
+			if tc.reasons == nil {
+				in.Partiality = plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonCgoFilesDropped, Package: "pkg:golang/example.com/cgomod"}}}
+			}
 			got := statePluginScope(in)
 			var details []string
 			for _, r := range got.Refutations {

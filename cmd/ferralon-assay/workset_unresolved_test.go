@@ -368,7 +368,7 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 		{
 			name: "python osv: pins the reader withholds over an unread tox.ini are named, not queried",
 			acq: func(t *testing.T) *acquired {
-				return pythonToxTree(t, "requests==2.31.0\njinja2==3.1.4\n", "[testenv]\ndeps =\n    jinja2==3.1.2\n")
+				return pythonToxTree(t, "requests==2.31.0\njinja2==3.1.4\n", "[testenv]\ndeps =\n    py312: jinja2==3.1.2\n")
 			},
 			wantSkipped: map[string]string{"jinja2": "pkg:pypi/jinja2", "requests": "pkg:pypi/requests"},
 			wantSource:  report.WorkSetNone,

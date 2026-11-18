@@ -215,6 +215,14 @@ func TestJSXMarked_UnclosedCommentAfterSlash(t *testing.T) {
 	}
 }
 
+// A comment that opens before the last one read is read afresh: here the second slash
+// meets a comment whose close the first slash's gap never reached.
+func TestJSXMarked_CommentOpenedBeforeTheRememberedOne(t *testing.T) {
+	if !jsxMarked([]rune("/\n/*\n/\n/*//*/>*/")) {
+		t.Error("jsxMarked = false for a tag end past a comment")
+	}
+}
+
 // What the gap scan remembers between slashes changes no answer: every short text over
 // the runes a gap is made of, and a spread of long ones, marks as it does when each gap is
 // read afresh.

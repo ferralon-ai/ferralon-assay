@@ -146,7 +146,8 @@ func validatedByRooted(prog *program, names []string) bool {
 }
 
 // rootedValidatorsOf runs the validator rooting over the given source files and returns
-// its rooted-name set, for callers (the symbol index) that have no program.
+// its rooted-name set, for callers (the symbol index) that have no program. Test-source
+// files get no marker from rootConstraintValidators, so their classes are never rooted.
 func rootedValidatorsOf(buildDir string, files []string) map[string]bool {
 	var parsed []fileParse
 	var main []sourceClass
@@ -158,9 +159,7 @@ func rootedValidatorsOf(buildDir string, files []string) map[string]bool {
 		src := string(data)
 		pr := parseFile(src)
 		parsed = append(parsed, fileParse{path: f, pkg: pr.pkg, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses})
-		if isMainSource(buildDir, f) {
-			main = append(main, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
-		}
+		main = append(main, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
 	}
 	return rootConstraintValidators(buildDir, parsed, main)
 }

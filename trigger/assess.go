@@ -1451,17 +1451,8 @@ func didNotRunReasons(store artifact.Store, assessmentID string, pkg *report.Pac
 			reasons = inv.PartialityFlags
 		}
 	}
-	if scoped := footprintScoped(store, assessmentID); len(scoped) > 0 {
-		admitted, _, resolved := admittedPackage(store, assessmentID, pkg)
-		notImported := resolved && refutedNotImported(store, assessmentID, admitted, pkg != nil && pkg.Root)
-		for _, r := range scoped {
-			if notImported && boundedCgo(r) {
-				continue
-			}
-			if scopedLimitCounts(r, admitted, resolved, pkg != nil && pkg.Root) {
-				reasons = append(reasons, r.Reason)
-			}
-		}
+	for _, r := range countingScoped(store, assessmentID, pkg) {
+		reasons = append(reasons, r.Reason)
 	}
 	// A symbol the build's target of the package does not define was searched for and is not there.
 	absent := false
@@ -1475,6 +1466,29 @@ func didNotRunReasons(store artifact.Store, assessmentID string, pkg *report.Pac
 		}
 		if report.ClassifyPartialityReason(reason) == report.PartialityDidNotRun {
 			out = append(out, reason)
+		}
+	}
+	return out
+}
+
+// countingScoped returns the scoped limits that count against this advisory's package, in the order
+// the run declared them: those scopedLimitCounts admits, less the bounded cgo limit where the
+// package's refutation rests on the build not importing it (refutedNotImported, boundedCgo).
+func countingScoped(store artifact.Store, assessmentID string, pkg *report.Package) []artifact.ScopedPartialityFlag {
+	scoped := footprintScoped(store, assessmentID)
+	if len(scoped) == 0 {
+		return nil
+	}
+	root := pkg != nil && pkg.Root
+	admitted, _, resolved := admittedPackage(store, assessmentID, pkg)
+	notImported := resolved && refutedNotImported(store, assessmentID, admitted, root)
+	var out []artifact.ScopedPartialityFlag
+	for _, r := range scoped {
+		if notImported && boundedCgo(r) {
+			continue
+		}
+		if scopedLimitCounts(r, admitted, resolved, root) {
+			out = append(out, r)
 		}
 	}
 	return out

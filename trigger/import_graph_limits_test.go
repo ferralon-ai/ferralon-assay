@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -22,6 +23,7 @@ func TestFinding_NotImportedAgainstCgo(t *testing.T) {
 		mutate      func(*groundsFixture)
 		wantVerdict report.Verdict
 		wantReason  string
+		wantLimits  []report.Limit
 	}{
 		{
 			name:        "bounded cgo beside the not-imported basis clears",
@@ -70,6 +72,27 @@ func TestFinding_NotImportedAgainstCgo(t *testing.T) {
 			mutate:      func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonCgo} },
 			wantVerdict: report.VerdictUndetermined,
 			wantReason:  report.ReasonAnalysisDidNotRun,
+			wantLimits:  []report.Limit{{Reason: plugin.PartialReasonCgo}},
+		},
+		{
+			name: "run-wide cgo beside bounded cgo withholds, and is the limit named",
+			mutate: func(fx *groundsFixture) {
+				fx.footprint = []string{plugin.PartialReasonCgo}
+				fx.scoped = []artifact.ScopedPartialityFlag{bounded}
+			},
+			wantVerdict: report.VerdictUndetermined,
+			wantReason:  report.ReasonAnalysisDidNotRun,
+			wantLimits:  []report.Limit{{Reason: plugin.PartialReasonCgo}},
+		},
+		{
+			name: "another cgo limit with targets withholds",
+			mutate: func(fx *groundsFixture) {
+				unresolved := bounded
+				unresolved.Reason = plugin.PartialReasonCgoUnresolved
+				fx.scoped = []artifact.ScopedPartialityFlag{unresolved}
+			},
+			wantVerdict: report.VerdictUndetermined,
+			wantReason:  report.ReasonAnalysisDidNotRun,
 		},
 		{
 			name: "an unresolved cgo setting withholds",
@@ -99,6 +122,9 @@ func TestFinding_NotImportedAgainstCgo(t *testing.T) {
 			f := fx.finding(t)
 			if f.Verdict != tc.wantVerdict || f.UndeterminedReason != tc.wantReason {
 				t.Fatalf("got %s/%q, want %s/%q", f.Verdict, f.UndeterminedReason, tc.wantVerdict, tc.wantReason)
+			}
+			if tc.wantLimits != nil && !reflect.DeepEqual(f.WithheldBy, tc.wantLimits) {
+				t.Errorf("withheld_by = %+v, want %+v", f.WithheldBy, tc.wantLimits)
 			}
 		})
 	}

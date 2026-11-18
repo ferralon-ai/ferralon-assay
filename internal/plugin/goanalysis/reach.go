@@ -242,12 +242,61 @@ func resultFromGraph(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 		} else {
 			entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir)
 			res = withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env, entrypoints)
+			res = restateNotImported(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env)
 			res.LibraryEntrypoints = entrypoints.record()
 		}
 	}
 	// Every result passes here: the call graph this lane searches omits reflection's calls, so no
 	// refutation and no Searched sink stands that those calls may contradict.
 	return withholdForReflectReach(res, scanned, g.ReflectReach), nil
+}
+
+// restateNotImported restates a module refutation the withholds kept as
+// analyzer_package_not_imported when no non-test file of the scanned module that `./...` covers (so
+// not testdata, nor a directory whose name begins with `_` or `.`), under any build constraint other
+// than `ignore` or a Go release the build cannot compile under, imports any of the advisory's
+// vulnerable packages of that module:
+// govulncheck matched the module alone, the advisory's entries list the module's vulnerable
+// packages, the load is complete and holds none of them, and no file the build left out imports one
+// (leftOutImporters). With no listed package, a package-level
+// finding, an incomplete load, a left-out file that imports one, or a step of that check failing,
+// the refutation keeps its basis. The detail names the packages and the load's cgo setting.
+func restateNotImported(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || slices.ContainsFunc(scanned.findings, func(f vulnFinding) bool { return len(f.Trace) > 0 && f.Trace[0].Package != "" }) {
+		return res
+	}
+	vulnerable := scanned.countingPackages(module)
+	if len(vulnerable) == 0 || incompleteLoad(pkgs, scanned.partial.readImports()) {
+		return res
+	}
+	loaded := newModuleReach(pkgs, module, vulnerable).loaded
+	if slices.ContainsFunc(vulnerable, func(p string) bool { return loaded[p] != nil }) {
+		return res
+	}
+	if found, failed := leftOutImporters(ctx, pkgs, module, vulnerable, release, buildDir, env); found || failed {
+		return res
+	}
+	// The claim holds with cgo on or off, since the walk covers the files either setting drops. The
+	// setting is resolved again only to name it in the detail.
+	pinned, err := cgoPinned(ctx, buildDir, env)
+	if err != nil {
+		return res
+	}
+	names := vulnerable
+	if len(names) > 5 {
+		names = append(slices.Clone(names[:5]), fmt.Sprintf("%d more", len(vulnerable)-5))
+	}
+	restated := *r
+	restated.Basis = plugin.RefutationAnalyzerPackageNotImported
+	restated.Detail = fmt.Sprintf("%s; the build (CGO_ENABLED=%s) imports none of the advisory's vulnerable packages of %s, and neither does a non-test file it leaves out: %s",
+		r.Detail, envOr(pinned, "CGO_ENABLED", ""), module, strings.Join(names, ", "))
+	res.Refutation = &restated
+	return res
 }
 
 // withholdForReflectReach drops a refutation, and every Searched sink, that a call reflection makes

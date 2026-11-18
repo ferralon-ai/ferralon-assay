@@ -37,6 +37,9 @@ type analyzer struct {
 	image     string // digest-pinned scip-java image ref; "" closes the gate
 	dockerBin string // docker binary; "" means "docker"
 	graphFile string // the build graph the host accepted; "" means none
+	// compileNote is what the host's compile step found when the class output still did not cover
+	// the sources; "" means nothing to add.
+	compileNote string
 	// unit is the ID of the reactor module a per-unit search runs for; "" means the whole graph.
 	unit string
 	// tool is the build tool whose resolved graph a whole-tool search runs for; "" means every

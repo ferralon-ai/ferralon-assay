@@ -236,6 +236,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				WithheldBy:         limits,
 				Evidence:           report.EvidenceSummary{Detail: report.WithheldDetail(reason, limits)},
 			}
+			if pipeline.OwnAdvisoryHeldForPartialRun(store, assessmentID) {
+				f.Evidence.Detail = ownAdvisoryPartialRunDetail
+			}
 			break
 		}
 		f = report.AdvisoryFinding{
@@ -1379,10 +1382,22 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
 	admitted, _, ok := admittedPackage(store, assessmentID, pkg)
-	if r := reach.Refutation; !ok || r == nil || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
+	r := admittedRefutation(reach, admitted, pkg != nil && pkg.Root)
+	if !ok || r == nil || !inAdmitted(r.Package, admitted, pkg != nil && pkg.Root) {
 		return reasons
 	}
-	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return scopeStatedLimits[r] })
+	drops := scopeStatedLimits
+	switch r.Basis {
+	case plugin.RefutationAnalyzerSymbolNotReached:
+	case plugin.RefutationAnalyzerPackageNotImported:
+		// "No build file imports the package" is a claim about every platform, so it does not stand
+		// beside a file another platform builds that may call into the module. It reads the files cgo
+		// off drops too, so the cgo-off limits still clear.
+		drops = map[string]bool{plugin.PartialReasonPluginLoadCgoOff: true, plugin.PartialReasonCgoFilesDropped: true}
+	default:
+		return reasons
+	}
+	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return drops[r] })
 }
 
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a
@@ -1439,13 +1454,8 @@ func didNotRunReasons(store artifact.Store, assessmentID string, pkg *report.Pac
 			reasons = inv.PartialityFlags
 		}
 	}
-	if scoped := footprintScoped(store, assessmentID); len(scoped) > 0 {
-		admitted, _, resolved := admittedPackage(store, assessmentID, pkg)
-		for _, r := range scoped {
-			if scopedLimitCounts(r, admitted, resolved, pkg != nil && pkg.Root) {
-				reasons = append(reasons, r.Reason)
-			}
-		}
+	for _, r := range countingScoped(store, assessmentID, pkg) {
+		reasons = append(reasons, r.Reason)
 	}
 	// A symbol the build's target of the package does not define was searched for and is not there.
 	absent := false
@@ -1462,6 +1472,48 @@ func didNotRunReasons(store artifact.Store, assessmentID string, pkg *report.Pac
 		}
 	}
 	return out
+}
+
+// countingScoped returns the scoped limits that count against this advisory's package, in the order
+// the run declared them: those scopedLimitCounts admits, less the bounded cgo limit where the
+// package's refutation rests on the build not importing it (refutedNotImported, boundedCgo).
+func countingScoped(store artifact.Store, assessmentID string, pkg *report.Package) []artifact.ScopedPartialityFlag {
+	scoped := footprintScoped(store, assessmentID)
+	if len(scoped) == 0 {
+		return nil
+	}
+	root := pkg != nil && pkg.Root
+	admitted, _, resolved := admittedPackage(store, assessmentID, pkg)
+	notImported := resolved && refutedNotImported(store, assessmentID, admitted, root)
+	var out []artifact.ScopedPartialityFlag
+	for _, r := range scoped {
+		if notImported && boundedCgo(r) {
+			continue
+		}
+		if scopedLimitCounts(r, admitted, resolved, root) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// refutedNotImported reports whether the assessment holds, on the admitted package, a refutation that
+// rests on the build importing none of the advisory's vulnerable packages
+// (plugin.RefutationAnalyzerPackageNotImported).
+func refutedNotImported(store artifact.Store, assessmentID string, admitted pkgKey, root bool) bool {
+	reach, _ := reachabilityResult(store, assessmentID)
+	r := admittedRefutation(reach, admitted, root)
+	return r != nil && r.Basis == plugin.RefutationAnalyzerPackageNotImported && inAdmitted(r.Package, admitted, root)
+}
+
+// boundedCgo reports whether r is the Go lane's bounded cgo limit: a cgo package named with the
+// modules its C code, and the files CGO_ENABLED=0 dropped, can call into. Every import of those files
+// is already in the build, and C calls back only into Go symbols the build compiles in, so neither
+// brings in a package the build does not import; a refutation resting on that (refutedNotImported)
+// holds against it. The run-wide cgo limit, declared when a dropped file imports a package outside
+// the build, has no targets and is not this one.
+func boundedCgo(r artifact.ScopedPartialityFlag) bool {
+	return r.Reason == plugin.PartialReasonCgo && len(r.Targets) > 0
 }
 
 // outsideBuildExempt holds the did-not-run limits that cannot undermine outsideBuildGrounds. Those
@@ -1550,8 +1602,8 @@ func goPathWithin(p, root string) bool {
 //   - The subject's toolchain must NOT have been scanned (M4). This is the clause that LIFTS the
 //     undetermined verdict rather than adding to it: once the analysis has actually run under an
 //     exact subject toolchain, the empty path set IS evidence about the subject, and
-//     not_exploitable/vulnerable_symbol_unreachable becomes the established claim it always purported
-//     to be.
+//     not_exploitable, on the basis the refutation states, becomes the established claim it always
+//     purported to be.
 //
 // What is left is the empty path set govulncheck produced against the ANALYZER's Go rather than
 // the subject's.

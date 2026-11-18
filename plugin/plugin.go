@@ -718,6 +718,10 @@ type ReachabilityResult struct {
 	Searched []string `json:"searched,omitempty"`
 	// Refutation is lane-held positive evidence that the package's vulnerable code cannot run.
 	Refutation *Refutation `json:"refutation,omitempty"`
+	// Refutations holds a refutation of each other package the advisory names that the lane also
+	// refuted, each on its own evidence and under its own Assumptions. A package the advisory names
+	// that is absent from both fields is not refuted.
+	Refutations []Refutation `json:"refutations,omitempty"`
 	// LibraryEntrypoints is the entry-point set the lane resolved from
 	// ReachabilityRequest.LibraryEntrypoints, when it resolved one.
 	LibraryEntrypoints *ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
@@ -740,6 +744,9 @@ const (
 	// RefutationAnalyzerSymbolNotReached: govulncheck reported the advisory against a module or
 	// package in the build and found no call path to any of its vulnerable symbols.
 	RefutationAnalyzerSymbolNotReached = "analyzer_symbol_not_reached"
+	// RefutationAnalyzerPackageNotImported: govulncheck reported the advisory against a module in
+	// the build, and the build imports none of the advisory's vulnerable packages of that module.
+	RefutationAnalyzerPackageNotImported = "analyzer_package_not_imported"
 	// RefutationPackageNotLoaded: the package is installed at the admitted version and no
 	// runtime-loaded module imports it.
 	RefutationPackageNotLoaded = "package_not_loaded"

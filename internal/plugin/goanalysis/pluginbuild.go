@@ -95,16 +95,12 @@ func (s *ssaProgram) runTimeReason(name string) (string, bool) {
 	return r, ok
 }
 
-// statePluginScope says, in the detail of a refutation kept beside a limit that holds only because
-// the scanned build has cgo off, the build setting the refutation holds for. plugin_load:cgo_off:
-// the program reaches plugin.Open, which loads nothing with cgo off. cgo:files_dropped: the build
-// left out cgo files, none of which was found to call into the advisory's module. Either way the
-// same program built with cgo on was not checked.
+// statePluginScope says, in the detail of each refutation kept beside a limit that holds only
+// because the scanned build has cgo off, the build setting the refutation holds for.
+// plugin_load:cgo_off: the program reaches plugin.Open, which loads nothing with cgo off.
+// cgo:files_dropped: the build left out cgo files, none of which was found to call into the
+// advisory's module. Either way the same program built with cgo on was not checked.
 func statePluginScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
-	r := res.Refutation
-	if r == nil {
-		return res
-	}
 	var scopes []string
 	if slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoadCgoOff) {
 		scopes = append(scopes, pluginScopeDetail)
@@ -117,12 +113,22 @@ func statePluginScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
 	if len(scopes) == 0 {
 		return res
 	}
-	stated := *r
-	if r.Detail != "" {
-		scopes = append([]string{r.Detail}, scopes...)
+	state := func(r plugin.Refutation) plugin.Refutation {
+		stated := scopes
+		if r.Detail != "" {
+			stated = append([]string{r.Detail}, scopes...)
+		}
+		r.Detail = strings.Join(stated, "; ")
+		return r
 	}
-	stated.Detail = strings.Join(scopes, "; ")
-	res.Refutation = &stated
+	if res.Refutation != nil {
+		stated := state(*res.Refutation)
+		res.Refutation = &stated
+	}
+	res.Refutations = slices.Clone(res.Refutations)
+	for i, r := range res.Refutations {
+		res.Refutations[i] = state(r)
+	}
 	return res
 }
 

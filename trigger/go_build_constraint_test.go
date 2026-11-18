@@ -26,6 +26,15 @@ func TestFinding_GoBuildConstraintLimit(t *testing.T) {
 			wantVerdict: report.VerdictNotExploitable,
 		},
 		{
+			name: "build-constraint exclusion clears a package the lane refuted beside another",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutations = []plugin.Refutation{*fx.reach.Refutation}
+				fx.reach.Refutation = &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/first", Detail: "d"}
+				fx.footprint = []string{plugin.PartialReasonExcludedFilesBuildConstraint}
+			},
+			wantVerdict: report.VerdictNotExploitable,
+		},
+		{
 			name: "build-constraint exclusion beside unsearched methods stays withheld",
 			mutate: func(fx *groundsFixture) {
 				fx.reach.Refutation = nil

@@ -1140,6 +1140,9 @@ type Report struct {
 	// outside the build, one per ecosystem, and whether each was inferred or declared. A lane
 	// resolves one only to judge a refutation such a caller may contradict. Sorted by ecosystem.
 	LibraryEntrypoints []plugin.ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
+	// Entrypoints are the entry points each lane analysed, one record per lane that reported a set,
+	// rendered from the same resolved set as LibraryEntrypoints. Sorted by lane.
+	Entrypoints []plugin.EntryRootRecord `json:"entrypoints,omitempty"`
 	// DependencyCode records whether a JS scan read its dependencies' code and, when a fetch
 	// failed and the scan fell back to reading none, the cause. Set on every JavaScript scan;
 	// nil for every other language.

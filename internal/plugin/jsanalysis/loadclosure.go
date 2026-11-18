@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,21 +24,13 @@ import (
 // when nothing in it can load code the lane cannot name. A package with no module in a complete
 // closure, and which no closure module names in a load, never runs.
 
-// entryRoot is one inferred entry point of the build.
-type entryRoot struct {
-	Lane string `json:"lane"`
-	// Kind is "module" (a first-party source file's top level), "bin" (an installed package's
-	// binary a launch text names) or "script" (a module a launch text's word loads by
-	// specifier, as in `node -r dotenv/config`).
-	Kind string `json:"kind"`
-	// Selector is the root file: a path relative to the scanned tree, or
-	// "npm:<package>/<path in package>" for a file of an installed package.
-	Selector string `json:"selector"`
-	Name     string `json:"name,omitempty"`
-	// Origin is where the root was inferred from: "<dir>/package.json#scripts.<name>",
-	// "<dir>/package.json#<key>", or the launch file's path.
-	Origin string `json:"origin,omitempty"`
-
+// scriptRoot is an entry point a launch text starts, and the module it starts. Kind is
+// plugin.EntryKindBin (an installed package's binary a launch text names) or
+// plugin.EntryKindScript (a module a launch text's word loads by specifier, as in
+// `node -r dotenv/config`). Origin is "<dir>/package.json#scripts.<name>",
+// "<dir>/package.json#<key>", or the launch file's path.
+type scriptRoot struct {
+	plugin.EntryRoot
 	module string
 }
 
@@ -52,8 +45,10 @@ type loadClosure struct {
 	Loaded    []string `json:"loaded,omitempty"`
 	// Assumptions are the disclosed assumptions a refutation from this closure rests on.
 	Assumptions []string `json:"assumptions,omitempty"`
+	// hiddenLoaded are the packages with unread code in the closure.
+	hiddenLoaded []plugin.ScopedReason
 	// Roots are the inferred entry points other than first-party modules.
-	Roots []entryRoot `json:"roots,omitempty"`
+	Roots []plugin.EntryRoot `json:"roots,omitempty"`
 
 	modules map[string]bool
 }
@@ -82,13 +77,36 @@ type loadRecord struct {
 	mods map[string]*modLimits
 	// first are the lock entries first-party loads resolve to.
 	first []*depEntry
-	// hidden are the packages whose code, or part of it, the lane does not read.
-	hidden []*depEntry
-	vetoes map[string]bool
+	// hidden are the packages whose code, or part of it, the lane does not read, each with
+	// what bounds the loads of the code it hides.
+	hidden map[*depEntry]hiddenBound
+	// scripted are the read packages that run an install script.
+	scripted []scriptedPackage
+	vetoes   map[string]bool
+}
+
+// hiddenBound is what the unread code of a package is taken to load. known is false when the
+// package's declared dependencies are not read, and nothing bounds it. compiled marks a package
+// whose JavaScript is read and whose compiled addon is not.
+type hiddenBound struct {
+	reason   string // the partiality reason its limit is declared under
+	declared []string
+	known    bool
+	compiled bool
+}
+
+type scriptedPackage struct {
+	e   *depEntry
+	pkg *depPackage
 }
 
 func newLoadRecord() *loadRecord {
-	return &loadRecord{mods: map[string]*modLimits{}, vetoes: map[string]bool{}}
+	return &loadRecord{mods: map[string]*modLimits{}, hidden: map[*depEntry]hiddenBound{}, vetoes: map[string]bool{}}
+}
+
+// hide records e as a package with unread code.
+func (lr *loadRecord) hide(e *depEntry, reason string, declared []string, known, compiled bool) {
+	lr.hidden[e] = hiddenBound{reason: reason, declared: declared, known: known, compiled: compiled}
 }
 
 func (lr *loadRecord) veto(cond bool, why string) {
@@ -175,13 +193,62 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 	d := prog.deps
 	lc := &loadClosure{Installed: installedOrigins(entries)}
 	loaded := map[string]bool{}
-	hidden := map[*depEntry]bool{}
-	for _, e := range lr.hidden {
-		hidden[e] = true
+	var queue []string
+	// A computed load names its module at run time, and unread code names its loads nowhere.
+	// Each is taken to stay inside its bound (computedLoadBound, hiddenBound), so every module
+	// of every package in the bound may run.
+	bound := map[*depEntry]bool{}
+	computed, unread, compiled := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	var admit func(e *depEntry)
+	var project []*depEntry
+	projectRead := false
+	admitProject := func() {
+		if !projectRead {
+			projectRead, project = true, projectDirectDeps(prog, lr)
+		}
+		for _, e := range project {
+			admit(e)
+		}
 	}
+	opened := map[*depEntry]bool{}
 	loads := func(e *depEntry) {
 		loaded[originPURL(e.name)] = true
-		lr.veto(hidden[e], "package "+e.name+" loads and its code is not all read")
+		h, hidden := lr.hidden[e]
+		if !hidden || opened[e] {
+			return
+		}
+		opened[e] = true
+		lc.hiddenLoaded = append(lc.hiddenLoaded, plugin.ScopedReason{Reason: h.reason, Package: e.purl})
+		if !h.known {
+			lr.veto(true, "package "+e.name+" loads, its code is not all read and its declared dependencies are not known")
+			return
+		}
+		// The hidden code may run any module of its own package.
+		admit(e)
+		for _, x := range resolveDeclared(d, e.path, h.declared) {
+			admit(x)
+		}
+		if h.compiled {
+			compiled[e.name] = true
+			return
+		}
+		// Unread JavaScript may hold a computed load, which reaches what computedLoadBound says.
+		unread[e.name] = true
+		admitProject()
+	}
+	admit = func(e *depEntry) {
+		if bound[e] {
+			return
+		}
+		bound[e] = true
+		loads(e)
+		pkg := d.pkgs[e.path]
+		if pkg == nil {
+			return
+		}
+		for _, id := range slices.Sorted(maps.Values(pkg.modules)) {
+			queue = append(queue, moduleInitSCIP(e.path+"/"+id))
+		}
 	}
 
 	for _, e := range entries {
@@ -191,9 +258,16 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 		}
 	}
 	roots, rooted := inferScriptRoots(prog, entries, lr)
-	lc.Roots = roots
+	for _, r := range roots {
+		lc.Roots = append(lc.Roots, r.EntryRoot)
+	}
 	for _, e := range rooted {
 		loads(e)
+	}
+	scripted := map[string]bool{}
+	for _, s := range lr.scripted {
+		scripted[s.e.name] = true
+		loads(s.e)
 	}
 
 	// A module with any reached frame has loaded, so its top level runs too.
@@ -212,39 +286,11 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 	}
 	reached := map[string]bool{}
 	lc.modules = map[string]bool{}
-	queue := append([]string(nil), baseRoots...)
+	queue = append(queue, baseRoots...)
 	for _, r := range roots {
 		queue = append(queue, moduleInitSCIP(r.module))
 	}
-	// A computed load names its module at run time. It is taken to stay inside its bound (see
-	// computedLoadBound), so every module of every package in the bound may run.
-	bound := map[*depEntry]bool{}
 	whole := map[string]bool{}
-	computed := map[string]bool{}
-	admit := func(e *depEntry) {
-		if bound[e] {
-			return
-		}
-		bound[e] = true
-		loads(e)
-		pkg := d.pkgs[e.path]
-		if pkg == nil {
-			return
-		}
-		for _, id := range slices.Sorted(maps.Values(pkg.modules)) {
-			queue = append(queue, moduleInitSCIP(e.path+"/"+id))
-		}
-	}
-	var project []*depEntry
-	projectRead := false
-	admitProject := func() {
-		if !projectRead {
-			projectRead, project = true, projectDirectDeps(prog, lr)
-		}
-		for _, e := range project {
-			admit(e)
-		}
-	}
 	// A prefix load is a computed load whose literal prefix names more than the bound does.
 	prefixed := func(pkgPath, module, prefix string) {
 		named, ok := prefixTargets(d, entries, pkgPath, module, prefix)
@@ -260,59 +306,79 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 	for _, ps := range g.prefixes {
 		prefixed("", ps.module, ps.prefix)
 	}
-	for len(queue) > 0 {
-		n := queue[0]
-		queue = queue[1:]
-		if reached[n] {
-			continue
-		}
-		if m, ok := owner[n]; ok && !whole[m] {
-			whole[m] = true
-			ml, pkg := lr.mods[m], d.pkgOf(m)
-			if ml != nil && pkg != nil && (ml.flags.dynImport || ml.flags.computedReq) {
-				computed[pkg.entry.name] = true
-				lr.veto(pkg.manifest == nil || pkg.manifest.declaredOpen, "a computed load in "+m+" is in a package whose declared dependencies are not read")
-				admit(pkg.entry)
-				for _, e := range computedLoadBound(d, pkg) {
-					admit(e)
-				}
-				admitProject()
-				for _, p := range ml.prefixes {
-					prefixed(pkg.entry.path, m, p)
-				}
-			}
-		}
-		reached[n] = true
-		if m, ok := owner[n]; ok && !lc.modules[m] {
-			lc.modules[m] = true
-			queue = append(queue, moduleInitSCIP(m))
-		}
-		queue = append(queue, adj[n]...)
-	}
-
 	for _, e := range lr.first {
 		loads(e)
 	}
-	for m := range lc.modules {
-		if pkg := d.pkgOf(m); pkg != nil {
-			loads(pkg.entry)
-		}
-		ml := lr.mods[m]
-		if ml == nil {
+	for _, s := range kept {
+		if isNodeBuiltin(s.spec) {
 			continue
 		}
-		for _, e := range ml.loads {
+		// A load of an unread package is covered by that package's bound.
+		name, _ := splitBareSpecifier(s.spec)
+		if e := d.layout.lookup(moduleDir(s.module), name); e != nil && d.pkgs[e.path] == nil && lr.hidden[e].known {
 			loads(e)
+			continue
 		}
-		for _, t := range ml.mayLoad {
-			loaded[t] = true
+		lr.veto(true, "first-party load of "+s.spec+" is not covered by read code")
+	}
+	// Marking a loaded module's packages can open a hidden one, whose bound adds modules: the
+	// walk and the marking repeat until neither adds anything.
+	marked := map[string]bool{}
+	for len(queue) > 0 {
+		for len(queue) > 0 {
+			n := queue[0]
+			queue = queue[1:]
+			if reached[n] {
+				continue
+			}
+			if m, ok := owner[n]; ok && !whole[m] {
+				whole[m] = true
+				ml, pkg := lr.mods[m], d.pkgOf(m)
+				if ml != nil && pkg != nil && (ml.flags.dynImport || ml.flags.computedReq) {
+					computed[pkg.entry.name] = true
+					lr.veto(pkg.manifest == nil || pkg.manifest.declaredOpen, "a computed load in "+m+" is in a package whose declared dependencies are not read")
+					admit(pkg.entry)
+					for _, e := range computedLoadBound(d, pkg) {
+						admit(e)
+					}
+					admitProject()
+					for _, p := range ml.prefixes {
+						prefixed(pkg.entry.path, m, p)
+					}
+				}
+			}
+			reached[n] = true
+			if m, ok := owner[n]; ok && !lc.modules[m] {
+				lc.modules[m] = true
+				queue = append(queue, moduleInitSCIP(m))
+			}
+			queue = append(queue, adj[n]...)
 		}
-		f := ml.flags
-		lr.veto(f.unreadModule, "loaded module "+m+" loads a module that is not read")
-		lr.veto(f.evaluated, "loaded module "+m+" evaluates code")
-		lr.veto(f.loaderEscape, "loaded module "+m+" hands a module loader on")
-		lr.veto(f.toolFailure || f.unsupported, "loaded module "+m+" is not fully parsed")
-		lr.veto(ml.loadsCode, "loaded module "+m+" loads a built-in that can load or run other code")
+		for _, m := range slices.Sorted(maps.Keys(lc.modules)) {
+			if marked[m] {
+				continue
+			}
+			marked[m] = true
+			if pkg := d.pkgOf(m); pkg != nil {
+				loads(pkg.entry)
+			}
+			ml := lr.mods[m]
+			if ml == nil {
+				continue
+			}
+			for _, e := range ml.loads {
+				loads(e)
+			}
+			for _, t := range ml.mayLoad {
+				loaded[t] = true
+			}
+			f := ml.flags
+			lr.veto(f.unreadModule, "loaded module "+m+" loads a module that is not read")
+			lr.veto(f.evaluated, "loaded module "+m+" evaluates code")
+			lr.veto(f.loaderEscape, "loaded module "+m+" hands a module loader on")
+			lr.veto(f.toolFailure || f.unsupported, "loaded module "+m+" is not fully parsed")
+			lr.veto(ml.loadsCode, "loaded module "+m+" loads a built-in that can load or run other code")
+		}
 	}
 	lr.veto((g.anyExempt || lr.anyExempt(lc.modules)) && (g.anyProto || lr.anyProto(lc.modules)),
 		"a loaded module sets a prototype while a computed read is accepted for its literal receiver")
@@ -321,12 +387,21 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 	lr.veto(g.flags.evaluated, "first-party code evaluates code")
 	lr.veto(g.flags.loaderEscape, "first-party code hands a module loader on")
 	lr.veto(prog.readFailed || prog.skipped || prog.unreadSource, "first-party code is not fully read")
-	for _, s := range kept {
-		lr.veto(!isNodeBuiltin(s.spec), "first-party load of "+s.spec+" is not covered by read code")
-	}
 
 	if len(computed) > 0 {
-		lc.Assumptions = []string{computedLoadAssumption(slices.Sorted(maps.Keys(computed)))}
+		lc.Assumptions = append(lc.Assumptions, computedLoadAssumption(slices.Sorted(maps.Keys(computed))))
+	}
+	if len(unread) > 0 {
+		lc.Assumptions = append(lc.Assumptions, "the code of "+strings.Join(slices.Sorted(maps.Keys(unread)), ", ")+
+			", which is not read, is assumed to load only its own package's modules, its declared dependencies and the project's direct dependencies")
+	}
+	if len(scripted) > 0 {
+		lc.Assumptions = append(lc.Assumptions, "the install scripts of "+strings.Join(slices.Sorted(maps.Keys(scripted)), ", ")+
+			" are assumed to run only the files of their own package and the commands they name, and to leave the installed tree as locked")
+	}
+	if len(compiled) > 0 {
+		lc.Assumptions = append(lc.Assumptions, "the compiled code of "+strings.Join(slices.Sorted(maps.Keys(compiled)), ", ")+
+			" is assumed to load only its own package's modules and its declared dependencies")
 	}
 	lc.Loaded = slices.Sorted(maps.Keys(loaded))
 	lc.Vetoes = slices.Sorted(maps.Keys(lr.vetoes))
@@ -499,6 +574,11 @@ func (lc *loadClosure) scopeCalls(flags partialFlags) partialFlags {
 		flags.uninspectable = false
 		bound(plugin.PartialReasonUninspectablePackage)
 	}
+	// The calls a loaded hidden package makes are not read; they land on loaded code.
+	for _, s := range lc.hiddenLoaded {
+		s.Targets = targets
+		flags.scoped = append(flags.scoped, s)
+	}
 	if flags.unlisted {
 		flags.unlisted = false
 		bound(plugin.PartialReasonUnlistedSites)
@@ -549,6 +629,67 @@ type launchText struct {
 	rel    string // the file, relative to the tree root
 	origin string // rel, plus "#scripts.<name>" or "#<key>" inside a package.json
 	text   string
+	// dep is set for an installed package's install script: its words name files of that
+	// package, and rel is the package's own package.json.
+	dep *scriptedPackage
+}
+
+// installerWords are the commands that install or rewrite packages: an install script that
+// names one can leave a tree no lockfile describes.
+var installerWords = map[string]bool{
+	"npm": true, "npx": true, "pnpm": true, "pnpx": true, "yarn": true, "yarnpkg": true,
+	"bun": true, "bunx": true, "corepack": true, "patch-package": true,
+	"npm_execpath": true, // $npm_execpath: whichever package manager is running
+}
+
+// nodeEvalFlags are Node's options that run their argument as code.
+var nodeEvalFlags = map[string]bool{"-e": true, "--eval": true, "-p": true, "--print": true, "-pe": true, "-ep": true}
+
+// shellFlagCommands are the commands whose own flags share a spelling with nodeEvalFlags and run
+// no code. After any other word the flag is taken as an interpreter's.
+var shellFlagCommands = map[string]bool{"mkdir": true, "test": true, "set": true, "cp": true, "rm": true, "echo": true}
+
+// inlineBuiltins are the built-ins through which code piped or handed to an interpreter starts
+// other code. An install script that names one outside a parsed file is not followed.
+var inlineBuiltins = map[string]bool{"child_process": true, "worker_threads": true, "vm": true}
+
+// inlineRequires matches an install script that is one `node -e` whose code only requires files
+// of its own package by literal relative path, the form a package uses to make its install step
+// optional (`node -e "try{require('./postinstall')}catch(e){}"`). The word scan roots each file.
+var inlineRequires = regexp.MustCompile(`^\s*node\s+(?:-e|--eval)\s+"\s*(?:try\s*\{\s*)?(?:require\('\./[A-Za-z0-9_./-]+'\)\s*;?\s*)+(?:\}\s*catch\s*\(\s*\w*\s*\)\s*\{\s*\}\s*;?\s*)?"\s*(?:\|\|\s*(?:exit\s+0|true)\s*)?$`)
+
+// namesFile reports whether an install-script word reads as a file path rather than a command,
+// a flag or a package name.
+func namesFile(w string) bool {
+	if strings.HasPrefix(w, "//") || strings.HasPrefix(w, "@") || strings.HasPrefix(w, "/dev/") {
+		return false
+	}
+	switch path.Ext(w) {
+	case ".js", ".cjs", ".mjs", ".ts", ".json", ".node", ".sh", ".bash", ".py", ".gyp", ".cmd", ".bat", ".ps1":
+		return true
+	}
+	return w == "." || w == ".." || strings.HasPrefix(w, "./") || strings.HasPrefix(w, "../") || strings.Contains(w, "/")
+}
+
+// scriptFile returns the module of pkg that the install-script word w runs as `node <w>`, and
+// whether w names a file of the package at all, resolved as Node does: the path as written, with
+// an extension, then as a directory (its package.json main, else its index). file is the
+// package-relative path of the module, or the word when the file is one the lane does not parse.
+func (rs *resolver) scriptFile(pkg *depPackage, w string) (module string, file string, named bool) {
+	rel, inside := pkgJoin("", w)
+	if !inside {
+		return "", "", false
+	}
+	m, found := rs.nodePath(pkg, rel)
+	if !found {
+		return "", "", false
+	}
+	for f, id := range pkg.modules {
+		if m != "" && pkg.entry.path+"/"+id == m {
+			return m, f, true
+		}
+	}
+	return "", w, true
 }
 
 // maxLaunchText bounds one launch file; a larger one is not read and vetoes.
@@ -728,7 +869,7 @@ func scriptLoadWords(script string) []string {
 // interpret: every word that names an installed package's binary roots that binary, and every
 // word that resolves as a module specifier from the script's directory roots what it loads. A
 // word that may start code the lane cannot name vetoes the closure on lr.
-func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]entryRoot, []*depEntry) {
+func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]scriptRoot, []*depEntry) {
 	d := prog.deps
 	type bin struct {
 		e   *depEntry
@@ -773,6 +914,13 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 	}
 
 	texts := launchTexts(prog, lr)
+	for i := range lr.scripted {
+		s := &lr.scripted[i]
+		for _, name := range slices.Sorted(maps.Keys(s.pkg.installTexts)) {
+			rel := s.e.path + "/package.json"
+			texts = append(texts, launchText{rel: rel, origin: rel + "#scripts." + name, text: s.pkg.installTexts[name], dep: s})
+		}
+	}
 	scanned := map[string]bool{}
 	for _, lt := range texts {
 		scanned[lt.rel] = true
@@ -798,10 +946,10 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 	}
 
 	rs := prog.resolver()
-	var roots []entryRoot
+	var roots []scriptRoot
 	var rooted []*depEntry
-	seen := map[entryRoot]bool{}
-	add := func(r entryRoot, e *depEntry) {
+	seen := map[scriptRoot]bool{}
+	add := func(r scriptRoot, e *depEntry) {
 		rooted = append(rooted, e)
 		if r.module != "" && !seen[r] {
 			seen[r] = true
@@ -811,7 +959,7 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 	for i := 0; i < len(texts); i++ {
 		lt := texts[i]
 		rel, origin := lt.rel, lt.origin
-		fetches, manager := false, false
+		fetches, manager, cmd := false, false, ""
 		for _, w := range scriptLoadWords(lt.text) {
 			// A runner that fetches a command the install does not hold runs code no
 			// lockfile names, which may load anything installed.
@@ -831,10 +979,37 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 				fetches = manager
 			}
 			manager = w == "npm" || w == "pnpm" || w == "yarn" || w == "bun"
-			for _, f := range named(rel, w) {
-				scanned[f] = true
-				if text, ok := readLaunchText(prog.root, f, lr); ok {
-					texts = append(texts, launchText{rel: f, origin: f, text: text})
+			if s := lt.dep; s != nil {
+				lr.veto(installerWords[w] || strings.HasSuffix(w, ".npm_execpath"), origin+" runs "+w+", which can install code no lockfile names")
+				// Code given on the command line is JavaScript the lane does not parse.
+				// The flag belongs to the last word that is not itself a flag: `mkdir -p` and
+				// `test -e` are not code, and a runtime may be named any way.
+				if !strings.HasPrefix(w, "-") {
+					cmd = w
+				}
+				lr.veto(nodeEvalFlags[w] && !shellFlagCommands[cmd] && !inlineRequires.MatchString(lt.text), origin+" runs inline code that is more than a require of its package's own files")
+				lr.veto(inlineBuiltins[w], origin+" names "+w+", a built-in that can run other code, outside a file the lane parses")
+				// A patched package's files are not what runs: its hidden bound stands in.
+				// A directory change moves what every later path names, and a path that ends in
+				// a slash is the start of a computed one: neither is a file the lane can name.
+				lr.veto(w == "cd" || w == "pushd", origin+" changes directory, so the files it names are not placed")
+				if m, file, ok := rs.scriptFile(s.pkg, w); strings.HasPrefix(w, "-") || d.pkgs[s.e.path] == nil {
+				} else if strings.HasSuffix(w, "/") {
+					lr.veto(true, origin+" names "+w+", the start of a path it completes when it runs")
+				} else if ok {
+					lr.veto(m == "", origin+" names "+file+", a file the lane does not parse")
+					if m != "" {
+						add(scriptRoot{EntryRoot: plugin.EntryRoot{Lane: plugin.EntryLaneJS, Kind: plugin.EntryKindScript, Selector: "npm:" + s.e.name + "/" + file, Name: w, Origin: origin}, module: m}, s.e)
+					}
+				} else if e, _ := rs.depTargets(rel, w, true); e == nil && namesFile(w) {
+					lr.veto(true, origin+" names "+w+", which is not a file of its package")
+				}
+			} else {
+				for _, f := range named(rel, w) {
+					scanned[f] = true
+					if text, ok := readLaunchText(prog.root, f, lr); ok {
+						texts = append(texts, launchText{rel: f, origin: f, text: text})
+					}
 				}
 			}
 			if i := strings.LastIndex(w, "node_modules/"); i >= 0 {
@@ -845,7 +1020,7 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 				name = b
 			}
 			for _, b := range bins[name] {
-				r := entryRoot{Lane: "js", Kind: "bin", Name: name, Origin: origin}
+				r := scriptRoot{EntryRoot: plugin.EntryRoot{Lane: plugin.EntryLaneJS, Kind: plugin.EntryKindBin, Name: name, Origin: origin}}
 				if b.pkg == nil {
 					add(r, b.e)
 					continue
@@ -879,7 +1054,7 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 					if read[e] {
 						lr.veto(true, "script word "+w+" names package "+e.name+" and selects no module the lane parses")
 					}
-					add(entryRoot{}, e)
+					add(scriptRoot{}, e)
 				}
 				for _, m := range mods {
 					id := strings.TrimPrefix(m, e.path+"/")
@@ -890,12 +1065,12 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]ent
 							break
 						}
 					}
-					add(entryRoot{Lane: "js", Kind: "script", Selector: "npm:" + e.name + "/" + file, Name: w, Origin: origin, module: m}, e)
+					add(scriptRoot{EntryRoot: plugin.EntryRoot{Lane: plugin.EntryLaneJS, Kind: plugin.EntryKindScript, Selector: "npm:" + e.name + "/" + file, Name: w, Origin: origin}, module: m}, e)
 				}
 			}
 		}
 	}
-	slices.SortStableFunc(roots, func(a, b entryRoot) int {
+	slices.SortStableFunc(roots, func(a, b scriptRoot) int {
 		return cmp.Or(strings.Compare(a.Selector, b.Selector), strings.Compare(a.Origin, b.Origin))
 	})
 	return roots, rooted

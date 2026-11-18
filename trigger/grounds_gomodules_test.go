@@ -65,7 +65,7 @@ func TestNamesOtherPackage_GoPackagePaths(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := namesOtherPackage(tt.purls, tt.admitted, tt.mods); got != tt.want {
+			if got := namesOtherPackage(tt.purls, tt.admitted, tt.mods, nil); got != tt.want {
 				t.Errorf("namesOtherPackage(%q, %v) = %v, want %v", tt.purls, tt.admitted, got, tt.want)
 			}
 		})
@@ -135,7 +135,7 @@ func TestGoModulesOf_FromInventory(t *testing.T) {
 		}
 	}
 	xnetKey := pkgKey{typ: "golang", name: "golang.org/x/net"}
-	if !namesOtherPackage([]string{"pkg:golang/golang.org/x/net", "pkg:golang/example.com/fork"}, xnetKey, mods) {
+	if !namesOtherPackage([]string{"pkg:golang/golang.org/x/net", "pkg:golang/example.com/fork"}, xnetKey, mods, nil) {
 		t.Error("an advisory naming the replacement module beside x/net collapsed to x/net; want it blocking")
 	}
 }

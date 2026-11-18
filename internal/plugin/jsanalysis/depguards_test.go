@@ -212,9 +212,13 @@ func TestDepGuards_RunSourceCap(t *testing.T) {
 	}
 }
 
-// TestDepGuards_TarballShape: a tarball holding an entry twice (N7), also as two names differing
-// only in case (one file on a case-insensitive filesystem), or a top-level entry outside
-// package/ past the unpacked-size cap (F2), leaves the package unread with a scoped limit.
+// TestDepGuards_TarballShape: a tarball holding a file the lane reads twice with different bytes
+// (N7), an entry as two names differing only in case (one file on a case-insensitive
+// filesystem), or a top-level entry outside package/ past the unpacked-size cap (F2), leaves the
+// package unread with a scoped limit. A file held twice with the same bytes, or one the lane
+// does not read, is no guess and is read once, and a `main` that is not a string
+// (`"main": false`) reads as absent, as Node takes it. Node refuses a package whose `type` is
+// not a string, so that one stays unread.
 func TestDepGuards_TarballShape(t *testing.T) {
 	const run = "exports.run = function run() {};\n"
 	for _, tc := range []struct {
@@ -225,6 +229,20 @@ func TestDepGuards_TarballShape(t *testing.T) {
 			{name: "package/package.json", body: guardDepMain},
 			{name: "package/index.js", body: run},
 			{name: "package/index.js", body: "exports.run = function run() { other(); };\n"},
+		}},
+		{"duplicate_manifest", []tgzEntry{
+			{name: "package/package.json", body: guardDepMain},
+			{name: "package/package.json", body: `{"name":"dep","version":"1.0.0","main":"other.js"}`},
+			{name: "package/index.js", body: run},
+		}},
+		{"duplicate_entry_under_another_spelling", []tgzEntry{
+			{name: "package/package.json", body: guardDepMain},
+			{name: "package/index.js", body: run},
+			{name: "package/./index.js", body: "exports.run = function run() { other(); };\n"},
+		}},
+		{"type_that_is_not_a_string", []tgzEntry{
+			{name: "package/package.json", body: `{"name":"dep","version":"1.0.0","type":1}`},
+			{name: "package/index.js", body: run},
 		}},
 		{"case_colliding_manifest", []tgzEntry{
 			{name: "package/package.json", body: guardDepMain},
@@ -255,14 +273,49 @@ func TestDepGuards_TarballShape(t *testing.T) {
 			}
 		})
 	}
-	t.Run("control", func(t *testing.T) {
-		p := guardPkg(nil)
-		p.tgz = buildRawTgz(t, tgzEntry{name: "package/package.json", body: guardDepMain}, tgzEntry{name: "package/index.js", body: run})
-		f := newDepFixture(t, map[string]string{"index.js": "require('dep').run();\n"}, p)
-		if cg := withDeps(t, f.dir, f.memStore()); !readsDep(cg) {
-			t.Errorf("a well-formed tarball is read; edges %+v", cg.Edges)
-		}
-	})
+	for _, tc := range []struct {
+		name    string
+		entries []tgzEntry
+	}{
+		{"control", []tgzEntry{{name: "package/package.json", body: guardDepMain}, {name: "package/index.js", body: run}}},
+		{"same_source_twice", []tgzEntry{
+			{name: "package/package.json", body: guardDepMain},
+			{name: "package/./index.js", body: run},
+			{name: "package/index.js", body: run},
+		}},
+		{"same_manifest_twice", []tgzEntry{
+			{name: "package/package.json", body: guardDepMain},
+			{name: "package/package.json", body: guardDepMain},
+			{name: "package/index.js", body: run},
+		}},
+		{"unread_file_twice", []tgzEntry{
+			{name: "package/package.json", body: guardDepMain},
+			{name: "package/README.md", body: "one\n"},
+			{name: "package/README.md", body: "two\n"},
+			{name: "package/index.js", body: run},
+		}},
+		{"main_that_is_not_a_string", []tgzEntry{
+			{name: "package/package.json", body: `{"name":"dep","version":"1.0.0","main":false,"module":null}`},
+			{name: "package/index.js", body: run},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := guardPkg(nil)
+			p.tgz = buildRawTgz(t, tc.entries...)
+			f := newDepFixture(t, map[string]string{"index.js": "require('dep').run();\n"}, p)
+			cg := withDeps(t, f.dir, f.memStore())
+			if !readsDep(cg) {
+				t.Errorf("the tarball is read; edges %+v", cg.Edges)
+			}
+			if hasScoped(cg.Partiality, plugin.PartialReasonUninspectablePackage, guardPURL) {
+				t.Errorf("a read package carries no limit; got %+v", cg.Partiality)
+			}
+			pkg, err := unpackDepPackage(t.Context(), &depEntry{name: "dep"}, p.tgz)
+			if err != nil || len(pkg.sources) != 1 {
+				t.Errorf("the package holds one source; got %+v, %v", pkg, err)
+			}
+		})
+	}
 }
 
 // TestDepGuards_UnknownInstallScripts (B1, B2): a lock that does not record install scripts (npm
@@ -350,18 +403,20 @@ func TestDepGuards_ExportsConditions(t *testing.T) {
 }
 
 // TestDepGuards_BindingGypImpliesInstall (N8, M4c): a binding.gyp with no install or preinstall
-// script makes npm run `node-gyp rebuild`, an install script, so it withholds run-wide.
+// script makes npm run `node-gyp rebuild`, an install script, so the package runs whether or
+// not anything loads it and its limit is declared.
 func TestDepGuards_BindingGypImpliesInstall(t *testing.T) {
+	const purl = "pkg:npm/dep@1.0.0"
 	f := newDepFixture(t, map[string]string{"index.js": guardIdle}, guardPkg(map[string]string{"binding.gyp": "{}\n"}))
-	if cg := withDeps(t, f.dir, f.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUninspectablePackage) {
-		t.Errorf("binding.gyp without an install script must withhold run-wide; got %+v", cg.Partiality)
+	if cg := withDeps(t, f.dir, f.memStore()); !hasBounded(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
+		t.Errorf("binding.gyp without an install script must declare the package's limit; got %+v", cg.Partiality)
 	}
 	scripted := newDepFixture(t, map[string]string{"index.js": guardIdle}, guardPkg(map[string]string{
 		"binding.gyp":  "{}\n",
 		"package.json": `{"name":"dep","version":"1.0.0","main":"index.js","scripts":{"install":"prebuild-install"}}`,
 	}))
-	if cg := withDeps(t, scripted.dir, scripted.memStore()); !hasReason(cg.Partiality, plugin.PartialReasonUninspectablePackage) {
-		t.Errorf("an explicit install script withholds run-wide too; got %+v", cg.Partiality)
+	if cg := withDeps(t, scripted.dir, scripted.memStore()); !hasBounded(cg.Partiality, plugin.PartialReasonUninspectablePackage, purl) {
+		t.Errorf("an explicit install script declares it too; got %+v", cg.Partiality)
 	}
 }
 

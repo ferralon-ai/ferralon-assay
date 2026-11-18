@@ -854,6 +854,11 @@ func npmrcSetsOnly(root, file string, plain map[string]bool) bool {
 	if !ok {
 		return false
 	}
+	return npmrcTextSetsOnly(data, plain)
+}
+
+// npmrcTextSetsOnly is npmrcSetsOnly for the text of an .npmrc.
+func npmrcTextSetsOnly(data []byte, plain map[string]bool) bool {
 	entries, ok := parseNpmrc(data)
 	if !ok {
 		return false

@@ -50,6 +50,7 @@ var servletSuperSuffix string
 var (
 	validatorSuper        string
 	validatorEntryMethods = map[string]bool{}
+	validatorEntryArity   = map[string]int{}
 )
 
 func init() {
@@ -66,6 +67,9 @@ func init() {
 			validatorSuper = f.Match.Supertype[strings.LastIndexByte(f.Match.Supertype, '/')+1:]
 			for _, m := range f.Match.Methods {
 				validatorEntryMethods[m] = true
+			}
+			for m, n := range f.Match.Arity {
+				validatorEntryArity[m] = n
 			}
 		default:
 			containerEntrypoints[f.Match.Annotation] = f.Kind

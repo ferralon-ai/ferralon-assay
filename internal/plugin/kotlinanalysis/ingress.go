@@ -85,7 +85,7 @@ var (
 	// validatorSupers is the constraint-validator family's supertype as internal names
 	// under both the javax/ and jakarta/ roots; validatorMethods its entry-method names.
 	validatorSupers  = map[string]bool{}
-	validatorMethods = map[string]bool{}
+	validatorMethods = map[string]int{} // entry-method name -> parameter count
 )
 
 func init() {
@@ -96,7 +96,7 @@ func init() {
 				validatorSupers[root+f.Match.Supertype] = true
 			}
 			for _, m := range f.Match.Methods {
-				validatorMethods[m] = true
+				validatorMethods[m] = f.Match.Arity[m]
 			}
 		case f.Match.Annotation != "" && f.Kind == jvmingress.KindHTTPRoute:
 			routeVerb[f.Match.Annotation] = f.Verb
@@ -150,7 +150,7 @@ func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
 				out = append(out, frameworkIngress{ref: m.Ref, kind: jvmingress.KindServlet})
 				continue
 			}
-			if isValidator && validatorMethods[m.Ref.Name] && !m.Abstract {
+			if n, ok := validatorMethods[m.Ref.Name]; isValidator && ok && !m.Abstract && descriptorArity(m.Ref.Descriptor) == n {
 				out = append(out, frameworkIngress{ref: m.Ref, kind: jvmingress.KindConstraintValidator})
 			}
 		}
@@ -306,4 +306,21 @@ func joinRoute(base, path string) string {
 	default:
 		return strings.TrimSuffix(base, "/") + "/" + strings.TrimPrefix(path, "/")
 	}
+}
+
+// descriptorArity counts the parameters of a JVM method descriptor: "(ILjava/lang/String;[J)V" has three.
+func descriptorArity(desc string) int {
+	n := 0
+	for i := 1; i < len(desc) && desc[i] != ')'; i++ {
+		for i < len(desc) && desc[i] == '[' {
+			i++
+		}
+		if i < len(desc) && desc[i] == 'L' {
+			for i < len(desc) && desc[i] != ';' {
+				i++
+			}
+		}
+		n++
+	}
+	return n
 }

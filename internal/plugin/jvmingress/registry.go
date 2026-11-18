@@ -62,6 +62,11 @@ type MatchSpec struct {
 	// deep the chain. "" unless the family is matched by supertype closure (SuperSuffix is the
 	// direct-superclass form).
 	Supertype string
+
+	// Arity bounds a Methods entry to one parameter count where the framework calls it with
+	// a fixed signature (validator isValid(value, context) has two, initialize(annotation)
+	// one). A method name absent here matches at any arity.
+	Arity map[string]int
 }
 
 // families is the behavior-preserving census. Declared in any order; Families()
@@ -91,7 +96,7 @@ var families = []IngressFamily{
 
 	{Name: "servlet", Kind: KindServlet, Match: MatchSpec{SuperSuffix: "HttpServlet", Methods: []string{"doGet", "doPost", "doPut", "doDelete", "service"}}, SCIPNeedle: ""},
 
-	{Name: "validator.constraint", Kind: KindConstraintValidator, Match: MatchSpec{Supertype: "validation/ConstraintValidator", Methods: []string{"isValid", "initialize"}}, SCIPNeedle: "validation/ConstraintValidator#"},
+	{Name: "validator.constraint", Kind: KindConstraintValidator, Match: MatchSpec{Supertype: "validation/ConstraintValidator", Methods: []string{"isValid", "initialize"}, Arity: map[string]int{"isValid": 2, "initialize": 1}}, SCIPNeedle: "validation/ConstraintValidator#"},
 }
 
 // sortedFamilies is the census sorted by Name once at package init, so every

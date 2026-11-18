@@ -101,6 +101,9 @@ type sourceClass struct {
 	// methods is the per-method annotation surface (name + arity + full annotation list)
 	// the sink overlays classify against. Additive; nothing in the bean model reads it.
 	methods []sourceMethod
+	// local is true for a class declared inside a method or initializer body. It has no
+	// top-level or member binary name the scan can map to a compiled class.
+	local bool
 }
 
 // classLoc locates a first-party class for building an impl method's SCIP id.
@@ -178,6 +181,11 @@ func scanSourceClasses(clean, raw []rune, pkg string) []sourceClass {
 				}
 				self := append(append([]string(nil), typeChain()...), nm)
 				sc := &sourceClass{pkg: pkg, name: nm, enclosing: self, supers: supers}
+				for _, f := range stack {
+					if f.cls == nil {
+						sc.local = true
+					}
+				}
 				applyClassAnnos(sc, pending)
 				sc.classAnnos = append([]parsedAnno(nil), pending...) // full list retained for the sink overlays (additive)
 				pending = nil

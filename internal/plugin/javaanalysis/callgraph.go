@@ -24,9 +24,13 @@ func sym(s string) plugin.Symbol { return plugin.Symbol{SCIP: s, DisplayName: s}
 // sites + ingress markers, plus a method index keyed by (simpleName, arity) used
 // to resolve lexical call sites to concrete declared methods.
 type program struct {
-	files      []fileParse
-	readFailed bool
-	skipped    bool
+	files []fileParse
+	// rootedValidators holds the simple names of first-party classes whose concrete
+	// isValid(2) the validator.constraint family roots, on the class or a first-party
+	// ancestor. See rootedConstraintValidator.
+	rootedValidators map[string]bool
+	readFailed       bool
+	skipped          bool
 	// methodsByKey maps "name/arity" → the SCIP ids of every declared method with
 	// that simple name and arity. A single entry resolves unambiguously; multiple
 	// (or zero) entries mean the lexical callee cannot be soundly resolved.
@@ -101,7 +105,7 @@ func loadProgram(buildDir string) (*program, error) {
 	}
 
 	prog := &program{methodsByKey: map[string][]string{}, concreteByKey: map[string][]string{}}
-	var srcClasses []sourceClass
+	var srcClasses, mainClasses []sourceClass
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
@@ -129,9 +133,13 @@ func loadProgram(buildDir string) (*program, error) {
 		// Bean scan over the same source (cleaned for structure, raw for annotation
 		// values). Additive: it reads the same files but produces only the bean input,
 		// never touching the declaration/call index above.
-		srcClasses = append(srcClasses, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
+		scanned := scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)
+		srcClasses = append(srcClasses, scanned...)
+		if isMainSource(buildDir, f) {
+			mainClasses = append(mainClasses, scanned...)
+		}
 	}
-	rootConstraintValidators(prog.files, srcClasses)
+	prog.rootedValidators = rootConstraintValidators(buildDir, prog.files, mainClasses)
 	prog.beanData = buildSourceBeanData(srcClasses)
 	// #6: legacy XML <bean> definitions under the build tree are an additive bean source
 	// (beanconfig.go). Their Satisfies is enriched with the first-party supertype map so

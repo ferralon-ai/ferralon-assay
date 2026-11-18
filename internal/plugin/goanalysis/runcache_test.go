@@ -817,6 +817,15 @@ func TestPackagesResolveOffline(t *testing.T) {
 			}
 		})
 	}
+	// A go list that did not finish printed no error, and that is not a build with none.
+	t.Run("go list did not run", func(t *testing.T) {
+		dir := writeTree(t, tests[0].files)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if packagesResolveOffline(ctx, dir, reachBaseEnv(context.Background())) {
+			t.Error("packagesResolveOffline = true for a go list that never ran")
+		}
+	})
 }
 
 // TestGovulncheckFailureEntryIsolation pins that a stored failure and a stored stream are never read

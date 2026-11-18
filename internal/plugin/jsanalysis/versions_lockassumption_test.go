@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -28,6 +29,27 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 	)
 	pkg := func(extra string) string {
 		return `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"}` + extra + `}`
+	}
+	// gitLock is lock with qs installed from each of sources, the first at the root.
+	const (
+		commit   = "2a70b41d5a9eb377a5b730d3379d00f26368d1e4"
+		other    = "6a15e5fcbc495fb3a9f107e356b683404c1130bb"
+		fromGit  = "git+ssh://git@github.com/acme/qs.git#" + commit
+		registry = "https://registry.npmjs.org/qs/-/qs-6.11.0.tgz"
+	)
+	gitLock := func(sources ...string) string {
+		l := `{"name":"app","lockfileVersion":3,"packages":{` +
+			`"":{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"}},` +
+			`"node_modules/express":{"version":"4.19.2"}`
+		at := "node_modules/qs"
+		for _, src := range sources {
+			l += `,"` + at + `":{"version":"6.11.0","resolved":"` + src + `"}`
+			at = "node_modules/express/" + at
+		}
+		return l + `}}`
+	}
+	gitOverride := func(spec string, sources ...string) map[string]string {
+		return map[string]string{"package.json": pkg(`,"overrides":{"qs":"` + spec + `"}`), "package-lock.json": gitLock(sources...), "install.sh": "npm install\n"}
 	}
 	npm := func(extra map[string]string) map[string]string {
 		files := map[string]string{"package.json": pkg(""), "package-lock.json": lock}
@@ -63,6 +85,10 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"Dockerfile copies an .npmrc that names a registry into the home directory", npm(map[string]string{"ci/.npmrc": "registry=https://registry.example.test/\n", "Dockerfile": copied + "COPY ci/.npmrc /root\nRUN npm install\n"}), assumed},
 		{"npm install with an override that refers to the manifest's own range", npm(map[string]string{"package.json": pkg(`,"overrides":{"express":"$express"}`), "install.sh": "npm install\n"}), assumed},
 		{"npm install with an override the lock holds to", npm(map[string]string{"package.json": pkg(`,"overrides":{"express":"4.19.2"}`), "install.sh": "npm install\n"}), assumed},
+		{"npm install, an override names the repository the lock installs from", gitOverride("github:acme/qs", fromGit), assumed},
+		{"npm install, an override names that repository at the locked commit", gitOverride("github:acme/qs#"+commit, fromGit), assumed},
+		{"npm install, an override names that repository by URL", gitOverride("git+https://github.com/acme/qs.git", fromGit, "git+https://github.com/acme/qs.git#"+commit), assumed},
+		{"npm install, an override names that repository by shorthand ending in .git", gitOverride("github:acme/qs.git", fromGit), assumed},
 		{"yarn install", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install")}, assumed},
 		{"yarn --frozen-lockfile", map[string]string{"package.json": pkg(""), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn --frozen-lockfile")}, assumed},
 		{"pnpm install", map[string]string{"package.json": pkg(""), "pnpm-lock.yaml": pnpmLock, ".github/workflows/ci.yml": ci("pnpm install")}, assumed},
@@ -76,6 +102,14 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"npm run with arguments", npm(map[string]string{"package.json": pkg(`,"scripts":{"e2e":"mocha"}`), ".github/workflows/ci.yml": ci("npm run e2e -- --grep smoke")}), plain},
 		{"wrapper then npm start", npm(map[string]string{"Dockerfile": whole + "/usr/local/wait-for-it.sh db:27017 -- npm start\n"}), plain},
 		{"nx build", npm(map[string]string{"package.json": pkg(`,"scripts":{"build":"nx build"}`)}), plain},
+		{"npm install after inline code that prints a field of package.json", npm(map[string]string{".github/workflows/ci.yml": ci("node -p \"require('./package.json').version\" && npm install")}), plain},
+		{"npm install after a step that reads package.json in a command substitution", npm(map[string]string{".github/workflows/ci.yml": ci("echo \"version=$(jq -r '.version' package.json)\" >> $GITHUB_OUTPUT\n      - run: npm install")}), plain},
+		{"grep for an interpreter's name in package.json", npm(map[string]string{".github/workflows/ci.yml": ci("npm ci\n      - run: grep node package.json")}), plain},
+		{"npm install after a registry token is written to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo \"//registry.npmjs.org/:_authToken=${NPM_TOKEN}\" > .npmrc && npm install\n"}), assumed},
+		{"npm install after a registry token is added to .npmrc in an earlier step", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), ".github/workflows/ci.yml": ci("echo \"//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}\" >> .npmrc\n      - run: npm install")}), assumed},
+		{"npm install after a scoped registry and its token are written to the home .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo -e '@acme:registry=https://npm.pkg.github.com\\n//npm.pkg.github.com/:_authToken='\"$TOKEN\" > ~/.npmrc\nnpm install\n"}), assumed},
+		{"npm install after printf writes a registry to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "printf 'registry=https://registry.example.test/\\nalways-auth=true\\n' >> .npmrc && npm install\n"}), assumed},
+		{"npm install with an override after a registry token is written to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' > .npmrc && npm install\n"}), assumed},
 		{"jq reads package.json", npm(map[string]string{".github/workflows/ci.yml": ci("npm ci\n      - run: jq -r .version package.json")}), plain},
 		{"playwright browser install", npm(map[string]string{"package.json": `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"},"devDependencies":{"@playwright/test":"^1.40.0"},"scripts":{"pretest":"npx playwright install chromium"}}`,
 			"package-lock.json": `{"name":"app","lockfileVersion":3,"packages":{"":{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"},"devDependencies":{"@playwright/test":"^1.40.0"}},"node_modules/express":{"version":"4.19.2"},"node_modules/@playwright/test":{"version":"1.40.0","dev":true}}}`}), plain},
@@ -86,6 +120,7 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"npm install --no-package-lock", npm(map[string]string{"Dockerfile": whole + "npm install --no-package-lock\n"}), withheld},
 		{"npm install with no lock", map[string]string{"package.json": pkg(""), "other/package.json": pkg(""), "other/package-lock.json": lock, "Dockerfile": whole + "npm install\n"}, withheld},
 		{"npm install in a directory the lock above does not cover", npm(map[string]string{"api/package.json": api, "install.sh": "cd api && npm install\n"}), withheld},
+		{"npm install after inline code that names no build file", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "node -e \"require('fs').rmSync('tmp', { recursive: true, force: true });\" && npm install\n"}), assumed},
 		{"npm install beside a second package.json it does not install", npm(map[string]string{"api/package.json": api, "Dockerfile": whole + "npm install\n"}), assumed},
 		{"npm install, the lock does not cover the manifest", npm(map[string]string{"package.json": `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0","left-pad":"^1.3.0"}}`, "Dockerfile": whole + "npm install\n"}), withheld},
 		{"npm install under an .npmrc that turns the lock off", npm(map[string]string{".npmrc": "package-lock=false\n", "Dockerfile": whole + "npm install\n"}), withheld},
@@ -129,6 +164,47 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"Dockerfile adds an .npmrc to the home directory", npm(map[string]string{".npmrc": "registry=https://registry.example.test/\n", "Dockerfile": copied + "ADD .npmrc /root/.npmrc\nRUN npm install\n"}), withheld},
 		{"Dockerfile copies an .npmrc that turns the lock off into the home directory", npm(map[string]string{"ci/.npmrc": "package-lock=false\n", "Dockerfile": copied + "COPY ci/.npmrc /root\nRUN npm install\n"}), withheld},
 		{"pnpm install, an override keyed by a version selector", map[string]string{"package.json": pkg(`,"pnpm":{"overrides":{"express@<5":"4.19.2"}}`), "pnpm-lock.yaml": pnpmLock, ".github/workflows/ci.yml": ci("pnpm install")}, withheld},
+		{"npm install after a script's inline code removes the lock", npm(map[string]string{"package.json": pkg(`,"scripts":{"clean-install":"node -e \"const fs = require('fs'); fs.rmSync('node_modules', { recursive: true, force: true }); fs.rmSync('package-lock.json', { force: true });\" && npm install"}`)}), withheld},
+		{"npm install after inline code rewrites the manifest", npm(map[string]string{".github/workflows/ci.yml": ci("node -e \"require('fs').writeFileSync('./package.json', '{}')\"\n      - run: npm install")}), withheld},
+		{"npm install after inline code removes the lock named in a variable", npm(map[string]string{"install.sh": "node -e \"const f='package-lock.json'; const fs=require('fs'); fs.rmSync(f)\" && npm install\n"}), withheld},
+		{"npm install after inline code removes the lock in an arrow function", npm(map[string]string{".github/workflows/ci.yml": ci("node -e \"['package-lock.json'].forEach(f => require('fs').rmSync(f))\" && npm install")}), withheld},
+		{"npm install after inline code run through sudo removes the lock", npm(map[string]string{"install.sh": "sudo -E node -e \"require('fs').rmSync('package-lock.json')\" && npm install\n"}), withheld},
+		{"npm install after inline code run through cross-env removes the lock", npm(map[string]string{"package.json": pkg(`,"scripts":{"fresh":"cross-env CI=1 node -e \"require('fs').rmSync('package-lock.json')\" && npm install"}`)}), withheld},
+		{"npm install after inline code requires package.json and rewrites it", npm(map[string]string{"install.sh": "node -e \"const p=require('./package.json'); p.dependencies.express='5'; require('fs').writeFileSync('package.json', JSON.stringify(p))\" && npm install\n"}), withheld},
+		{"npm install after a token and a lock setting are written to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo -e \"//registry.npmjs.org/:_authToken=${NPM_TOKEN}\\npackage-lock=false\" > .npmrc && npm install\n"}), withheld},
+		{"npm install after a single-quoted token and lock setting are written to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo '//registry.npmjs.org/:_authToken=abc\\npackage-lock=false' > .npmrc && npm install\n"}), withheld},
+		{"npm install after a key held in a variable is written to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo \"${KEY}=false\" >> .npmrc && npm install\n"}), withheld},
+		{"npm install after a command's output is written to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo \"registry=$(cat ci/registry)\" >> .npmrc && npm install\n"}), withheld},
+		{"npm install after printf fills a format onto .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "printf '%s\\n' \"$NPMRC\" > .npmrc && npm install\n"}), withheld},
+		{"npm install after printf is handed an argument for its format", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "printf 'registry=https://registry.example.test/\\n' 'always-auth=true' > .npmrc && npm install\n"}), withheld},
+		{"npm install after a registry is written to package.json", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo registry=https://registry.example.test/ > package.json && npm install\n"}), withheld},
+		{"npm install after a registry is written to the lock", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo registry=https://registry.example.test/ >> package-lock.json && npm install\n"}), withheld},
+		{"npm install after a variable's text is written to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo \"$NPMRC\" > .npmrc && npm install\n"}), withheld},
+		{"npm install after a registry token is written to .npmrc and a second file", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo \"//registry.npmjs.org/:_authToken=${NPM_TOKEN}\" > package-lock.json > .npmrc && npm install\n"}), withheld},
+		{"npm install after a backquoted command's output is written to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo 'registry=https://registry.example.test/'`cat ci/suffix` > .npmrc && npm install\n"}), withheld},
+		{"npm install after an escaped byte is written to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo -e 'registry=https://registry.example.test/\\x0apackage-lock=false' > .npmrc && npm install\n"}), withheld},
+		{"npm install after a registry is written to an .npmrc under a computed directory", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo 'registry=https://registry.example.test/' > \"$(pwd)/.npmrc\" && npm install\n"}), withheld},
+		{"npm install after legacy-peer-deps is written to .npmrc", npm(map[string]string{"package.json": pkg(`,"overrides":{"qs":"6.11.0"}`), "install.sh": "echo legacy-peer-deps=true >> .npmrc && npm install\n"}), withheld},
+		{"npm install, an override names a repository for an alias the lock installs from the registry", map[string]string{
+			"package.json":      `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0","qs":"npm:bar@1.0.0"},"overrides":{"qs":"github:acme/qs"}}`,
+			"package-lock.json": `{"name":"app","lockfileVersion":3,"packages":{"":{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0","qs":"npm:bar@1.0.0"}},"node_modules/express":{"version":"4.19.2"},"node_modules/qs":{"name":"bar","version":"1.0.0","resolved":"https://registry.npmjs.org/bar/-/bar-1.0.0.tgz"}}}`,
+			"install.sh":        "npm install\n"}, withheld},
+		{"npm install, an override names a repository by a git+git URL", gitOverride("git+git://github.com/acme/qs", "git+git://github.com/acme/qs#"+commit), withheld},
+		{"npm install, an override names another repository than the lock installs from", gitOverride("github:acme/qs-fork", fromGit), withheld},
+		{"npm install, an override names another owner's repository", gitOverride("github:other/qs", fromGit), withheld},
+		{"npm install, an override names a commit the lock does not hold", gitOverride("github:acme/qs#"+other, fromGit), withheld},
+		{"npm install, an override names that repository in another case", gitOverride("github:Acme/qs", fromGit), withheld},
+		{"npm install, an override names a repository and a dependent is locked to a ref of it", map[string]string{"package.json": pkg(`,"overrides":{"qs":"github:acme/qs"}`), "install.sh": "npm install\n",
+			"package-lock.json": strings.Replace(gitLock(fromGit), `"node_modules/express":{`, `"node_modules/express":{"dependencies":{"qs":"github:acme/qs#main"},`, 1)}, withheld},
+		{"npm install, an override names a branch", gitOverride("github:acme/qs#main", fromGit), withheld},
+		{"npm install, an override names a branch and the lock holds no copy of it", gitOverride("github:acme/qs#main"), withheld},
+		{"npm install, an override names a repository and the lock installs from the registry", gitOverride("github:acme/qs", registry), withheld},
+		{"npm install, an override names a repository and one locked copy is from the registry", gitOverride("github:acme/qs", fromGit, registry), withheld},
+		{"npm install, an override names a repository and the lock records no commit", gitOverride("github:acme/qs", "git+ssh://git@github.com/acme/qs.git"), withheld},
+		{"npm install, an override names a repository and the lock records no source", gitOverride("github:acme/qs", ""), withheld},
+		{"npm install, an override names a repository on another host", gitOverride("git+https://gitlab.com/acme/qs.git", "git+https://gitlab.com/acme/qs.git#"+commit), withheld},
+		{"npm install, an override names a tarball", gitOverride("https://example.test/qs.tgz", fromGit), withheld},
+		{"yarn install, a resolution names a repository", map[string]string{"package.json": pkg(`,"resolutions":{"express":"github:acme/express"}`), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install")}, withheld},
 		{"npm install, a nested override", npm(map[string]string{"package.json": pkg(`,"overrides":{"express":{"qs":"6.11.0"}}`), "install.sh": "npm install\n"}), withheld},
 		{"npm install, an override pins a version the lock does not hold", npm(map[string]string{"package.json": pkg(`,"overrides":{"express":"4.19.0"}`), "install.sh": "npm install\n"}), withheld},
 		{"yarn install, a resolution pins a version the lock does not hold", map[string]string{"package.json": pkg(`,"resolutions":{"express":"4.19.0"}`), "yarn.lock": yarnLock, ".github/workflows/ci.yml": ci("yarn install")}, withheld},

@@ -1213,6 +1213,25 @@ func levelPair(super string) map[string][]byte {
 	return entries
 }
 
+// hiddenFieldPair is a base Util and its META-INF/versions/11 override, where only the
+// override declares static field MSG, which ancestor anc (a superclass, or with iface a
+// superinterface) also declares, as dnsjava's DohResolver hides DohResolverCommon's.
+func hiddenFieldPair(anc string, iface bool) map[string][]byte {
+	super, ifaces, ancFlags := anc, []string(nil), uint16(0x0021)
+	if iface {
+		super, ifaces, ancFlags = "java/lang/Object", []string{anc}, 0x0601
+	}
+	msg := [][2]string{{"MSG", "Ljava/lang/String;"}}
+	run := []xmethod{{"run", "()V", accPublicStatic, ret}}
+	b := &cpb{}
+	entries := map[string][]byte{"META-INF/versions/11/com/evil/netkit/Util.class": emitClassF(b, "com/evil/netkit/Util", super, ifaces, 0x0021, run, nil, msg)}
+	b = &cpb{}
+	entries["com/evil/netkit/Util.class"] = emitClassF(b, "com/evil/netkit/Util", super, ifaces, 0x0021, run, nil, nil)
+	b = &cpb{}
+	entries[anc+".class"] = emitClassF(b, anc, "java/lang/Object", nil, ancFlags, nil, nil, msg)
+	return entries
+}
+
 // utilPairI is utilPair with direct superinterfaces on both bodies.
 func utilPairI(super string, ifaces []string, more ...xmethod) map[string][]byte {
 	b := &cpb{}
@@ -1271,6 +1290,14 @@ func TestBytecodeReach_MultiReleaseOverrides(t *testing.T) {
 		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
 		// The graph reads a field only for the class a getstatic or putstatic initializes, and
 		// a java/ declarer's initializer is JDK code.
+		// Initializing the merged class initializes its superclasses, so resolving a hidden
+		// superclass field to it over-approximates; a superinterface is not initialized.
+		{"one-sided field hiding a loaded superclass's field: searched", func() map[string][]byte {
+			return hiddenFieldPair("com/evil/netkit/Base", false)
+		}, "com/evil/netkit/Util", false, ""},
+		{"one-sided field hiding a loaded superinterface's field: multi_release_unmerged", func() map[string][]byte {
+			return hiddenFieldPair("com/evil/netkit/Consts", true)
+		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
 		{"one-sided field under an unread java/ ancestor: searched", func() map[string][]byte {
 			return levelPair("java/lang/Enum")
 		}, "com/evil/netkit/Util", false, ""},

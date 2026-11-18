@@ -248,6 +248,7 @@ func TestLoadFixtureRejects(t *testing.T) {
 		{name: "unknown scenario field", scenario: scenarioYAML(sharedIntel()) + "extra: 1\n", kind: KindFixtureInvalid, msg: "not found"},
 		{name: "go scenario without a toolchain", scenario: strings.Replace(scenarioYAML(sharedIntel()), "  go: 1.23.12\n", "", 1), kind: KindFixtureInvalid, msg: "pins build.go"},
 		{name: "scan.flags restates a harness flag", scenario: scenarioYAML(sharedIntel()) + "scan:\n  flags: [\"-scan-timeout=1m\"]\n", kind: KindFixtureInvalid, msg: "-scan-timeout"},
+		{name: "scan.flags restates the subject toolchain", scenario: scenarioYAML(sharedIntel()) + "scan:\n  flags: [\"-subject-go-version=go1.22.0\"]\n", kind: KindFixtureInvalid, msg: "-subject-go-version"},
 		{name: "unknown truth", expect: strings.Replace(expectYAML, "truth: reachable", "truth: maybe", 1), kind: KindFixtureInvalid, msg: "truth"},
 		{name: "always-wrong floor", expect: strings.Replace(strings.Replace(expectYAML, "truth: reachable", "truth: unreachable", 1),
 			"floor: reachable_candidate", "floor: disqualified", 1), kind: KindFixtureInvalid, msg: "always wrong"},

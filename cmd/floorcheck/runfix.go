@@ -557,8 +557,8 @@ func scanAndCompare(ctx context.Context, o runOptions, name string, fx Fixture, 
 	return compareFixture(fx, obs, prior, priorName, defaultRules)
 }
 
-// scanArgs is the scanner's command line for a fixture: the flags floor/scan.sh passes, from the
-// scenario, the scenario's pinned Go release as the subject's toolchain, then the scenario's own
+// scanArgs is the scanner's command line for a fixture: the harness's flags from the scenario,
+// with the scenario's pinned Go release as the subject's toolchain, then the scenario's own
 // scan.flags.
 func scanArgs(fx Fixture, target, outDir, timeout string) []string {
 	repo, _ := subjectRepo(fx.Scenario.Repo)

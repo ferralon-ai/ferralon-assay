@@ -148,7 +148,7 @@ var runtimeLane = map[string][]string{
 // harnessFlags are the scanner flags the harness sets itself; scan.flags may not restate them.
 var harnessFlags = []string{
 	"target", "out", "subject-repo", "revision", "commit", "advisory-corpus", "advisory-corpus-policy",
-	"advisory-signals", "require-advisory-corpus", "scan-timeout",
+	"advisory-signals", "require-advisory-corpus", "scan-timeout", "subject-go-version",
 }
 
 // Fixture is a loaded, verified fixture.

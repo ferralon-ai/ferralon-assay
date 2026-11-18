@@ -103,10 +103,12 @@ func loadProgram(buildDir string) (*program, error) {
 	prog := &program{methodsByKey: map[string][]string{}, concreteByKey: map[string][]string{}}
 	var srcClasses []sourceClass
 	var validatedBy []string
+	wc := newWildcardCheck()
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			prog.readFailed = true
+			wc.readFailed = true
 			continue
 		}
 		src := string(data)
@@ -115,6 +117,7 @@ func loadProgram(buildDir string) (*program, error) {
 			prog.skipped = true
 		}
 		validatedBy = append(validatedBy, pr.validatedBy...)
+		wc.add(pr)
 		fp := fileParse{path: f, pkg: pr.pkg, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses}
 		prog.files = append(prog.files, fp)
 		for _, d := range pr.decls {
@@ -134,7 +137,7 @@ func loadProgram(buildDir string) (*program, error) {
 		srcClasses = append(srcClasses, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
 	}
 	rootConstraintValidators(prog.files, srcClasses)
-	if !constraintValidatorsRooted(validatedBy, srcClasses) {
+	if !wc.ok() || !constraintValidatorsRooted(validatedBy, srcClasses) {
 		prog.skipped = true
 	}
 	prog.beanData = buildSourceBeanData(srcClasses)

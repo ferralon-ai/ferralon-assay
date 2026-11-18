@@ -189,3 +189,64 @@ func constraintValidatorsRooted(names []string, classes []sourceClass) bool {
 	}
 	return true
 }
+
+// wildcardCheck is the program-level half of resolving a meta-annotation through
+// "import java.lang.annotation.*;" (parseFile does the per-file conditions). The name
+// binds to java.lang.annotation only if the file's package declares no top-level type of
+// that name (package scope shadows an on-demand import, JLS 6.4.1). The package's type
+// set is established only from first-party source: it fails closed when any file could not
+// be read, when any file in the package skipped a construct (a declaration may hide in
+// it), and, as a residual, it does not see dependency classes, because the lexical pass
+// has no classfile graph; a split package that a dependency jar also contributes to is
+// not detected.
+type wildcardCheck struct {
+	claims     []wildcardClaim
+	top        map[string]map[string]bool // package -> top-level type names
+	skipped    map[string]bool            // package -> some file skipped a construct
+	readFailed bool
+}
+
+type wildcardClaim struct {
+	pkg   string
+	names []string
+}
+
+func newWildcardCheck() *wildcardCheck {
+	return &wildcardCheck{top: map[string]map[string]bool{}, skipped: map[string]bool{}}
+}
+
+func (w *wildcardCheck) add(pr parseResult) {
+	if w.top[pr.pkg] == nil {
+		w.top[pr.pkg] = map[string]bool{}
+	}
+	for _, n := range pr.topLevel {
+		w.top[pr.pkg][n] = true
+	}
+	if pr.skipped {
+		w.skipped[pr.pkg] = true
+	}
+	if len(pr.wildcardNames) > 0 {
+		w.claims = append(w.claims, wildcardClaim{pkg: pr.pkg, names: pr.wildcardNames})
+	}
+}
+
+// ok reports whether every claimed name binds to java.lang.annotation.
+func (w *wildcardCheck) ok() bool {
+	if len(w.claims) == 0 {
+		return true
+	}
+	if w.readFailed {
+		return false
+	}
+	for _, c := range w.claims {
+		if w.skipped[c.pkg] {
+			return false
+		}
+		for _, n := range c.names {
+			if w.top[c.pkg][n] {
+				return false
+			}
+		}
+	}
+	return true
+}

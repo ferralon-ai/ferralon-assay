@@ -64,6 +64,14 @@ type parseResult struct {
 	// (constraintValidatorsRooted); parseFile cannot see other files, so the program-level
 	// caller makes that check and treats a failure as skipped.
 	validatedBy []string
+	// wildcardNames are the java.lang.annotation meta-annotation simple names an admitted
+	// annotation type reaches only through "import java.lang.annotation.*;". They bind to
+	// that package only if no same-package type declares the name (wildcardCheck, program
+	// level); a failure there marks the run skipped.
+	wildcardNames []string
+	// topLevel are the simple names of every top-level type the file declares, annotation
+	// types included: the package scope that shadows an on-demand import.
+	topLevel []string
 }
 
 // stripJava removes comments, string literals, char literals, and text-block
@@ -194,7 +202,8 @@ func parseFile(src string) parseResult {
 	// imports maps the simple name of each single-type import to its qualified
 	// name; wildcard and static imports are not recorded (annotationTypeHeaderInert
 	// treats a name they could supply as unresolved).
-	imports := map[string]string{}
+	imports := importScope{single: map[string]string{}}
+	declared := map[string]bool{} // every type name declared anywhere in the file
 
 	i := 0
 	for i < n {
@@ -239,9 +248,16 @@ func parseFile(src string) parseResult {
 			// declares partiality: an annotation type's meta-annotations give it
 			// dispatch or wiring meaning the lane does not model.
 			if word == "interface" && precededByAt(r, i) {
-				if vb, ok := annotationTypeHeaderInert(r, i, imports, len(typeStack) > 0); ok {
+				if an, _ := readWord(r, skipSpace(r, next)); an != "" {
+					declared[an] = true
+					if len(typeStack) == 0 {
+						res.topLevel = append(res.topLevel, an)
+					}
+				}
+				if vb, wn, ok := annotationTypeHeaderInert(r, i, imports, len(typeStack) > 0); ok {
 					if end, ok := annotationTypeEnd(r, next); ok {
 						res.validatedBy = append(res.validatedBy, vb...)
+						res.wildcardNames = append(res.wildcardNames, wn...)
 						i = end
 						continue
 					}
@@ -268,6 +284,10 @@ func parseFile(src string) parseResult {
 					continue
 				}
 				enclosing := enclosingTypes(typeStack)
+				declared[name] = true
+				if len(typeStack) == 0 {
+					res.topLevel = append(res.topLevel, name)
+				}
 				res.decls = append(res.decls, decl{kind: kindType, name: name, enclosing: enclosing})
 				fr := frame{name: name, isEnum: word == "enum"}
 				if fr.isEnum {
@@ -295,7 +315,7 @@ func parseFile(src string) parseResult {
 				// skip to the terminating ';'
 				end := skipTo(r, next, ';')
 				if word == "import" {
-					recordImport(imports, r[next:end])
+					recordImport(&imports, r[next:end])
 				}
 				i = end
 				continue
@@ -323,6 +343,13 @@ func parseFile(src string) parseResult {
 	// rune count, so the two index identically; the length guard in parseAnnotation is a
 	// belt-and-suspenders check.
 	res.calls, res.ingresses = parseCallsAndIngresses(r, []rune(src))
+	// A same-file declaration of a meta-annotation's name shadows the on-demand import
+	// (condition 3); the check is whole-file because the declaration may follow the use.
+	for _, n := range res.wildcardNames {
+		if declared[n] {
+			res.skipped = true
+		}
+	}
 	return res
 }
 
@@ -1119,15 +1146,27 @@ func constraintValidatedBy(r []rune, pos, end int) ([]string, bool) {
 	return out, true
 }
 
-// recordImport records an import under its last segment; text is what follows the
-// "import" keyword through the ';'. A static ("statica.B.C") or wildcard ("a.b.*")
-// entry never equals a qualified name in inertMetaNames, so it resolves nothing.
-func recordImport(imports map[string]string, text []rune) {
+// importScope is a file's import declarations. single maps the simple name of each
+// single-type import (static ones included, as "statica.B.C") to its text; onDemand lists
+// every "x.*" import, static ones with their "static" prefix.
+type importScope struct {
+	single   map[string]string
+	onDemand []string
+}
+
+// recordImport records an import; text is what follows the "import" keyword through
+// the ';'. A static single import never equals a qualified name in inertMetaNames, so
+// it resolves nothing (but its key still shadows an on-demand import).
+func recordImport(s *importScope, text []rune) {
 	name := strings.Join(strings.Fields(strings.TrimSuffix(string(text), ";")), "")
 	if name == "" {
 		return
 	}
-	imports[name[strings.LastIndexByte(name, '.')+1:]] = name
+	if strings.HasSuffix(name, ".*") {
+		s.onDemand = append(s.onDemand, name)
+		return
+	}
+	s.single[name[strings.LastIndexByte(name, '.')+1:]] = name
 }
 
 // annotationTypeHeaderInert reports whether every annotation on the "@interface"
@@ -1139,8 +1178,8 @@ func recordImport(imports map[string]string, text []rune) {
 // name); a fully qualified name needs neither. The header is the run of text back
 // to the previous ';', '{' or '}' outside an argument list; it must hold nothing but annotations and the
 // modifiers an annotation type allows.
-func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nested bool) ([]string, bool) {
-	var validatedBy []string
+func annotationTypeHeaderInert(r []rune, kw int, imports importScope, nested bool) ([]string, []string, bool) {
+	var validatedBy, wildcard []string
 	at := kw - 1
 	for at > 0 && r[at] != '@' {
 		at--
@@ -1152,7 +1191,7 @@ func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nest
 			depth++
 		} else if c == '(' {
 			if depth == 0 {
-				return nil, false
+				return nil, nil, false
 			}
 			depth--
 		} else if depth == 0 && (c == ';' || c == '{' || c == '}') {
@@ -1169,17 +1208,20 @@ func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nest
 		if r[pos] == '@' {
 			end, ok := annotationUse(r, pos)
 			if !ok {
-				return nil, false
+				return nil, nil, false
 			}
 			name, _ := annotationName(r, pos)
-			full, ok := inertMetaName(name, imports, nested)
+			full, viaWildcard, ok := inertMetaName(name, imports, nested)
 			if !ok {
-				return nil, false
+				return nil, nil, false
+			}
+			if viaWildcard {
+				wildcard = append(wildcard, name)
 			}
 			if constraintNames[full] {
 				vb, ok := constraintValidatedBy(r, pos, end)
 				if !ok {
-					return nil, false
+					return nil, nil, false
 				}
 				validatedBy = append(validatedBy, vb...)
 			}
@@ -1188,11 +1230,11 @@ func annotationTypeHeaderInert(r []rune, kw int, imports map[string]string, nest
 		}
 		w, nx := readWord(r, pos)
 		if !annotationTypeModifiers[w] {
-			return nil, false
+			return nil, nil, false
 		}
 		pos = nx
 	}
-	return validatedBy, true
+	return validatedBy, wildcard, true
 }
 
 var annotationTypeModifiers = map[string]bool{
@@ -1216,10 +1258,33 @@ func annotationName(r []rune, pos int) (string, int) {
 }
 
 // inertMetaName resolves name to its qualified name when that is in inertMetaNames.
-func inertMetaName(name string, imports map[string]string, nested bool) (string, bool) {
+// viaWildcard reports a simple name bound through "import java.lang.annotation.*;"; the
+// caller still owes the same-file and same-package checks.
+//
+// JLS 6.4.1: a single-type import and a type declared in the compilation unit or its
+// package shadow an on-demand import, and an on-demand import is ambiguous with another
+// that supplies the same name. So a simple name binds to java.lang.annotation through the
+// wildcard only when (1) no single-type or single-static import has that name, (2) the
+// annotation type is top-level (an enclosing type's member types would shadow), (3) the
+// file declares no type of that name (checked at end of parseFile), (4) no same-package
+// type has it (wildcardCheck), and (5) java.lang.annotation.* is the file's only
+// on-demand import. Another on-demand import names a package or type whose members this
+// lane cannot enumerate (dependency jars are not read here), so its absence of the name
+// is unprovable and the name stays unresolved. java.lang's implicit import supplies none
+// of the five names.
+func inertMetaName(name string, imports importScope, nested bool) (full string, viaWildcard, ok bool) {
 	if strings.Contains(name, ".") {
-		return name, inertMetaNames[name]
+		return name, false, inertMetaNames[name]
 	}
-	full := imports[name]
-	return full, !nested && inertMetaNames[full]
+	if nested {
+		return "", false, false
+	}
+	if full = imports.single[name]; full != "" {
+		return full, false, inertMetaNames[full]
+	}
+	full = "java.lang.annotation." + name
+	if inertMetaNames[full] && len(imports.onDemand) == 1 && imports.onDemand[0] == "java.lang.annotation.*" {
+		return full, true, true
+	}
+	return "", false, false
 }

@@ -367,8 +367,8 @@ import java.lang.annotation.Retention;
 		{"import of another package's Target", `package p;
 import com.acme.Target;
 @Target @interface A {}`, true},
-		{"wildcard import could supply Target", `package p;
-import java.lang.annotation.*;
+		{"wildcard of another package could supply Target", `package p;
+import com.acme.*;
 @Target(ElementType.METHOD) @interface A {}`, true},
 		{"static import of Target", `package p;
 import static com.acme.Marks.Target;

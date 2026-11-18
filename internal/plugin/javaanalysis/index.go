@@ -44,11 +44,13 @@ func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest) (plugin.Sym
 		readFailed  bool
 		skipped     bool
 		validatedBy []string
+		wc          = newWildcardCheck()
 	)
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			readFailed = true
+			wc.readFailed = true
 			continue
 		}
 		pr := parseFile(string(data))
@@ -56,9 +58,13 @@ func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest) (plugin.Sym
 			skipped = true
 		}
 		syms = append(syms, symbolsFromParse(pr)...)
+		wc.add(pr)
 		if len(pr.validatedBy) > 0 {
 			validatedBy = append(validatedBy, pr.validatedBy...)
 		}
+	}
+	if !wc.ok() {
+		skipped = true
 	}
 	if len(validatedBy) > 0 && !constraintValidatorsRooted(validatedBy, firstPartyClasses(files)) {
 		skipped = true

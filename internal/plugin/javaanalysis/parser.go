@@ -59,11 +59,12 @@ type parseResult struct {
 	calls     []callSite      // method-call expressions inside method bodies
 	ingresses []ingressMarker // annotation/servlet entry-point markers
 	skipped   bool            // a construct was not fully modeled (e.g. an annotation type body that may hold code)
-	// validatedBy holds the simple class names an admitted @Constraint annotation type
-	// names. The file is accepted only if each is a class the validator entry family roots
-	// (rootedConstraintValidator); parseFile cannot see other files, so the program-level
-	// caller makes that check and treats a failure as skipped.
-	validatedBy []string
+	// validatedBy holds the classes an admitted @Constraint annotation type names. The file
+	// is accepted only if each is a class the validator entry family roots
+	// (rootedConstraintValidator) and the first-party declaration of its simple name has a
+	// qualified name the literal can denote; parseFile cannot see other files, so the
+	// program-level caller makes that check and treats a failure as skipped.
+	validatedBy []validatedClass
 	// wildcardNames are the java.lang.annotation meta-annotation simple names an admitted
 	// annotation type reaches only through "import java.lang.annotation.*;". They bind to
 	// that package only if no same-package type declares the name (wildcardCheck, program
@@ -254,7 +255,7 @@ func parseFile(src string) parseResult {
 						res.topLevel = append(res.topLevel, an)
 					}
 				}
-				if vb, wn, ok := annotationTypeHeaderInert(r, i, imports, len(typeStack) > 0); ok {
+				if vb, wn, ok := annotationTypeHeaderInert(r, i, imports, res.pkg, len(typeStack) > 0); ok {
 					if end, ok := annotationTypeEnd(r, next); ok {
 						res.validatedBy = append(res.validatedBy, vb...)
 						res.wildcardNames = append(res.wildcardNames, wn...)
@@ -1127,8 +1128,17 @@ var validatedByArg = regexp.MustCompile(`^@[\w.$]+\(validatedBy=(?:(` + classLit
 
 const classLit = `[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.class`
 
-// constraintValidatedBy returns the simple class names in the @Constraint use r[pos:end].
-func constraintValidatedBy(r []rune, pos, end int) ([]string, bool) {
+// validatedClass is one class literal of a validatedBy element: its simple name, and the
+// qualified names the literal can denote from where it is written. quals is empty when the
+// scan cannot resolve the literal (a name only an on-demand import could supply, or one an
+// enclosing type could shadow); such a class is never admitted.
+type validatedClass struct {
+	name  string
+	quals []string
+}
+
+// constraintValidatedBy returns the classes named in the @Constraint use r[pos:end].
+func constraintValidatedBy(r []rune, pos, end int, imports importScope, pkg string, nested bool) ([]validatedClass, bool) {
 	text := strings.Join(strings.Fields(string(r[pos:end])), "")
 	m := validatedByArg.FindStringSubmatch(text)
 	if m == nil {
@@ -1138,12 +1148,47 @@ func constraintValidatedBy(r []rune, pos, end int) ([]string, bool) {
 	if list == "" {
 		list = m[2]
 	}
-	var out []string
+	var out []validatedClass
 	for _, lit := range strings.Split(list, ",") {
 		lit = strings.TrimSuffix(lit, ".class")
-		out = append(out, lit[strings.LastIndexByte(lit, '.')+1:])
+		out = append(out, validatedClass{name: lit[strings.LastIndexByte(lit, '.')+1:], quals: literalQualifiedNames(lit, imports, pkg, nested)})
 	}
 	return out, true
+}
+
+// literalQualifiedNames lists the qualified names a class literal can denote. A first
+// segment that a single-type import binds expands through that import (a static import
+// resolves nothing). Otherwise a dotted literal is read as written, and also as a
+// member-type path rooted in the annotation's own package ("Ann.V"); a simple name binds
+// in the annotation's own package, which shadows an on-demand import, so a name only an
+// on-demand import could supply never matches a first-party declaration. A nested
+// annotation type's simple name could be an enclosing type's member, so it resolves nothing.
+func literalQualifiedNames(lit string, imports importScope, pkg string, nested bool) []string {
+	first, rest, dotted := strings.Cut(lit, ".")
+	if target := imports.single[first]; target != "" {
+		if strings.HasPrefix(target, "static") {
+			return nil
+		}
+		if dotted {
+			return []string{target + "." + rest}
+		}
+		return []string{target}
+	}
+	if !dotted {
+		if nested {
+			return nil
+		}
+		return []string{qualify(pkg, lit)}
+	}
+	return []string{lit, qualify(pkg, lit)}
+}
+
+// qualify prefixes a package, if any.
+func qualify(pkg, name string) string {
+	if pkg == "" {
+		return name
+	}
+	return pkg + "." + name
 }
 
 // importScope is a file's import declarations. single maps the simple name of each
@@ -1178,8 +1223,9 @@ func recordImport(s *importScope, text []rune) {
 // name); a fully qualified name needs neither. The header is the run of text back
 // to the previous ';', '{' or '}' outside an argument list; it must hold nothing but annotations and the
 // modifiers an annotation type allows.
-func annotationTypeHeaderInert(r []rune, kw int, imports importScope, nested bool) ([]string, []string, bool) {
-	var validatedBy, wildcard []string
+func annotationTypeHeaderInert(r []rune, kw int, imports importScope, pkg string, nested bool) ([]validatedClass, []string, bool) {
+	var validatedBy []validatedClass
+	var wildcard []string
 	at := kw - 1
 	for at > 0 && r[at] != '@' {
 		at--
@@ -1219,7 +1265,7 @@ func annotationTypeHeaderInert(r []rune, kw int, imports importScope, nested boo
 				wildcard = append(wildcard, name)
 			}
 			if constraintNames[full] {
-				vb, ok := constraintValidatedBy(r, pos, end)
+				vb, ok := constraintValidatedBy(r, pos, end, imports, pkg, nested)
 				if !ok {
 					return nil, nil, false
 				}

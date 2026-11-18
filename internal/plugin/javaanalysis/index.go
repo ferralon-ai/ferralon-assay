@@ -22,7 +22,7 @@ import (
 //     not model, degrades Partiality to declared-partial (PartialReasonToolFailure
 //     for read failures, PartialReasonUnsupported for skipped constructs). The
 //     result NEVER renders an unknown as a complete index.
-func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest) (plugin.SymbolIndexResult, error) {
+func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest, opts ...Option) (plugin.SymbolIndexResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
 		return plugin.SymbolIndexResult{}, fmt.Errorf("javaanalysis: stat build dir %q: %w", req.BuildDir, err)
@@ -43,7 +43,7 @@ func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest) (plugin.Sym
 		syms        []plugin.Symbol
 		readFailed  bool
 		skipped     bool
-		validatedBy []string
+		validatedBy []validatedClass
 		wc          = newWildcardCheck()
 	)
 	for _, f := range files {
@@ -63,10 +63,10 @@ func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest) (plugin.Sym
 			validatedBy = append(validatedBy, pr.validatedBy...)
 		}
 	}
-	if !wc.ok() {
+	if !wc.ok() || !wildcardsClearOfDependencies(wc.claims, req.BuildDir, opts...) {
 		skipped = true
 	}
-	if len(validatedBy) > 0 && !validatedByRooted(&program{rootedValidators: rootedValidatorsOf(req.BuildDir, files)}, validatedBy) {
+	if len(validatedBy) > 0 && !validatedByRooted(validatorProgramOf(req.BuildDir, files), validatedBy) {
 		skipped = true
 	}
 

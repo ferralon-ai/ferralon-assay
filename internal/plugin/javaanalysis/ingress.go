@@ -21,6 +21,9 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest, opts ..
 	if err != nil {
 		return plugin.IngressResult{}, err
 	}
+	if !prog.skipped && !wildcardsClearOfDependencies(prog.wildcardClaims, req.BuildDir, opts...) {
+		prog.skipped = true
+	}
 
 	seen := map[string]bool{}
 	var ingresses []plugin.Ingress

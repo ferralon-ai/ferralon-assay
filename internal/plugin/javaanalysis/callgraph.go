@@ -29,8 +29,11 @@ type program struct {
 	// isValid(2) the validator.constraint family roots, on the class or a first-party
 	// ancestor. See rootedConstraintValidator.
 	rootedValidators map[string]bool
-	readFailed       bool
-	skipped          bool
+	// firstPartyQualified maps the simple name of each main-source class declared once to
+	// its qualified name; validatedByRooted checks a validatedBy literal against it.
+	firstPartyQualified map[string]string
+	readFailed          bool
+	skipped             bool
 	// methodsByKey maps "name/arity" → the SCIP ids of every declared method with
 	// that simple name and arity. A single entry resolves unambiguously; multiple
 	// (or zero) entries mean the lexical callee cannot be soundly resolved.
@@ -110,7 +113,7 @@ func loadProgram(buildDir string) (*program, error) {
 
 	prog := &program{methodsByKey: map[string][]string{}, concreteByKey: map[string][]string{}}
 	var srcClasses, mainClasses []sourceClass
-	var validatedBy []string
+	var validatedBy []validatedClass
 	wc := newWildcardCheck()
 	for _, f := range files {
 		data, err := os.ReadFile(f)
@@ -149,6 +152,7 @@ func loadProgram(buildDir string) (*program, error) {
 		}
 	}
 	prog.rootedValidators = rootConstraintValidators(buildDir, prog.files, mainClasses)
+	prog.firstPartyQualified = firstPartyQualifiedNames(mainClasses)
 	prog.wildcardClaims = wc.claims
 	if !wc.ok() || !validatedByRooted(prog, validatedBy) {
 		prog.skipped = true

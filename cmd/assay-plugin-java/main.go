@@ -108,7 +108,7 @@ func dispatch(ctx context.Context, req plugin.Request, opts ...javaanalysis.Opti
 		if req.IndexSymbols == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing index_symbols request", req.Op)
 		}
-		res, err := javaanalysis.IndexSymbols(ctx, *req.IndexSymbols)
+		res, err := javaanalysis.IndexSymbols(ctx, *req.IndexSymbols, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}

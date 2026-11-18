@@ -2,6 +2,7 @@ package javaanalysis
 
 import (
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jvmingress"
@@ -133,22 +134,48 @@ func rootedConstraintValidator(prog *program, name string) bool {
 }
 
 // validatedByRooted reports whether every class an admitted @Constraint names is a class
-// rootedConstraintValidator accepts. An empty list holds trivially; any name that is
-// unresolved, ambiguous, dependency-backed or without a rooted isValid(2) makes it false
-// and the run stays partial: the annotation's validatedBy class would run with no root.
-func validatedByRooted(prog *program, names []string) bool {
-	for _, n := range names {
-		if !rootedConstraintValidator(prog, n) {
+// rootedConstraintValidator accepts and is the class the literal denotes. The rooted check
+// is by simple name, so a literal that names a dependency class (a qualified name, or an
+// import) while a first-party class shares the simple name would otherwise pass: the
+// unique first-party declaration of the simple name must have a qualified name the literal
+// can denote (package plus enclosing path). An empty list holds trivially; any name that is
+// unresolved, ambiguous, dependency-backed, a different class, or without a rooted
+// isValid(2) makes it false and the run stays partial: the annotation's validatedBy class
+// would run with no root.
+func validatedByRooted(prog *program, classes []validatedClass) bool {
+	for _, c := range classes {
+		if !rootedConstraintValidator(prog, c.name) {
+			return false
+		}
+		if !slices.Contains(c.quals, prog.firstPartyQualified[c.name]) {
 			return false
 		}
 	}
 	return true
 }
 
-// rootedValidatorsOf runs the validator rooting over the given source files and returns
-// its rooted-name set, for callers (the symbol index) that have no program. Test-source
-// files get no marker from rootConstraintValidators, so their classes are never rooted.
-func rootedValidatorsOf(buildDir string, files []string) map[string]bool {
+// firstPartyQualifiedNames maps the simple name of each non-local first-party class that
+// is declared once to its qualified name: package plus enclosing path, with nested types
+// dot-joined. A name declared more than once has no entry.
+func firstPartyQualifiedNames(classes []sourceClass) map[string]string {
+	count := map[string]int{}
+	for _, sc := range classes {
+		count[sc.name]++
+	}
+	out := map[string]string{}
+	for _, sc := range classes {
+		if count[sc.name] == 1 && !sc.local {
+			out[sc.name] = qualify(sc.pkg, strings.Join(sc.enclosing, "."))
+		}
+	}
+	return out
+}
+
+// validatorProgramOf runs the validator rooting over the given source files and returns a
+// program holding what validatedByRooted reads, for callers (the symbol index) that have no
+// full program. Only main-source classes count, as in loadProgram: a test-source class
+// gets no marker from rootConstraintValidators and is not a first-party declaration here.
+func validatorProgramOf(buildDir string, files []string) *program {
 	var parsed []fileParse
 	var main []sourceClass
 	for _, f := range files {
@@ -159,9 +186,11 @@ func rootedValidatorsOf(buildDir string, files []string) map[string]bool {
 		src := string(data)
 		pr := parseFile(src)
 		parsed = append(parsed, fileParse{path: f, pkg: pr.pkg, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses})
-		main = append(main, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
+		if isMainSource(buildDir, f) {
+			main = append(main, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
+		}
 	}
-	return rootConstraintValidators(buildDir, parsed, main)
+	return &program{rootedValidators: rootConstraintValidators(buildDir, parsed, main), firstPartyQualified: firstPartyQualifiedNames(main)}
 }
 
 // scipValidatorMethods returns the isValid and initialize method symbols the SCIP index
@@ -312,8 +341,7 @@ func (w *wildcardCheck) ok() bool {
 // shadows an on-demand import, JLS 6.4.1; a split package may take types from a jar). It
 // needs the opened classes, so it runs where the dependency graph is built. A graph that
 // is absent or not complete cannot establish the package's contents, so the claim fails
-// closed. Only the call graph has the dependency graph; the other operations do not read
-// jars.
+// closed. Every operation that parses first-party source runs it.
 func wildcardClearOfDependencies(claims []wildcardClaim, dg *dependencyGraph) bool {
 	if len(claims) == 0 {
 		return true
@@ -336,4 +364,14 @@ func wildcardClearOfDependencies(claims []wildcardClaim, dg *dependencyGraph) bo
 		}
 	}
 	return true
+}
+
+// wildcardsClearOfDependencies opens the dependency graph for an operation that has none
+// and applies wildcardClearOfDependencies. With no wildcard claim it opens nothing.
+func wildcardsClearOfDependencies(claims []wildcardClaim, buildDir string, opts ...Option) bool {
+	if len(claims) == 0 {
+		return true
+	}
+	dg, _ := buildDependencyGraph(buildDir, opts...)
+	return wildcardClearOfDependencies(claims, dg)
 }

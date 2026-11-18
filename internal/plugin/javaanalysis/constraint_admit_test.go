@@ -102,32 +102,75 @@ import jakarta.validation.Constraint;
 			if pr.skipped != tt.wantSkipped {
 				t.Errorf("skipped = %v, want %v", pr.skipped, tt.wantSkipped)
 			}
-			if !slices.Equal(pr.validatedBy, tt.wantNames) {
-				t.Errorf("validatedBy = %v, want %v", pr.validatedBy, tt.wantNames)
+			var names []string
+			for _, c := range pr.validatedBy {
+				names = append(names, c.name)
+			}
+			if !slices.Equal(names, tt.wantNames) {
+				t.Errorf("validatedBy = %v, want %v", names, tt.wantNames)
 			}
 		})
 	}
 }
 
-func TestValidatedByRooted(t *testing.T) {
-	// The program-level half asks #522's rootedConstraintValidator about every named class.
-	prog := &program{rootedValidators: map[string]bool{"A": true, "B": true}}
+func TestLiteralQualifiedNames(t *testing.T) {
+	imp := importScope{single: map[string]string{"X": "org.lib.X", "Holder": "org.lib.Holder", "S": "staticcom.acme.M.S"}}
 	tests := []struct {
-		name  string
-		prog  *program
-		names []string
-		want  bool
+		name   string
+		lit    string
+		nested bool
+		want   []string
 	}{
-		{"no constraint", prog, nil, true},
-		{"every name rooted", prog, []string{"A", "B"}, true},
-		{"one of two not rooted", prog, []string{"A", "C"}, false},
-		{"none rooted", prog, []string{"C"}, false},
-		{"family absent: no rooted set", &program{}, []string{"A"}, false},
-		{"no program", nil, []string{"A"}, false},
+		{"simple name, no import: the annotation's package", "V", false, []string{"com.acme.V"}},
+		{"simple name through a single-type import", "X", false, []string{"org.lib.X"}},
+		{"simple name through a static import", "S", false, nil},
+		{"qualified, read as written or as a member path of the package", "org.lib.X", false, []string{"org.lib.X", "com.acme.org.lib.X"}},
+		{"member path of a first-party type", "Ann.V", false, []string{"Ann.V", "com.acme.Ann.V"}},
+		{"member path of an imported type", "Holder.V", false, []string{"org.lib.Holder.V"}},
+		{"simple name in a nested annotation type", "V", true, nil},
+		{"simple name through an import in a nested annotation type", "X", true, []string{"org.lib.X"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := validatedByRooted(tt.prog, tt.names); got != tt.want {
+			if got := literalQualifiedNames(tt.lit, imp, "com.acme", tt.nested); !slices.Equal(got, tt.want) {
+				t.Errorf("literalQualifiedNames(%q) = %v, want %v", tt.lit, got, tt.want)
+			}
+		})
+	}
+	if got := literalQualifiedNames("V", importScope{single: map[string]string{}}, "", false); !slices.Equal(got, []string{"V"}) {
+		t.Errorf("default package: %v", got)
+	}
+}
+
+func TestValidatedByRooted(t *testing.T) {
+	// The program-level half asks #522's rootedConstraintValidator about every named class,
+	// and requires the first-party declaration of the simple name to be a class the literal
+	// can denote.
+	prog := &program{
+		rootedValidators:    map[string]bool{"A": true, "B": true},
+		firstPartyQualified: map[string]string{"A": "com.acme.A", "B": "com.acme.Holder.B"},
+	}
+	a := validatedClass{name: "A", quals: []string{"com.acme.A"}}
+	tests := []struct {
+		name    string
+		prog    *program
+		classes []validatedClass
+		want    bool
+	}{
+		{"no constraint", prog, nil, true},
+		{"every name rooted and matching", prog, []validatedClass{a, {name: "B", quals: []string{"com.acme.Holder.B"}}}, true},
+		{"one of two not rooted", prog, []validatedClass{a, {name: "C", quals: []string{"com.acme.C"}}}, false},
+		{"none rooted", prog, []validatedClass{{name: "C", quals: []string{"com.acme.C"}}}, false},
+		{"rooted but another package's class", prog, []validatedClass{{name: "A", quals: []string{"org.lib.A"}}}, false},
+		{"rooted but the literal denotes the top-level name", prog, []validatedClass{{name: "B", quals: []string{"com.acme.B"}}}, false},
+		{"rooted, literal unresolvable", prog, []validatedClass{{name: "A"}}, false},
+		{"one candidate of several matches", prog, []validatedClass{{name: "A", quals: []string{"A", "com.acme.A"}}}, true},
+		{"family absent: no rooted set", &program{}, []validatedClass{a}, false},
+		{"no program", nil, []validatedClass{a}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := validatedByRooted(tt.prog, tt.classes); got != tt.want {
 				t.Errorf("validatedByRooted = %v, want %v", got, tt.want)
 			}
 		})
@@ -144,11 +187,32 @@ import jakarta.validation.ConstraintValidator;
 public class AgeValidator implements ConstraintValidator<Age, Integer> {
     public boolean isValid(Integer v, Object c) { return v > 0; }
 }`
+	annImp := func(imp, lit string) string {
+		return "package com.acme;\nimport jakarta.validation.Constraint;\n" + imp + "\n@Constraint(validatedBy = " + lit + ".class) public @interface Age { String message() default \"bad\"; }"
+	}
+	other := "package com.other;\n" + validator[len("package com.acme;\n"):]
+	holder := `package com.acme;
+import jakarta.validation.ConstraintValidator;
+public class Holder {
+    public static class V implements ConstraintValidator<Age, Integer> {
+        public boolean isValid(Integer v, Object c) { return v > 0; }
+    }
+}`
 	tests := []struct {
 		name        string
 		files       map[string]string
 		wantPartial bool
 	}{
+		{"imported dependency class, first-party class of the same simple name elsewhere", map[string]string{"com/acme/Age.java": annImp("import org.lib.AgeValidator;", "AgeValidator"), "com/other/AgeValidator.java": other}, true},
+		{"qualified dependency class, first-party class of the same simple name in the package", map[string]string{"com/acme/Age.java": annImp("", "org.lib.AgeValidator"), "com/acme/AgeValidator.java": validator}, true},
+		{"qualified first-party class", map[string]string{"com/acme/Age.java": annImp("", "com.other.AgeValidator"), "com/other/AgeValidator.java": other}, false},
+		{"imported first-party class", map[string]string{"com/acme/Age.java": annImp("import com.other.AgeValidator;", "AgeValidator"), "com/other/AgeValidator.java": other}, false},
+		{"qualified first-party class in the annotation's package", map[string]string{"com/acme/Age.java": annImp("", "com.acme.AgeValidator"), "com/acme/AgeValidator.java": validator}, false},
+		{"name only an on-demand import could supply", map[string]string{"com/acme/Age.java": annImp("import com.other.*;", "AgeValidator"), "com/other/AgeValidator.java": other}, true},
+		{"nested validator named by its member path", map[string]string{"com/acme/Age.java": annImp("", "Holder.V"), "com/acme/Holder.java": holder}, false},
+		{"nested validator named by its simple name", map[string]string{"com/acme/Age.java": annImp("", "V"), "com/acme/Holder.java": holder}, true},
+		{"top-level validator named by a member path", map[string]string{"com/acme/Age.java": annImp("", "Holder.AgeValidator"), "com/acme/AgeValidator.java": validator}, true},
+		{"same simple name in test sources", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AgeValidator.java": validator, "src/test/java/com/other/AgeValidator.java": other}, false},
 		{"first-party validator", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AgeValidator.java": validator}, false},
 		{"validator is a dependency class", map[string]string{"com/acme/Age.java": mk("DepValidator"), "com/acme/Other.java": "package com.acme; public class Other {}"}, true},
 		{"named class is not a validator", map[string]string{"com/acme/Age.java": mk("AgeValidator"), "com/acme/AgeValidator.java": "package com.acme; public class AgeValidator { boolean isValid(Integer v) { return true; } }"}, true},
@@ -281,14 +345,15 @@ import java.lang.annotation.*;
 			// check (TestWildcardAdmission_DependencyClasses) clears, so this row isolates the
 			// first-party half.
 			writeJar(t, netkitJarPath(dir), "org/lib/Util.class", emitClass(&cpb{}, "org/lib/Util", []mspec{{"m", "()V", []byte{0xB1}}}))
-			cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir}, netkitGraph(t, dir))
+			graph := netkitGraph(t, dir)
+			cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir}, graph)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got := hasReason(cg.Partiality, plugin.PartialReasonUnsupported); got != tt.wantPartial {
 				t.Errorf("CallGraph unsupported = %v, want %v", got, tt.wantPartial)
 			}
-			ix, err := IndexSymbols(context.Background(), plugin.IndexSymbolsRequest{BuildDir: dir})
+			ix, err := IndexSymbols(context.Background(), plugin.IndexSymbolsRequest{BuildDir: dir}, graph)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -356,6 +421,20 @@ import java.lang.annotation.*;
 			}
 			if got := hasReason(cg.Partiality, plugin.PartialReasonUnsupported); got != tt.wantPartial {
 				t.Errorf("CallGraph unsupported = %v, want %v (%+v)", got, tt.wantPartial, cg.Partiality)
+			}
+			ix, err := IndexSymbols(context.Background(), plugin.IndexSymbolsRequest{BuildDir: build}, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hasReason(ix.Partiality, plugin.PartialReasonUnsupported); got != tt.wantPartial {
+				t.Errorf("IndexSymbols unsupported = %v, want %v (%+v)", got, tt.wantPartial, ix.Partiality)
+			}
+			fi, err := FindIngresses(context.Background(), plugin.FindIngressesRequest{BuildDir: build}, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hasReason(fi.Partiality, plugin.PartialReasonUnsupported); got != tt.wantPartial {
+				t.Errorf("FindIngresses unsupported = %v, want %v (%+v)", got, tt.wantPartial, fi.Partiality)
 			}
 		})
 	}

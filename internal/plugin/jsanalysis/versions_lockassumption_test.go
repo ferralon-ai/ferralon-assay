@@ -104,6 +104,7 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"nx build", npm(map[string]string{"package.json": pkg(`,"scripts":{"build":"nx build"}`)}), plain},
 		{"npm install after inline code that prints a field of package.json", npm(map[string]string{".github/workflows/ci.yml": ci("node -p \"require('./package.json').version\" && npm install")}), plain},
 		{"npm install after a step that reads package.json in a command substitution", npm(map[string]string{".github/workflows/ci.yml": ci("echo \"version=$(jq -r '.version' package.json)\" >> $GITHUB_OUTPUT\n      - run: npm install")}), plain},
+		{"grep for an interpreter's name in package.json", npm(map[string]string{".github/workflows/ci.yml": ci("npm ci\n      - run: grep node package.json")}), plain},
 		{"jq reads package.json", npm(map[string]string{".github/workflows/ci.yml": ci("npm ci\n      - run: jq -r .version package.json")}), plain},
 		{"playwright browser install", npm(map[string]string{"package.json": `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"},"devDependencies":{"@playwright/test":"^1.40.0"},"scripts":{"pretest":"npx playwright install chromium"}}`,
 			"package-lock.json": `{"name":"app","lockfileVersion":3,"packages":{"":{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"},"devDependencies":{"@playwright/test":"^1.40.0"}},"node_modules/express":{"version":"4.19.2"},"node_modules/@playwright/test":{"version":"1.40.0","dev":true}}}`}), plain},
@@ -162,6 +163,8 @@ func TestResolveVersions_LockAssumption(t *testing.T) {
 		{"npm install after inline code rewrites the manifest", npm(map[string]string{".github/workflows/ci.yml": ci("node -e \"require('fs').writeFileSync('./package.json', '{}')\"\n      - run: npm install")}), withheld},
 		{"npm install after inline code removes the lock named in a variable", npm(map[string]string{"install.sh": "node -e \"const f='package-lock.json'; const fs=require('fs'); fs.rmSync(f)\" && npm install\n"}), withheld},
 		{"npm install after inline code removes the lock in an arrow function", npm(map[string]string{".github/workflows/ci.yml": ci("node -e \"['package-lock.json'].forEach(f => require('fs').rmSync(f))\" && npm install")}), withheld},
+		{"npm install after inline code run through sudo removes the lock", npm(map[string]string{"install.sh": "sudo -E node -e \"require('fs').rmSync('package-lock.json')\" && npm install\n"}), withheld},
+		{"npm install after inline code run through cross-env removes the lock", npm(map[string]string{"package.json": pkg(`,"scripts":{"fresh":"cross-env CI=1 node -e \"require('fs').rmSync('package-lock.json')\" && npm install"}`)}), withheld},
 		{"npm install after inline code requires package.json and rewrites it", npm(map[string]string{"install.sh": "node -e \"const p=require('./package.json'); p.dependencies.express='5'; require('fs').writeFileSync('package.json', JSON.stringify(p))\" && npm install\n"}), withheld},
 		{"npm install the lock covers after a line is added to .npmrc", npm(map[string]string{"install.sh": "echo package-lock=false >> .npmrc && npm install\n"}), withheld},
 		{"npm install, an override names a repository for an alias the lock installs from the registry", map[string]string{

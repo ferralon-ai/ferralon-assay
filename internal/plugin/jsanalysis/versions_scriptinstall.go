@@ -842,12 +842,15 @@ var codeInterpreters = map[string]bool{
 // printed: require('./package.json').version.
 var requireReadRE = regexp.MustCompile(`^(?:console\.log\()?require\(["'][^"'()]+["']\)(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\)?;?$`)
 
-// laneCode returns the arguments of a command an interpreter runs, past any leading
-// NAME=VALUE: each may be code. An argument that only reads a property of a required file
-// (requireReadRE) writes nothing, so is left out.
+// laneCode returns the arguments of a command an interpreter runs, past a leading cross-env
+// and its NAME=VALUE words: each may be code. An argument that only reads a property of a
+// required file (requireReadRE) writes nothing, so is left out.
 func laneCode(words []string) []string {
-	for len(words) > 0 && assignmentRE.MatchString(words[0]) {
+	if len(words) > 0 && (words[0] == "cross-env" || words[0] == "cross-env-shell") {
 		words = words[1:]
+		for len(words) > 0 && assignmentRE.MatchString(words[0]) {
+			words = words[1:]
+		}
 	}
 	if len(words) < 2 {
 		return nil

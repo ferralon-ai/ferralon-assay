@@ -128,7 +128,8 @@ type Spec struct {
 	// with no slash, names a shell library the lane knows installs nothing. A word that may name
 	// a file the build holds where the command runs is never one. nil means none is.
 	Library func(word string) bool
-	// Code returns the words of a command holding no token that are code an interpreter runs
+	// Code returns the words of a command holding no token, past its leading assignments and
+	// launchers (sudo, env), that are code an interpreter runs
 	// (the argument of node -e). Every file name written in one is named as an argument is, so
 	// inline code that removes or rewrites a bound file withholds as a command naming the file
 	// does. nil means the lane reads no inline code.
@@ -729,7 +730,7 @@ func (v *Veto) mentionCode(words []string) {
 	if v.spec.Code == nil {
 		return
 	}
-	for _, code := range v.spec.Code(words) {
+	for _, code := range v.spec.Code(words[programAt(words):]) {
 		for _, name := range strings.FieldsFunc(strings.ToLower(code), notFileNameRune) {
 			v.mentioned[name] = true
 		}

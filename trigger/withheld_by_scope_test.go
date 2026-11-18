@@ -139,6 +139,51 @@ func TestFinding_WithheldByElsewhere(t *testing.T) {
 			want: []report.Limit{count(plugin.PartialReasonCgo, maxLimitsElsewhere+1), {Reason: plugin.PartialReasonCgo, Path: "main.go"}},
 		},
 		{
+			name: "limits that name the row and limits that do not share one number",
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = append(namingN(maxLimitsNaming+2), unbounded(plugin.PartialReasonCgo, maxLimitsElsewhere+1)...)
+			},
+			want: append(full(namingN(maxLimitsNaming)), count(plugin.PartialReasonCgo, 2+maxLimitsElsewhere+1)),
+		},
+		{
+			name: "limits declared by path alone are counted",
+			mutate: func(fx *groundsFixture) {
+				unversioned(fx)
+				for i := range maxLimitsElsewhere + 1 {
+					fx.scoped = append(fx.scoped, artifact.ScopedPartialityFlag{Reason: plugin.PartialReasonCgo, Path: fmt.Sprintf("nested%d/go.mod", i)})
+				}
+			},
+			want: []report.Limit{count(plugin.PartialReasonCgo, maxLimitsElsewhere+1)},
+		},
+		{
+			name: "a row with no package URL is matched by ecosystem and name",
+			mutate: func(fx *groundsFixture) {
+				unversioned(fx)
+				fx.pkg.PURL = ""
+				fx.advisoryPURL = ""
+				own := artifact.ScopedPartialityFlag{Reason: plugin.PartialReasonCgo, Package: net}
+				fx.scoped = append(bounded(plugin.PartialReasonCgo, maxLimitsElsewhere+1), own)
+			},
+			want: []report.Limit{count(plugin.PartialReasonCgo, maxLimitsElsewhere+1), {Reason: plugin.PartialReasonCgo, Package: net}},
+		},
+		{
+			name: "each package naming the row is listed before a second limit in any",
+			mutate: func(fx *groundsFixture) {
+				unversioned(fx)
+				for i := range maxLimitsNaming {
+					fx.scoped = append(fx.scoped, artifact.ScopedPartialityFlag{Reason: plugin.PartialReasonCgo, Package: net + "@v0.1.0", Path: fmt.Sprintf("f%d.go", i)})
+				}
+				fx.scoped = append(fx.scoped, artifact.ScopedPartialityFlag{Reason: plugin.PartialReasonCgo, Package: net + "@v0.2.0", Path: "g.go"})
+			},
+			want: func() []report.Limit {
+				var out []report.Limit
+				for i := range maxLimitsNaming - 1 {
+					out = append(out, report.Limit{Reason: plugin.PartialReasonCgo, Package: net + "@v0.1.0", Path: fmt.Sprintf("f%d.go", i)})
+				}
+				return append(out, count(plugin.PartialReasonCgo, 1), report.Limit{Reason: plugin.PartialReasonCgo, Package: net + "@v0.2.0", Path: "g.go"})
+			}(),
+		},
+		{
 			name: "past the naming cap the rest join the number",
 			mutate: func(fx *groundsFixture) {
 				fx.scoped = namingN(maxLimitsNaming + 2)

@@ -62,6 +62,7 @@ func withheldBy(store artifact.Store, assessmentID string, pkg *report.Package, 
 	}
 	seen := map[string]bool{}
 	elsewhere := map[string]int{}
+	var named []int
 	for i, l := range declared {
 		if !held[i] {
 			continue
@@ -73,14 +74,31 @@ func withheldBy(store artifact.Store, assessmentID string, pkg *report.Package, 
 			seen[key] = true
 		}
 		if l.Package+l.Path != "" || len(l.Targets) > 0 {
-			if !naming[i] {
+			if naming[i] {
+				named = append(named, i)
+			} else {
 				elsewhere[l.Reason]++
+			}
+		}
+	}
+	// Of the limits naming the package, the first in each package it was declared in is listed
+	// before a second in any, so the cap does not hide which packages hold unseen code.
+	full := make([]bool, len(declared))
+	listed := map[string]int{}
+	for _, firstOnly := range []bool{true, false} {
+		inPackage := map[string]bool{}
+		for _, i := range named {
+			l := declared[i]
+			first := !inPackage[l.Reason+"\x00"+l.Package]
+			inPackage[l.Reason+"\x00"+l.Package] = true
+			if !full[i] && first == firstOnly && listed[l.Reason] < maxLimitsNaming {
+				full[i] = true
+				listed[l.Reason]++
 			}
 		}
 	}
 	// A reason's count entry takes the place of the first scoped limit it stands for.
 	var limits []report.Limit
-	listed := map[string]int{}
 	counted := map[string]int{}
 	for i, l := range declared {
 		if !held[i] {
@@ -89,8 +107,7 @@ func withheldBy(store artifact.Store, assessmentID string, pkg *report.Package, 
 		scoped := l.Package+l.Path != "" || len(l.Targets) > 0
 		switch {
 		case !scoped:
-		case naming[i] && listed[l.Reason] < maxLimitsNaming:
-			listed[l.Reason]++
+		case full[i]:
 		case !naming[i] && elsewhere[l.Reason] <= maxLimitsElsewhere:
 		default:
 			if at, ok := counted[l.Reason]; ok {

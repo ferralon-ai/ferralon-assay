@@ -674,9 +674,6 @@ func (g *gapScan) skip(i int) int {
 		switch {
 		case isLineTerminator(src[i]):
 			if g.breakFrom <= i && i < g.breakTo {
-				if first >= 0 && block < 0 {
-					g.breakFrom = first
-				}
 				return g.breakEnd
 			}
 			if first < 0 {

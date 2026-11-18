@@ -169,8 +169,8 @@ func TestFinding_RefutedBeside(t *testing.T) {
 			name: "admitted package not imported, one of two others unreached", pkg: dockerPkg, affected: []string{v3, docker, xnet},
 			mods: goModules{"github.com/distribution/distribution/v3": true, "github.com/docker/distribution": true, "golang.org/x/net": true},
 			reach: plugin.ReachabilityResult{
-				Refutation:  ptr(unreached(v3, "d")),
-				Refutations: []plugin.Refutation{notImported(docker, "d"), notImported(xnet, "d")},
+				Refutation:  ptr(notImported(xnet, "d")),
+				Refutations: []plugin.Refutation{notImported(docker, "d"), unreached(v3, "d")},
 			},
 			toolchain: exact, scanned: true, wantBasis: verdict.BasisSymbolUnreachable,
 		},

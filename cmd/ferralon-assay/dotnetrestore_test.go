@@ -164,3 +164,31 @@ func TestRunDotNetRestore_StartErrorIsToolFailed(t *testing.T) {
 		t.Fatalf("failure = %+v, want tool_failed:restore carrying the start error", f)
 	}
 }
+
+func TestRunDotNetRestore_StripsCredentials(t *testing.T) {
+	bin := t.TempDir()
+	dump := filepath.Join(bin, "env.txt")
+	if err := os.WriteFile(filepath.Join(bin, "dotnet"), []byte("#!/bin/sh\n/usr/bin/env > "+dump+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("KEEP_ME", "1")
+	for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_CACHE_URL"} {
+		t.Setenv(k, "secret")
+	}
+	if f := runDotNetRestore(context.Background(), t.TempDir(), []string{"A/A.csproj"}); f != nil {
+		t.Fatal(f)
+	}
+	b, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"GITHUB_TOKEN=", "GH_TOKEN=", "ACTIONS_ID_TOKEN_REQUEST_TOKEN=", "ACTIONS_ID_TOKEN_REQUEST_URL=", "ACTIONS_RUNTIME_TOKEN=", "ACTIONS_CACHE_URL="} {
+		if strings.Contains(string(b), k) {
+			t.Errorf("%s reached dotnet restore", k)
+		}
+	}
+	if !strings.Contains(string(b), "KEEP_ME=1") {
+		t.Fatalf("other variables were dropped: %q", b)
+	}
+}

@@ -5,9 +5,13 @@ See also the README's [Network egress](../README.md#network-egress) summary.
 **Your code and your credentials never leave the runner.** No run mode is offline, though, and it is
 worth being precise about what does leave.
 
-A default `baseline` or `pr-inherit` run contacts two public hosts:
+A default `baseline` or `pr-inherit` run contacts three public hosts:
 
 - **`proxy.golang.org`** — when it resolves the subject's module graph.
+- **`sum.golang.org`** — the Go checksum database, which `go` consults to verify the modules it
+  downloads from `proxy.golang.org`. The module paths and versions it verifies are visible to that
+  host. It is the same lookup `go build` performs unless the environment sets `GONOSUMDB`, `GOPRIVATE`
+  or `GOFLAGS=-insecure`.
 - **`vuln.go.dev`** — the Go analyzer's reachability stage runs govulncheck with no `-db` flag
   (`internal/plugin/goanalysis/reach.go`), so it resolves `golang.org/x/vuln`'s default vulnerability
   database, uncached, on every run. The module paths it looks up are visible to that host.
@@ -88,16 +92,25 @@ what that switch does when it is on, including the self-cleanup side effects.
 
 A Java or Kotlin scan runs the repository's own Maven or Gradle (`-build-graph auto`, the default), and
 so does the `resolve-graph` command. The build's scripts and plugins run on the runner, and the tool
-fetches from the repositories the build configures with the job's credentials, as `mvn` or `gradle`
-would; a branch that rewrites those repositories sends those credentials to the host it names. A scan
+fetches from the repositories the build configures with the registry credentials the build has, as `mvn`
+or `gradle` would; a branch that rewrites those repositories sends those credentials to the host it names. A scan
 with `-build-graph off`, or one that reads a graph resolved ahead of the scan, does not run the build
 tool.
+
+**The job's own tokens are removed from every build-tool process.** Each subprocess the scanner starts to
+run the repository's build or package tooling (Maven, Gradle, `dotnet restore`, and every language
+analyzer, whose `go`, npm, pip and similar calls run inside it) gets its environment without
+`GITHUB_TOKEN`, `GH_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL`,
+`ACTIONS_RUNTIME_TOKEN` and `ACTIONS_CACHE_URL`, so build code a pull request controls cannot use the
+job's write-capable token. Registry credentials the build legitimately needs (`.npmrc`, Maven
+`settings.xml`, other environment variables) are left as they are. A build that relied on
+`GITHUB_TOKEN` to fetch a private dependency now fails to resolve it; give that build its own
+credential through the registry's usual file or variable.
 
 When the checkout holds no compiled main classes, or they are older than the sources, the same scan
 also runs the repository's own `mvn compile` or `gradle classes` (the wrapper when the repository has
 one) so the Java and Kotlin lanes can read the build's bytecode. That run executes the build's compiler
-plugins, annotation processors and code generators on the runner, with the job's credentials and the
-repositories the build configures, and writes the build's output directory (`target/`, `build/`) into the
+plugins, annotation processors and code generators on the runner, with the repositories the build configures, and writes the build's output directory (`target/`, `build/`) into the
 checkout, where a later step of the job sees it. It does not run tests, and it does not run when the
 output is already present and current. Each build tool's run is bounded at 10 minutes; a run that fails
 or is not possible leaves the scan to go on and the affected results undetermined. For Java the reason

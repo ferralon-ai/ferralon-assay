@@ -121,7 +121,7 @@ func runDotNetRestore(ctx context.Context, dir string, targets []string) *buildg
 	if err != nil {
 		return &buildgraph.Failure{Kind: buildgraph.KindToolchainAbsent, Log: "no dotnet on PATH"}
 	}
-	env := append(os.Environ(), "DOTNET_CLI_TELEMETRY_OPTOUT=1", "DOTNET_NOLOGO=1", "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1", "MSBUILDDISABLENODEREUSE=1")
+	env := append(buildgraph.StripCredentials(os.Environ()), "DOTNET_CLI_TELEMETRY_OPTOUT=1", "DOTNET_NOLOGO=1", "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1", "MSBUILDDISABLENODEREUSE=1")
 	var first *buildgraph.Failure
 	for _, t := range targets {
 		// An absolute path, so a file name starting with "-" is never read as an option.

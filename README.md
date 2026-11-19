@@ -393,9 +393,10 @@ mode's behavior, a scheduled `cve-watch` workflow, and which surface fires under
 **Your code never leaves the runner, and a registry credential leaves it only for a host the
 scanned branch's own configuration names: the npm registry its `.npmrc` binds a token to, or, for
 a Java or Kotlin scan, the repositories its Maven or Gradle build configures.** No run mode is offline: a default
-`baseline` or `pr-inherit` run resolves the subject's module graph against `proxy.golang.org` and
+`baseline` or `pr-inherit` run resolves the subject's module graph against `proxy.golang.org`, verifies
+the modules it downloads against the checksum database at `sum.golang.org`, and
 fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
-`go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
+`go build` and `govulncheck` perform) — the module proxy and `vuln.go.dev` are also the scan's main cost drivers, see
 [Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
 `api.osv.dev`. The Action downloads the scanner release from `github.com`. A run with
 `advisory-corpus-repo` set clones the corpus repository from `github.com`. With
@@ -405,7 +406,8 @@ run downloads the release's assets from `github.com` (served from
 downloads cosign from the `sigstore/cosign` GitHub release, and needs the Sigstore TUF CDN,
 `tuf-repo-cdn.sigstore.dev`, to verify the corpus signature. None of the corpus requests presents a
 token or carries anything about your code. A Java or Kotlin scan runs the repository's own Maven or
-Gradle with the job's environment, and the build tool contacts whatever repositories the build
+Gradle with the job's environment minus the GitHub and Actions tokens
+(`GITHUB_TOKEN`, `GH_TOKEN` and the `ACTIONS_*` runtime, OIDC and cache variables), and the build tool contacts whatever repositories the build
 configures. A JS scan also fetches each lock-pinned package tarball by name and version from the
 configured registry, unless it runs with `-dependency-code=off` or `offline` (the repository's
 `.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads

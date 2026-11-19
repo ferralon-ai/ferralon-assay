@@ -93,6 +93,16 @@ func TestHelperProcess(t *testing.T) {
 				},
 			},
 		}
+	case "credentials":
+		for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_CACHE_URL"} {
+			if _, ok := os.LookupEnv(k); ok {
+				resp.Error += k + " "
+			}
+		}
+		if os.Getenv("KEEP_ME") != "1" {
+			resp.Error += "KEEP_ME-missing"
+		}
+		resp.SymbolIndex = &SymbolIndexResult{Partiality: Complete()}
 	case "badproto":
 		resp.Protocol = "tegron.plugin.vBOGUS"
 		resp.SymbolIndex = &SymbolIndexResult{Partiality: Complete()}
@@ -312,5 +322,17 @@ func TestConstructorsDiscoverBinaryName(t *testing.T) {
 				t.Errorf("Language() = %q, want %q", got, tc.language)
 			}
 		})
+	}
+}
+
+func TestPluginSubprocessStripsCredentials(t *testing.T) {
+	for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_CACHE_URL"} {
+		t.Setenv(k, "secret")
+	}
+	t.Setenv("KEEP_ME", "1")
+	p := newHelperPlugin(t, "credentials")
+	// The helper reports any credential it can see as an error; a clean child answers without one.
+	if _, err := p.IndexSymbols(context.Background(), IndexSymbolsRequest{BuildDir: "/x"}); err != nil {
+		t.Fatalf("subprocess saw: %v", err)
 	}
 }

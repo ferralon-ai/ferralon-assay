@@ -1036,7 +1036,7 @@ func shortDigest(d string) string {
 // function cannot name has no standing to claim grounds it cannot describe.
 func disqualBasis(reason string) verdict.NonExploitableBasis {
 	switch reason {
-	case pipeline.ReasonVersionNotInRange:
+	case pipeline.ReasonVersionNotInRange, pipeline.ReasonFixCommitInHistory:
 		return verdict.BasisVersionNotAffected
 	case pipeline.ReasonSymbolAbsent:
 		return verdict.BasisSymbolAbsent
@@ -1059,6 +1059,8 @@ func disqualDetail(reason string) string {
 	switch reason {
 	case pipeline.ReasonVersionNotInRange:
 		return "resolved dependency version is outside the advisory's affected range"
+	case pipeline.ReasonFixCommitInHistory:
+		return "the commit the advisory names as its fix is in the scanned commit's history, and every range the advisory affects the project's own package by ends at a fixed version"
 	case pipeline.ReasonSymbolAbsent:
 		return "the vulnerable symbol is absent from the built artifact"
 	case pipeline.ReasonAdvisoryEcosystemMismatch:

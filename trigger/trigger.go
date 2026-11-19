@@ -205,7 +205,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	// unchanged in the loop below (advisoryFromArtifacts still serves the finding path — §4.1 / C5).
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
-	inv, invLanguage, err := inventoryWithin(analysis, req.Codebase, req.AssessOptions...)
+	inv, invLanguage, invDir, err := inventoryAtWithin(analysis, req.Codebase, req.AssessOptions...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("trigger: resolve codebase inventory: %w", err)
 	}
@@ -227,6 +227,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	b.SetGoBuildList(sbom)
 	b.AddPartiality(invNotes...)
 	mods := goModulesOf(sbom, invNotes)
+	nested := newNestedRoots(analysis, req.Codebase, req.AssessOptions, invDir, inv)
 
 	// cut and rows count the rows the scan stopped before assessing and all rows, sibling
 	// instances included, so the note's count is the number of scan_cut_short rows.
@@ -258,7 +259,10 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 		// row, plus the scan-level limit that explains it. The report has carried such rows
 		// since v2; v1 withheld the row entirely, having no cell for "the advisory applies and
 		// we established nothing". The row is what makes the omission legible at the count.
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(st, assessmentID))
+		purls := pipeline.AdvisoryPackagePURLs(st, assessmentID)
+		f := findingInBuild(st, assessmentID, advisory, pkg, mods)
+		limits, settled := nested.limitsFor(adv, f, invNotes, purls)
+		f = withNestedRoots(withInventoryLimits(f, limits, purls), settled)
 		b.AddFinding(f)
 		b.WithLibraryEntrypoints(libraryEntrypoints(st, assessmentID)...)
 		if note, ok := limitNoteFor(f); ok {

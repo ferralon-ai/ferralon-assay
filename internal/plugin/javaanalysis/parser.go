@@ -1,6 +1,7 @@
 package javaanalysis
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -57,7 +58,21 @@ type parseResult struct {
 	decls     []decl
 	calls     []callSite      // method-call expressions inside method bodies
 	ingresses []ingressMarker // annotation/servlet entry-point markers
-	skipped   bool            // a construct was not fully modeled (e.g. annotation type body)
+	skipped   bool            // a construct was not fully modeled (e.g. an annotation type body that may hold code)
+	// validatedBy holds the classes an admitted @Constraint annotation type names. The file
+	// is accepted only if each is a class the validator entry family roots
+	// (rootedConstraintValidator) and the first-party declaration of its simple name has a
+	// qualified name the literal can denote; parseFile cannot see other files, so the
+	// program-level caller makes that check and treats a failure as skipped.
+	validatedBy []validatedClass
+	// wildcardNames are the java.lang.annotation meta-annotation simple names an admitted
+	// annotation type reaches only through "import java.lang.annotation.*;". They bind to
+	// that package only if no same-package type declares the name (wildcardCheck, program
+	// level); a failure there marks the run skipped.
+	wildcardNames []string
+	// topLevel are the simple names of every top-level type the file declares, annotation
+	// types included: the package scope that shadows an on-demand import.
+	topLevel []string
 }
 
 // stripJava removes comments, string literals, char literals, and text-block
@@ -185,6 +200,12 @@ func parseFile(src string) parseResult {
 	// enum flag drives leading enum-constant parsing.
 	var typeStack []frame
 
+	// imports maps the simple name of each single-type import to its qualified
+	// name; wildcard and static imports are not recorded (annotationTypeHeaderInert
+	// treats a name they could supply as unresolved).
+	imports := importScope{single: map[string]string{}}
+	declared := map[string]bool{} // every type name declared anywhere in the file
+
 	i := 0
 	for i < n {
 		c := r[i]
@@ -220,10 +241,28 @@ func parseFile(src string) parseResult {
 			i = next
 		case isIdentStart(c):
 			word, next := readWord(r, i)
-			// An annotation type "@interface" is not modeled: it uses a distinct
-			// member grammar. Detect the '@' immediately before "interface" and
-			// declare partiality, skipping its body rather than misparsing it.
+			// An annotation type "@interface" uses a distinct member grammar and is
+			// not modeled: its elements stay out of decls. Its body is consumed
+			// whole when it provably holds no executable code (annotationBodyEnd);
+			// any other body, a header that is not "@interface Name {", or an
+			// annotation on the type that is not a known-inert meta-annotation,
+			// declares partiality: an annotation type's meta-annotations give it
+			// dispatch or wiring meaning the lane does not model.
 			if word == "interface" && precededByAt(r, i) {
+				if an, _ := readWord(r, skipSpace(r, next)); an != "" {
+					declared[an] = true
+					if len(typeStack) == 0 {
+						res.topLevel = append(res.topLevel, an)
+					}
+				}
+				if vb, wn, ok := annotationTypeHeaderInert(r, i, imports, res.pkg, len(typeStack) > 0); ok {
+					if end, ok := annotationTypeEnd(r, next); ok {
+						res.validatedBy = append(res.validatedBy, vb...)
+						res.wildcardNames = append(res.wildcardNames, wn...)
+						i = end
+						continue
+					}
+				}
 				res.skipped = true
 				if open, ok := findBrace(r, next); ok {
 					// The body is entered as a type frame that holds no members: its
@@ -254,6 +293,10 @@ func parseFile(src string) parseResult {
 					continue
 				}
 				enclosing := enclosingTypes(typeStack)
+				declared[name] = true
+				if len(typeStack) == 0 {
+					res.topLevel = append(res.topLevel, name)
+				}
 				res.decls = append(res.decls, decl{kind: kindType, name: name, enclosing: enclosing})
 				fr := frame{name: name, isEnum: word == "enum"}
 				if fr.isEnum {
@@ -279,7 +322,11 @@ func parseFile(src string) parseResult {
 			}
 			if word == "package" || word == "import" {
 				// skip to the terminating ';'
-				i = skipTo(r, next, ';')
+				end := skipTo(r, next, ';')
+				if word == "import" {
+					recordImport(&imports, r[next:end])
+				}
+				i = end
 				continue
 			}
 			// Member-level: only consider declarations when the immediate
@@ -305,6 +352,13 @@ func parseFile(src string) parseResult {
 	// rune count, so the two index identically; the length guard in parseAnnotation is a
 	// belt-and-suspenders check.
 	res.calls, res.ingresses = parseCallsAndIngresses(r, []rune(src))
+	// A same-file declaration of a meta-annotation's name shadows the on-demand import
+	// (condition 3); the check is whole-file because the declaration may follow the use.
+	for _, n := range res.wildcardNames {
+		if declared[n] {
+			res.skipped = true
+		}
+	}
 	return res
 }
 
@@ -705,4 +759,589 @@ func indexWord(s, word string) int {
 		}
 		from = abs + len(word)
 	}
+}
+
+// An annotation type body is accepted as inert only when every member matches
+// the allow-list below; anything else (nested type, method call, lambda, "new",
+// a brace block that is not an array initializer, an unbalanced brace, EOF) is
+// rejected and the caller declares partiality. The scan runs over stripJava
+// output, where string and char literals are a single '_' placeholder token.
+//
+//	body     = "{" { member } "}"
+//	member   = ";" | { modifier | annotation } type name ( "(" ")" [ "default" value ] | "=" value ) ";"
+//	value    = number | name | annotation | "{" [ value { "," value } [ "," ] ] "}"
+//	name     = ident { ( "." ident | "[" "]" ) }          (literals, enum constants, class literals)
+//	number   = [ "+" | "-" ] digit-led token
+//	annotation = "@" qualified-name [ "(" [ pair { "," pair } ] ")" ]
+//	pair     = [ ident "=" ] value
+
+// annotationTypeEnd, given the index just past the "interface" keyword of an
+// "@interface", returns the index just past the body's closing brace and ok=true
+// when the header is "Name {" and the body is inert.
+func annotationTypeEnd(r []rune, pos int) (int, bool) {
+	pos = skipSpace(r, pos)
+	if pos >= len(r) || !isIdentStart(r[pos]) {
+		return 0, false
+	}
+	_, pos = readWord(r, pos)
+	pos = skipSpace(r, pos)
+	if pos >= len(r) || r[pos] != '{' {
+		return 0, false
+	}
+	return annotationBodyEnd(r, pos)
+}
+
+// annotationBodyPrimitives and annotationBodyModifiers are the only words that
+// may lead an element or constant declaration besides a reference type name.
+var annotationBodyPrimitives = map[string]bool{
+	"boolean": true, "byte": true, "char": true, "short": true,
+	"int": true, "long": true, "float": true, "double": true,
+}
+
+var annotationBodyModifiers = map[string]bool{
+	"public": true, "abstract": true, "static": true, "final": true,
+}
+
+// annotationBodyReserved are words that never name a type or element here; a
+// body that uses one is not the shape the allow-list describes.
+var annotationBodyReserved = map[string]bool{
+	"class": true, "interface": true, "enum": true, "record": true,
+	"new": true, "default": true, "void": true, "this": true, "super": true,
+	"switch": true, "return": true, "if": true, "for": true, "while": true,
+	"do": true, "try": true, "throw": true, "synchronized": true,
+}
+
+// annotationBodyEnd scans the body whose '{' is at open and returns the index
+// just past its '}'.
+func annotationBodyEnd(r []rune, open int) (int, bool) {
+	n := len(r)
+	pos := open + 1
+	for {
+		pos = skipSpace(r, pos)
+		if pos >= n {
+			return 0, false
+		}
+		switch r[pos] {
+		case '}':
+			return pos + 1, true
+		case ';':
+			pos++
+			continue
+		}
+		end, ok := annotationMember(r, pos)
+		if !ok {
+			return 0, false
+		}
+		pos = end
+	}
+}
+
+// annotationMember scans one element or constant declaration and returns the
+// index just past its terminating ';'.
+func annotationMember(r []rune, pos int) (int, bool) {
+	n := len(r)
+	// modifiers and member annotations
+	for {
+		pos = skipSpace(r, pos)
+		if pos >= n {
+			return 0, false
+		}
+		if r[pos] == '@' {
+			var ok bool
+			if pos, ok = annotationUse(r, pos); !ok {
+				return 0, false
+			}
+			continue
+		}
+		if isIdentStart(r[pos]) {
+			if w, nx := readWord(r, pos); annotationBodyModifiers[w] {
+				pos = nx
+				continue
+			}
+		}
+		break
+	}
+	// type
+	word, pos := readWord(r, pos)
+	if annotationBodyReserved[word] {
+		return 0, false
+	}
+	if !annotationBodyPrimitives[word] {
+		var ok bool
+		if pos, ok = qualifiedTail(r, pos); !ok {
+			return 0, false
+		}
+		pos = skipSpace(r, pos)
+		if pos < n && r[pos] == '<' {
+			end := skipGroup(r, pos)
+			if !typeArgumentsOnly(r[pos:end]) {
+				return 0, false
+			}
+			pos = end
+		}
+	}
+	for {
+		pos = skipSpace(r, pos)
+		if pos < n && r[pos] == '[' {
+			if j := skipSpace(r, pos+1); j < n && r[j] == ']' {
+				pos = j + 1
+				continue
+			}
+		}
+		break
+	}
+	// element or constant name
+	if pos >= n || !isIdentStart(r[pos]) {
+		return 0, false
+	}
+	name, pos := readWord(r, pos)
+	if annotationBodyReserved[name] {
+		return 0, false
+	}
+	pos = skipSpace(r, pos)
+	if pos >= n {
+		return 0, false
+	}
+	switch r[pos] {
+	case '(':
+		pos = skipSpace(r, pos+1)
+		if pos >= n || r[pos] != ')' {
+			return 0, false
+		}
+		pos = skipSpace(r, pos+1)
+		if w, nx := readWord(r, pos); w == "default" {
+			var ok bool
+			if pos, ok = annotationValue(r, nx); !ok {
+				return 0, false
+			}
+			pos = skipSpace(r, pos)
+		}
+	case '=':
+		var ok bool
+		if pos, ok = annotationValue(r, pos+1); !ok {
+			return 0, false
+		}
+		pos = skipSpace(r, pos)
+	default:
+		return 0, false
+	}
+	if pos >= n || r[pos] != ';' {
+		return 0, false
+	}
+	return pos + 1, true
+}
+
+// qualifiedTail consumes { "." ident } after an already-read identifier.
+func qualifiedTail(r []rune, pos int) (int, bool) {
+	n := len(r)
+	for {
+		j := skipSpace(r, pos)
+		if j >= n || r[j] != '.' {
+			return pos, true
+		}
+		j = skipSpace(r, j+1)
+		if j >= n || !isIdentStart(r[j]) {
+			return 0, false
+		}
+		_, pos = readWord(r, j)
+	}
+}
+
+// typeArgumentsOnly reports whether a "<...>" group holds only what a type
+// argument list can: identifiers, '.', ',', '?', '&', brackets, nesting and space.
+func typeArgumentsOnly(g []rune) bool {
+	for _, c := range g {
+		switch {
+		case isIdentPart(c), c == '.', c == ',', c == '?', c == '&',
+			c == '<', c == '>', c == '[', c == ']', c == ' ', c == '\t', c == '\n', c == '\r':
+		default:
+			return false
+		}
+	}
+	return len(g) >= 2 && g[len(g)-1] == '>'
+}
+
+// annotationUse scans "@Name" with an optional argument list, the '@' at pos.
+func annotationUse(r []rune, pos int) (int, bool) {
+	n := len(r)
+	pos = skipSpace(r, pos+1)
+	if pos >= n || !isIdentStart(r[pos]) {
+		return 0, false
+	}
+	w, pos := readWord(r, pos)
+	if annotationBodyReserved[w] {
+		return 0, false
+	}
+	pos, ok := qualifiedTail(r, pos)
+	if !ok {
+		return 0, false
+	}
+	j := skipSpace(r, pos)
+	if j >= n || r[j] != '(' {
+		return pos, true
+	}
+	pos = skipSpace(r, j+1)
+	for {
+		if pos >= n {
+			return 0, false
+		}
+		if r[pos] == ')' {
+			return pos + 1, true
+		}
+		// pair = [ ident "=" ] value
+		if isIdentStart(r[pos]) {
+			_, nx := readWord(r, pos)
+			k := skipSpace(r, nx)
+			if k < n && r[k] == '=' {
+				pos = k + 1
+			}
+		}
+		if pos, ok = annotationValue(r, pos); !ok {
+			return 0, false
+		}
+		pos = skipSpace(r, pos)
+		if pos < n && r[pos] == ',' {
+			pos = skipSpace(r, pos+1)
+			continue
+		}
+		if pos >= n || r[pos] != ')' {
+			return 0, false
+		}
+	}
+}
+
+// annotationValue scans one value (see grammar) and returns the index just past
+// it. It does not check what follows; each caller requires its own terminator,
+// which is what rejects "Foo.compute()", "A + B", "x -> y" and "a ? b : c".
+func annotationValue(r []rune, pos int) (int, bool) {
+	n := len(r)
+	pos = skipSpace(r, pos)
+	if pos >= n {
+		return 0, false
+	}
+	c := r[pos]
+	switch {
+	case c == '{':
+		pos = skipSpace(r, pos+1)
+		for {
+			if pos >= n {
+				return 0, false
+			}
+			if r[pos] == '}' {
+				return pos + 1, true
+			}
+			var ok bool
+			if pos, ok = annotationValue(r, pos); !ok {
+				return 0, false
+			}
+			pos = skipSpace(r, pos)
+			if pos < n && r[pos] == ',' {
+				pos = skipSpace(r, pos+1)
+				continue
+			}
+			if pos >= n || r[pos] != '}' {
+				return 0, false
+			}
+		}
+	case c == '@':
+		return annotationUse(r, pos)
+	case c == '+' || c == '-':
+		pos = skipSpace(r, pos+1)
+		if pos >= n || !isDigit(r[pos]) {
+			return 0, false
+		}
+		return numberEnd(r, pos), true
+	case isDigit(c) || (c == '.' && pos+1 < n && isDigit(r[pos+1])):
+		return numberEnd(r, pos), true
+	case isIdentStart(c):
+		w, nx := readWord(r, pos)
+		if annotationBodyReserved[w] {
+			return 0, false
+		}
+		pos = nx
+		for {
+			j := skipSpace(r, pos)
+			if j >= n {
+				return pos, true
+			}
+			switch r[j] {
+			case '.':
+				j = skipSpace(r, j+1)
+				if j >= n || !isIdentStart(r[j]) {
+					return 0, false
+				}
+				w, pos = readWord(r, j)
+				if w != "class" && annotationBodyReserved[w] {
+					return 0, false
+				}
+			case '[':
+				j = skipSpace(r, j+1)
+				if j >= n || r[j] != ']' {
+					return 0, false
+				}
+				pos = j + 1
+			default:
+				return pos, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func isDigit(c rune) bool { return c >= '0' && c <= '9' }
+
+// numberEnd consumes a numeric literal token starting at a digit (or '.').
+func numberEnd(r []rune, pos int) int {
+	n := len(r)
+	hex := pos+1 < n && r[pos] == '0' && (r[pos+1] == 'x' || r[pos+1] == 'X')
+	for pos < n {
+		c := r[pos]
+		switch {
+		case isIdentPart(c), c == '.':
+			pos++
+		case (c == '+' || c == '-') && !hex && pos > 0 && (r[pos-1] == 'e' || r[pos-1] == 'E'):
+			pos++
+		default:
+			return pos
+		}
+	}
+	return pos
+}
+
+// inertMetaNames are the only annotations an annotation type may carry and still
+// be accepted, by qualified name: the java.lang.annotation meta-annotations, none of
+// which gives the annotated type dispatch or wiring meaning, and Bean Validation's
+// @Constraint, whose validatedBy classes are container-invoked and so are admitted only
+// when each is a rooted first-party validator (see rootedConstraintValidator). Any
+// other annotation, including a user-defined one, keeps the file skipped.
+var inertMetaNames = map[string]bool{
+	"java.lang.annotation.Retention":  true,
+	"java.lang.annotation.Target":     true,
+	"java.lang.annotation.Documented": true,
+	"java.lang.annotation.Inherited":  true,
+	"java.lang.annotation.Repeatable": true,
+	"jakarta.validation.Constraint":   true,
+	"javax.validation.Constraint":     true,
+}
+
+// constraintNames are the qualified names among inertMetaNames that carry validatedBy.
+var constraintNames = map[string]bool{
+	"jakarta.validation.Constraint": true,
+	"javax.validation.Constraint":   true,
+}
+
+// validatedByArg matches the whole of a @Constraint use, whitespace removed: a lone
+// validatedBy element holding one class literal or a braced list of them. Anything else
+// (no argument, an empty array, a call, a constant) does not match and stays skipped.
+var validatedByArg = regexp.MustCompile(`^@[\w.$]+\(validatedBy=(?:(` + classLit + `)|\{(` + classLit + `(?:,` + classLit + `)*),?\})\)$`)
+
+const classLit = `[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.class`
+
+// validatedClass is one class literal of a validatedBy element: its simple name, and the
+// qualified names the literal can denote from where it is written. quals is empty when the
+// scan cannot resolve the literal (a name only an on-demand import could supply, or one an
+// enclosing type could shadow); such a class is never admitted.
+type validatedClass struct {
+	name  string
+	quals []string
+}
+
+// constraintValidatedBy returns the classes named in the @Constraint use r[pos:end].
+func constraintValidatedBy(r []rune, pos, end int, imports importScope, pkg string, nested bool) ([]validatedClass, bool) {
+	text := strings.Join(strings.Fields(string(r[pos:end])), "")
+	m := validatedByArg.FindStringSubmatch(text)
+	if m == nil {
+		return nil, false
+	}
+	list := m[1]
+	if list == "" {
+		list = m[2]
+	}
+	var out []validatedClass
+	for _, lit := range strings.Split(list, ",") {
+		lit = strings.TrimSuffix(lit, ".class")
+		out = append(out, validatedClass{name: lit[strings.LastIndexByte(lit, '.')+1:], quals: literalQualifiedNames(lit, imports, pkg, nested)})
+	}
+	return out, true
+}
+
+// literalQualifiedNames lists the qualified names a class literal can denote. A first
+// segment that a single-type import binds expands through that import (a static import
+// resolves nothing). Otherwise a dotted literal is read as written, and also as a
+// member-type path rooted in the annotation's own package ("Ann.V"); a simple name binds
+// in the annotation's own package, which shadows an on-demand import, so a name only an
+// on-demand import could supply never matches a first-party declaration. Inside a nested
+// annotation type, a member type the enclosing class inherits from a dependency shadows
+// both a single-type import and a package type (JLS 6.4.1), so a literal there resolves
+// nothing.
+func literalQualifiedNames(lit string, imports importScope, pkg string, nested bool) []string {
+	if nested {
+		return nil
+	}
+	first, rest, dotted := strings.Cut(lit, ".")
+	if target := imports.single[first]; target != "" {
+		if strings.HasPrefix(target, "static") {
+			return nil
+		}
+		if dotted {
+			return []string{target + "." + rest}
+		}
+		return []string{target}
+	}
+	if !dotted {
+		return []string{qualify(pkg, lit)}
+	}
+	return []string{lit, qualify(pkg, lit)}
+}
+
+// qualify prefixes a package, if any.
+func qualify(pkg, name string) string {
+	if pkg == "" {
+		return name
+	}
+	return pkg + "." + name
+}
+
+// importScope is a file's import declarations. single maps the simple name of each
+// single-type import (static ones included, as "statica.B.C") to its text; onDemand lists
+// every "x.*" import, static ones with their "static" prefix.
+type importScope struct {
+	single   map[string]string
+	onDemand []string
+}
+
+// recordImport records an import; text is what follows the "import" keyword through
+// the ';'. A static single import never equals a qualified name in inertMetaNames, so
+// it resolves nothing (but its key still shadows an on-demand import).
+func recordImport(s *importScope, text []rune) {
+	name := strings.Join(strings.Fields(strings.TrimSuffix(string(text), ";")), "")
+	if name == "" {
+		return
+	}
+	if strings.HasSuffix(name, ".*") {
+		s.onDemand = append(s.onDemand, name)
+		return
+	}
+	s.single[name[strings.LastIndexByte(name, '.')+1:]] = name
+}
+
+// annotationTypeHeaderInert reports whether every annotation on the "@interface"
+// whose '@' precedes the keyword at kw is in inertMetaNames, and returns the validatedBy
+// class names of any @Constraint among them.
+// A simple name counts only through a single-type import of the java.lang.annotation
+// type (a wildcard or same-package type could supply a different one) and only
+// at the top level (an enclosing type could declare or inherit a member type of that
+// name); a fully qualified name needs neither. The header is the run of text back
+// to the previous ';', '{' or '}' outside an argument list; it must hold nothing but annotations and the
+// modifiers an annotation type allows.
+func annotationTypeHeaderInert(r []rune, kw int, imports importScope, pkg string, nested bool) ([]validatedClass, []string, bool) {
+	var validatedBy []validatedClass
+	var wildcard []string
+	at := kw - 1
+	for at > 0 && r[at] != '@' {
+		at--
+	}
+	start, depth := at, 0
+	for start > 0 {
+		c := r[start-1]
+		if c == ')' {
+			depth++
+		} else if c == '(' {
+			if depth == 0 {
+				return nil, nil, false
+			}
+			depth--
+		} else if depth == 0 && (c == ';' || c == '{' || c == '}') {
+			break
+		}
+		start--
+	}
+	pos := start
+	for pos < at {
+		pos = skipSpace(r, pos)
+		if pos >= at {
+			break
+		}
+		if r[pos] == '@' {
+			end, ok := annotationUse(r, pos)
+			if !ok {
+				return nil, nil, false
+			}
+			name, _ := annotationName(r, pos)
+			full, viaWildcard, ok := inertMetaName(name, imports, nested)
+			if !ok {
+				return nil, nil, false
+			}
+			if viaWildcard {
+				wildcard = append(wildcard, name)
+			}
+			if constraintNames[full] {
+				vb, ok := constraintValidatedBy(r, pos, end, imports, pkg, nested)
+				if !ok {
+					return nil, nil, false
+				}
+				validatedBy = append(validatedBy, vb...)
+			}
+			pos = end
+			continue
+		}
+		w, nx := readWord(r, pos)
+		if !annotationTypeModifiers[w] {
+			return nil, nil, false
+		}
+		pos = nx
+	}
+	return validatedBy, wildcard, true
+}
+
+var annotationTypeModifiers = map[string]bool{
+	"public": true, "protected": true, "private": true, "abstract": true, "static": true, "strictfp": true,
+}
+
+// annotationName reads the qualified name after the '@' at pos with its spaces removed.
+func annotationName(r []rune, pos int) (string, int) {
+	pos = skipSpace(r, pos+1)
+	var b strings.Builder
+	for {
+		w, nx := readWord(r, pos)
+		b.WriteString(w)
+		j := skipSpace(r, nx)
+		if j >= len(r) || r[j] != '.' {
+			return b.String(), nx
+		}
+		b.WriteByte('.')
+		pos = skipSpace(r, j+1)
+	}
+}
+
+// inertMetaName resolves name to its qualified name when that is in inertMetaNames.
+// viaWildcard reports a simple name bound through "import java.lang.annotation.*;"; the
+// caller still owes the same-file and same-package checks.
+//
+// JLS 6.4.1: a single-type import and a type declared in the compilation unit or its
+// package shadow an on-demand import, and an on-demand import is ambiguous with another
+// that supplies the same name. So a simple name binds to java.lang.annotation through the
+// wildcard only when (1) no single-type or single-static import has that name, (2) the
+// annotation type is top-level (an enclosing type's member types would shadow), (3) the
+// file declares no type of that name (checked at end of parseFile), (4) no same-package
+// type has it (wildcardCheck), and (5) java.lang.annotation.* is the file's only
+// on-demand import. Another on-demand import names a package or type whose members this
+// lane cannot enumerate (dependency jars are not read here), so its absence of the name
+// is unprovable and the name stays unresolved. java.lang's implicit import supplies none
+// of the five names.
+func inertMetaName(name string, imports importScope, nested bool) (full string, viaWildcard, ok bool) {
+	if strings.Contains(name, ".") {
+		return name, false, inertMetaNames[name]
+	}
+	if nested {
+		return "", false, false
+	}
+	if full = imports.single[name]; full != "" {
+		return full, false, inertMetaNames[full]
+	}
+	full = "java.lang.annotation." + name
+	if inertMetaNames[full] && len(imports.onDemand) == 1 && imports.onDemand[0] == "java.lang.annotation.*" {
+		return full, true, true
+	}
+	return "", false, false
 }

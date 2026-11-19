@@ -21,7 +21,8 @@ func TestResolveVersions_YarnRunsName(t *testing.T) {
 	}{
 		{"dependency bin with args", pkg(`"format":"yarn prettier --write ."`), true},
 		{"script with nothing after it", pkg(`"check":"yarn lint"`), true},
-		{"script with args appended", pkg(`"check":"yarn lint --fix"`), false},
+		{"script with args appended", pkg(`"check":"yarn lint --fix"`), true},
+		{"script with a yarn option appended", pkg(`"check":"yarn lint --cwd ../b"`), false},
 		{"neither a script nor a dependency", pkg(`"format":"yarn left-pad"`), false},
 		{"dependency naming a token", pkg(`"all":"yarn npm-run-all lint"`), false},
 		{"argument naming a token", pkg(`"format":"yarn prettier npx"`), false},

@@ -252,6 +252,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			},
 		}
 	}
+	if f.Verdict == report.VerdictReachableCandidate || f.UndeterminedReason == report.ReasonRefutationWithheld {
+		f.ScopedVerdicts = scopedVerdicts(store, assessmentID, pkg, mods)
+	}
 	// No Priority here: EPSS/KEV context is attached by the report Builder (rankWith), after every
 	// verdict is final, so nothing on this path can read it (inv. 5).
 	f.Annotations = annotations(store, assessmentID)
@@ -1033,7 +1036,7 @@ func shortDigest(d string) string {
 // function cannot name has no standing to claim grounds it cannot describe.
 func disqualBasis(reason string) verdict.NonExploitableBasis {
 	switch reason {
-	case pipeline.ReasonVersionNotInRange:
+	case pipeline.ReasonVersionNotInRange, pipeline.ReasonFixCommitInHistory:
 		return verdict.BasisVersionNotAffected
 	case pipeline.ReasonSymbolAbsent:
 		return verdict.BasisSymbolAbsent
@@ -1056,6 +1059,8 @@ func disqualDetail(reason string) string {
 	switch reason {
 	case pipeline.ReasonVersionNotInRange:
 		return "resolved dependency version is outside the advisory's affected range"
+	case pipeline.ReasonFixCommitInHistory:
+		return "the commit the advisory names as its fix is in the scanned commit's history, and every range the advisory affects the project's own package by ends at a fixed version"
 	case pipeline.ReasonSymbolAbsent:
 		return "the vulnerable symbol is absent from the built artifact"
 	case pipeline.ReasonAdvisoryEcosystemMismatch:
@@ -1254,13 +1259,15 @@ type inventoryFacts struct {
 // in which case the honest emission is report.VerdictUndetermined rather than a refutation —
 // and returns the machine-readable reason.
 //
-// It is called from ONE place: finding()'s default arm. That placement is load-bearing and
-// replaces two clauses this predicate used to carry itself. A disqualified advisory is
-// reported (M3's version axis DERIVED the not-affected — a stronger claim than the one being
-// withdrawn, so eating it would discard the fix), and a reachable candidate is reported
+// It decides a row's verdict in ONE place: finding()'s default arm. That placement is
+// load-bearing and replaces two clauses this predicate used to carry itself. A disqualified
+// advisory is reported (M3's version axis DERIVED the not-affected — a stronger claim than the
+// one being withdrawn, so eating it would discard the fix), and a reachable candidate is reported
 // (declaring a positive finding undetermined would be a far worse failure than the one this
 // closes). Both are earlier arms of that switch, so control flow enforces them rather than a
-// duplicated condition that could drift out of step with it.
+// duplicated condition that could drift out of step with it. Its one other caller,
+// scopedVerdicts, reads it only to gate the scoped verdict a reachable_candidate or
+// refutation_withheld row may carry beside its own; the row's verdict is never changed there.
 //
 // Two axes decide it, in order of how specifically they can name the missing fact:
 //

@@ -44,6 +44,15 @@ var servletEntryMethods = map[string]bool{}
 // (registry-fed), consumed by isServletBase in parser.go.
 var servletSuperSuffix string
 
+// validatorSuper is the constraint-validator family's supertype simple name and
+// validatorEntryMethods its entry-method names (both registry-fed), consumed by
+// validatorentry.go.
+var (
+	validatorSuper        string
+	validatorEntryMethods = map[string]bool{}
+	validatorEntryArity   = map[string]int{}
+)
+
 func init() {
 	for _, f := range jvmingress.Families() {
 		switch f.Kind {
@@ -53,6 +62,14 @@ func init() {
 			servletSuperSuffix = f.Match.SuperSuffix
 			for _, m := range f.Match.Methods {
 				servletEntryMethods[m] = true
+			}
+		case jvmingress.KindConstraintValidator:
+			validatorSuper = f.Match.Supertype[strings.LastIndexByte(f.Match.Supertype, '/')+1:]
+			for _, m := range f.Match.Methods {
+				validatorEntryMethods[m] = true
+			}
+			for m, n := range f.Match.Arity {
+				validatorEntryArity[m] = n
 			}
 		default:
 			containerEntrypoints[f.Match.Annotation] = f.Kind
@@ -82,6 +99,7 @@ type bodyFrame struct {
 	methodName   string   // non-empty when this frame is a method body
 	methodArity  int      // arity of the method whose body this is
 	pendingAnnos []pendingAnno
+	annotation   bool // an @interface body: nested types only, no members
 }
 
 // pendingAnno is an ingress-marking annotation (route or container-entrypoint)
@@ -134,6 +152,11 @@ func parseCallsAndIngresses(r, raw []rune) ([]callSite, []ingressMarker) {
 	for i < n {
 		c := r[i]
 		switch {
+		case c == '@' && atInterface(r, i):
+			// "@interface" declares an annotation type; step over the '@' so the
+			// identifier path below models its body frame.
+			i++
+
 		case c == '@':
 			// Annotation. Read the annotation name and an optional ("...") or
 			// (path="...") selector. Record it as pending; it binds to the next
@@ -159,6 +182,21 @@ func parseCallsAndIngresses(r, raw []rune) ([]callSite, []ingressMarker) {
 		case isIdentStart(c):
 			word, next := readWord(r, i)
 			switch {
+			case word == "interface" && precededByAt(r, i):
+				// Annotation-type body: owns nested types, its elements are not
+				// method declarations. Calls in a nested type attribute to the chain
+				// that includes the annotation type, matching the declaration pass.
+				if open, ok := findBrace(r, next); ok {
+					if an, _ := readWord(r, skipSpace(r, next)); an != "" {
+						stack = append(stack, bodyFrame{typeName: an, enclosing: enclosingChain(), annotation: true})
+						pendingAnnos = nil
+						i = open + 1
+						continue
+					}
+				}
+				i = next
+				continue
+
 			case typeKeywords[word] && !precededByDot(r, i):
 				name, isServlet, openIdx, ok := parseTypeHeaderServlet(r, next)
 				if !ok {
@@ -250,7 +288,7 @@ func inTypeBodyFrame(stack []bodyFrame) bool {
 		return false
 	}
 	top := stack[len(stack)-1]
-	return top.typeName != ""
+	return top.typeName != "" && !top.annotation
 }
 
 // topType returns the innermost named-type frame, or nil if none is open.

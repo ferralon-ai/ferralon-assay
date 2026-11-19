@@ -1,0 +1,72 @@
+{
+  "affected": [
+    {
+      "coordinate": "github.com/golang-jwt/jwt",
+      "purl": "pkg:golang/github.com/golang-jwt/jwt",
+      "ranges": [
+        {
+          "introduced": "3.2.0",
+          "last_affected": "3.2.2"
+        },
+        {
+          "introduced": "0"
+        }
+      ],
+      "version_scheme": "gomod"
+    },
+    {
+      "coordinate": "github.com/golang-jwt/jwt/v4",
+      "fixed_versions": [
+        "4.5.2"
+      ],
+      "purl": "pkg:golang/github.com/golang-jwt/jwt/v4",
+      "ranges": [
+        {
+          "fixed": "4.5.2",
+          "upper_exclusive": "4.5.2"
+        }
+      ],
+      "version_scheme": "gomod"
+    },
+    {
+      "coordinate": "github.com/golang-jwt/jwt/v5",
+      "fixed_versions": [
+        "5.2.2"
+      ],
+      "purl": "pkg:golang/github.com/golang-jwt/jwt/v5",
+      "ranges": [
+        {
+          "fixed": "5.2.2",
+          "introduced": "5.0.0-rc.1",
+          "upper_exclusive": "5.2.2"
+        }
+      ],
+      "version_scheme": "gomod"
+    }
+  ],
+  "aliases": [
+    "CVE-2025-30204",
+    "GO-2025-3553"
+  ],
+  "coordinate": "github.com/golang-jwt/jwt",
+  "cwes": [
+    "CWE-405"
+  ],
+  "fix": {
+    "upstream_commit": "https://github.com/golang-jwt/jwt/commit/0951d184286dece21f73c85673fd308786ffe9c3"
+  },
+  "purl": "pkg:golang/github.com/golang-jwt/jwt",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "Asymmetric Resource Consumption (Amplification) (CWE-405): golang-jwt is a Go implementation of JSON Web Tokens. Starting in version 3.2.0 and prior to versions 5.2.2 and 4.5.2, the function parse.ParseUnverified splits (via a call to strings.Split) its argument (which is untrusted data) on periods. As a result, in the face of a malicious request whose Authorization header consists of Bearer  followed by many period characters, a call to that function incurs allocations to the tune of O(n) bytes (where n stands for the length of the function's argument), with a constant factor of about 16. This issue is fixed in 5.2.2 and 4.5.2.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "github.com/golang-jwt/jwt/v4.Parser.ParseUnverified",
+    "github.com/golang-jwt/jwt/v5.Parser.ParseUnverified"
+  ],
+  "version_scheme": "gomod",
+  "vuln_id": "GHSA-mh63-6h87-95cp",
+  "withdrawn": false
+}

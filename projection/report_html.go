@@ -103,6 +103,8 @@ type reportHTMLFinding struct {
 	Detail   string
 	// Assumptions are the stated assumptions a not_exploitable holds under, one line each.
 	Assumptions []string
+	// Scoped are the sentences for the finding's scoped verdicts, shown beside its own.
+	Scoped []string
 	// Annotations are the assumptions the analysis made in reaching the verdict, one line each.
 	Annotations []string
 	Path        string
@@ -259,6 +261,7 @@ func reportHTMLFindingFrom(f report.AdvisoryFinding) reportHTMLFinding {
 		Severity:           severity,
 		Detail:             f.Evidence.Detail,
 		Assumptions:        f.Evidence.Assumptions,
+		Scoped:             scopedStatementList(f.ScopedVerdicts),
 		Annotations:        annotationDetails(f.Annotations),
 		Path:               f.Evidence.ReachablePath,
 		UndeterminedReason: f.UndeterminedReason,
@@ -429,6 +432,15 @@ func annotationDetails(annotations []plugin.Annotation) []string {
 	var out []string
 	for _, a := range annotations {
 		out = append(out, a.Detail)
+	}
+	return out
+}
+
+// scopedStatementList is the sentence for each of a finding's scoped verdicts.
+func scopedStatementList(scoped []report.ScopedVerdict) []string {
+	var out []string
+	for _, v := range scoped {
+		out = append(out, v.Statement())
 	}
 	return out
 }

@@ -1,0 +1,355 @@
+schema: ferralon.floor-expect.v1
+scan: complete
+findings:
+  - advisory: CVE-2026-111497
+    package: "github.com/andybalholm/brotli@v1.1.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/andybalholm/brotli.*Reader.Read, github.com/andybalholm/brotli.decodeError.Error reached from routers/web/repo.UpdatePullRequestTarget"
+  - advisory: CVE-2026-33814
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*Transport.NewClientConn, golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip reached from services/migrations.*GogsDownloader.RoundTrip"
+  - advisory: CVE-2026-78659
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*writeData.String, golang.org/x/net/http2.ConfigureTransports, golang.org/x/net/http2.FrameHeader.String, golang.org/x/net/http2.FrameType.String, golang.org/x/net/http2.StreamError.Error, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip, golang.org/x/net/http2.stickyErrWriter.Write, golang.org/x/net/http2.transportResponseBody.Read reached from modules/translation/i18n.*locale.TrHTML"
+  - advisory: CVE-2026-78660
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*Transport.NewClientConn, golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip reached from services/migrations.*GogsDownloader.RoundTrip"
+  - advisory: CVE-2026-78663
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.*writeData.String, golang.org/x/net/http2.FrameType.String, golang.org/x/net/http2.StreamError.Error, golang.org/x/net/http2.chunkWriter.Write, golang.org/x/net/http2.headerFieldValueError.Error, golang.org/x/net/http2.noDialH2RoundTripper.RoundTrip, golang.org/x/net/http2.transportResponseBody.Read reached from modules/translation/i18n.*locale.TrHTML"
+  - advisory: CVE-2026-78669
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*Transport.RoundTrip, golang.org/x/net/http2.*bufferedWriterTimeoutWriter.Write, golang.org/x/net/http2.ConfigureTransports, golang.org/x/net/http2.ConnectionError.Error, golang.org/x/net/http2.SettingID.String, golang.org/x/net/http2.chunkWriter.Write, golang.org/x/net/http2.headerFieldNameError.Error, golang.org/x/net/http2.transportResponseBody.Close reached from routers/web/repo.UpdatePullRequestTarget"
+  - advisory: CVE-2026-97032
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/http2.*Transport.NewClientConn, golang.org/x/net/http2.*bufferedWriterTimeoutWriter.Write, golang.org/x/net/http2.*unencryptedTransport.RoundTrip, golang.org/x/net/http2.FrameHeader.String, golang.org/x/net/http2.FrameType.String, golang.org/x/net/http2.chunkWriter.Write, golang.org/x/net/http2.headerFieldNameError.Error, golang.org/x/net/http2.stickyErrWriter.Write reached from modules/translation/i18n.*locale.TrHTML"
+  - advisory: GHSA-9w9f-6mg8-jp7w
+    package: "github.com/blevesearch/bleve/v2@v2.4.2"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2025-11579
+    package: "github.com/nwaples/rardecode@v1.1.3"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/nwaples/rardecode.*cipherBlockReader.Read, github.com/nwaples/rardecode.*limitedReader.Read, github.com/nwaples/rardecode.init reached from modules/dump.init"
+  - advisory: GHSA-hcg3-q754-cr77
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.*Request.Reply, golang.org/x/crypto/ssh.*extChannel.Read, golang.org/x/crypto/ssh.*extChannel.Write, golang.org/x/crypto/ssh.NewServerConn reached from modules/git.*Repository.GetLanguageStats"
+  - advisory: GHSA-vvgc-356p-c3xw
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/html.*Tokenizer.Next, golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from modules/markup/orgmode.Render"
+  - advisory: CVE-2025-29923
+    package: "github.com/redis/go-redis/v9@v9.7.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/redis/go-redis/v9.*baseClient.initConn reached from modules/cache.*RedisCacher.Flush"
+  - advisory: GHSA-mh63-6h87-95cp
+    package: "github.com/golang-jwt/jwt/v5@v5.2.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/golang-jwt/jwt/v5.*Parser.ParseUnverified reached from services/actions.TokenToTaskID"
+  - advisory: CVE-2025-47911
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from modules/markup/orgmode.Render"
+  - advisory: CVE-2025-47913
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh/agent.*agentKeyringSigner.Sign, golang.org/x/crypto/ssh/agent.*agentKeyringSigner.SignWithAlgorithm reached from modules/graceful.*Server.Serve"
+  - advisory: CVE-2025-58058
+    package: "github.com/ulikunitz/xz@v0.5.12"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/ulikunitz/xz.*Reader.Read, github.com/ulikunitz/xz.*Writer.Close, github.com/ulikunitz/xz.*Writer.Write, github.com/ulikunitz/xz.NewReader, github.com/ulikunitz/xz.init, github.com/ulikunitz/xz.noneHash.Write, github.com/ulikunitz/xz/lzma.*Writer2.Close, github.com/ulikunitz/xz/lzma.*chunkHeader.String reached from modules/packages/arch.ParsePackage"
+  - advisory: CVE-2025-58181
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.NewServerConn reached from modules/graceful.*Server.Serve"
+  - advisory: CVE-2025-58190
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from modules/markup/orgmode.Render"
+  - advisory: CVE-2025-59937
+    package: "github.com/wneessen/go-mail@v0.5.2"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/wneessen/go-mail.*Msg.GetRecipients, github.com/wneessen/go-mail.*Msg.SetAddrHeader, github.com/wneessen/go-mail.*Msg.SetDateWithValue, github.com/wneessen/go-mail.*Msg.SetGenHeader, github.com/wneessen/go-mail.*Msg.WriteTo, github.com/wneessen/go-mail.*msgWriter.Write, github.com/wneessen/go-mail/smtp.*Client.Mail, github.com/wneessen/go-mail/smtp.*Client.Rcpt reached from modules/packages/rubygems.*MarshalEncoder.Encode"
+  - advisory: CVE-2025-8556
+    package: "github.com/cloudflare/circl@v1.5.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/cloudflare/circl/dh/x25519.KeyGen, github.com/cloudflare/circl/dh/x448.init, github.com/cloudflare/circl/internal/sha3.*State.Reset, github.com/cloudflare/circl/math/fp25519.P, github.com/cloudflare/circl/math/fp448.InvSqrt, github.com/cloudflare/circl/math/fp448.ToBytes, github.com/cloudflare/circl/sign/ed25519.PrivateKey.Seed, github.com/cloudflare/circl/sign/ed25519.Verify reached from services/packages/rpm.GetOrCreateKeyPair"
+  - advisory: CVE-2026-116591
+    package: "github.com/klauspost/compress@v1.17.11"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/klauspost/compress/fse.Compress, github.com/klauspost/compress/fse.Decompress, github.com/klauspost/compress/huff0.Compress1X, github.com/klauspost/compress/huff0.Compress4X, github.com/klauspost/compress/huff0.ReadTable reached from modules/zstd.*Writer.Close"
+  - advisory: CVE-2026-1229
+    package: "github.com/cloudflare/circl@v1.5.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/cloudflare/circl/dh/x25519.KeyGen, github.com/cloudflare/circl/dh/x25519.init, github.com/cloudflare/circl/dh/x448.KeyGen, github.com/cloudflare/circl/internal/sha3.*State.Read, github.com/cloudflare/circl/math.init, github.com/cloudflare/circl/math/fp25519.Cmov, github.com/cloudflare/circl/math/fp25519.SetOne, github.com/cloudflare/circl/math/fp448.SetOne reached from services/packages/rpm.init"
+  - advisory: CVE-2026-25680
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from modules/markup/orgmode.Render"
+  - advisory: CVE-2026-25681
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from modules/markup/orgmode.Render"
+  - advisory: CVE-2026-25934
+    package: "github.com/go-git/go-git/v5@v5.13.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-git/go-git/v5/plumbing.HashSlice.Len, github.com/go-git/go-git/v5/plumbing.HashSlice.Less, github.com/go-git/go-git/v5/plumbing/format/packfile.*scannerReader.Seek, github.com/go-git/go-git/v5/plumbing/transport/internal/common.NewClient, github.com/go-git/go-git/v5/utils/ioutil.*readerAtAsReader.Read, github.com/go-git/go-git/v5/utils/ioutil.init, github.com/go-git/go-git/v5/utils/merkletrie/noder.init, github.com/go-git/go-git/v5/utils/sync.init reached from modules/git.ParseCatFileTreeLine"
+  - advisory: CVE-2026-27136
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from modules/markup.PostProcessDefault"
+  - advisory: CVE-2026-32952
+    package: "github.com/Azure/go-ntlmssp@v0.0.0-20221128193559-754e69321358"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/Azure/go-ntlmssp.ProcessChallenge reached from services/mailer/sender.*ntlmAuth.Next"
+  - advisory: GHSA-p77j-4mvh-x3m3
+    package: "google.golang.org/grpc@v1.67.1"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2026-33762
+    package: "github.com/go-git/go-git/v5@v5.13.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-git/go-git/v5/plumbing/cache.init, github.com/go-git/go-git/v5/plumbing/format/pktline.init, github.com/go-git/go-git/v5/plumbing/protocol/packp/sideband.init, github.com/go-git/go-git/v5/plumbing/transport/client.init, github.com/go-git/go-git/v5/plumbing/transport/internal/common.NewClient, github.com/go-git/go-git/v5/utils/merkletrie/internal/frame.init, github.com/go-git/go-git/v5/utils/merkletrie/noder.init, github.com/go-git/go-git/v5/utils/sync.init$5 reached from services/actions.init"
+  - advisory: CVE-2026-33809
+    package: "golang.org/x/image@v0.21.0"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2026-33812
+    package: "golang.org/x/image@v0.21.0"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2026-33813
+    package: "golang.org/x/image@v0.21.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/image/webp.Decode, golang.org/x/image/webp.DecodeConfig reached from modules/avatar.ProcessAvatarImage"
+  - advisory: CVE-2026-34165
+    package: "github.com/go-git/go-git/v5@v5.13.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-git/go-git/v5/plumbing.Hash.IsZero, github.com/go-git/go-git/v5/plumbing/format/gitignore.NewMatcher, github.com/go-git/go-git/v5/plumbing/format/idxfile.objects.Less, github.com/go-git/go-git/v5/plumbing/storer.init, github.com/go-git/go-git/v5/plumbing/transport/file.init, github.com/go-git/go-git/v5/storage/filesystem.init, github.com/go-git/go-git/v5/utils/diff.init, github.com/go-git/go-git/v5/utils/ioutil.WriteNopCloser reached from services/actions.init"
+  - advisory: GO-2026-5026
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/idna.ToASCII reached from services/migrations.*GogsDownloader.RoundTrip"
+  - advisory: GHSA-45gg-vh54-h5m9
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.NewServerConn reached from modules/graceful.*Server.Serve"
+  - advisory: GHSA-w879-237q-wc7r
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.NewServerConn, golang.org/x/crypto/ssh.NewSignerFromKey, golang.org/x/crypto/ssh.ParseAuthorizedKey, golang.org/x/crypto/ssh.ParsePrivateKey, golang.org/x/crypto/ssh.ParsePublicKey reached from modules/graceful.*Server.Serve"
+  - advisory: GHSA-vgwf-h737-ff37
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.NewServerConn reached from modules/graceful.*Server.Serve"
+  - advisory: CVE-2026-39831
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.*CertChecker.CheckCert, golang.org/x/crypto/ssh.*Certificate.Verify, golang.org/x/crypto/ssh.*skECDSAPublicKey.Verify, golang.org/x/crypto/ssh.*skEd25519PublicKey.Verify, golang.org/x/crypto/ssh.NewServerConn reached from models/asymkey.VerifySSHKey"
+  - advisory: CVE-2026-39834
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.*extChannel.Write, golang.org/x/crypto/ssh.NewServerConn reached from modules/graceful.*Server.Serve"
+  - advisory: CVE-2026-41506
+    package: "github.com/go-git/go-git/v5@v5.13.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-git/go-git/v5/plumbing/transport/http.NewClient reached from services/actions.init"
+  - advisory: CVE-2026-42500
+    package: "golang.org/x/image@v0.21.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/image/bmp.Decode reached from modules/avatar.ProcessAvatarImage"
+  - advisory: CVE-2026-42502
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from modules/markup.PostProcessDefault"
+  - advisory: CVE-2026-42506
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from modules/markup.PostProcessDefault"
+  - advisory: CVE-2026-44740
+    package: "github.com/go-git/go-billy/v5@v5.6.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-git/go-billy/v5/helper/chroot.New reached from services/actions.init"
+  - advisory: CVE-2026-44973
+    package: "github.com/go-git/go-billy/v5@v5.6.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-git/go-billy/v5/helper/chroot.New, github.com/go-git/go-billy/v5/osfs.New reached from services/actions.init"
+  - advisory: CVE-2026-45570
+    package: "github.com/go-git/go-git/v5@v5.13.1"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-git/go-git/v5/plumbing.Hash.String, github.com/go-git/go-git/v5/plumbing.HashSlice.Less, github.com/go-git/go-git/v5/plumbing/format/gitignore.ParsePattern, github.com/go-git/go-git/v5/plumbing/format/packfile.*Error.Error, github.com/go-git/go-git/v5/plumbing/object.init, github.com/go-git/go-git/v5/utils/diff.init, github.com/go-git/go-git/v5/utils/merkletrie.init, github.com/go-git/go-git/v5/utils/sync.init$3 reached from routers/web/repo.UpdatePullRequestTarget"
+  - advisory: GHSA-x527-x647-q7gg
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.NewServerConn reached from modules/graceful.*Server.Serve"
+  - advisory: CVE-2026-46597
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.NewServerConn reached from modules/graceful.*Server.Serve"
+  - advisory: CVE-2026-46599
+    package: "golang.org/x/image@v0.21.0"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2026-46601
+    package: "golang.org/x/image@v0.21.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/image/webp.Decode, golang.org/x/image/webp.DecodeConfig, golang.org/x/image/webp.init reached from modules/avatar.ProcessAvatarImage"
+  - advisory: CVE-2026-46602
+    package: "golang.org/x/image@v0.21.0"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2026-46603
+    package: "golang.org/x/image@v0.21.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/image/vp8l.Decode reached from modules/avatar.ProcessAvatarImage"
+  - advisory: CVE-2026-46604
+    package: "golang.org/x/image@v0.21.0"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2026-5160
+    package: "github.com/yuin/goldmark@v1.7.8"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/yuin/goldmark/renderer/html.*Renderer.renderAutoLink, github.com/yuin/goldmark/renderer/html.*Renderer.renderImage, github.com/yuin/goldmark/renderer/html.*Renderer.renderLink reached from modules/markup/markdown.*ASTTransformer.Transform"
+  - advisory: CVE-2026-56852
+    package: "golang.org/x/text@v0.21.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/text/unicode/norm.Form.Append, golang.org/x/text/unicode/norm.Form.AppendString, golang.org/x/text/unicode/norm.Form.FirstBoundaryInString, golang.org/x/text/unicode/norm.Form.IsNormalString, golang.org/x/text/unicode/norm.Form.Properties, golang.org/x/text/unicode/norm.Form.PropertiesString, golang.org/x/text/unicode/norm.Form.QuickSpan, golang.org/x/text/unicode/norm.Form.String reached from models/user.NormalizeUserName"
+  - advisory: CVE-2026-56854
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.NewServerConn reached from modules/graceful.*Server.Serve"
+  - advisory: CVE-2026-56855
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.NewServerConn reached from modules/graceful.*Server.Serve"
+  - advisory: CVE-2026-72816
+    package: "github.com/go-chi/chi/v5@v5.1.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-chi/chi/v5/middleware.RealIP reached from modules/web.*Router.Any"
+  - advisory: CVE-2026-72817
+    package: "github.com/go-chi/chi/v5@v5.1.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/go-chi/chi/v5/middleware.RealIP reached from modules/web.*Router.Any"
+  - advisory: CVE-2026-78661
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/html.Parse, golang.org/x/net/html.ParseFragment reached from modules/markup/orgmode.Render"
+  - advisory: CVE-2026-78662
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/crypto/ssh.NewServerConn reached from modules/graceful.*Server.Serve"
+  - advisory: CVE-2026-84303
+    package: "google.golang.org/grpc@v1.67.1"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2026-84304
+    package: "google.golang.org/grpc@v1.67.1"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2026-84445
+    package: "google.golang.org/grpc@v1.67.1"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: CVE-2026-97045
+    package: "golang.org/x/net@v0.34.0"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: golang.org/x/net/html.Render reached from modules/markup.PostProcessDefault"
+  - advisory: GHSA-hrxh-6v49-42gf
+    package: "google.golang.org/grpc@v1.67.1"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: GO-2026-5932
+    package: "golang.org/x/crypto@v0.32.0"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: required, vulnerable package never imported"
+  - advisory: GO-2026-6905
+    package: "github.com/blakesmith/ar@v0.0.0-20190502131153-809d4375e1fb"
+    truth: reachable
+    floor: reachable_candidate
+    note: "govulncheck: github.com/blakesmith/ar.*Reader.Read reached from modules/git.ParseCatFileTreeLine"

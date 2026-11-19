@@ -1331,7 +1331,7 @@ func TestCallGraph_ManifestReadInPartIsToolFailure(t *testing.T) {
 			name: "B2-3 othermod declared only in tox deps",
 			files: map[string]string{
 				"requirements.txt": "acmelib==1.0\n",
-				"tox.ini":          "[testenv]\ndeps =\n    othermod\n",
+				"tox.ini":          "[testenv]\ndeps =\n    py312: othermod\n",
 				"app.py":           app + "\nimport othermod\n",
 			},
 			toolFailure: true,

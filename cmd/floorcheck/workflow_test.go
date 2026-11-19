@@ -362,3 +362,29 @@ func TestFloorWorkflowMatrixKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestFloorWorkflowSummaryLoneArtifact covers a one-fixture dispatch: download-artifact extracts a
+// lone matching artifact straight into its path, so summary.json sits at the top level.
+func TestFloorWorkflowSummaryLoneArtifact(t *testing.T) {
+	needTools(t, "bash", "jq", "comm")
+	script := stepRun(t, "summary", "GITHUB_STEP_SUMMARY")
+	dir := t.TempDir()
+	d := filepath.Join(dir, "floor-observations")
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(RunSummary{Schema: "x", Fixtures: []FixtureSummary{{Fixture: "a", Outcome: OutcomePass, Counts: Counts{Met: 1}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "summary.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	matrix, err := json.Marshal(map[string][]ListEntry{"include": {{Name: "a"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runScript(t, dir, script, "MATRIX="+string(matrix), "GITHUB_STEP_SUMMARY="+filepath.Join(dir, "step.md")); code != 0 {
+		t.Errorf("exit %d, want 0\n%s", code, out)
+	}
+}

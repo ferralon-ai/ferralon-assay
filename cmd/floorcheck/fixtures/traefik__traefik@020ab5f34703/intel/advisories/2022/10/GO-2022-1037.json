@@ -1,0 +1,56 @@
+{
+  "affected": [
+    {
+      "coordinate": "stdlib",
+      "fixed_versions": [
+        "1.18.7",
+        "1.19.2"
+      ],
+      "purl": "pkg:golang/stdlib",
+      "ranges": [
+        {
+          "fixed": "1.18.7",
+          "upper_exclusive": "1.18.7"
+        },
+        {
+          "fixed": "1.19.2",
+          "introduced": "1.19.0-0",
+          "upper_exclusive": "1.19.2"
+        }
+      ],
+      "version_scheme": "go-toolchain"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "1.18.7",
+      "fixed_version": "1.18.7"
+    },
+    {
+      "fixed": "1.19.2",
+      "fixed_version": "1.19.2"
+    }
+  ],
+  "aliases": [
+    "BIT-golang-2022-2879",
+    "CVE-2022-2879"
+  ],
+  "coordinate": "stdlib",
+  "purl": "pkg:golang/stdlib",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "Reader.Read does not set a limit on the maximum size of file headers. A maliciously crafted archive could cause Read to allocate unbounded amounts of memory, potentially causing resource exhaustion or panics. After fix, Reader.Read limits the maximum size of header blocks to 1 MiB.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "archive/tar.Reader.Next",
+    "archive/tar.Reader.next",
+    "archive/tar.Writer.WriteHeader",
+    "archive/tar.Writer.writePAXHeader",
+    "archive/tar.parsePAX"
+  ],
+  "version_scheme": "go-toolchain",
+  "vuln_id": "GO-2022-1037",
+  "withdrawn": false
+}

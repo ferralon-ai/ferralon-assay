@@ -226,6 +226,14 @@ func parseFile(src string) parseResult {
 			if word == "interface" && precededByAt(r, i) {
 				res.skipped = true
 				if open, ok := findBrace(r, next); ok {
+					// The body is entered as a type frame that holds no members: its
+					// elements stay out of decls, but a type nested in it is declared
+					// with the annotation type in its enclosing chain.
+					if an, _ := readWord(r, skipSpace(r, next)); an != "" {
+						typeStack = append(typeStack, frame{name: an, annotation: true})
+						i = open + 1
+						continue
+					}
 					i = skipGroup(r, open)
 				} else {
 					i = next
@@ -302,8 +310,9 @@ func parseFile(src string) parseResult {
 
 // frame is one entry on the enclosing-block stack.
 type frame struct {
-	name   string // "" for a non-type block
-	isEnum bool
+	name       string // "" for a non-type block
+	isEnum     bool
+	annotation bool // an @interface body: nested types only, no members
 }
 
 // parseEnumConstants reads the leading constant section of an enum body, given
@@ -569,7 +578,7 @@ func enclosingTypes(stack []frame) []string {
 
 // inTypeBody reports whether the innermost open block is a named type body.
 func inTypeBody(stack []frame) bool {
-	return len(stack) > 0 && stack[len(stack)-1].name != ""
+	return len(stack) > 0 && stack[len(stack)-1].name != "" && !stack[len(stack)-1].annotation
 }
 
 // --- low-level scanners over the cleaned rune slice ---

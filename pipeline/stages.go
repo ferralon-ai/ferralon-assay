@@ -591,7 +591,8 @@ func (t TriggerRoute) Zero() bool {
 }
 
 // FixHint is the advisory-declared upstream-fix hint. FailedFixClass is a closed set
-// (failedFixClassRecognized). It is a synthesis hint, never a sufficiency oracle (inv.5).
+// (failedFixClassRecognized). It is a synthesis hint, never a sufficiency oracle (inv.5); the
+// one conclusion drawn from it is ReasonFixCommitInHistory, which only clears.
 type FixHint struct {
 	UpstreamCommit string // upstream commit that fixed the vuln
 	GuardShape     string // shape of the guard the fix introduced
@@ -863,6 +864,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		Aliases          []string                  `json:"aliases,omitempty"`
 		AffectedRanges   []affectedRange           `json:"affected_ranges,omitempty"`
 		FixedVersion     string                    `json:"fixed_version,omitempty"`
+		FixCommit        string                    `json:"fix_commit,omitempty"` // fix.upstream_commit as the record spells it, read back by extractFixCommit
 		PURL             string                    `json:"purl,omitempty"`
 		AdvisorySymbols  []string                  `json:"advisory_symbols,omitempty"`
 		Conditional      []string                  `json:"target_conditional_symbols,omitempty"`
@@ -890,6 +892,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		Aliases:          facts.Aliases,
 		AffectedRanges:   ranges,
 		FixedVersion:     facts.FixedVersion,
+		FixCommit:        facts.Fix.UpstreamCommit,
 		PURL:             facts.PURL,
 		AdvisorySymbols:  facts.Symbols,
 		Conditional:      facts.TargetConditionalSymbols,
@@ -1711,9 +1714,12 @@ func (disqualificationDiscovery) Status() assessment.Status { return assessment.
 type DisqualResult struct {
 	Disqualified bool   `json:"disqualified"`
 	Reason       string `json:"reason"`
-	// Source names the advisory record a version or symbol refute relied on. Set exactly when
-	// Disqualified is true on ReasonVersionNotInRange or ReasonSymbolAbsent; nil otherwise.
+	// Source names the advisory record a version, symbol or fix-commit refute relied on. Set exactly
+	// when Disqualified is true on ReasonVersionNotInRange, ReasonSymbolAbsent or
+	// ReasonFixCommitInHistory; nil otherwise.
 	Source *RefuteSource `json:"source,omitempty"`
+	// FixCommit is the commit a ReasonFixCommitInHistory refute found in the scanned history.
+	FixCommit string `json:"fix_commit,omitempty"`
 }
 
 // RefuteSource names the record a refute relied on. Advisory is always set. Corpus and Record are
@@ -1733,6 +1739,10 @@ const (
 	ReasonVersionNotInRange = "version_not_in_affected_range"
 	ReasonSymbolAbsent      = "vulnerable_symbol_absent"
 	ReasonInsufficient      = "insufficient_evidence_to_disqualify"
+	// ReasonFixCommitInHistory: the advisory is against the scanned project's own package, every
+	// range of it ends at a fixed version, and the commit the advisory names as the fix is HEAD or
+	// an ancestor of it (fixCommitClears). It clears; its absence establishes nothing.
+	ReasonFixCommitInHistory = "fix_commit_in_history"
 
 	// Intake disqualification reason codes (M0). These short-circuit advisories that are
 	// un-adjudicable BY DESIGN — nothing in the resolved codebase the analysis could ever
@@ -2754,8 +2764,20 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	axis, axisKnown := extractVersionAxis(store, c.ID)
 	symbol, symbolKnown := extractSymbolSignal(store, c.ID)
 
-	disqualified, reason := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, extractAlsoPresent(store, c.ID), symbol, symbolKnown)
+	others := extractAlsoPresent(store, c.ID)
+	disqualified, reason := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown)
 	res := DisqualResult{Disqualified: disqualified, Reason: reason}
+	if !disqualified {
+		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) &&
+			fixCommitClears(rngs, rangeKnown, axis.Versions, others,
+				func() bool { return headContainsCommit(ctx, buildDir, commit) },
+				func(lower string) bool {
+					return rangeEnteredBeforeFix(ctx, buildDir, rootGoModule(store, c.ID, buildDir), commit, lower)
+				}) {
+			disqualified = true
+			res = DisqualResult{Disqualified: true, Reason: ReasonFixCommitInHistory, FixCommit: commit}
+		}
+	}
 	if disqualified {
 		src := extractRefuteSource(store, c)
 		res.Source = &src

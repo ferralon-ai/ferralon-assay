@@ -96,7 +96,8 @@ func (s *ssaProgram) runTimeReason(name string) (string, bool) {
 }
 
 // statePluginScope says, in the detail of each refutation kept beside a limit that holds only
-// because the scanned build has cgo off, the build setting the refutation holds for.
+// because the scanned build has cgo off, the program view's among them, the build setting the
+// refutation holds for.
 // plugin_load:cgo_off: the program reaches plugin.Open, which loads nothing with cgo off.
 // cgo:files_dropped: the build left out cgo files, none of which was found to call into the
 // advisory's module. Either way the same program built with cgo on was not checked.
@@ -128,6 +129,11 @@ func statePluginScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
 	res.Refutations = slices.Clone(res.Refutations)
 	for i, r := range res.Refutations {
 		res.Refutations[i] = state(r)
+	}
+	if res.ProgramView != nil {
+		view := *res.ProgramView
+		view.Refutation = state(view.Refutation)
+		res.ProgramView = &view
 	}
 	return res
 }

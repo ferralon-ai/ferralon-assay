@@ -30,9 +30,12 @@ import (
 //	npm run|run-script <name>            runs a script and installs nothing; the script, like
 //	npm test|t|start                     every package.json script value, passes the same gate
 //	yarn run <name>, yarn test|start
-//	yarn <name> [args]                   a name no yarn command takes, that is a script
-//	                                     (with no args) or a declared dependency's bin, with
-//	                                     no / or \ in it and no -- among the args
+//	yarn <name> [args]                   a name no yarn command takes, that is a declared
+//	                                     dependency's bin, with no / or \ in it and no --
+//	                                     among the args
+//	npm run|run-script <name> <args>     a script run with arguments: the text it runs, the
+//	npm start|test|stop|restart <args>   script's text with the args appended, passes the
+//	yarn [run] <name> <args>             same gate (laneScriptRun)
 //	npx <name> [args]                    a declared dependency, with no npx flag or @version:
 //	                                     its local bin, or a fetch into the npx cache, which
 //	                                     never enters the project's node_modules
@@ -73,7 +76,9 @@ func scriptSpec(root string, locks map[string]lockInfo, assumed, built *bool) sc
 		},
 		ReadOnly:    laneReadOnly,
 		Library:     gitShellLibrary,
+		Helper:      laneHelper,
 		Concurrent:  laneConcurrent,
+		ScriptRun:   laneScriptRun,
 		Code:        laneCode,
 		Inert:       laneNpmrcWrite,
 		ReadRegular: readRegular,
@@ -249,7 +254,7 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 			if len(rest) == 1 {
 				return laneRunsInTree(b, dir)
 			}
-			return rest[1] == "--" && laneScriptTakesArgs(b, dir, rest[0], rest[2:])
+			return false // with arguments, a script run is laneScriptRun's
 		case "start":
 			dir, rest, ok := lanePrefix(args)
 			return ok && len(rest) == 0 && laneRunsInTree(b, dir)
@@ -751,40 +756,324 @@ func laneRunsInTree(b scriptsurface.Binder, dir string) bool {
 	return true
 }
 
-// laneScriptTakesArgs reports whether "npm run <name> -- <args>" only runs a script: npm
-// appends args to the script's text, so the package.json it binds to must be read here, its
-// script name must name no token, which the args could turn into an install, and no arg may
-// name one.
-func laneScriptTakesArgs(b scriptsurface.Binder, dir, name string, args []string) bool {
-	for _, a := range args {
-		if laneNamesToken(a) {
-			return false
+// laneScriptRun returns the shell text a script run with arguments runs, and whether words is
+// one: npm run|run-script <name> <args>, npm start|test|t|stop|restart <args> (each with an
+// optional --prefix <dir>), yarn run <name> <args>, or yarn <name> <args> for a name no yarn
+// command takes that is a script in every package.json the command binds to. npm and yarn 1
+// append the arguments to the script's text, and yarn 2+ to its last command, which is the
+// same text for every script laneExtends takes; the text is then checked as the script's own
+// text is, from where the command runs. A script run with no arguments is not one: its
+// script is checked where it is written.
+//
+// npm passes a run its positional arguments and everything after --; a --flag before -- sets
+// the npm config of that name for the run and every npm it starts (npm_config_<flag>), so each
+// must be no npm config (npmConfigs, by name, negation or the abbreviation npm expands) and the
+// script's text must then name no token. An npm short flag may be any config. yarn 1 parses
+// its own options anywhere before a --, so a yarn run takes none of yarnRunOptions and no --
+// or short flag. Every argument is laneSafeArg, so the composed text splits where the script's
+// own does and nowhere else, and names neither a token nor a file an install reads.
+//
+// It returns no text, which withholds, when a package.json is not read here, a script is
+// missing (npm start with no start script runs node server.js), or its text is not one
+// laneExtends takes.
+func laneScriptRun(words []string, b scriptsurface.Binder) ([]string, bool) {
+	for len(words) > 0 && laneKeptAssignment(words[0]) {
+		words = words[1:]
+	}
+	if len(words) < 3 {
+		return nil, false
+	}
+	head, ok := scriptsurface.CommandName(words[0])
+	if !ok {
+		return nil, false
+	}
+	switch head {
+	case "npm":
+		verb, args, ok := npmVerb(words[1:])
+		if !ok {
+			return nil, false
 		}
+		dir, rest, ok := lanePrefix(args)
+		if !ok {
+			return nil, false
+		}
+		name := verb
+		switch verb {
+		case "run", "run-script":
+			if len(rest) < 2 || rest[0] == "" || strings.HasPrefix(rest[0], "-") {
+				return nil, false
+			}
+			name, rest = rest[0], rest[1:]
+		case "t":
+			name = "test"
+		case "start", "test", "stop", "restart":
+		default:
+			return nil, false
+		}
+		if len(rest) == 0 {
+			return nil, false
+		}
+		pos, flags, ok := npmRunArgs(rest)
+		if !ok {
+			return nil, true
+		}
+		var pkgs []string
+		if dir == "" {
+			pkgs = b.Nearest("package.json")
+		} else {
+			pkgs = b.Prefixed(dir, "package.json")
+		}
+		texts, ok := laneScriptTexts(pkgs, name, name == "start")
+		if !ok {
+			return nil, true
+		}
+		return laneCompose(texts, pos, flags), true
+	case "yarn":
+		name, args := words[1], words[2:]
+		if name == "run" {
+			name, args = words[2], words[3:]
+		} else if yarnBuiltins[name] {
+			return nil, false
+		}
+		if len(args) == 0 || name == "" || strings.HasPrefix(name, "-") || strings.ContainsAny(name, `/\`) {
+			return nil, false
+		}
+		texts, ok := laneScriptTexts(b.Nearest("package.json"), name, false)
+		if !ok {
+			// Not a script everywhere it binds: yarn may run a bin, which laneAllowed decides.
+			return nil, false
+		}
+		flags := false
+		for _, a := range args {
+			if a == "--" || !laneSafeArg(a) {
+				return nil, true
+			}
+			if strings.HasPrefix(a, "-") {
+				opt, _, _ := strings.Cut(strings.TrimPrefix(a, "--"), "=")
+				if !strings.HasPrefix(a, "--") || yarnRunOptions[strings.TrimPrefix(opt, "no-")] {
+					return nil, true
+				}
+				flags = true
+			}
+		}
+		return laneCompose(texts, args, flags), true
 	}
-	var pkgs []string
-	if dir == "" {
-		pkgs = b.Nearest("package.json")
-	} else {
-		pkgs = b.Prefixed(dir, "package.json")
+	return nil, false
+}
+
+// npmRunArgs splits what follows a script run's name into the words npm hands the script and
+// whether a --flag sets a config for the run; ok is false for an argument that is not
+// laneSafeArg, a short flag, a flag naming an npm config, or a word after a flag before --,
+// which npm may take as that flag's value.
+func npmRunArgs(args []string) (pos []string, flags, ok bool) {
+	for i, a := range args {
+		if a == "--" {
+			for _, p := range args[i+1:] {
+				if !laneSafeArg(p) {
+					return nil, false, false
+				}
+			}
+			return append(pos, args[i+1:]...), flags, true
+		}
+		if !laneSafeArg(a) {
+			return nil, false, false
+		}
+		if !strings.HasPrefix(a, "-") {
+			if flags {
+				return nil, false, false
+			}
+			pos = append(pos, a)
+			continue
+		}
+		name, _, _ := strings.Cut(strings.TrimPrefix(a, "--"), "=")
+		if !strings.HasPrefix(a, "--") || npmConfigNamed(name) {
+			return nil, false, false
+		}
+		flags = true
 	}
-	if pkgs == nil {
-		return false
-	}
-	for _, p := range pkgs {
-		raw, ok := readManifest(p)
+	return pos, flags, true
+}
+
+// npmConfigNamed reports whether --<name> may set an npm config: name, in any case, _ read as
+// -, and past any number of no- negations, is one of npmConfigs or the start of one, which
+// npm expands.
+func npmConfigNamed(name string) bool {
+	n := strings.ReplaceAll(strings.ToLower(name), "_", "-")
+	for {
+		if n == "" {
+			return true
+		}
+		for c := range npmConfigs {
+			if strings.HasPrefix(c, n) {
+				return true
+			}
+		}
+		t, ok := strings.CutPrefix(n, "no-")
 		if !ok {
 			return false
 		}
-		var scripts map[string]string
-		if s, has := raw["scripts"]; has && json.Unmarshal(s, &scripts) != nil {
-			return false
-		}
-		text, has := scripts[name]
-		if !has || laneNamesToken(text) {
+		n = t
+	}
+}
+
+// npmConfigs are the npm configs and their aliases, npm 6 through 11, each _ written as -.
+var npmConfigs = func() map[string]bool {
+	m := map[string]bool{}
+	for _, n := range strings.Fields(`
+		access all allow-directory allow-file allow-git allow-remote allow-same-version also audit
+		audit-level auth-type before bin-links browser bypass-2fa ca cache cache-max cache-min
+		cafile call cert cidr color commit-hooks cpu depth description dev diff diff-dst-prefix
+		diff-ignore-all-space diff-name-only diff-no-prefix diff-src-prefix diff-text
+		diff-unified dry-run editor engine-strict expect-result-count expect-results expires
+		fetch-retries fetch-retry-factor fetch-retry-maxtimeout fetch-retry-mintimeout
+		fetch-timeout force foreground-scripts format-package-lock fund git git-tag-version
+		global global-style globalconfig heading https-proxy if-present ignore-scripts include
+		include-attestations include-staged include-workspace-root init-author-email
+		init-author-name init-author-url init-license init-module init-private init-type
+		init-version init.author.email init.author.name init.author.url init.license
+		init.module init.version install-links install-strategy json key legacy-bundling
+		legacy-peer-deps libc link local-address location lockfile-version loglevel logs-dir
+		logs-max long maxsockets message min-release-age name node-gyp node-options noproxy
+		npm-version offline omit omit-lockfile-registry-resolved only optional orgs
+		orgs-permission os otp pack-destination package package-lock package-lock-only packages
+		packages-all packages-and-scopes-permission parseable prefer-dedupe prefer-offline
+		prefer-online prefix preid production progress provenance provenance-file proxy
+		read-only rebuild-bundle registry replace-registry-host save save-bundle save-dev
+		save-exact save-optional save-peer save-prefix save-prod sbom-format sbom-type scope
+		scopes script-shell searchexclude searchlimit searchopts searchstaleness shell
+		shrinkwrap sign-git-commit sign-git-tag strict-peer-deps strict-ssl tag
+		tag-version-prefix timing token-description umask unicode update-notifier usage
+		user-agent userconfig version versions viewer which workspace workspaces
+		workspaces-update yes
+		onload-script scripts-prepend-node-path unsafe-perm user group tmp always-auth sso-type
+		sso-poll-frequency cache-lock-retries cache-lock-stale cache-lock-wait rollback
+		node-version send-metrics metrics-registry ignore-prepublish globalignorefile logstream
+		silent verbose quiet loud dd ddd desc enjoy-by porcelain readonly reg ws iwr local help
+		email auth _auth username _password otp`) {
+		m[strings.ReplaceAll(n, "_", "-")] = true
+	}
+	return m
+}()
+
+// yarnRunOptions are the yarn 1 options, past a no- negation, that yarn takes for itself
+// before a --, wherever they are written: each may move where the run binds or what an
+// install it starts reads.
+var yarnRunOptions = map[string]bool{
+	"cwd": true, "use-yarnrc": true, "default-rc": true, "modules-folder": true,
+	"global-folder": true, "link-folder": true, "cache-folder": true,
+	"preferred-cache-folder": true, "registry": true, "offline": true, "prefer-offline": true,
+	"production": true, "prod": true, "frozen-lockfile": true, "pure-lockfile": true,
+	"lockfile": true, "ignore-scripts": true, "ignore-engines": true, "ignore-optional": true,
+	"ignore-platform": true, "flat": true, "force": true, "har": true, "check-files": true,
+	"network-concurrency": true, "network-timeout": true, "mutex": true, "proxy": true,
+	"https-proxy": true, "strict-semver": true, "scripts-prepend-node-path": true,
+	"bin-links": true, "link-duplicates": true, "update-checksums": true, "skip-integrity-check": true,
+	"emoji": true, "verbose": true, "silent": true, "json": true, "progress": true,
+	"non-interactive": true, "otp": true, "version": true, "help": true, "enable-pnp": true,
+	"disable-pnp": true, "pnp": true, "focus": true, "audit": true,
+}
+
+// laneSafeArg reports whether an argument appended to a script's text stays one literal word
+// that names no token and no file an install reads.
+func laneSafeArg(a string) bool {
+	if a == "" || laneNamesToken(a) || laneNamesBuildFile(a) {
+		return false
+	}
+	for _, r := range a {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_./:=,@%+-", r)) {
 			return false
 		}
 	}
 	return true
+}
+
+// laneScriptTexts returns the text of the script name in each package.json in pkgs, a start
+// script defaulting to node server.js when start is set. ok is false when pkgs is nil, a
+// package.json is not read here, or a script is missing or one laneExtends does not take.
+func laneScriptTexts(pkgs []string, name string, start bool) ([]string, bool) {
+	if pkgs == nil {
+		return nil, false
+	}
+	var texts []string
+	for _, p := range pkgs {
+		raw, ok := readManifest(p)
+		if !ok {
+			return nil, false
+		}
+		var scripts map[string]string
+		if s, has := raw["scripts"]; has && json.Unmarshal(s, &scripts) != nil {
+			return nil, false
+		}
+		text, has := scripts[name]
+		if !has && start {
+			text, has = "node server.js", true
+		}
+		if !has || !laneExtends(text) {
+			return nil, false
+		}
+		texts = append(texts, text)
+	}
+	return texts, true
+}
+
+// laneExtends reports whether appending words to a script's text adds them to its last
+// command, as npm and both yarns run it: one line with no comment, ending in a literal word
+// or a quote, not a shell keyword that closes or opens a body.
+func laneExtends(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" || strings.ContainsAny(t, "#\n\r") {
+		return false
+	}
+	last := t[len(t)-1]
+	if !laneSafeArg(string(last)) && last != '"' && last != '\'' {
+		return false
+	}
+	f := strings.Fields(t)
+	switch f[len(f)-1] {
+	case "fi", "done", "esac", "}", "then", "do", "else":
+		return false
+	}
+	return true
+}
+
+// laneCompose appends args to each text. With a config flag set, a text naming a token
+// returns none, which withholds: the npm it runs would read the config.
+func laneCompose(texts, args []string, flags bool) []string {
+	var cmds []string
+	for _, t := range texts {
+		if flags && laneNamesToken(t) {
+			return nil
+		}
+		if len(args) > 0 {
+			t = strings.TrimSpace(t) + " " + strings.Join(args, " ")
+		}
+		cmds = append(cmds, t)
+	}
+	return cmds
+}
+
+// laneHelper reports whether words, a . or source line in the file at path, sources a helper
+// a tool writes outside the repository that installs nothing: husky 5-8's
+// "$(dirname -- "$0")/_/husky.sh" from a hook directly under .husky, where the repository
+// holds no .husky/_/husky.sh of its own (husky writes it at install, and git-ignores it), and
+// nvm's .nvm/nvm.sh, which only sets PATH and functions, where nothing the build holds or
+// copies is there (at). Other nvm spellings are scriptsurface's pathOnlyScripts.
+func laneHelper(path string, words []string) (at string, ok bool) {
+	if len(words) != 2 {
+		return "", false
+	}
+	switch words[1] {
+	case "$(dirname $0)/_/husky.sh", "$(dirname -- $0)/_/husky.sh":
+		dir := filepath.Dir(path)
+		if filepath.Base(dir) != ".husky" {
+			return "", false
+		}
+		_, err := os.Lstat(filepath.Join(dir, "_", "husky.sh"))
+		return "", err != nil && absent(err)
+	case ".nvm/nvm.sh", "./.nvm/nvm.sh":
+		return ".nvm/nvm.sh", true
+	}
+	return "", false
 }
 
 // laneWrapsScriptRun reports whether words is "<program> … -- <pm> start|test|run <name>": a
@@ -1106,11 +1395,15 @@ func laneKeptAssignment(word string) bool {
 }
 
 // lanePrefix takes one --prefix <dir> or --prefix=<dir> out of args, returning dir ("" when
-// there is none) and the args left; ok is false for a second one or one with no dir.
+// there is none) and the args left, reading none past a --; ok is false for a second one or
+// one with no dir.
 func lanePrefix(args []string) (dir string, rest []string, ok bool) {
 	for i := 0; i < len(args); i++ {
 		var d string
 		switch a := args[i]; {
+		case a == "--":
+			// What follows is the script's, a --prefix among it included.
+			return dir, append(rest, args[i:]...), true
 		case a == "--prefix":
 			if i+1 == len(args) {
 				return "", nil, false
@@ -1123,7 +1416,7 @@ func lanePrefix(args []string) (dir string, rest []string, ok bool) {
 			rest = append(rest, a)
 			continue
 		}
-		if dir != "" || d == "" {
+		if dir != "" || d == "" || strings.HasPrefix(d, "-") {
 			return "", nil, false
 		}
 		dir = d

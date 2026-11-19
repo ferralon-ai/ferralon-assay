@@ -84,6 +84,15 @@ type VEXVulnerability struct {
 type VEXProduct struct {
 	// ID is the PURL or other product identifier.
 	ID string `json:"@id"`
+	// Subcomponents are the components of the product the statement is about. A statement scoped to
+	// a shipped binary names the vulnerable dependency here, the binary being the product.
+	Subcomponents []VEXSubcomponent `json:"subcomponents,omitempty"`
+}
+
+// VEXSubcomponent identifies a component inside a VEXProduct.
+type VEXSubcomponent struct {
+	// ID is the PURL or other component identifier.
+	ID string `json:"@id"`
 }
 
 // VEXExtensions carries verdict details not captured by the OpenVEX schema.

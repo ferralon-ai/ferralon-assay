@@ -49,8 +49,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - BIT-brotli-2026-111497
       - BIT-dotnet-2026-111497
@@ -80,12 +80,22 @@ rows:
       hops: 2
       path_sha: 25082c7c4fae4758
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/andybalholm/brotli@v1.1.1
+        symbol: github.com/andybalholm/brotli.decodeError.Error
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-gitea-2020-13246
       - CVE-2020-13246
       - GHSA-g2qx-6ghw-67hm
       - GO-2022-0830
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -100,7 +110,7 @@ rows:
       - CVE-2021-28378
       - GHSA-g95p-88p4-76cm
       - GO-2022-0832
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -115,7 +125,7 @@ rows:
       - CVE-2021-29134
       - GHSA-h3q4-vmw4-cpr5
       - GO-2022-0353
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -130,7 +140,7 @@ rows:
       - CVE-2021-3382
       - GHSA-9f8c-pfvv-p4gm
       - GO-2024-2757
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -145,7 +155,7 @@ rows:
       - CVE-2021-45327
       - GHSA-jrpg-35hw-m4p9
       - GO-2022-0310
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -160,7 +170,7 @@ rows:
       - CVE-2021-45330
       - GHSA-pg38-r834-g45j
       - GO-2022-0982
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -175,7 +185,7 @@ rows:
       - CVE-2021-45331
       - GHSA-hfmf-q69j-6m5p
       - GO-2022-0315
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -190,7 +200,7 @@ rows:
       - CVE-2022-0905
       - GHSA-jr9c-h74f-2v28
       - GO-2022-0609
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -205,7 +215,7 @@ rows:
       - CVE-2022-1058
       - GHSA-4rqq-rxvc-v2rc
       - GO-2024-2752
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -220,7 +230,7 @@ rows:
       - CVE-2022-1928
       - GHSA-ph3w-2843-72mx
       - GO-2022-0612
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -235,7 +245,7 @@ rows:
       - CVE-2022-27313
       - GHSA-g7p7-x6w7-w6qg
       - GO-2022-0442
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -250,7 +260,7 @@ rows:
       - CVE-2022-30781
       - GHSA-p5f9-c9j9-g8qx
       - GO-2022-0450
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -265,7 +275,7 @@ rows:
       - CVE-2022-38183
       - GHSA-fhv8-m4j4-cww2
       - GO-2024-2769
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -280,7 +290,7 @@ rows:
       - CVE-2022-38795
       - GHSA-8j3v-68w3-3848
       - GO-2023-1999
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -295,7 +305,7 @@ rows:
       - CVE-2022-42968
       - GHSA-w8xw-7crf-h23x
       - GO-2022-1065
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -310,7 +320,7 @@ rows:
       - CVE-2023-3515
       - GHSA-cf6v-9j57-v6r6
       - GO-2023-1894
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -325,7 +335,7 @@ rows:
       - CVE-2025-68938
       - GHSA-cm54-pfmc-xrwx
       - GO-2025-4258
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -340,7 +350,7 @@ rows:
       - CVE-2025-68939
       - GHSA-263q-5cv3-xq9g
       - GO-2025-4261
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -355,7 +365,7 @@ rows:
       - CVE-2025-68940
       - GHSA-rrcw-5rjv-vj26
       - GO-2025-4267
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -370,7 +380,7 @@ rows:
       - CVE-2025-68941
       - GHSA-xfq3-qj7j-4565
       - GO-2025-4268
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -385,7 +395,7 @@ rows:
       - CVE-2025-68942
       - GHSA-898p-hh3p-hf9r
       - GO-2025-4263
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -400,7 +410,7 @@ rows:
       - CVE-2025-68943
       - GHSA-jhx5-4vr4-f327
       - GO-2025-4266
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -415,7 +425,7 @@ rows:
       - CVE-2025-68944
       - GHSA-f85h-c7m6-cfpm
       - GO-2025-4264
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -430,7 +440,7 @@ rows:
       - CVE-2025-68945
       - GHSA-7xq4-mwcp-q8fx
       - GO-2025-4262
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -445,7 +455,7 @@ rows:
       - CVE-2025-68946
       - GHSA-hq57-c72x-4774
       - GO-2025-4265
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -460,7 +470,7 @@ rows:
       - CVE-2025-69413
       - GHSA-pc73-rj2c-wvf9
       - GO-2026-4274
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -476,7 +486,7 @@ rows:
       - GHSA-8fwc-qjw5-rvgp
       - GHSA-f4wq-6ww5-m56p
       - GO-2026-4365
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -492,7 +502,7 @@ rows:
       - GHSA-hgr3-x44x-33hx
       - GHSA-jr6h-pwwp-c8g6
       - GO-2026-4367
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -508,7 +518,7 @@ rows:
       - GHSA-h4fh-pc4w-8w27
       - GHSA-rw22-5hhq-pfpf
       - GO-2026-4370
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -524,7 +534,7 @@ rows:
       - GHSA-2vgv-hgv4-22mh
       - GHSA-g54m-9f6g-wj7q
       - GO-2026-4362
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -540,7 +550,7 @@ rows:
       - GHSA-644v-xv3j-xgqg
       - GHSA-j8xr-c56q-m8jj
       - GO-2026-4368
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -556,7 +566,7 @@ rows:
       - GHSA-9cgq-wp42-4rpq
       - GHSA-ccq9-c5hv-cf64
       - GO-2026-4366
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -572,7 +582,7 @@ rows:
       - GHSA-393c-qgvj-3xph
       - GHSA-rrq5-r9h5-pc7c
       - GO-2026-4363
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -588,7 +598,7 @@ rows:
       - GHSA-jrpc-w85r-hgqx
       - GHSA-qqgv-v353-cv8p
       - GO-2026-4369
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -604,7 +614,7 @@ rows:
       - GHSA-4xx9-vc8v-87hv
       - GHSA-vfmv-f93v-37mw
       - GO-2026-4364
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -619,7 +629,7 @@ rows:
       - CVE-2026-60004
       - GHSA-rcr6-4jqh-j84m
       - GO-2026-6433
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -642,8 +652,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - BIT-golang-2020-7919
       - CVE-2020-7919
@@ -657,8 +667,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - BIT-golang-2021-31525
       - CVE-2021-31525
@@ -672,8 +682,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - BIT-golang-2021-33194
       - CVE-2021-33194
@@ -687,8 +697,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - BIT-golang-2022-27664
       - CVE-2022-27664
@@ -702,8 +712,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - BIT-golang-2022-2879
       - CVE-2022-2879
@@ -745,8 +755,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - BIT-golang-2022-32190
       - CVE-2022-32190
@@ -802,8 +812,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - BIT-golang-2022-41720
       - CVE-2022-41720
@@ -845,8 +855,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - BIT-golang-2022-41724
       - CVE-2022-41724
@@ -1182,8 +1192,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - BIT-golang-2023-39326
       - CVE-2023-39326
@@ -1267,8 +1277,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - BIT-golang-2023-45289
       - CVE-2023-45289
@@ -1520,7 +1530,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: disqualified
+      verdict: undetermined
+      reason: package_version_unresolved
   - advisory:
       - BIT-golang-2025-22873
       - CVE-2025-22873
@@ -1639,6 +1650,16 @@ rows:
       hops: 2
       path_sha: 23af6ef976444b01
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/url.Parse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-58183
       - CVE-2025-58183
@@ -1659,6 +1680,16 @@ rows:
       hops: 2
       path_sha: 352e40b5ab4d5c79
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: archive/tar.Reader.Next
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-58185
       - CVE-2025-58185
@@ -1680,6 +1711,16 @@ rows:
       hops: 3
       path_sha: 043e6ba5849e9181
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: encoding/asn1.Unmarshal
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-58186
       - CVE-2025-58186
@@ -1700,6 +1741,16 @@ rows:
       hops: 2
       path_sha: bf58f01323defa5a
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/http.Get
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-58187
       - CVE-2025-58187
@@ -1720,6 +1771,16 @@ rows:
       hops: 2
       path_sha: 31ba014a1395da98
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/x509.ParsePKCS1PrivateKey
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-58188
       - CVE-2025-58188
@@ -1745,6 +1806,16 @@ rows:
       hops: 7
       path_sha: 2a926229b18fce2e
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/x509.Certificate.Verify
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-58189
       - CVE-2025-58189
@@ -1765,6 +1836,16 @@ rows:
       hops: 2
       path_sha: e3f930fff37badad
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/tls.Conn.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-61723
       - CVE-2025-61723
@@ -1785,6 +1866,16 @@ rows:
       hops: 2
       path_sha: 75d5e33b2c76b9f7
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: encoding/pem.Decode
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-61724
       - CVE-2025-61724
@@ -1806,6 +1897,16 @@ rows:
       hops: 3
       path_sha: 33126dbd8ae2f4a5
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/textproto.Reader.ReadResponse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-61725
       - CVE-2025-61725
@@ -1826,6 +1927,16 @@ rows:
       hops: 2
       path_sha: f3134ad2d373aced
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/mail.ParseAddress
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-61726
       - CVE-2025-61726
@@ -1846,6 +1957,16 @@ rows:
       hops: 2
       path_sha: e4595d59a5416f57
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/url.URL.Query
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-61727
       - CVE-2025-61727
@@ -1871,6 +1992,16 @@ rows:
       hops: 7
       path_sha: 2a926229b18fce2e
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/x509.Certificate.Verify
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-61728
       - CVE-2025-61728
@@ -1891,6 +2022,16 @@ rows:
       hops: 2
       path_sha: 1c57e39e7c805965
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: archive/zip.Reader.Open
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-61729
       - CVE-2025-61729
@@ -1916,6 +2057,16 @@ rows:
       hops: 7
       path_sha: b2cc5d79a22ea54b
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/x509.Certificate.VerifyHostname
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-61730
       - CVE-2025-61730
@@ -1936,6 +2087,16 @@ rows:
       hops: 2
       path_sha: e3f930fff37badad
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/tls.Conn.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2025-61731
       - CVE-2025-61731
@@ -1998,6 +2159,16 @@ rows:
       hops: 2
       path_sha: e3f930fff37badad
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/tls.Conn.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-111943
       - CVE-2026-111943
@@ -2013,7 +2184,29 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: disqualified
+      verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/routers/web/user/setting/security.WebauthnRegisterPost
+        - github.com/go-webauthn/webauthn/webauthn.WebAuthn.FinishRegistration
+        - github.com/go-webauthn/webauthn/webauthn.WebAuthn.CreateCredential
+        - github.com/go-webauthn/webauthn/protocol.ParsedCredentialCreationData.Verify
+        - github.com/go-webauthn/webauthn/protocol.AttestationObject.Verify
+        - github.com/go-webauthn/webauthn/protocol.AttestationObject.VerifyAttestation
+        - crypto/x509.Certificate.Verify
+      hops: 7
+      path_sha: 2a926229b18fce2e
+      status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/x509.Certificate.Verify
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-25679
       - CVE-2026-25679
@@ -2034,6 +2227,16 @@ rows:
       hops: 2
       path_sha: 23af6ef976444b01
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/url.Parse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-27137
       - CVE-2026-27137
@@ -2082,6 +2285,16 @@ rows:
       hops: 2
       path_sha: 6a9e5b2a599288c1
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: os.ReadDir
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-27140
       - CVE-2026-27140
@@ -2116,6 +2329,16 @@ rows:
       hops: 2
       path_sha: b20cc10f8c31f367
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: html/template.Template.ExecuteTemplate
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-27143
       - CVE-2026-27143
@@ -2169,6 +2392,16 @@ rows:
       hops: 7
       path_sha: 2a926229b18fce2e
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/x509.Certificate.Verify
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-32282
       - CVE-2026-32282
@@ -2202,6 +2435,16 @@ rows:
       hops: 2
       path_sha: e3f930fff37badad
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/tls.Conn.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-32288
       - CVE-2026-32288
@@ -2222,6 +2465,16 @@ rows:
       hops: 2
       path_sha: 352e40b5ab4d5c79
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: archive/tar.Reader.Next
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-32289
       - CVE-2026-32289
@@ -2242,6 +2495,16 @@ rows:
       hops: 2
       path_sha: aa0d9cff4a371c45
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: html/template.Template.Parse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-33810
       - CVE-2026-33810
@@ -2292,6 +2555,16 @@ rows:
       hops: 4
       path_sha: 664a0cb06dfe118a
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/http2.Transport.RoundTrip
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-33818
       - CVE-2026-33818
@@ -2313,6 +2586,16 @@ rows:
       hops: 3
       path_sha: 043e6ba5849e9181
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: encoding/asn1.Unmarshal
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-39817
       - CVE-2026-39817
@@ -2361,6 +2644,16 @@ rows:
       hops: 2
       path_sha: f3134ad2d373aced
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/mail.ParseAddress
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-39822
       - CVE-2026-39822
@@ -2395,6 +2688,16 @@ rows:
       hops: 2
       path_sha: b20cc10f8c31f367
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: html/template.Template.ExecuteTemplate
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-39825
       - CVE-2026-39825
@@ -2429,6 +2732,16 @@ rows:
       hops: 2
       path_sha: b20cc10f8c31f367
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: html/template.Template.ExecuteTemplate
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-39836
       - CVE-2026-39836
@@ -2448,6 +2761,16 @@ rows:
       hops: 2
       path_sha: 37b4546624615f7b
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net.ResolveTCPAddr
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-42499
       - CVE-2026-42499
@@ -2468,6 +2791,16 @@ rows:
       hops: 2
       path_sha: f3134ad2d373aced
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/mail.ParseAddress
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-42501
       - CVE-2026-42501
@@ -2508,6 +2841,16 @@ rows:
       hops: 9
       path_sha: e993d0e173039c16
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: mime.WordDecoder.DecodeHeader
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-42505
       - CVE-2026-42505
@@ -2527,6 +2870,16 @@ rows:
       hops: 2
       path_sha: e3f930fff37badad
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/tls.Conn.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-42507
       - CVE-2026-42507
@@ -2546,6 +2899,16 @@ rows:
       hops: 2
       path_sha: 71e4a2d94c2446a7
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/textproto.Error.Error
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-46600
       - CVE-2026-46600
@@ -2581,6 +2944,16 @@ rows:
       hops: 2
       path_sha: 2bd23c16a563c2b5
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/http.Server.Serve
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-56857
       - CVE-2026-56857
@@ -2615,6 +2988,16 @@ rows:
       hops: 2
       path_sha: b20cc10f8c31f367
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: html/template.Template.ExecuteTemplate
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-56859
       - CVE-2026-56859
@@ -2635,6 +3018,16 @@ rows:
       hops: 2
       path_sha: 84ac02e91ea4c093
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: encoding/xml.Decoder.Decode
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-56860
       - CVE-2026-56860
@@ -2655,6 +3048,16 @@ rows:
       hops: 2
       path_sha: c8c7e1027c6ecce8
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/url.URL.ResolveReference
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-56862
       - CVE-2026-56862
@@ -2675,6 +3078,16 @@ rows:
       hops: 2
       path_sha: e3f930fff37badad
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/tls.Conn.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-56866
       - CVE-2026-56866
@@ -2695,6 +3108,16 @@ rows:
       hops: 2
       path_sha: bf58f01323defa5a
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/http.Get
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-78659
       - CVE-2026-78659
@@ -2715,6 +3138,16 @@ rows:
       hops: 2
       path_sha: 370386399d8d22e5
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/http2.gzipReader.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-78660
       - CVE-2026-78660
@@ -2737,6 +3170,16 @@ rows:
       hops: 4
       path_sha: 664a0cb06dfe118a
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/http2.Transport.RoundTrip
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-78663
       - CVE-2026-78663
@@ -2757,6 +3200,16 @@ rows:
       hops: 2
       path_sha: 370386399d8d22e5
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/http2.gzipReader.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-78667
       - CVE-2026-78667
@@ -2777,6 +3230,16 @@ rows:
       hops: 2
       path_sha: a068b189e97a1baa
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/http.ServeFile
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-78669
       - CVE-2026-78669
@@ -2797,6 +3260,16 @@ rows:
       hops: 2
       path_sha: 370386399d8d22e5
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/http2.gzipReader.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-94439
       - CVE-2026-94439
@@ -2817,6 +3290,16 @@ rows:
       hops: 2
       path_sha: 18b251d2393d7f4c
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/http.NewRequest
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-94440
       - CVE-2026-94440
@@ -2838,6 +3321,16 @@ rows:
       hops: 3
       path_sha: 41b52f8e43fc86f1
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: mime/multipart.Reader.ReadForm
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-94448
       - CVE-2026-94448
@@ -2858,6 +3351,16 @@ rows:
       hops: 2
       path_sha: b20cc10f8c31f367
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: html/template.Template.ExecuteTemplate
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-97030
       - CVE-2026-97030
@@ -2878,6 +3381,16 @@ rows:
       hops: 2
       path_sha: b20cc10f8c31f367
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: html/template.Template.ExecuteTemplate
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-97031
       - CVE-2026-97031
@@ -2898,6 +3411,16 @@ rows:
       hops: 2
       path_sha: e3f930fff37badad
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: crypto/tls.Conn.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - BIT-golang-2026-97032
       - CVE-2026-97032
@@ -2918,11 +3441,21 @@ rows:
       hops: 2
       path_sha: 370386399d8d22e5
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/http2.gzipReader.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2018-15192
       - GHSA-fg3x-rwq9-74cw
       - GO-2023-1971
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -2946,13 +3479,13 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2018-18926
       - GHSA-hf6f-jq25-8gq9
       - GO-2022-0844
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -2966,7 +3499,7 @@ rows:
       - CVE-2019-1010261
       - GHSA-5rh7-6gfj-mc87
       - GO-2023-1922
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -2988,8 +3521,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2019-11840
       - GHSA-r5c5-pr8j-pfp7
@@ -3002,8 +3535,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2019-11841
       - GHSA-x3jr-pf6g-c48f
@@ -3016,8 +3549,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2019-9512
       - CVE-2019-9514
@@ -3032,8 +3565,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2020-14040
       - GHSA-5rcv-m4m3-hfh7
@@ -3046,8 +3579,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2020-29652
       - GHSA-3vm4-22fp-5rfm
@@ -3060,8 +3593,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2020-7667
       - GHSA-9423-6c93-gpp8
@@ -3075,8 +3608,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2020-8918
       - GHSA-5x29-3hr9-6wpw
@@ -3089,8 +3622,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2020-9283
       - GHSA-ffhg-7mh4-33c4
@@ -3103,8 +3636,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2021-29482
       - GHSA-25xm-hr59-7c27
@@ -3117,8 +3650,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2021-38561
       - GHSA-ppp9-7jff-5vj2
@@ -3131,8 +3664,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2021-4235
       - GHSA-r88r-gmrh-7j83
@@ -3145,8 +3678,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2021-43565
       - GHSA-gwc9-m7rh-j2ww
@@ -3159,8 +3692,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2022-21698
       - GHSA-cg3q-j54f-5p7p
@@ -3173,8 +3706,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2022-27191
       - GHSA-8c26-wmh5-6g9v
@@ -3187,8 +3720,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2022-28948
       - GHSA-hp87-p4gw-j4gq
@@ -3201,8 +3734,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2022-30636
       - GO-2024-2961
@@ -3214,8 +3747,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2022-3064
       - GHSA-6q6q-88xp-6f2r
@@ -3228,8 +3761,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2022-31022
       - GHSA-9w9f-6mg8-jp7w
@@ -3256,8 +3789,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2022-32189
     package: '-'
@@ -3282,8 +3815,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2023-1732
       - GHSA-2q89-485c-9j2x
@@ -3296,8 +3829,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2023-22726
       - GHSA-pc99-qmg4-rcff
@@ -3324,8 +3857,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2023-3978
       - GHSA-2wrh-6pvc-2jm9
@@ -3338,8 +3871,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2023-48795
       - GHSA-45x7-px36-x8w8
@@ -3353,8 +3886,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2023-49568
       - GHSA-mw99-9chc-xw7r
@@ -3367,8 +3900,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2023-49569
       - GHSA-449p-3h89-pw88
@@ -3381,8 +3914,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2024-0406
       - GHSA-rhh4-rh7c-7r5v
@@ -3409,8 +3942,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2024-24792
       - GHSA-9phm-fm57-rhg8
@@ -3423,8 +3956,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2024-45337
       - GHSA-v778-237x-gjrc
@@ -3437,8 +3970,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2024-45338
       - GHSA-w32m-9786-jp63
@@ -3451,8 +3984,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2024-51744
       - GHSA-29wx-vh33-7x7r
@@ -3465,8 +3998,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2024-6104
       - GHSA-v6v8-xj6m-xwqh
@@ -3479,13 +4012,13 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2024-6886
       - GHSA-4h4p-553m-46qh
       - GO-2024-3056
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -3528,6 +4061,16 @@ rows:
       hops: 3
       path_sha: 3f4f181a1aba4aac
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/nwaples/rardecode@v1.1.3
+        symbol: github.com/nwaples/rardecode.init
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2025-21613
       - GHSA-v725-9546-7q7m
@@ -3540,8 +4083,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2025-21614
       - GHSA-r9px-m959-cxf4
@@ -3554,8 +4097,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2025-22868
       - GHSA-6v2p-p543-phr9
@@ -3592,6 +4135,16 @@ rows:
       hops: 3
       path_sha: 685b2e74ae9b2444
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.extChannel.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2025-22870
       - GHSA-qxp5-gwg8-xv66
@@ -3627,6 +4180,16 @@ rows:
       hops: 2
       path_sha: c7f4f4f1783ff90e
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/html.Tokenizer.Next
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2025-29923
       - GHSA-92cp-5422-2mw7
@@ -3655,6 +4218,16 @@ rows:
       hops: 10
       path_sha: 64777cf63135d803
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/redis/go-redis/v9@v9.7.0
+        symbol: github.com/redis/go-redis/v9.baseClient.initConn
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2025-30204
       - GHSA-mh63-6h87-95cp
@@ -3667,17 +4240,9 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: reachable_candidate
-    gap: 'unfiled: reachable_candidate'
-    path_review:
-      path:
-        - code.gitea.io/gitea/services/actions.TokenToTaskID
-        - github.com/golang-jwt/jwt/v5.ParseWithClaims
-        - github.com/golang-jwt/jwt/v5.Parser.ParseWithClaims
-        - github.com/golang-jwt/jwt/v5.Parser.ParseUnverified
-      hops: 4
-      path_sha: 1898e82c721a3e21
-      status: unreviewed
+      verdict: undetermined
+      reason: analysis_did_not_run
+    gap: 'unfiled: undetermined/analysis_did_not_run'
   - advisory:
       - CVE-2025-30204
       - GHSA-mh63-6h87-95cp
@@ -3690,8 +4255,26 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: not_emitted
-    gap: 'unfiled: not_emitted'
+      verdict: reachable_candidate
+    path_review:
+      path:
+        - code.gitea.io/gitea/services/actions.TokenToTaskID
+        - github.com/golang-jwt/jwt/v5.ParseWithClaims
+        - github.com/golang-jwt/jwt/v5.Parser.ParseWithClaims
+        - github.com/golang-jwt/jwt/v5.Parser.ParseUnverified
+      hops: 4
+      path_sha: 1898e82c721a3e21
+      status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/golang-jwt/jwt/v5@v5.2.1
+        symbol: github.com/golang-jwt/jwt/v5.Parser.ParseUnverified
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2025-3445
       - GHSA-7vpp-9cxj-q8gv
@@ -3727,6 +4310,16 @@ rows:
       hops: 3
       path_sha: 4c47cfcdc2c7a8ae
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/html.Parse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2025-47913
       - GHSA-56w8-48fp-6mgv
@@ -3757,6 +4350,16 @@ rows:
       hops: 12
       path_sha: 5584edc12a8157be
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh/agent.agentKeyringSigner.SignWithAlgorithm
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2025-47914
       - GHSA-f6x5-jh6r-wrfv
@@ -3792,6 +4395,16 @@ rows:
       hops: 2
       path_sha: c237fd96d8ac53e5
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/ulikunitz/xz@v0.5.12
+        symbol: github.com/ulikunitz/xz.NewReader
+        symbol_confidence: moderate
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2025-58181
       - GHSA-j5w8-q4qc-rx2x
@@ -3814,6 +4427,16 @@ rows:
       hops: 4
       path_sha: 461154aabe426d10
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.NewServerConn
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2025-58190
       - GO-2026-4441
@@ -3834,6 +4457,16 @@ rows:
       hops: 3
       path_sha: 4c47cfcdc2c7a8ae
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/html.Parse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2025-59937
       - GHSA-wpwj-69cm-q9c5
@@ -3854,6 +4487,16 @@ rows:
       hops: 2
       path_sha: 438e0036f7a3f41b
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/wneessen/go-mail@v0.5.2
+        symbol: github.com/wneessen/go-mail.Msg.SetAddrHeader
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2025-65637
       - GHSA-4f99-4q7p-p3gh
@@ -3866,8 +4509,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2025-69725
       - GHSA-mqqf-5wvp-8fh8
@@ -3880,8 +4523,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2025-71405
       - GHSA-vrw8-fxc6-2r93
@@ -3918,6 +4561,15 @@ rows:
       hops: 4
       path_sha: a8daa9a8a8940b58
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/cloudflare/circl@v1.5.0
+        symbol: github.com/cloudflare/circl/sign/ed25519.init
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-114437
       - GHSA-j6qf-3m9c-vwj3
@@ -3954,6 +4606,16 @@ rows:
       hops: 5
       path_sha: 0fe95ca1db79f9e1
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/klauspost/compress@v1.17.11
+        symbol: github.com/klauspost/compress/huff0.Compress1X
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-1229
       - GHSA-q9hv-hpm4-hj6x
@@ -3976,11 +4638,20 @@ rows:
       hops: 4
       path_sha: a8daa9a8a8940b58
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/cloudflare/circl@v1.5.0
+        symbol: github.com/cloudflare/circl/sign/ed25519.init
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-20706
       - GHSA-cr4g-f395-h25h
       - GO-2026-5334
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -3994,7 +4665,7 @@ rows:
       - CVE-2026-20779
       - GHSA-gx3v-q759-g323
       - GO-2026-6057
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4008,7 +4679,7 @@ rows:
       - CVE-2026-20896
       - GHSA-f75j-4cw6-rmx4
       - GO-2026-6051
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4022,7 +4693,7 @@ rows:
       - CVE-2026-20909
       - GHSA-fhq3-p242-2qpf
       - GO-2026-6339
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4036,7 +4707,7 @@ rows:
       - CVE-2026-22547
       - GHSA-922f-hfwp-p56f
       - GO-2026-6338
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4050,7 +4721,7 @@ rows:
       - CVE-2026-22555
       - GHSA-fhx7-m96w-mv29
       - GO-2026-5365
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4064,7 +4735,7 @@ rows:
       - CVE-2026-22874
       - GHSA-2r5c-gw76-rh3w
       - GO-2026-6030
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4092,7 +4763,7 @@ rows:
       - CVE-2026-23603
       - GHSA-x77v-q46j-393g
       - GO-2026-6083
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4106,7 +4777,7 @@ rows:
       - CVE-2026-24451
       - GHSA-wrf9-r3h7-7x5v
       - GO-2026-6081
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4120,7 +4791,7 @@ rows:
       - CVE-2026-24690
       - GHSA-47rq-xp99-92mx
       - GO-2026-6334
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4134,7 +4805,7 @@ rows:
       - CVE-2026-24791
       - GHSA-wrr5-99h5-gq57
       - GO-2026-5721
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4148,7 +4819,7 @@ rows:
       - CVE-2026-25038
       - GHSA-v73x-hx65-6pf4
       - GO-2026-6076
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4179,6 +4850,16 @@ rows:
       hops: 3
       path_sha: 4c47cfcdc2c7a8ae
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/html.Parse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-25681
       - GO-2026-5029
@@ -4199,11 +4880,21 @@ rows:
       hops: 3
       path_sha: 4c47cfcdc2c7a8ae
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/html.Parse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-25712
       - GHSA-37w2-86g3-h4qh
       - GO-2026-6333
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4217,7 +4908,7 @@ rows:
       - CVE-2026-25714
       - GHSA-8629-vc8r-5p58
       - GO-2026-5243
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4231,7 +4922,7 @@ rows:
       - CVE-2026-25718
       - GHSA-h697-89cp-24q8
       - GO-2026-6340
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4245,7 +4936,7 @@ rows:
       - CVE-2026-25779
       - GHSA-j5r2-4c8j-xc3m
       - GO-2026-5448
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4259,7 +4950,7 @@ rows:
       - CVE-2026-25782
       - GHSA-qm72-8prh-g92x
       - GO-2026-6343
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4289,11 +4980,20 @@ rows:
       hops: 2
       path_sha: ed5a07c49f73a687
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/go-git/go-git/v5@v5.13.1
+        symbol: github.com/go-git/go-git/v5/plumbing.Hash.String
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-26231
       - GHSA-mm7c-rhg6-qr4r
       - GO-2026-5510
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4307,7 +5007,7 @@ rows:
       - CVE-2026-26232
       - GHSA-5v69-g2m3-3hq3
       - GO-2026-6336
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4321,7 +5021,7 @@ rows:
       - CVE-2026-26247
       - GHSA-m5ch-ppfx-xv3v
       - GO-2026-6342
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4335,7 +5035,7 @@ rows:
       - CVE-2026-26292
       - GHSA-rc56-rj3f-xggf
       - GO-2026-6344
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4349,7 +5049,7 @@ rows:
       - CVE-2026-26307
       - GHSA-h9c5-x7g8-4q7f
       - GO-2026-6341
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4394,6 +5094,16 @@ rows:
       hops: 3
       path_sha: 4c47cfcdc2c7a8ae
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/html.Parse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-27141
       - GO-2026-4559
@@ -4405,13 +5115,13 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2026-27657
       - GHSA-4c8f-3m6h-m56r
       - GO-2026-6335
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4425,7 +5135,7 @@ rows:
       - CVE-2026-27660
       - GHSA-x92v-f5gc-r34v
       - GO-2026-6347
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4439,7 +5149,7 @@ rows:
       - CVE-2026-27761
       - GHSA-3pww-vcvm-3gmj
       - GO-2026-6031
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4453,7 +5163,7 @@ rows:
       - CVE-2026-27771
       - GHSA-8qw8-rq86-9pc2
       - GO-2026-6017
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4467,7 +5177,7 @@ rows:
       - CVE-2026-27775
       - GHSA-649p-mmhf-85c7
       - GO-2026-6043
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4481,7 +5191,7 @@ rows:
       - CVE-2026-27779
       - GHSA-v8f2-2ghq-9whv
       - GO-2026-6345
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4495,7 +5205,7 @@ rows:
       - CVE-2026-27780
       - GHSA-vhq7-fwwh-7hjf
       - GO-2026-6346
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4509,7 +5219,7 @@ rows:
       - CVE-2026-27783
       - GHSA-3fwp-p5rj-2pxf
       - GO-2026-5081
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4523,7 +5233,7 @@ rows:
       - CVE-2026-28699
       - GHSA-9r5x-wg6m-x2rc
       - GO-2026-5299
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4537,7 +5247,7 @@ rows:
       - CVE-2026-28705
       - GHSA-7jvx-g65v-r899
       - GO-2026-6337
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4551,7 +5261,7 @@ rows:
       - CVE-2026-28737
       - GHSA-9cpj-qc93-vw8v
       - GO-2026-5286
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4565,7 +5275,7 @@ rows:
       - CVE-2026-28740
       - GHSA-2m9v-5q2g-58vq
       - GO-2026-6029
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4579,7 +5289,7 @@ rows:
       - CVE-2026-28744
       - GHSA-cc8w-r4qh-3v65
       - GO-2026-5321
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4609,6 +5319,16 @@ rows:
       hops: 2
       path_sha: 03b4d22f518ed5a5
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/Azure/go-ntlmssp@v0.0.0-20221128193559-754e69321358
+        symbol: github.com/Azure/go-ntlmssp.ProcessChallenge
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-33186
       - GHSA-p77j-4mvh-x3m3
@@ -4643,6 +5363,15 @@ rows:
       hops: 2
       path_sha: ed5a07c49f73a687
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/go-git/go-git/v5@v5.13.1
+        symbol: github.com/go-git/go-git/v5/plumbing.Hash.String
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-33809
       - GHSA-44p7-9xx4-hf2g
@@ -4691,6 +5420,16 @@ rows:
       hops: 4
       path_sha: ae4d1713d84de545
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/image@v0.21.0
+        symbol: golang.org/x/image/webp.Decode
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-33817
       - GHSA-6jwv-w5xf-7j27
@@ -4752,12 +5491,21 @@ rows:
       hops: 2
       path_sha: ed5a07c49f73a687
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/go-git/go-git/v5@v5.13.1
+        symbol: github.com/go-git/go-git/v5/plumbing.Hash.String
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-34966
       - CVE-2026-59765
       - GHSA-2wm4-vwp6-v7xc
       - GO-2026-6039
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -4791,6 +5539,16 @@ rows:
       hops: 7
       path_sha: 306c83c4a6d79eda
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/idna.ToASCII
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-39824
       - GO-2026-5024
@@ -4842,6 +5600,16 @@ rows:
       hops: 4
       path_sha: 461154aabe426d10
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.NewServerConn
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-39829
       - GHSA-w879-237q-wc7r
@@ -4862,6 +5630,16 @@ rows:
       hops: 2
       path_sha: 922ec2442cf1f896
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.ParseAuthorizedKey
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-39830
       - GHSA-vgwf-h737-ff37
@@ -4884,6 +5662,16 @@ rows:
       hops: 4
       path_sha: 461154aabe426d10
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.NewServerConn
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-39831
       - GHSA-89gr-r52h-f8rx
@@ -4904,6 +5692,16 @@ rows:
       hops: 2
       path_sha: 77ab869b9cbd1f28
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.CertChecker.CheckCert
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-39832
       - GHSA-f5wc-c3c7-36mc
@@ -4955,6 +5753,16 @@ rows:
       hops: 3
       path_sha: 52fef2b06be24cf9
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.extChannel.Write
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-39835
       - GHSA-78mq-xcr3-xm33
@@ -4993,6 +5801,16 @@ rows:
       hops: 5
       path_sha: fdf6d7abbabced1a
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/go-git/go-git/v5@v5.13.1
+        symbol: github.com/go-git/go-git/v5/plumbing/transport/http.NewClient
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-42500
       - GO-2026-5031
@@ -5014,6 +5832,16 @@ rows:
       hops: 4
       path_sha: d8d00e80de0bf641
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/image@v0.21.0
+        symbol: golang.org/x/image/bmp.Decode
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-42502
       - GO-2026-5027
@@ -5034,6 +5862,16 @@ rows:
       hops: 3
       path_sha: 4c47cfcdc2c7a8ae
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/html.Parse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-42506
       - GO-2026-5025
@@ -5054,6 +5892,16 @@ rows:
       hops: 3
       path_sha: 4c47cfcdc2c7a8ae
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/html.Parse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-42508
       - GHSA-5cgq-3rg8-m6cv
@@ -5073,7 +5921,7 @@ rows:
       - CVE-2026-42931
       - GHSA-wwqq-x6w4-frm2
       - GO-2026-6082
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5111,6 +5959,16 @@ rows:
       hops: 10
       path_sha: a67ca258aa533f4d
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/go-git/go-billy/v5@v5.6.1
+        symbol: github.com/go-git/go-billy/v5/helper/chroot.New
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-44973
       - GHSA-qw64-3x98-g7q2
@@ -5137,6 +5995,16 @@ rows:
       hops: 8
       path_sha: aed60851a3d5810c
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/go-git/go-billy/v5@v5.6.1
+        symbol: github.com/go-git/go-billy/v5/osfs.New
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-45022
       - GHSA-389r-gv7p-r3rp
@@ -5172,6 +6040,15 @@ rows:
       hops: 2
       path_sha: ed5a07c49f73a687
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/go-git/go-git/v5@v5.13.1
+        symbol: github.com/go-git/go-git/v5/plumbing.Hash.String
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-45571
       - GHSA-crhj-59gh-8x96
@@ -5209,6 +6086,16 @@ rows:
       hops: 4
       path_sha: 461154aabe426d10
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.NewServerConn
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-46597
       - GHSA-q4h4-gmj2-qvw2
@@ -5231,6 +6118,16 @@ rows:
       hops: 4
       path_sha: 461154aabe426d10
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.NewServerConn
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-46598
       - GHSA-9m57-25v3-79x9
@@ -5279,6 +6176,16 @@ rows:
       hops: 2
       path_sha: a633beb5ec73cf86
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/image@v0.21.0
+        symbol: golang.org/x/image/webp.init
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-46602
       - GO-2026-5062
@@ -5315,6 +6222,16 @@ rows:
       hops: 6
       path_sha: 8cbe7043555a90b5
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/image@v0.21.0
+        symbol: golang.org/x/image/vp8l.Decode
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-46604
       - GO-2026-5066
@@ -5332,7 +6249,7 @@ rows:
       - CVE-2026-50105
       - GHSA-6cqf-375w-639g
       - GO-2026-6036
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5365,11 +6282,21 @@ rows:
       hops: 5
       path_sha: 6b898285bb049012
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/yuin/goldmark@v1.7.8
+        symbol: github.com/yuin/goldmark/renderer/html.Renderer.renderAutoLink
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-54481
       - GHSA-94v3-77j7-vm48
       - GO-2026-6048
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5383,7 +6310,7 @@ rows:
       - CVE-2026-55982
       - GHSA-mg4f-x9v4-6h2p
       - GO-2026-6065
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5397,7 +6324,7 @@ rows:
       - CVE-2026-55984
       - GHSA-m932-crvm-gcp5
       - GO-2026-6064
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5411,7 +6338,7 @@ rows:
       - CVE-2026-55987
       - GHSA-vrhc-jjfc-m3m3
       - GO-2026-6078
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5425,7 +6352,7 @@ rows:
       - CVE-2026-56443
       - GHSA-7p4h-3gxq-x3h3
       - GO-2026-6045
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5439,7 +6366,7 @@ rows:
       - CVE-2026-56654
       - GHSA-683j-3ff6-hh2x
       - GO-2026-6034
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5453,7 +6380,7 @@ rows:
       - CVE-2026-56657
       - GHSA-4xjf-493q-98p3
       - GO-2026-6042
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5467,7 +6394,7 @@ rows:
       - CVE-2026-56750
       - GHSA-rgv6-xp99-6mgj
       - GO-2026-6072
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5481,7 +6408,7 @@ rows:
       - CVE-2026-56755
       - GHSA-6hm7-3pwj-22rm
       - GO-2026-6037
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5526,6 +6453,16 @@ rows:
       hops: 4
       path_sha: dde32d4b282c7dad
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/text@v0.21.0
+        symbol: golang.org/x/text/unicode/norm.Form.Transform
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-56854
       - GO-2026-6303
@@ -5547,6 +6484,16 @@ rows:
       hops: 4
       path_sha: 461154aabe426d10
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.NewServerConn
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-56855
       - GO-2026-6355
@@ -5568,6 +6515,16 @@ rows:
       hops: 4
       path_sha: 461154aabe426d10
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.NewServerConn
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-56864
       - GO-2026-6180
@@ -5600,7 +6557,7 @@ rows:
       - CVE-2026-57886
       - GHSA-6c6r-5xr4-cr5m
       - GO-2026-6035
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5614,7 +6571,7 @@ rows:
       - CVE-2026-57894
       - GHSA-82f7-87hm-852x
       - GO-2026-6027
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5628,7 +6585,7 @@ rows:
       - CVE-2026-57897
       - GHSA-frpw-3h2q-4jj6
       - GO-2026-6054
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5642,7 +6599,7 @@ rows:
       - CVE-2026-58314
       - GHSA-2fcr-jfvc-vgg2
       - GO-2026-6038
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5656,7 +6613,7 @@ rows:
       - CVE-2026-58418
       - GHSA-rqhx-647v-wx32
       - GO-2026-6075
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5670,7 +6627,7 @@ rows:
       - CVE-2026-58419
       - GHSA-44qc-pgvp-wx7v
       - GO-2026-6041
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5684,7 +6641,7 @@ rows:
       - CVE-2026-58421
       - GHSA-v96j-25gv-g2w9
       - GO-2026-6077
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5698,7 +6655,7 @@ rows:
       - CVE-2026-58422
       - GHSA-g9g6-qhrc-p3qc
       - GO-2026-6056
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5712,7 +6669,7 @@ rows:
       - CVE-2026-58423
       - GHSA-7wvc-rvp7-w99x
       - GO-2026-6046
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5726,7 +6683,7 @@ rows:
       - CVE-2026-58424
       - GHSA-777r-4v59-6486
       - GO-2026-6044
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5740,7 +6697,7 @@ rows:
       - CVE-2026-58425
       - GHSA-vxv2-8j6r-pcpg
       - GO-2026-6079
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5754,7 +6711,7 @@ rows:
       - CVE-2026-58426
       - GHSA-hg5r-vq93-9fv6
       - GO-2026-6060
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5768,7 +6725,7 @@ rows:
       - CVE-2026-58428
       - GHSA-25gq-j9jx-43pg
       - GO-2026-6028
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5782,7 +6739,7 @@ rows:
       - CVE-2026-58429
       - GHSA-fq2p-5p22-8g6j
       - GO-2026-6053
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5796,7 +6753,7 @@ rows:
       - CVE-2026-58432
       - GHSA-q9pg-jj6x-j9p6
       - GO-2026-6070
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5810,7 +6767,7 @@ rows:
       - CVE-2026-58434
       - GHSA-j2w3-9c3r-g83q
       - GO-2026-6062
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5824,7 +6781,7 @@ rows:
       - CVE-2026-58435
       - GHSA-rh79-75qm-gwjr
       - GO-2026-6073
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5838,7 +6795,7 @@ rows:
       - CVE-2026-58436
       - GHSA-fw57-jgch-pgf3
       - GO-2026-6055
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5852,7 +6809,7 @@ rows:
       - CVE-2026-58437
       - GHSA-8p9h-49rc-qgxj
       - GO-2026-6047
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5866,7 +6823,7 @@ rows:
       - CVE-2026-58439
       - GHSA-w5pg-649r-p6gg
       - GO-2026-6080
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5880,7 +6837,7 @@ rows:
       - CVE-2026-58441
       - GHSA-xmj7-xj85-hfc3
       - GO-2026-6084
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5894,7 +6851,7 @@ rows:
       - CVE-2026-58442
       - GHSA-h2x6-g7q6-344v
       - GO-2026-6058
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5908,7 +6865,7 @@ rows:
       - CVE-2026-58443
       - GHSA-xxjv-752h-3vp2
       - GO-2026-6086
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5922,7 +6879,7 @@ rows:
       - CVE-2026-58444
       - GHSA-cp3q-vrj2-ghhh
       - GO-2026-6050
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5936,7 +6893,7 @@ rows:
       - CVE-2026-58445
       - GHSA-pgqf-926r-548m
       - GO-2026-6067
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5950,7 +6907,7 @@ rows:
       - CVE-2026-58507
       - GHSA-p4mj-98mv-xq26
       - GO-2026-6066
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5964,7 +6921,7 @@ rows:
       - CVE-2026-58510
       - GHSA-q423-49rw-g9mh
       - GO-2026-6069
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5978,7 +6935,7 @@ rows:
       - CVE-2026-58511
       - GHSA-3r5c-2xxx-h872
       - GO-2026-6040
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -5992,7 +6949,7 @@ rows:
       - CVE-2026-59763
       - GHSA-9mq6-mqjj-c2c5
       - GO-2026-6049
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -6006,7 +6963,7 @@ rows:
       - CVE-2026-59766
       - GHSA-qf2f-qh6p-7v89
       - GO-2026-6071
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -6073,8 +7030,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - CVE-2026-72816
       - GHSA-rjr7-jggh-pgcp
@@ -6097,6 +7054,16 @@ rows:
       hops: 4
       path_sha: c6bb92d2414d8c4e
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/go-chi/chi/v5@v5.1.0
+        symbol: github.com/go-chi/chi/v5/middleware.RealIP
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-72817
       - GHSA-9g5q-2w5x-hmxf
@@ -6119,6 +7086,16 @@ rows:
       hops: 4
       path_sha: c6bb92d2414d8c4e
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/go-chi/chi/v5@v5.1.0
+        symbol: github.com/go-chi/chi/v5/middleware.RealIP
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-78661
       - GO-2026-6860
@@ -6139,6 +7116,16 @@ rows:
       hops: 3
       path_sha: 4c47cfcdc2c7a8ae
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/html.Parse
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-78662
       - GO-2026-6354
@@ -6160,6 +7147,16 @@ rows:
       hops: 4
       path_sha: 461154aabe426d10
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/crypto@v0.32.0
+        symbol: golang.org/x/crypto/ssh.NewServerConn
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-84303
       - GHSA-qc2q-p7wx-3px3
@@ -6391,6 +7388,16 @@ rows:
       hops: 3
       path_sha: 18b4b0ffc885a671
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: golang.org/x/net@v0.34.0
+        symbol: golang.org/x/net/html.Render
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - CVE-2026-97054
       - GO-2026-6859
@@ -6410,10 +7417,20 @@ rows:
       hops: 2
       path_sha: 18b251d2393d7f4c
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: '-'
+        symbol: net/http.NewRequest
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12
   - advisory:
       - GHSA-3m6q-h5gj-7mrw
       - GO-2026-5091
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -6434,8 +7451,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - GHSA-77vh-xpmg-72qh
     package: github.com/opencontainers/image-spec@v1.1.0
@@ -6446,8 +7463,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - GHSA-9763-4f94-gfch
       - GO-2024-2453
@@ -6459,8 +7476,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - GHSA-hrxh-6v49-42gf
       - GO-2026-6061
@@ -6485,12 +7502,12 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - GHSA-rjvx-x5h2-6px5
       - GO-2026-6074
-    package: code.gitea.io/gitea@v1.23.1
+    package: '-'
     target: gitea
     comparator_observed: unknown
     basis: 'comparator has no view: govulncheck v1.9.0 reports no finding for this advisory in this module'
@@ -6525,8 +7542,8 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: undetermined
-      reason: advisory_unknown_to_analyzer
+      verdict: disqualified
+      reason: version_not_in_affected_range
   - advisory:
       - GO-2026-5932
     package: golang.org/x/crypto@v0.32.0
@@ -6558,3 +7575,13 @@ rows:
       hops: 3
       path_sha: f361d97463f9b5ee
       status: unreviewed
+      bound_to:
+        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
+        component: github.com/blakesmith/ar@v0.0.0-20190502131153-809d4375e1fb
+        symbol: github.com/blakesmith/ar.Reader.Read
+        symbol_confidence: high
+        analysis:
+          assay_version: ferralon-assay/main-0be8b407dd78
+          assay_commit: 0be8b407dd7808c27834c519489057768137264a
+          corpus_release: corpus-92d72057330c
+          go_version: go1.23.12

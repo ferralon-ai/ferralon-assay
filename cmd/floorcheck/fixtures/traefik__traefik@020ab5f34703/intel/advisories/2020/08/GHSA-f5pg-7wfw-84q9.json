@@ -1,0 +1,49 @@
+{
+  "affected": [
+    {
+      "coordinate": "github.com/aws/aws-sdk-go",
+      "fixed_versions": [
+        "1.34.0"
+      ],
+      "purl": "pkg:golang/github.com/aws/aws-sdk-go",
+      "ranges": [
+        {
+          "fixed": "1.34.0",
+          "upper_exclusive": "1.34.0"
+        },
+        {
+          "introduced": "0"
+        }
+      ],
+      "version_scheme": "gomod"
+    }
+  ],
+  "affected_ranges": [
+    {
+      "fixed": "1.34.0",
+      "fixed_version": "1.34.0"
+    }
+  ],
+  "aliases": [
+    "CVE-2020-8911",
+    "GO-2022-0646"
+  ],
+  "coordinate": "github.com/aws/aws-sdk-go",
+  "cwes": [
+    "CWE-327"
+  ],
+  "purl": "pkg:golang/github.com/aws/aws-sdk-go",
+  "rejection_status": {
+    "state": "not_rejected"
+  },
+  "root_cause": "Use of a Broken or Risky Cryptographic Algorithm (CWE-327): A padding oracle vulnerability exists in the AWS S3 Crypto SDK for GoLang versions prior to V2. The SDK allows users to encrypt files with AES-CBC without computing a Message Authentication Code (MAC), which then allows an attacker who has write access to the target's S3 bucket and can observe whether or not an endpoint with access to the key can decrypt a file, they can reconstruct the plaintext with (on average) 128*length (plaintext) queries to the endpoint, by exploiting CBC's ability to manipulate the bytes of the next block and PKCS5 padding errors. It is recommended to update your SDK to V2 or later, and re-encrypt your files.",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "symbol_provenance": "osv-declared",
+  "symbols": [
+    "github.com/aws/aws-sdk-go/service/s3/s3crypto.NewDecryptionClient",
+    "github.com/aws/aws-sdk-go/service/s3/s3crypto.NewEncryptionClient"
+  ],
+  "version_scheme": "gomod",
+  "vuln_id": "GHSA-f5pg-7wfw-84q9",
+  "withdrawn": false
+}

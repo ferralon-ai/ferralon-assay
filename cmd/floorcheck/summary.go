@@ -298,10 +298,6 @@ func (s Summary) alert() string {
 // plainFailure says what a failure means in plain words, for the alert.
 func plainFailure(f Failure) string {
 	switch f.Kind {
-	case KindUngroundedNE:
-		return fmt.Sprintf("%d not_exploitable without grounds (%s)", len(f.Findings), firstOf(f.Findings))
-	case KindUngroundedDisq:
-		return fmt.Sprintf("%d disqualified without valid grounds (%s)", len(f.Findings), firstOf(f.Findings))
 	case KindTruncated:
 		return "the scan ran out of time"
 	case KindLedger:
@@ -312,16 +308,5 @@ func plainFailure(f Failure) string {
 		return "the report could not be read"
 	default:
 		return "the scan failed"
-	}
-}
-
-func firstOf(ids []string) string {
-	switch len(ids) {
-	case 0:
-		return ""
-	case 1:
-		return ids[0]
-	default:
-		return fmt.Sprintf("%s and %d more", ids[0], len(ids)-1)
 	}
 }

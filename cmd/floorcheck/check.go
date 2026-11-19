@@ -45,14 +45,12 @@ type Meta struct {
 
 // Failure kinds. Every kind fails the repository and so the run.
 const (
-	KindNoResult       = "no_result"
-	KindScanFailed     = "scan_failed"
-	KindNoReport       = "no_report"
-	KindMalformed      = "malformed_report"
-	KindTruncated      = "scan_truncated"
-	KindUngroundedNE   = "ungrounded_not_exploitable"
-	KindUngroundedDisq = "ungrounded_disqualified"
-	KindPathOutside    = "path_outside_module"
+	KindNoResult    = "no_result"
+	KindScanFailed  = "scan_failed"
+	KindNoReport    = "no_report"
+	KindMalformed   = "malformed_report"
+	KindTruncated   = "scan_truncated"
+	KindPathOutside = "path_outside_module"
 	// KindLedger is a showcase scan whose rows differ from its ledger, or a ledger that does not
 	// match the pinned build scope.
 	KindLedger = "ledger_mismatch"
@@ -151,8 +149,12 @@ const (
 //   - not_exploitable needs one of the four refutation bases (verdict.NonExploitableBasis).
 //   - disqualified on the version or symbol axis carries that axis's basis
 //     (version_not_in_affected_range, vulnerable_symbol_absent); one with an intake basis
-//     (advisory_ecosystem_mismatch, no_manifest_entry), or none in an older report, made no
-//     comparison and has nothing to check; any other basis cannot ground a disqualification.
+//     (advisory_ecosystem_mismatch, no_manifest_entry) made no comparison and has nothing to
+//     check; any other basis cannot ground a disqualification.
+//
+// report.Validate refuses a refutation whose basis is outside its verdict's set, and report.Upgrade
+// backfills an older report's intake basis first, so no finding of a decoded report is
+// groundsMissing.
 func groundsOf(f report.AdvisoryFinding) grounds {
 	switch f.Verdict {
 	case report.VerdictNotExploitable:
@@ -167,9 +169,8 @@ func groundsOf(f report.AdvisoryFinding) grounds {
 		switch f.Evidence.Basis {
 		case verdict.BasisVersionNotAffected, verdict.BasisSymbolAbsent:
 			return groundsPresent
-		case verdict.BasisNone, verdict.BasisAdvisoryEcosystemMismatch, verdict.BasisNoManifestEntry:
-			// No basis (an older report) or an intake basis: no comparison ran, so there is
-			// nothing to check.
+		case verdict.BasisAdvisoryEcosystemMismatch, verdict.BasisNoManifestEntry:
+			// An intake basis: no comparison ran, so there is nothing to check.
 			return groundsUnverifiable
 		default:
 			return groundsMissing
@@ -237,7 +238,7 @@ func decodeReport(data []byte) (report.Report, error) {
 }
 
 // assessReport fills res from a decoded report: verdict counts, undetermined reasons, truncation,
-// and a failure for each class of ungrounded refutation.
+// and the findings whose disqualification has nothing to check.
 func assessReport(res *RepoResult, r report.Report) {
 	res.AnalyzerVersion = r.Provenance.AnalyzerVersion
 	res.ScannedCommit = r.Subject.ResolvedCommit
@@ -246,7 +247,6 @@ func assessReport(res *RepoResult, r report.Report) {
 		res.Verdicts[v] = 0
 	}
 	reasons := map[string]int{}
-	var ungroundedNE, ungroundedDisq []string
 	for _, f := range r.Advisories {
 		res.Verdicts[f.Verdict]++
 		if f.Verdict == report.VerdictUndetermined {
@@ -259,33 +259,12 @@ func assessReport(res *RepoResult, r report.Report) {
 				Findings: []string{findingLabel(f)},
 			})
 		}
-		switch groundsOf(f) {
-		case groundsMissing:
-			if f.Verdict == report.VerdictNotExploitable {
-				ungroundedNE = append(ungroundedNE, findingLabel(f))
-			} else {
-				ungroundedDisq = append(ungroundedDisq, findingLabel(f))
-			}
-		case groundsUnverifiable:
+		if groundsOf(f) == groundsUnverifiable {
 			res.Unverifiable = append(res.Unverifiable, findingLabel(f))
 		}
 	}
 	res.TopUndetermined = topReasonCounts(reasons, topReasons)
 	res.Qualified = qualifiedSets(r.Advisories)
-	if len(ungroundedNE) > 0 {
-		res.Failures = append(res.Failures, Failure{
-			Kind:     KindUngroundedNE,
-			Detail:   fmt.Sprintf("%d not_exploitable without grounds", len(ungroundedNE)),
-			Findings: ungroundedNE,
-		})
-	}
-	if len(ungroundedDisq) > 0 {
-		res.Failures = append(res.Failures, Failure{
-			Kind:     KindUngroundedDisq,
-			Detail:   fmt.Sprintf("%d disqualified on a basis that does not ground a disqualification", len(ungroundedDisq)),
-			Findings: ungroundedDisq,
-		})
-	}
 	for _, n := range r.Partiality {
 		if n.Reason == report.ReasonScanCutShort {
 			res.ScanTruncated = true

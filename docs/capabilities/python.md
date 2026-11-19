@@ -19,7 +19,7 @@ The lane reads the declared Python dependency surface directly from the checkout
 | Parent edges + direct/transitive for uv, pdm, poetry, pip-compile (`# via`) | Partial | [PYTHON-NO-EDGES-NONLOCK](#python-no-edges-nonlock) |
 | Fail-open inventory (unresolved markers/unreadable files never silently drop a node) | Complete |  |
 | Deterministic output | Complete |  |
-| Import-name to distribution mapping (curated ~37 rows + PEP 503 identity for declared dists) | Partial | [PYTHON-IMPORT-MAP-GAP](#python-import-map-gap) |
+| Import-name to distribution mapping (curated rows, about 110, + PEP 503 identity for declared dists) | Partial | [PYTHON-IMPORT-MAP-GAP](#python-import-map-gap) |
 | First-party import packages derived from source layout (DeriveFirstParty) | Complete |  |
 | Workspace / multi-root enumeration | Planned | [PYTHON-SINGLE-ROOT-BUILD](#python-single-root-build) |
 | SBOM projection from inventory | Complete |  |
@@ -164,7 +164,7 @@ The lane hands the paid tier a call-graph path and the sink's package coordinate
 
 ### PYTHON-IMPORT-MAP-GAP
 
-**Trigger.** An import name that differs from the distribution name, is not in the curated mapping (for example sklearn, cv2) and is not PEP 503 identical.
+**Trigger.** An import name that differs from the distribution name, is not in the curated mapping (for example serial from pyserial, magic from python-magic) and is not PEP 503 identical.
 
 **Effect.** No boundary edge for calls into that dependency (silent recall loss); if manifests were partly read, `tool_failure` instead.
 

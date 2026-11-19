@@ -42,6 +42,7 @@ package projection
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
@@ -90,6 +91,16 @@ func ProjectReportVEX(r report.Report) (*VEXDocument, error) {
 		}
 		stmt.StatusNotes = annotationsStatement(f.Annotations)
 		stmts = append(stmts, stmt)
+		if !f.MayCarryScoped() {
+			// An incomplete assessment never says not_affected, whatever a producer attached.
+			continue
+		}
+		for _, sv := range f.ScopedVerdicts {
+			if sv.Scope.Module == "" {
+				return nil, fmt.Errorf("projection/report_vex: advisory %q carries a scoped verdict that names no module, so no product can name its binaries", f.Advisory.ID)
+			}
+			stmts = append(stmts, scopedVEXStatement(r, f, sv))
+		}
 	}
 
 	doc := &VEXDocument{
@@ -101,6 +112,49 @@ func ProjectReportVEX(r report.Report) (*VEXDocument, error) {
 		Statements: stmts,
 	}
 	return doc, nil
+}
+
+// scopedVEXStatement is the statement for a verdict scoped to shipped binaries. Its product is the
+// binary, not the module: one product per binary, each carrying the vulnerable dependency as its
+// subcomponent, so a consumer matching on the binary it ships finds not_affected for it, while the
+// finding's own statement keeps the library view's status for the dependency. The scoped
+// statement follows the finding's own, in the order the finding lists them.
+func scopedVEXStatement(r report.Report, f report.AdvisoryFinding, sv report.ScopedVerdict) VEXStatement {
+	dep := VEXSubcomponent{ID: reportProductID(f.Package, r.Subject)}
+	products := make([]VEXProduct, len(sv.Scope.Targets))
+	for i, t := range sv.Scope.Targets {
+		products[i] = VEXProduct{ID: binaryProductID(sv.Scope.Module, t, r.Subject.ResolvedCommit), Subcomponents: []VEXSubcomponent{dep}}
+	}
+	impact := sv.Statement()
+	if a := assumptionsStatement(sv.Evidence.Assumptions); a != "" {
+		impact += " " + a
+	}
+	stmt := VEXStatement{
+		Vulnerability:   VEXVulnerability{ID: f.Advisory.ID, Aliases: f.Advisory.Aliases},
+		Products:        products,
+		Status:          VEXStatusNotAffected,
+		Justification:   notAffectedJustification(sv.Evidence.Basis),
+		ImpactStatement: impact,
+	}
+	stmt.StatusNotes = annotationsStatement(f.Annotations)
+	return stmt
+}
+
+// binaryProductID is the OpenVEX product identifier of a shipped binary: the purl of the module it is
+// built from, at the scanned commit when the report has one, with a `binary` qualifier naming the main
+// package's directory, percent-encoded as a purl qualifier value is
+// ("pkg:golang/github.com/traefik/traefik/v3@<commit>?binary=cmd%2Ftraefik"). The qualifier is on
+// every binary, a main at the module root included ("?binary=."), so no binary's identifier is ever
+// the module's own purl, which names the library view. A scope always names its module
+// (report.Scope.Module); ProjectReportVEX refuses one that does not.
+func binaryProductID(module, target, commit string) string {
+	id := "pkg:golang/" + module
+	if commit != "" {
+		id += "@" + commit
+	}
+	// QueryEscape encodes every character a qualifier value may not hold bare, '/' and '&' among
+	// them, but writes a space as '+', which a purl spells %20.
+	return id + "?binary=" + strings.ReplaceAll(url.QueryEscape(target), "+", "%20")
 }
 
 // MarshalReportVEX projects and JSON-encodes (indented) in one call.

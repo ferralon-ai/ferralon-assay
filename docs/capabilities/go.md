@@ -81,6 +81,8 @@ A Go dependency advisory gets per-advisory govulncheck evidence. `reachable_cand
 | Go stdlib / toolchain advisories | Partial | [GO-TOOLCHAIN-NOT-SCANNED](#go-toolchain-not-scanned), [GO-TOOLCHAIN-PRE121](#go-toolchain-pre121) |
 | Run-wide did-not-run gate on `not_exploitable` | Partial | [GO-CGO](#go-cgo), [GO-PLUGIN-LOAD](#go-plugin-load) |
 
+`unsearched_methods` counts only the exported methods govulncheck never searches (a generic type's, or one promoted from a type outside the search) on an exported package-level type in a library entry point, the packages [GO-LIBRARY-ESCAPE](#go-library-escape) names, and only when the package declaring the method reaches one of the refuted module's vulnerable packages. A method of an unexported type, a type declared inside a function, or a package outside the entry points (a `main` package, `internal/` or `cmd/` under `auto`) no longer withholds the refutation.
+
 ## 6. Framework & dynamic-dispatch modeling
 
 Ingress discovery recognises net/http handlers and route registrars, the macaron, go-chi, gin and echo/v4 routers, and SSH server handlers. Reachability does not depend on ingress for dependency advisories (govulncheck supplies the entry roots), so ingress only decides whether a first-party path is rooted at a network surface. Taint is tracked at variable level over SSA, with an explicit sanitizer allow-list.
@@ -204,6 +206,8 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 **Trigger.** A library entry point reaches one of the refuted module's vulnerable packages. `library-entrypoints` (`-library-entrypoints`, `ASSAY_LIBRARY_ENTRYPOINTS`) names the entry points: `auto` (the default) takes every importable package outside `cmd/`, `example(s)/`, `test(s)/` and `testdata/`, `none` takes none, and a list of paths relative to the repository root names them, with `!path` taking a path out.
 
 **Effect.** The refutation is withheld with `library_escape`, and the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that stands only because of what you declared carries that declaration on the report as an assumption.
+
+**Scoped answer.** When the build ships programs, the lane also runs a program view, and a row held here can carry a `not_exploitable` scoped to those binaries: see [Binary-scoped verdicts](../binary-scoped-verdicts.md). A row that records a reach or taint path starting in one of those binaries' `main` packages carries none, for any of them: the path is a call the program view did not see. Only a `reachable_candidate` or a `refutation_withheld` row can carry one; a row undetermined for any other reason, such as a cut-short scan or an analysis that did not run, carries none. The path's entry package is read from its SCIP id; one that cannot be read counts as entering a binary. Mains spread over more than one module give no scoped verdict either.
 
 ### GO-NO-SYMBOLS
 

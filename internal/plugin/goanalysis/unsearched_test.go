@@ -209,10 +209,14 @@ func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := reconciledResult(context.Background(), tc.scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, plugin.LibraryEntrypoints{})
-			if err != nil {
-				t.Fatal(err)
+			module := "pkg:golang/example.com/vulnmod"
+			if tc.scanned.imports != nil {
+				module = "pkg:golang/stdlib"
 			}
+			res := withholdRefutation(context.Background(), plugin.ReachabilityResult{
+				Partiality: plugin.Complete(),
+				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: module},
+			}, tc.scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"), resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}

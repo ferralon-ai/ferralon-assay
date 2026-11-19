@@ -32,8 +32,9 @@ import (
 // installer something in the build may run (scriptsurface.Veto.Unrecognised), or "", and where
 // one runs an installer nothing in the build invokes (scriptsurface.Veto.Inactive); locks maps each path lockFiles(root)
 // returned to what parseLockfile read from it. lockAssumed is set when nothing withholds and an
-// install the build runs was allowed under lockAssumption.
-func unreadSurfaces(root string, locks map[string]lockInfo) (unread, scriptWithheld bool, unrecognised string, inactive []scriptsurface.Site, lockAssumed bool) {
+// install the build runs was allowed under lockAssumption, buildAssumed when one was allowed
+// under buildOutputAssumption.
+func unreadSurfaces(root string, locks map[string]lockInfo) (unread, scriptWithheld bool, unrecognised string, inactive []scriptsurface.Site, lockAssumed, buildAssumed bool) {
 	read := make(map[string]bool, len(locks))
 	for l := range locks {
 		read[l] = true
@@ -43,37 +44,39 @@ func unreadSurfaces(root string, locks map[string]lockInfo) (unread, scriptWithh
 			read[m] = true
 		}
 	}
-	var assumed bool
-	veto := scriptsurface.New(root, func(path string) bool { return read[path] }, scriptSpec(root, locks, &assumed))
+	var assumed, built bool
+	veto := scriptsurface.New(root, func(path string) bool { return read[path] }, scriptSpec(root, locks, &assumed, &built))
 	for _, c := range buildtree.Candidates(root, veto.Classify(npmInstallSurface), veto.FullyRead) {
 		if !c.FullyRead {
 			unread = true
 		}
 	}
 	scriptWithheld = veto.Withheld()
-	return unread || scriptWithheld, scriptWithheld, veto.Unrecognised(), veto.Inactive(), assumed && !unread && !scriptWithheld
+	held := !unread && !scriptWithheld
+	return unread || scriptWithheld, scriptWithheld, veto.Unrecognised(), veto.Inactive(), assumed && held, built && held
 }
 
 // installSurfaces is unreadSurfaces for the build at root, computed once per scan through the
 // run cache and shared by the versions op and the dependency layout. locks returns what
 // lockFiles(root) and parseLockfile read; it is called only when the cache holds no answer.
-func installSurfaces(ctx context.Context, root string, locks func() map[string]lockInfo) (unread, scriptWithheld bool, unrecognised string, inactive []scriptsurface.Site, lockAssumed bool) {
+func installSurfaces(ctx context.Context, root string, locks func() map[string]lockInfo) (unread, scriptWithheld bool, unrecognised string, inactive []scriptsurface.Site, lockAssumed, buildAssumed bool) {
 	type answer struct {
 		Unread, ScriptWithheld bool
 		Unrecognised           string
 		Inactive               []scriptsurface.Site
 		LockAssumed            bool
+		BuildAssumed           bool
 	}
 	b, err := runCached(ctx, "installsurfaces", []string{root}, func() ([]byte, error) {
 		var a answer
-		a.Unread, a.ScriptWithheld, a.Unrecognised, a.Inactive, a.LockAssumed = unreadSurfaces(root, locks())
+		a.Unread, a.ScriptWithheld, a.Unrecognised, a.Inactive, a.LockAssumed, a.BuildAssumed = unreadSurfaces(root, locks())
 		return json.Marshal(a)
 	})
 	var a answer
 	if err != nil || json.Unmarshal(b, &a) != nil {
 		return unreadSurfaces(root, locks())
 	}
-	return a.Unread, a.ScriptWithheld, a.Unrecognised, a.Inactive, a.LockAssumed
+	return a.Unread, a.ScriptWithheld, a.Unrecognised, a.Inactive, a.LockAssumed, a.BuildAssumed
 }
 
 // parsedLocks reads every lockfile lockFiles finds under root, keyed by path.

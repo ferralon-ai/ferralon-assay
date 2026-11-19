@@ -84,7 +84,10 @@ func TestCopyInstrBuilt(t *testing.T) {
 	}{
 		{"an absent source", ".", "dist/api api", false, false, true},
 		{"beside a source that is there", ".", "dist/api ci/notes.txt api/", false, false, false},
+		{"beside a source that is there, spelled through ..", ".", "dist/api x/../ci/notes.txt api/", false, false, false},
 		{"from a glob", ".", "dist/ap* api", false, false, false},
+		{"from a ? glob", ".", "dist/ap? api", false, false, false},
+		{"from a [ glob", ".", "dist/ap[i] api", false, false, false},
 		{"from a context that could not be examined", "file", "dist/api api", false, false, false},
 		{"by ADD", ".", "dist/api api", true, false, false},
 		{"from another stage", ".", "--from=build dist/api api", false, false, false},

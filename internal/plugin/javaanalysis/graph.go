@@ -159,6 +159,13 @@ func WithBuildGraph(file string) Option {
 	return func(a *analyzer) { a.graphFile = file }
 }
 
+// WithCompileNote hands the ops the host's note on why the build's class output still does not
+// cover the sources and what to run; it ends the first_party_bytecode_absent reason's path. An
+// empty note adds nothing.
+func WithCompileNote(note string) Option {
+	return func(a *analyzer) { a.compileNote = note }
+}
+
 // graphMemo keeps the last decoded graph: every op subprocess call reads the same file.
 var graphMemo struct {
 	sync.Mutex

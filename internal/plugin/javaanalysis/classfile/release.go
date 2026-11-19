@@ -180,9 +180,15 @@ var objectMethods = map[string]bool{
 	"wait()V": true, "wait(J)V": true, "wait(JI)V": true, "finalize()V": true,
 }
 
+// A one-sided field hiding a field of a loaded superclass is not a conflict. The graph
+// reads a field only to find the class a getstatic or putstatic initializes, and
+// initializing the merged class initializes every superclass too (JVMS §5.5), so
+// resolving to the merged class over-approximates either release's resolution. A
+// superinterface's field stays a conflict: class initialization skips superinterfaces.
 func (m *ReleaseMerge) ancestorMayDeclare(name string, s member) (string, bool) {
 	c := m.classes[name]
 	seen := map[string]bool{}
+	superChain := map[string]bool{c.Super: true}
 	stack := append([]string{c.Super}, c.Interfaces...)
 	for len(stack) > 0 {
 		a := stack[len(stack)-1]
@@ -205,10 +211,18 @@ func (m *ReleaseMerge) ancestorMayDeclare(name string, s member) (string, bool) 
 			return "under ancestor " + a + ", whose members are unread", true
 		}
 		if s.field {
+			declared := false
 			for _, f := range ac.Fields {
 				if f.Name == s.name && f.Descriptor == s.desc {
-					return "hides a field of " + a, true
+					declared = true
 				}
+			}
+			if declared && !superChain[a] {
+				return "hides a field of " + a, true
+			}
+			if declared {
+				// a's own declaration shadows its ancestors' for this field.
+				continue
 			}
 		} else {
 			for _, am := range ac.Methods {
@@ -216,6 +230,9 @@ func (m *ReleaseMerge) ancestorMayDeclare(name string, s member) (string, bool) 
 					return "hides a method of " + a, true
 				}
 			}
+		}
+		if superChain[a] {
+			superChain[ac.Super] = true
 		}
 		stack = append(stack, ac.Super)
 		stack = append(stack, ac.Interfaces...)

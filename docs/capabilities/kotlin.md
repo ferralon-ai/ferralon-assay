@@ -74,7 +74,7 @@ A sink is Searched, and so eligible for `not_exploitable`, only when a hazard-fr
 
 ## 6. Framework & dynamic-dispatch modeling
 
-Ingress is recognized from bytecode annotations through the shared registry: Spring MVC mappings (with class-level prefix), JAX-RS, `@Scheduled`, `@EventListener`, lifecycle callbacks, Kafka/JMS/Rabbit listeners and servlets. Spring DI is overlaid on first-party classes. The engine resolves lambda and string-concatenation `invokedynamic` sites to their real targets.
+Ingress is recognized from bytecode annotations through the shared registry: Spring MVC mappings (with class-level prefix), JAX-RS, `@Scheduled`, `@EventListener`, lifecycle callbacks, Kafka/JMS/Rabbit listeners, servlets, and `isValid`/`initialize` of any `javax`/`jakarta` `ConstraintValidator` (direct or inherited; an ancestor the build output lacks counts as a possible validator). Spring DI is overlaid on first-party classes. The engine resolves lambda and string-concatenation `invokedynamic` sites to their real targets.
 
 | Feature | Status | Caveats |
 |---|---|---|
@@ -158,7 +158,7 @@ The Kotlin lane produces the build manifest and symbol evidence the paid tier co
 
 **Trigger.** Build output not under `build/classes/kotlin/main`, `build/classes/java/main`, `target/classes`, `out/production/classes`: KMP JVM targets, Android variants, custom source sets.
 
-**Effect.** `tool_failure:no_build_output`; no program loaded, no clear.
+**Effect.** `tool_failure:no_build_output`; no program loaded, no clear. When the checkout holds no compiled main classes at all, the scan first compiles them with the project's own Gradle (`gradle classes`) or Maven (`mvn compile`), so this applies only when that run fails or the output lands elsewhere; the scan logs the command and the cause of a failure to stderr, and the [operator guide](../operator-guide.md#compiling-the-first-party-classes) lists what runs.
 
 ### KOTLIN-UNLOADED-DEP
 

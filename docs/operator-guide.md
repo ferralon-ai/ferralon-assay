@@ -88,7 +88,10 @@ An `undetermined` row is an open question, never a clean bill. Its `undetermined
 the scan did not establish. A `refutation_withheld` or `analysis_did_not_run` row also lists, in
 `withheld_by`, the limits that withheld the verdict: each one's reason code and, when the limit is
 scoped to part of the build, the package and path holding the code the analysis could not see and the
-packages that code could reach. The row's detail names the same limits. An `analysis_did_not_run` row
+packages that code could reach. A row lists in full up to eight scoped limits of one reason that name
+its package, and those that count against it without naming it while there are three or fewer. The
+rest of that reason are one entry whose `others` is their number; the scan-level `partiality` notes
+carry the package and path of each, not its targets. The row's detail names the same limits. An `analysis_did_not_run` row
 whose analysis failed or produced no call graph has no limit that says so, so its list can be empty,
 and a limit it does list is not the reason the analysis did not run.
 
@@ -309,6 +312,21 @@ that table describes, so on any other release, or none, more methods count as po
 The scan does the same for the whole build when a module's Maven or Gradle toolchain selects a JDK
 other than the stated one, or when the graph cannot say which JDK a module uses: an Android project,
 or a graph file written before toolchains were recorded.
+
+## Compiling the first-party classes
+
+The Java and Kotlin lanes search the build's compiled classes. When the checkout holds none for a module,
+or a class is older than its source, a scan with `-build-graph auto` runs the project's own compile
+before the analysis: `mvn -B compile` (with the stated `-P` profiles and properties) for Maven, or
+`gradle classes` for Gradle, with the repository's `mvnw` or `gradlew` when it has one. Tests are not run.
+A job that builds before the scan, so `target/` or `build/` is present and current, is not rebuilt.
+
+Each build tool's run is bounded at 10 minutes. The scan logs the command it ran, or why it could not, to
+stderr. When the output still does not cover the sources, the affected Java results are undetermined with
+the reason `first_party_bytecode_absent`, and its path names the command to run and the end of the tool's
+error. The affected Kotlin results carry `tool_failure:no_build_output`; the command and the cause are in
+the stderr log only. A scan with `-build-graph off`, or one
+that reads a graph file, does not run the build tool: run that command in a step before the scan.
 
 ## Resolving the JVM build graph
 

@@ -101,6 +101,12 @@ type sourceClass struct {
 	// methods is the per-method annotation surface (name + arity + full annotation list)
 	// the sink overlays classify against. Additive; nothing in the bean model reads it.
 	methods []sourceMethod
+	// annotationType marks an @interface frame: it owns nested types, is never reported as a
+	// bean class, and reads no members.
+	annotationType bool
+	// local is true for a class declared inside a method or initializer body. It has no
+	// top-level or member binary name the scan can map to a compiled class.
+	local bool
 }
 
 // classLoc locates a first-party class for building an impl method's SCIP id.
@@ -151,6 +157,8 @@ func scanSourceClasses(clean, raw []rune, pkg string) []sourceClass {
 	for i < n {
 		c := clean[i]
 		switch {
+		case c == '@' && atInterface(clean, i):
+			i++
 		case c == '@':
 			name, val, next := parseAnnotation(clean, raw, i)
 			pending = append(pending, parsedAnno{name: name, value: val})
@@ -160,7 +168,7 @@ func scanSourceClasses(clean, raw []rune, pkg string) []sourceClass {
 			i++
 		case c == '}':
 			if len(stack) > 0 {
-				if top := stack[len(stack)-1]; top.cls != nil {
+				if top := stack[len(stack)-1]; top.cls != nil && !top.cls.annotationType {
 					out = append(out, *top.cls)
 				}
 				stack = stack[:len(stack)-1]
@@ -178,8 +186,17 @@ func scanSourceClasses(clean, raw []rune, pkg string) []sourceClass {
 				}
 				self := append(append([]string(nil), typeChain()...), nm)
 				sc := &sourceClass{pkg: pkg, name: nm, enclosing: self, supers: supers}
-				applyClassAnnos(sc, pending)
-				sc.classAnnos = append([]parsedAnno(nil), pending...) // full list retained for the sink overlays (additive)
+				for _, f := range stack {
+					if f.cls == nil {
+						sc.local = true
+					}
+				}
+				if word == "interface" && precededByAt(clean, i) {
+					sc.annotationType = true
+				} else {
+					applyClassAnnos(sc, pending)
+					sc.classAnnos = append([]parsedAnno(nil), pending...) // full list retained for the sink overlays (additive)
+				}
 				pending = nil
 				stack = append(stack, frame{cls: sc})
 				i = openIdx + 1
@@ -188,7 +205,7 @@ func scanSourceClasses(clean, raw []rune, pkg string) []sourceClass {
 				i = skipTo(clean, next, ';')
 			default:
 				// A member declaration only at type-body depth (top frame is a type).
-				if len(stack) > 0 && stack[len(stack)-1].cls != nil {
+				if len(stack) > 0 && stack[len(stack)-1].cls != nil && !stack[len(stack)-1].cls.annotationType {
 					if adv, ok := parseMemberBean(clean, raw, i, stack[len(stack)-1].cls, pending); ok {
 						pending = nil
 						i = adv
@@ -202,6 +219,13 @@ func scanSourceClasses(clean, raw []rune, pkg string) []sourceClass {
 		}
 	}
 	return out
+}
+
+// atInterface reports whether the '@' at i begins an "@interface" annotation type
+// declaration rather than a use of an annotation.
+func atInterface(r []rune, i int) bool {
+	w, _ := readWord(r, skipSpace(r, i+1))
+	return w == "interface"
 }
 
 // parseTypeHeaderFull reads a type name and its full extends/implements supertype list

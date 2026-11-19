@@ -83,7 +83,7 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 // opens the javaanalysis Prove-path gate when envAnalyzerImage is set, with the docker binary
 // override from envAnalyzerDocker. Without the image the gate stays closed (pure-Go only).
 func analyzerOptions() []javaanalysis.Option {
-	opts := []javaanalysis.Option{javaanalysis.WithBuildGraph(os.Getenv(plugin.BuildGraphEnv))}
+	opts := []javaanalysis.Option{javaanalysis.WithBuildGraph(os.Getenv(plugin.BuildGraphEnv)), javaanalysis.WithCompileNote(os.Getenv(plugin.BuildCompileEnv))}
 	image := os.Getenv(envAnalyzerImage)
 	if image == "" {
 		return opts

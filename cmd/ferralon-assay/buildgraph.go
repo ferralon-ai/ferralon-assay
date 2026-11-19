@@ -37,6 +37,10 @@ type jvmGraph struct {
 	source  string
 	failure *buildgraph.Failure
 	partial *buildgraph.Failure
+	// compileNote is why the first-party class output the JVM lanes read still does not cover the
+	// sources after the scan's compile step (compileJVM), or what to run when it did not run; "" when
+	// the output was present or the compile produced it.
+	compileNote string
 }
 
 // record is the Report's build_graph field.

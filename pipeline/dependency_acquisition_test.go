@@ -579,7 +579,10 @@ func TestDependencyAcquisitionTokenNotRecorded(t *testing.T) {
 	}
 	p := inventoryPlugin{nodes: []plugin.DependencyNode{
 		npmNode("pkg:npm/%40a/lib@1.0.0", sri512(ok)),
-		npmNode("pkg:npm/qs@6.5.2", sri512(ok)), // served bytes mismatch: an unread outcome is recorded too
+		// served bytes mismatch: an unread outcome is recorded too. qs pins its own
+		// integrity: sharing @a/lib's would let qs read @a/lib's verified bytes from
+		// the digest-keyed cache whenever @a/lib is fetched first.
+		npmNode("pkg:npm/qs@6.5.2", sri512([]byte("qs tarball"))),
 	}}
 
 	store := artifact.NewMemStore()

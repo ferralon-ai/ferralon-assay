@@ -56,6 +56,18 @@ func (b *firstPartyBytecode) scoped() []plugin.ScopedReason {
 	return []plugin.ScopedReason{{Reason: reasonFirstPartyBytecodeAbsent, Path: b.gaps[0]}}
 }
 
+// noted is scoped with the host's compile note appended to its disclosure path, so the reason
+// names what to run and why the host's own compile did not produce the classes.
+func (b *firstPartyBytecode) noted(opts []Option) []plugin.ScopedReason {
+	sc := b.scoped()
+	if note := resolveOptions(opts).compileNote; note != "" {
+		for i := range sc {
+			sc[i].Path += "; " + note
+		}
+	}
+	return sc
+}
+
 // projectDirs returns the distinct project directories the class output roots belong to: the
 // directory holding target/classes (Maven) or build/classes/<lang>/main (Gradle). Java and
 // Kotlin output of one Gradle project count once.

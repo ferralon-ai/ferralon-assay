@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -102,6 +103,86 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 		return "", report.ReasonAdvisorySymbolAbsent, "", nil, false
 	}
 	return "", report.ReasonVulnerableSymbolUnresolved, "", nil, false
+}
+
+// scopedVerdicts is the not_exploitable the lane's program view grounds for the admitted package, scoped
+// to the build's shipped binaries, or none. It speaks beside a row whose own verdict is the library view
+// and never replaces it; the caller offers it only on a reachable_candidate or a refutation_withheld
+// row. It passes the gate every not_exploitable passes (undeterminedReason): with no reason, or only
+// refutation_withheld, whose limits are the library-entry withholds the view answers. A reachable
+// candidate never reached that gate, so a toolchain axis left undetermined or a did-not-run limit in
+// the footprint holds its scoped verdict back as it would hold a library one. It then takes the same
+// positive grounds as arm B of notExploitableGrounds: the admitted package's version resolved, the
+// advisory names no other package, and the refutation is of the admitted package. A path the row
+// records that enters at a binary holds the verdict back for every binary (entersBinary).
+func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) []report.ScopedVerdict {
+	if reason, undetermined := undeterminedReason(store, assessmentID, pkg); undetermined && reason != report.ReasonRefutationWithheld {
+		return nil
+	}
+	reach, _ := reachabilityResult(store, assessmentID)
+	view := reach.ProgramView
+	if view == nil || len(view.Binaries) == 0 || view.Refutation.Package == "" || view.Refutation.Basis != plugin.RefutationAnalyzerSymbolNotReached {
+		return nil
+	}
+	admitted, label, ok := admittedPackage(store, assessmentID, pkg)
+	if !ok || namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted, mods, refutedBeside(store, assessmentID, reach)) ||
+		!inAdmitted(view.Refutation.Package, admitted, pkg != nil && pkg.Root) || entersBinary(store, assessmentID, view) {
+		return nil
+	}
+	return []report.ScopedVerdict{{
+		Verdict: report.VerdictNotExploitable,
+		Scope:   report.Scope{Kind: report.ScopeBinaries, Targets: slices.Clone(view.Binaries), Module: view.Module},
+		Evidence: report.EvidenceSummary{
+			Basis:  verdict.BasisSymbolUnreachable,
+			Detail: fmt.Sprintf("%s: %s (%s)", label, view.Refutation.Detail, view.Refutation.Basis),
+		},
+	}}
+}
+
+// entersBinary reports whether a reach or taint path the row records starts in the main package of
+// one of the view's binaries. Such a path, as the call-graph fallback finds when govulncheck gives only
+// module-level evidence, is a call the program view's run from those mains did not see, so that run's
+// silence holds for none of them: one path is recorded per sink, and the next binary may be reached the
+// same way. It fails closed: a path whose entry package cannot be read counts as entering.
+func entersBinary(store artifact.Store, assessmentID string, view *plugin.ProgramView) bool {
+	mains := make(map[string]bool, len(view.Binaries))
+	for _, b := range view.Binaries {
+		mains[path.Join(view.Module, b)] = true
+	}
+	return slices.ContainsFunc(append(reachPaths(store, assessmentID), taintPaths(store, assessmentID)...), func(p plugin.ReachPath) bool {
+		entries := make([]plugin.Symbol, 0, 2)
+		if p.Ingress != (plugin.Symbol{}) {
+			entries = append(entries, p.Ingress)
+		}
+		if len(p.Trace) > 0 {
+			entries = append(entries, p.Trace[0])
+		}
+		if len(entries) == 0 {
+			return true
+		}
+		return slices.ContainsFunc(entries, func(s plugin.Symbol) bool {
+			pkg, ok := symbolPackage(s)
+			return !ok || mains[pkg]
+		})
+	})
+}
+
+// symbolPackage is the import path of the package a symbol belongs to. The Go lane records only the
+// SCIP id, so it is read from the id's last field, "<pkgPath>/<descriptor>" (a descriptor holds no
+// slash); Package is used when the lane set it. It refuses an id that does not have that shape.
+func symbolPackage(s plugin.Symbol) (string, bool) {
+	if s.Package != "" {
+		return s.Package, true
+	}
+	fields := strings.Fields(s.SCIP)
+	if len(fields) != 5 || fields[0] != "scip-go" || fields[1] != "gomod" {
+		return "", false
+	}
+	slash := strings.LastIndex(fields[4], "/")
+	if slash <= 0 || slash == len(fields[4])-1 {
+		return "", false
+	}
+	return fields[4][:slash], true
 }
 
 // vettedSymbols reports whether the advisory's symbol set is complete enough for an absence of the

@@ -326,6 +326,12 @@ type lockInfo struct {
 	// installed at the root's node_modules, every direct dependency among them) to the version
 	// string it records.
 	rootVersions map[string]string
+	// sources maps each package name an npm v2/v3 lock installs, normalized, to the "resolved"
+	// value of every copy, "" for a copy that records none.
+	sources map[string][]string
+	// refSpecs holds each name, normalized, that some package in an npm v2/v3 lock (the root
+	// among them) is recorded as depending on by a spec with a "#" part: a git ref or commit.
+	refSpecs map[string]bool
 }
 
 const (
@@ -344,6 +350,8 @@ func newLockInfo(kind string) lockInfo {
 		installed:    map[string]string{},
 		descriptors:  map[string]bool{},
 		rootVersions: map[string]string{},
+		sources:      map[string][]string{},
+		refSpecs:     map[string]bool{},
 	}
 }
 
@@ -447,6 +455,13 @@ func parsePackageLock(data []byte) (lockInfo, bool) {
 		info := newLockInfo(lockNPM)
 		for _, installPath := range slices.Sorted(maps.Keys(pl.Packages)) {
 			pkg := pl.Packages[installPath]
+			for _, deps := range []map[string]string{pkg.Dependencies, pkg.DevDependencies, pkg.OptionalDependencies, pkg.PeerDependencies} {
+				for n, spec := range deps {
+					if strings.Contains(spec, "#") {
+						info.refSpecs[normalizeNPMCoordinate(n)] = true
+					}
+				}
+			}
 			if !strings.Contains(installPath, "node_modules/") {
 				// The root ("") and each workspace folder are projects: record the specs npm
 				// locked them against.
@@ -473,6 +488,7 @@ func parsePackageLock(data []byte) (lockInfo, bool) {
 			if key := packageLockName(installPath, ""); key != "" {
 				info.names[normalizeNPMCoordinate(key)] = true // the folder name: an alias key when "name" differs
 				info.installed[installPath] = installedVersion(pl.Packages, key, pkg)
+				info.sources[normalizeNPMCoordinate(key)] = append(info.sources[normalizeNPMCoordinate(key)], pkg.Resolved)
 			}
 			name := packageLockName(installPath, pkg.Name)
 			if name == "" {

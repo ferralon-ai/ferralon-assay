@@ -12,7 +12,9 @@ import (
 // the same way on its own findings, and a refutation that survives every withhold joins
 // Refutations. A module whose refutation is withheld is absent from it. A refutation kept for the
 // scanned platform alone brings its excluded_files:build_constraint limit to the result, so the scan
-// still discloses it; everything else the result declares is the first module's judgement.
+// still discloses it; everything else the result declares is the first module's judgement. The
+// program view runs once, in the first module's call, over every module the findings name
+// (programView); the other modules are judged by the library view alone.
 func resultPerModule(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
 	res, err := resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
 	if err != nil {
@@ -28,7 +30,7 @@ func resultPerModule(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 		one.findings = slices.DeleteFunc(slices.Clone(scanned.findings), func(f vulnFinding) bool {
 			return len(f.Trace) == 0 || f.Trace[0].Module != module
 		})
-		other, err := resultFromGraph(ctx, one, g, buildDir, env, load, entry)
+		other, _, err := libraryView(ctx, one, g, buildDir, env, load, entry)
 		if err != nil {
 			return plugin.ReachabilityResult{}, err
 		}

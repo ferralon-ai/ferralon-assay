@@ -8,6 +8,7 @@ package pipeline
 import (
 	"strings"
 
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -167,7 +168,7 @@ func rangesForToolchainFloor(store artifact.Store, caseID string, rngs []affecte
 
 // compareVersions orders a against b under scheme's comparator, returning -1/0/+1. ok is false when
 // the scheme has no comparator or either version falls outside its grammar. The default Go path
-// rejects prereleases, pseudo-versions included, as versionOutsideUpper does.
+// orders a as compareGoModVersions does.
 func compareVersions(a, b, scheme string) (int, bool) {
 	switch scheme {
 	case "maven":
@@ -240,14 +241,58 @@ func canonicalGoModVersion(v string) (string, bool) {
 
 // compareGoModVersions orders module version a against bound b. b is canonicalized and may be a
 // pre-release or pseudo-version, ordered by semver.Compare as govulncheck does. a is the installed
-// version as go.mod writes it, so it must already be "v"-prefixed semver, and a pre-release a stays
-// unordered: an installed pseudo-version against a bound fails open.
+// version as go.mod writes it, so it must already be "v"-prefixed semver. A pseudo-version a is
+// ordered where comparePseudoVersion places it; any other pre-release a stays unordered.
 func compareGoModVersions(a, b string) (int, bool) {
 	cb, bok := canonicalGoModVersion(b)
-	if !semver.IsValid(a) || !bok || semver.Prerelease(a) != "" {
+	if !semver.IsValid(a) || !bok {
+		return 0, false
+	}
+	if module.IsPseudoVersion(a) {
+		return comparePseudoVersion(a, cb)
+	}
+	if semver.Prerelease(a) != "" {
 		return 0, false
 	}
 	return semver.Compare(a, cb), true
+}
+
+// comparePseudoVersion orders the installed pseudo-version a against the canonical bound b in the
+// two cases where a's place is known:
+//
+//   - b is a pseudo-version on the same base (the same tagged version before it, or none under the
+//     same major): the two commit times order them. Equal times order only the same revision.
+//   - b is not a pseudo-version and a's base is a tagged version at or above b: a is a commit after
+//     that tag, so it orders above b.
+//
+// Everything else is unordered: a pseudo-version with no tag before it against a tagged bound, one
+// whose base is below the bound (the commit lies somewhere between two tags), and two
+// pseudo-versions on different bases.
+func comparePseudoVersion(a, b string) (int, bool) {
+	base, err := module.PseudoVersionBase(a)
+	if err != nil {
+		return 0, false
+	}
+	if !module.IsPseudoVersion(b) {
+		if base == "" || semver.Compare(base, b) < 0 {
+			return 0, false
+		}
+		return 1, true
+	}
+	if bbase, err := module.PseudoVersionBase(b); err != nil || bbase != base || semver.Major(a) != semver.Major(b) {
+		return 0, false
+	}
+	at, aerr := module.PseudoVersionTime(a)
+	bt, berr := module.PseudoVersionTime(b)
+	if aerr != nil || berr != nil {
+		return 0, false
+	}
+	if c := at.Compare(bt); c != 0 {
+		return c, true
+	}
+	arev, _ := module.PseudoVersionRev(a)
+	brev, _ := module.PseudoVersionRev(b)
+	return 0, arev == brev
 }
 
 // withDisagreeingLegacyRanges adds the advisory-level legacy ranges to the element they describe when

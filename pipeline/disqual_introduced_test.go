@@ -77,9 +77,9 @@ func TestVersionOutsideRange_Introduced(t *testing.T) {
 	}
 }
 
-// A Go pseudo-version is a prerelease to the default Go comparator, so it is never placed against
-// an introduced bound: a range's verdict on it is the one the upper bound alone gave.
-func TestVersionOutsideRange_GoPseudoVersionUnchanged(t *testing.T) {
+// A Go pseudo-version the comparator cannot place against an introduced bound leaves the range's
+// verdict as the upper bound alone gave it.
+func TestVersionOutsideRange_GoPseudoVersionUnplacedIntroduced(t *testing.T) {
 	const pseudo = "v0.0.0-20210101000000-abcdef123456"
 	tests := []struct {
 		name string
@@ -87,7 +87,7 @@ func TestVersionOutsideRange_GoPseudoVersionUnchanged(t *testing.T) {
 		rng  affectedRange
 	}{
 		{"pseudo version below a release introduced", pseudo, affectedRange{LowerInclusive: "v1.0.0", UpperExclusive: "v1.5.0"}},
-		{"pseudo version against a pseudo introduced", pseudo, affectedRange{LowerInclusive: "v0.0.0-20220101000000-abcdef123456", UpperExclusive: "v1.5.0"}},
+		{"pseudo version against a pseudo introduced on another base", pseudo, affectedRange{LowerInclusive: "v1.2.4-0.20220101000000-abcdef123456", UpperExclusive: "v1.5.0"}},
 		{"release past the upper of a pseudo introduced", "v1.6.0", affectedRange{LowerInclusive: "v0.0.0-20220101000000-abcdef123456", UpperExclusive: "v1.5.0"}},
 	}
 	for _, tt := range tests {

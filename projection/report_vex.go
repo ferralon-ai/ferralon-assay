@@ -91,6 +91,10 @@ func ProjectReportVEX(r report.Report) (*VEXDocument, error) {
 		}
 		stmt.StatusNotes = annotationsStatement(f.Annotations)
 		stmts = append(stmts, stmt)
+		if !f.MayCarryScoped() {
+			// An incomplete assessment never says not_affected, whatever a producer attached.
+			continue
+		}
 		for _, sv := range f.ScopedVerdicts {
 			if sv.Scope.Module == "" {
 				return nil, fmt.Errorf("projection/report_vex: advisory %q carries a scoped verdict that names no module, so no product can name its binaries", f.Advisory.ID)

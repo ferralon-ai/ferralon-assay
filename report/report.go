@@ -1491,16 +1491,30 @@ func (r Report) Validate() error {
 	return nil
 }
 
-// validateScoped checks f's scoped verdicts: they qualify only a reachable_candidate or an
-// undetermined row, and each is a not_exploitable resting on reachability for a named scope: its
-// binaries and the module they are built from.
+// MayCarryScoped reports whether f may carry scoped verdicts: a reachable_candidate, or an
+// undetermined row whose reason is refutation_withheld (the analysis ran and held back a refutation
+// the program view can supply). Any other undetermined row is an incomplete assessment, and no
+// narrower claim can stand on it.
+func (f AdvisoryFinding) MayCarryScoped() bool {
+	switch f.Verdict {
+	case VerdictReachableCandidate:
+		return true
+	case VerdictUndetermined:
+		return f.UndeterminedReason == ReasonRefutationWithheld
+	}
+	return false
+}
+
+// validateScoped checks f's scoped verdicts: they qualify only a reachable_candidate or a
+// refutation_withheld row, and each is a not_exploitable resting on reachability for a named scope:
+// its binaries and the module they are built from.
 func (f AdvisoryFinding) validateScoped() error {
 	if len(f.ScopedVerdicts) == 0 {
 		return nil
 	}
-	if f.Verdict != VerdictReachableCandidate && f.Verdict != VerdictUndetermined {
-		return fmt.Errorf("report: advisory %q carries scoped verdicts but verdict is %q (a scope narrows only a reachable_candidate or an undetermined row)",
-			f.Advisory.ID, f.Verdict)
+	if !f.MayCarryScoped() {
+		return fmt.Errorf("report: advisory %q carries scoped verdicts but verdict is %q with undetermined_reason %q (a scope narrows only a reachable_candidate or an undetermined row whose reason is %s)",
+			f.Advisory.ID, f.Verdict, f.UndeterminedReason, ReasonRefutationWithheld)
 	}
 	for _, v := range f.ScopedVerdicts {
 		switch {

@@ -186,9 +186,10 @@ func TestReportVEX_ScopedVerdictProducts(t *testing.T) {
 			SchemaVersion: report.SchemaVersion,
 			Subject:       report.Subject{Repo: "example.com/m", ResolvedCommit: tc.commit},
 			Advisories: []report.AdvisoryFinding{{
-				Advisory: report.Advisory{ID: "GO-1"},
-				Package:  &report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.1.0", PURL: "pkg:golang/golang.org/x/net@v0.1.0"},
-				Verdict:  report.VerdictUndetermined,
+				Advisory:           report.Advisory{ID: "GO-1"},
+				Package:            &report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.1.0", PURL: "pkg:golang/golang.org/x/net@v0.1.0"},
+				Verdict:            report.VerdictUndetermined,
+				UndeterminedReason: report.ReasonRefutationWithheld,
 				ScopedVerdicts: []report.ScopedVerdict{{
 					Verdict:  report.VerdictNotExploitable,
 					Scope:    report.Scope{Kind: report.ScopeBinaries, Targets: tc.targets, Module: tc.module},
@@ -222,6 +223,58 @@ func TestReportVEX_ScopedVerdictProducts(t *testing.T) {
 		}
 		if bin.Status != projection.VEXStatusNotAffected || !strings.Contains(bin.ImpactStatement, tc.impact) {
 			t.Errorf("%s: statement = %s %q, want not_affected naming %q", tc.name, bin.Status, bin.ImpactStatement, tc.impact)
+		}
+	}
+}
+
+// TestReportVEX_ScopedVerdictRowGate: only a reachable_candidate or a refutation_withheld row projects
+// its scoped verdict; an incomplete row emits the finding's own statement alone, never a not_affected,
+// even though the report was never validated.
+func TestReportVEX_ScopedVerdictRowGate(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		verdict report.Verdict
+		reason  string
+		want    int // statements
+	}{
+		{"reachable_candidate", report.VerdictReachableCandidate, "", 2},
+		{"refutation_withheld", report.VerdictUndetermined, report.ReasonRefutationWithheld, 2},
+		{"scan_cut_short", report.VerdictUndetermined, report.ReasonScanCutShort, 1},
+		{"analysis_did_not_run", report.VerdictUndetermined, report.ReasonAnalysisDidNotRun, 1},
+		{"dependency_not_fetched", report.VerdictUndetermined, report.ReasonDependencyNotFetched, 1},
+		{"go_toolchain_not_scanned", report.VerdictUndetermined, report.ReasonGoToolchainNotScanned, 1},
+		{"go_toolchain_unresolved", report.VerdictUndetermined, report.ReasonGoToolchainUnresolved, 1},
+		{"tool_failure", report.VerdictUndetermined, plugin.PartialReasonToolFailure, 1},
+	} {
+		r := report.Report{
+			SchemaVersion: report.SchemaVersion,
+			Subject:       report.Subject{Repo: "example.com/m", ResolvedCommit: "abc123"},
+			Advisories: []report.AdvisoryFinding{{
+				Advisory:           report.Advisory{ID: "GO-1"},
+				Package:            &report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.1.0", PURL: "pkg:golang/golang.org/x/net@v0.1.0"},
+				Verdict:            tc.verdict,
+				UndeterminedReason: tc.reason,
+				ScopedVerdicts: []report.ScopedVerdict{{
+					Verdict:  report.VerdictNotExploitable,
+					Scope:    report.Scope{Kind: report.ScopeBinaries, Targets: []string{"cmd/app"}, Module: "example.com/m"},
+					Evidence: report.EvidenceSummary{Basis: verdict.BasisSymbolUnreachable, Detail: "started from the mains only"},
+				}},
+			}},
+		}
+		doc, err := projection.ProjectReportVEX(r)
+		if err != nil {
+			t.Fatalf("%s: ProjectReportVEX: %v", tc.name, err)
+		}
+		if len(doc.Statements) != tc.want {
+			t.Errorf("%s: %d statements, want %d", tc.name, len(doc.Statements), tc.want)
+		}
+		for _, st := range doc.Statements[1:] {
+			if tc.want == 1 || st.Status != projection.VEXStatusNotAffected {
+				t.Errorf("%s: scoped statement %+v emitted for an incomplete row", tc.name, st)
+			}
+		}
+		if tc.want == 1 && doc.Statements[0].Status == projection.VEXStatusNotAffected {
+			t.Errorf("%s: finding's own statement is not_affected", tc.name)
 		}
 	}
 }

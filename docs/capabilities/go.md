@@ -207,7 +207,7 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Effect.** The refutation is withheld with `library_escape`, and the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that stands only because of what you declared carries that declaration on the report as an assumption.
 
-**Scoped answer.** When the build ships programs, the lane also runs a program view, and a row held here can carry a `not_exploitable` scoped to those binaries: see [Binary-scoped verdicts](../binary-scoped-verdicts.md). A row that records a reach or taint path starting in one of those binaries' `main` packages carries none, for any of them: the path is a call the program view did not see. The path's entry package is read from its SCIP id; one that cannot be read counts as entering a binary. Mains spread over more than one module give no scoped verdict either.
+**Scoped answer.** When the build ships programs, the lane also runs a program view, and a row held here can carry a `not_exploitable` scoped to those binaries: see [Binary-scoped verdicts](../binary-scoped-verdicts.md). A row that records a reach or taint path starting in one of those binaries' `main` packages carries none, for any of them: the path is a call the program view did not see. Only a `reachable_candidate` or a `refutation_withheld` row can carry one; a row undetermined for any other reason, such as a cut-short scan or an analysis that did not run, carries none. The path's entry package is read from its SCIP id; one that cannot be read counts as entering a binary. Mains spread over more than one module give no scoped verdict either.
 
 ### GO-NO-SYMBOLS
 

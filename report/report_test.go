@@ -157,8 +157,8 @@ func TestReportValidate(t *testing.T) {
 	})
 }
 
-// TestReportValidate_ScopedVerdicts: a scoped verdict narrows only a reachable_candidate or an
-// undetermined row, never one that already has a verdict of its own, and is a not_exploitable resting
+// TestReportValidate_ScopedVerdicts: a scoped verdict narrows only a reachable_candidate or a
+// refutation_withheld row, never one that already has a verdict of its own, and is a not_exploitable resting
 // on reachability that names its binaries and their module.
 func TestReportValidate_ScopedVerdicts(t *testing.T) {
 	scoped := func() ScopedVerdict {
@@ -174,15 +174,22 @@ func TestReportValidate_ScopedVerdicts(t *testing.T) {
 		edit  func(*ScopedVerdict)
 		valid bool
 	}{
-		{"on an undetermined row", undeterminedReport, func(*ScopedVerdict) {}, true},
+		{"on a refutation_withheld row", withheldReport, func(*ScopedVerdict) {}, true},
 		{"on a reachable candidate", func() Report { r := fullReport(); r.Advisories = r.Advisories[2:]; return r }, func(*ScopedVerdict) {}, true},
 		{"on a not_exploitable row", func() Report { r := fullReport(); r.Advisories = r.Advisories[1:2]; return r }, func(*ScopedVerdict) {}, false},
 		{"on a disqualified row", func() Report { r := fullReport(); r.Advisories = r.Advisories[:1]; return r }, func(*ScopedVerdict) {}, false},
-		{"a scoped reachable_candidate", undeterminedReport, func(v *ScopedVerdict) { v.Verdict = VerdictReachableCandidate }, false},
-		{"a scope of no kind", undeterminedReport, func(v *ScopedVerdict) { v.Scope.Kind = "" }, false},
-		{"a scope with no binaries", undeterminedReport, func(v *ScopedVerdict) { v.Scope.Targets = nil }, false},
-		{"a scope with no module", undeterminedReport, func(v *ScopedVerdict) { v.Scope.Module = "" }, false},
-		{"a basis other than reachability", undeterminedReport, func(v *ScopedVerdict) { v.Evidence.Basis = verdict.BasisSymbolAbsent }, false},
+		{"on a scan_cut_short row", reasonReport(ReasonScanCutShort), func(*ScopedVerdict) {}, false},
+		{"on an analysis_did_not_run row", reasonReport(ReasonAnalysisDidNotRun), func(*ScopedVerdict) {}, false},
+		{"on a dependency_not_fetched row", reasonReport(ReasonDependencyNotFetched), func(*ScopedVerdict) {}, false},
+		{"on a go_toolchain_not_scanned row", undeterminedReport, func(*ScopedVerdict) {}, false},
+		{"on a go_toolchain_unresolved row", reasonReport(ReasonGoToolchainUnresolved), func(*ScopedVerdict) {}, false},
+		{"on a tool_failure row", reasonReport(plugin.PartialReasonToolFailure), func(*ScopedVerdict) {}, false},
+		{"on a package_version_unresolved row", reasonReport(ReasonPackageVersionUnresolved), func(*ScopedVerdict) {}, false},
+		{"a scoped reachable_candidate", withheldReport, func(v *ScopedVerdict) { v.Verdict = VerdictReachableCandidate }, false},
+		{"a scope of no kind", withheldReport, func(v *ScopedVerdict) { v.Scope.Kind = "" }, false},
+		{"a scope with no binaries", withheldReport, func(v *ScopedVerdict) { v.Scope.Targets = nil }, false},
+		{"a scope with no module", withheldReport, func(v *ScopedVerdict) { v.Scope.Module = "" }, false},
+		{"a basis other than reachability", withheldReport, func(v *ScopedVerdict) { v.Evidence.Basis = verdict.BasisSymbolAbsent }, false},
 	} {
 		r := tc.row()
 		v := scoped()
@@ -193,6 +200,18 @@ func TestReportValidate_ScopedVerdicts(t *testing.T) {
 		}
 	}
 }
+
+// reasonReport is the minimal undetermined finding with the given reason.
+func reasonReport(reason string) func() Report {
+	return func() Report {
+		r := undeterminedReport()
+		r.Advisories[0].UndeterminedReason = reason
+		r.Advisories[0].Evidence.Detail = UndeterminedDetail(reason)
+		return r
+	}
+}
+
+func withheldReport() Report { return reasonReport(ReasonRefutationWithheld)() }
 
 // undeterminedReport is the minimal legal undetermined finding: a verdict, a reason, and nothing
 // that would make it an assertion.

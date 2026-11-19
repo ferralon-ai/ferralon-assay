@@ -70,6 +70,13 @@ One row, with an added field. Nothing is renamed, and a consumer that ignores `s
 the report as before. The row's own `verdict`, `undetermined_reason` and `evidence` are the library
 view's. Counts of verdicts count the row once.
 
+**Which rows can carry one.** Only a `reachable_candidate` row, or an `undetermined` row whose
+`undetermined_reason` is `refutation_withheld`. Every other incomplete reason (`scan_cut_short`,
+`analysis_did_not_run`, `dependency_not_fetched`, `go_toolchain_*`, `tool_failure*`,
+`package_version_unresolved`, `advisory_*` and the rest) cannot: the analysis did not finish for that
+row, so no narrower claim can stand on it. The report validator rejects such a row, naming the reason,
+and the OpenVEX projector emits no scoped statement for it even when validation was bypassed.
+
 ```json
 {
   "advisory": {"id": "GO-2024-0000"},
@@ -116,7 +123,8 @@ shows it beside the row's own label, and the SARIF message ends with it.
 ## OpenVEX
 
 The finding keeps its own statement, for the module's package, with the library view's status. For
-each scoped verdict, a second statement follows it:
+each scoped verdict, a second statement follows it (only for a row that can carry one, see
+[The row](#the-row)):
 
 - `products`: one per binary, `@id` the **binary**: `pkg:golang/<module>@<scanned commit>?binary=<target>`,
   the target percent-encoded as a purl qualifier value is, for example

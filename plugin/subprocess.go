@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
@@ -102,9 +103,8 @@ func execSubprocess(ctx context.Context, bin string, req Request, env ...string)
 	reqLine = append(reqLine, '\n')
 
 	cmd := exec.CommandContext(ctx, bin)
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
+	// The plugin runs the repository's own build tooling, so it never inherits the CI credentials.
+	cmd.Env = append(buildgraph.StripCredentials(os.Environ()), env...)
 	cmd.Stdin = bytes.NewReader(reqLine)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

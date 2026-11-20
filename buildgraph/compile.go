@@ -107,7 +107,7 @@ func gradleCompileArgs(c Conditions) []string {
 func runProcess(ctx context.Context, dir string, env []string, exe string, args []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = dir
-	cmd.Env = env
+	cmd.Env = StripCredentials(env)
 	cmd.WaitDelay = 10 * time.Second
 	var out bytes.Buffer
 	cmd.Stdout = &out

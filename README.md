@@ -45,6 +45,10 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Keep the job token out of the checkout's git config, where the scanned
+          # build's own scripts could read it. See Network egress below.
+          persist-credentials: false
 
       - name: Run the Ferralon Assay
         id: assay
@@ -206,7 +210,9 @@ malformed file, an unsupported `version`, or a ref that is not a plain branch/ta
 run instead of being skipped, and a ref that cannot be fetched fails naming the ref. Keys this
 scanner does not know produce a warning and are ignored, so newer settings do not break older
 scanners. The fetch uses the credentials `actions/checkout` left in the repository's git config;
-it contacts only your repository's own remote.
+it contacts only your repository's own remote. On a private repository that means checking out
+with the default `persist-credentials: true` rather than the Quickstart's `false`, which leaves the
+job token readable to the scanned build (see [Network egress](#network-egress)).
 
 ## What it reports
 
@@ -393,9 +399,10 @@ mode's behavior, a scheduled `cve-watch` workflow, and which surface fires under
 **Your code never leaves the runner, and a registry credential leaves it only for a host the
 scanned branch's own configuration names: the npm registry its `.npmrc` binds a token to, or, for
 a Java or Kotlin scan, the repositories its Maven or Gradle build configures.** No run mode is offline: a default
-`baseline` or `pr-inherit` run resolves the subject's module graph against `proxy.golang.org` and
+`baseline` or `pr-inherit` run resolves the subject's module graph against `proxy.golang.org`, verifies
+the modules it downloads against the checksum database at `sum.golang.org`, and
 fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
-`go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
+`go build` and `govulncheck` perform) — the module proxy and `vuln.go.dev` are also the scan's main cost drivers, see
 [Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
 `api.osv.dev`. The Action downloads the scanner release from `github.com`. A run with
 `advisory-corpus-repo` set clones the corpus repository from `github.com`. With
@@ -405,8 +412,13 @@ run downloads the release's assets from `github.com` (served from
 downloads cosign from the `sigstore/cosign` GitHub release, and needs the Sigstore TUF CDN,
 `tuf-repo-cdn.sigstore.dev`, to verify the corpus signature. None of the corpus requests presents a
 token or carries anything about your code. A Java or Kotlin scan runs the repository's own Maven or
-Gradle with the job's environment, and the build tool contacts whatever repositories the build
-configures. A JS scan also fetches each lock-pinned package tarball by name and version from the
+Gradle with the job's environment minus the GitHub and Actions tokens
+(`GITHUB_TOKEN`, `GH_TOKEN` and the `ACTIONS_*` runtime, OIDC and cache variables) and the runner's
+step files (`GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STATE`, `GITHUB_STEP_SUMMARY`), and
+the build tool contacts whatever repositories the build configures. That keeps the job's tokens out
+of the build's environment, not out of its reach: by default `actions/checkout` persists the job
+token in the checkout's git config, where the build's own scripts can read it. Check out with
+`persist-credentials: false`, as the Quickstart does, to remove it. A JS scan also fetches each lock-pinned package tarball by name and version from the
 configured registry, unless it runs with `-dependency-code=off` or `offline` (the repository's
 `.npmrc`, `NPM_CONFIG_USERCONFIG`, `NPM_CONFIG_REGISTRY`). An `.npmrc` `${VAR}` reference reads
 only `NODE_AUTH_TOKEN`, `NPM_TOKEN` or a variable named with `-dependency-npmrc-env`, and a token

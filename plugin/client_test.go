@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 )
 
 // These hermetic tests exercise the exec + newline-JSON/stdio transport WITHOUT the real
@@ -94,7 +96,7 @@ func TestHelperProcess(t *testing.T) {
 			},
 		}
 	case "credentials":
-		for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_CACHE_URL"} {
+		for _, k := range buildgraph.CredentialEnv() {
 			if _, ok := os.LookupEnv(k); ok {
 				resp.Error += k + " "
 			}
@@ -326,7 +328,7 @@ func TestConstructorsDiscoverBinaryName(t *testing.T) {
 }
 
 func TestPluginSubprocessStripsCredentials(t *testing.T) {
-	for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_CACHE_URL"} {
+	for _, k := range buildgraph.CredentialEnv() {
 		t.Setenv(k, "secret")
 	}
 	t.Setenv("KEEP_ME", "1")

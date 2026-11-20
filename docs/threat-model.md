@@ -97,15 +97,25 @@ or `gradle` would; a branch that rewrites those repositories sends those credent
 with `-build-graph off`, or one that reads a graph resolved ahead of the scan, does not run the build
 tool.
 
-**The job's own tokens are removed from every build-tool process.** Each subprocess the scanner starts to
-run the repository's build or package tooling (Maven, Gradle, `dotnet restore`, and every language
-analyzer, whose `go`, npm, pip and similar calls run inside it) gets its environment without
+**The scanner does not hand the job's tokens to the build's environment.** Each subprocess the scanner
+starts to run the repository's build or package tooling (Maven, Gradle, `dotnet restore`, and every
+language analyzer, whose `go`, npm, pip and similar calls run inside it) gets its environment without
 `GITHUB_TOKEN`, `GH_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL`,
-`ACTIONS_RUNTIME_TOKEN` and `ACTIONS_CACHE_URL`, so build code a pull request controls cannot use the
-job's write-capable token. Registry credentials the build legitimately needs (`.npmrc`, Maven
-`settings.xml`, other environment variables) are left as they are. A build that relied on
+`ACTIONS_RUNTIME_TOKEN` and `ACTIONS_CACHE_URL`. It also goes without the runner's step files,
+`GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STATE` and `GITHUB_STEP_SUMMARY`, through which a
+process could set the environment or `PATH` of a later step of the job that does hold the token. Names
+are matched in any case, as Windows does. Registry credentials the build legitimately needs (`.npmrc`,
+Maven `settings.xml`, other environment variables) are left as they are. A build that relied on
 `GITHUB_TOKEN` to fetch a private dependency now fails to resolve it; give that build its own
 credential through the registry's usual file or variable.
+
+This covers the environment only. By default `actions/checkout` persists the job token in the
+checkout's git configuration (`persist-credentials: true`) so later git commands can use it, and a build
+script, annotation processor or install script runs inside that checkout and can read it from there.
+Check out with `persist-credentials: false`, as the README's workflow examples do, to keep the token
+out of the files the build can read. An `analyze.ref` fetch (`.github/ferralon.yml`) uses that persisted
+credential, so a private repository that sets `analyze.ref` cannot fetch with `persist-credentials:
+false`; it keeps the default, and with it the exposure above.
 
 When the checkout holds no compiled main classes, or they are older than the sources, the same scan
 also runs the repository's own `mvn compile` or `gradle classes` (the wrapper when the repository has

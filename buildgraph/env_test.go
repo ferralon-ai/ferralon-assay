@@ -16,6 +16,8 @@ func TestStripCredentials(t *testing.T) {
 		want []string
 	}{
 		{"every credential goes", []string{"GITHUB_TOKEN=a", "GH_TOKEN=b", "ACTIONS_ID_TOKEN_REQUEST_TOKEN=c", "ACTIONS_ID_TOKEN_REQUEST_URL=d", "ACTIONS_RUNTIME_TOKEN=e", "ACTIONS_CACHE_URL=f"}, []string{}},
+		{"every runner file goes", []string{"GITHUB_ENV=/r/env", "GITHUB_PATH=/r/path", "GITHUB_OUTPUT=/r/out", "GITHUB_STATE=/r/state", "GITHUB_STEP_SUMMARY=/r/sum"}, []string{}},
+		{"names match in any case", []string{"Github_Token=a", "gh_token=b", "github_env=c", "Github_Path=d"}, []string{}},
 		{"the rest stays in order", []string{"PATH=/bin", "GITHUB_TOKEN=a", "NPM_TOKEN=n", "MAVEN_OPTS=-Xmx1g"}, []string{"PATH=/bin", "NPM_TOKEN=n", "MAVEN_OPTS=-Xmx1g"}},
 		{"a longer name is kept", []string{"GITHUB_TOKEN_FILE=x", "MY_GH_TOKEN=y"}, []string{"GITHUB_TOKEN_FILE=x", "MY_GH_TOKEN=y"}},
 		{"empty value still removed", []string{"GH_TOKEN="}, []string{}},
@@ -33,6 +35,18 @@ func TestStripCredentials(t *testing.T) {
 	}
 }
 
+// TestCredentialEnvIsACopy guards the exported list: a caller that edits its copy must not shrink
+// what StripCredentials removes.
+func TestCredentialEnvIsACopy(t *testing.T) {
+	names := CredentialEnv()
+	for i := range names {
+		names[i] = "x"
+	}
+	if got := StripCredentials([]string{"GITHUB_TOKEN=a"}); len(got) != 0 {
+		t.Fatalf("editing CredentialEnv's result changed the strip: %q", got)
+	}
+}
+
 // dumpEnvTool writes a script that dumps its environment to out and exits 0.
 func dumpEnvTool(t *testing.T, path, out string) {
 	t.Helper()
@@ -46,7 +60,7 @@ func dumpEnvTool(t *testing.T, path, out string) {
 
 func credentialEnvSet() []string {
 	env := []string{"PATH=/usr/bin:/bin", "KEEP_ME=1"}
-	for _, k := range credentialEnv {
+	for _, k := range CredentialEnv() {
 		env = append(env, k+"=secret")
 	}
 	return env
@@ -58,7 +72,7 @@ func requireStripped(t *testing.T, dump string) {
 	if err != nil {
 		t.Fatalf("tool did not run: %v", err)
 	}
-	for _, k := range credentialEnv {
+	for _, k := range CredentialEnv() {
 		if strings.Contains(string(b), k+"=") {
 			t.Errorf("%s reached the tool", k)
 		}

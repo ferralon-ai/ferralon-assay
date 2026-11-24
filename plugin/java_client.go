@@ -124,7 +124,7 @@ func withJavaEnv(key, value string) JavaOption {
 // discovery mirrors NewGoPlugin: an explicit path via WithJavaBinaryPath takes
 // precedence; otherwise exec.LookPath resolves BinaryName("java") on PATH.
 func NewJavaPlugin(opts ...JavaOption) (LanguagePlugin, error) {
-	p := &javaPlugin{env: []string{javaRunCacheDirEnv + "=", JavaServeEnv + "="}}
+	p := &javaPlugin{env: []string{javaRunCacheDirEnv + "="}}
 	for _, opt := range opts {
 		opt(p)
 	}

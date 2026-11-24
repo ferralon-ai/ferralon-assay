@@ -159,7 +159,8 @@ func TestReplacedResolution(t *testing.T) {
 				"_fork/go.mod":  forkMod,
 				"_fork/vuln.go": fork,
 			},
-			symbols:       []string{v3, "example.com/vuln/v2.5/foo.F", "example.com/vuln/v2.5.F"},
+			symbols: []string{v3, "example.com/vuln/v2.5/foo.F", "example.com/vuln/v2.5.F", "example.com/vuln/v2.Foo/x.F",
+				"example.com/vuln/v2.Foo.Bar.Baz", "example.com/vuln/v2.a-b.F", "example.com/vuln/v2._.F", "example.com/vuln/v2.F."},
 			wantOK:        true,
 			wantMatched:   []string{v3},
 			wantUnresolve: true,
@@ -316,11 +317,13 @@ func TestReplaceSources(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(unreadable, 0o755) })
 	cases := []struct {
 		name    string
+		path    string // "" = v4
 		treeDir string
 		goWork  string
 		want    bool
 	}{
 		{name: "a readable tree without the vN directory does not hold it", treeDir: t.TempDir()},
+		{name: "a module of the build list with no replace holds nothing", path: "example.com/other/v2", treeDir: t.TempDir()},
 		{name: "a replacement with no directory holds it", want: true},
 		{name: "an unreadable tree holds it", treeDir: unreadable, want: true},
 		{name: "a go.work replace outside the build list holds it", treeDir: t.TempDir(), goWork: "go 1.22\n\nuse .\n\nreplace example.com/vuln/v4 => ./_v4\n", want: true},
@@ -339,13 +342,20 @@ func TestReplaceSources(t *testing.T) {
 			if tc.goWork != "" {
 				work = filepath.Join(buildDir, "go.work")
 			}
-			mods := []listedModule{{Path: "example.com/vuln", Replace: &replace{Path: "example.com/fork", Dir: tc.treeDir}}}
+			mods := []listedModule{
+				{Path: "example.com/other", Version: "v1.0.0"},
+				{Path: "example.com/vuln", Replace: &replace{Path: "example.com/fork", Dir: tc.treeDir}},
+			}
 			held, err := replaceSources(buildDir, work, mods)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := held(v4); got != tc.want {
-				t.Errorf("held(%s) = %v, want %v", v4, got, tc.want)
+			p := tc.path
+			if p == "" {
+				p = v4
+			}
+			if got := held(p, "F"); got != tc.want {
+				t.Errorf("held(%s) = %v, want %v", p, got, tc.want)
 			}
 		})
 	}

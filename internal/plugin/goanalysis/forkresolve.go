@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go/token"
 	"go/types"
 	"os"
 	"path/filepath"
@@ -177,11 +178,11 @@ func qualifiers(sym string) []qualified {
 
 // outsideBuild reports whether the package qualifying advisory symbol sym is absent from the build's
 // resolved package set, under every reading of its qualifier: the build compiles no package of that
-// path, and no replace directive's source holds it (replaceSources). A symbol with no import path is
-// never outside the build.
-func outsideBuild(sym string, compiled map[string]*packages.Package, held func(string) bool) bool {
+// path, and no replace directive's source holds it (replaceSources). A symbol with no import path, or
+// with no reading that names a declaration (declName), is never outside the build.
+func outsideBuild(sym string, compiled map[string]*packages.Package, held func(pkg, name string) bool) bool {
 	qs := qualifiers(sym)
-	if len(qs) == 0 {
+	if !slices.ContainsFunc(qs, func(q qualified) bool { return declName(q.name) }) {
 		return false
 	}
 	for _, q := range qs {
@@ -190,7 +191,22 @@ func outsideBuild(sym string, compiled map[string]*packages.Package, held func(s
 				return false
 			}
 		}
-		if held(q.pkg) {
+		if held(q.pkg, q.name) {
+			return false
+		}
+	}
+	return true
+}
+
+// declName reports whether name is one lookupInPackage can resolve: a function "F" or a method "T.M",
+// each a non-blank identifier.
+func declName(name string) bool {
+	parts := strings.Split(name, ".")
+	if len(parts) > 2 {
+		return false
+	}
+	for _, p := range parts {
+		if !token.IsIdentifier(p) || p == "_" {
 			return false
 		}
 	}
@@ -203,7 +219,7 @@ func outsideBuild(sym string, compiled map[string]*packages.Package, held func(s
 // replacement's tree; or a replace directive of the build's go.mod or go.work, on a
 // module the build list does not hold, whose source path holds it. A replacement whose tree cannot be
 // read holds every import path below its module path.
-func replaceSources(buildDir, goWork string, mods []listedModule) (func(string) bool, error) {
+func replaceSources(buildDir, goWork string, mods []listedModule) (func(p, name string) bool, error) {
 	listed := map[string]bool{}
 	for _, m := range mods {
 		listed[m.Path] = true
@@ -245,7 +261,7 @@ func replaceSources(buildDir, goWork string, mods []listedModule) (func(string) 
 			}
 		}
 	}
-	return func(p string) bool {
+	return func(p, name string) bool {
 		for _, old := range unlisted {
 			if pathHolds(old, p) {
 				return true
@@ -263,15 +279,15 @@ func replaceSources(buildDir, goWork string, mods []listedModule) (func(string) 
 			// renamed or removed, not code outside the build. Only a major-version suffix (m.Path/vN)
 			// of a module path carrying none names another module, and only when the replacement's
 			// tree has no vN directory (and no directory of the element as written), which would make
-			// every path below it the module's own. qualifiers also reads "vN.T.M" as package "vN.T",
-			// so a last element is read up to a dot that an identifier follows; a dot inside a path
-			// ("v2.5/x") or before a digit ("v2.5") is part of the module's own element.
+			// every path below it the module's own. qualifiers also reads "vN.T.M" as package "vN.T"
+			// with name "M", so a last element "vN.T" is read as vN only when "T.<name>" names a
+			// declaration of m.Path/vN (declName); any other dotted element is the module's own.
 			if _, major, _ := module.SplitPathVersion(m.Path); major != "" {
 				return true
 			}
 			first, _, nested := strings.Cut(rel, "/")
 			elem := first
-			if v, name, dot := strings.Cut(first, "."); !nested && dot && name != "" && isIdentStart(name[0]) {
+			if v, typ, dot := strings.Cut(first, "."); !nested && dot && declName(typ+"."+name) {
 				elem = v
 			}
 			if _, major, ok := module.SplitPathVersion(m.Path + "/" + elem); !ok || major == "" {
@@ -292,8 +308,4 @@ func replaceSources(buildDir, goWork string, mods []listedModule) (func(string) 
 		}
 		return false
 	}, nil
-}
-
-func isIdentStart(c byte) bool {
-	return c == '_' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }

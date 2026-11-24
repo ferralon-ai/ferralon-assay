@@ -280,8 +280,8 @@ func replaceSources(buildDir, goWork string, mods []listedModule) (func(p, name 
 			// of a module path carrying none names another module, and only when the replacement's
 			// tree has no vN directory (and no directory of the element as written), which would make
 			// every path below it the module's own. qualifiers also reads "vN.T.M" as package "vN.T"
-			// with name "M", so a last element "vN.T" is read as vN only when "T.<name>" names a
-			// declaration of m.Path/vN (declName); any other dotted element is the module's own.
+			// with name "M", so a last element "vN.T" is read as vN only when "T.<name>" has the form
+			// of a declaration name (declName); any other dotted element is the module's own.
 			if _, major, _ := module.SplitPathVersion(m.Path); major != "" {
 				return true
 			}

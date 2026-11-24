@@ -207,6 +207,9 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 	headLib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!lib", Packages: []string{"example.com/target/other"}}
 	storedLib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{"example.com/target/lib", "example.com/target/other"}}
 	head, stored := recordOf(headLib, "!lib"), recordOf(storedLib)
+	// A head pass over a changed package set that resolved a record and no set.
+	movedLib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{"example.com/target/lib", "example.com/target/new"}}
+	moved := recordOf(movedLib)
 	options := func(t *testing.T, lib *plugin.ResolvedLibraryEntrypoints, roots *plugin.EntryRootRecord) []pipeline.AssessOption {
 		return []pipeline.AssessOption{
 			pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
@@ -275,6 +278,7 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 		{"PR re-analysis, head resolved none", func(t *testing.T) *report.Report { return pr(t, bumped, nil, nil) }, stored},
 		{"PR re-analysis, head resolved a set but no record", func(t *testing.T) *report.Report { return pr(t, bumped, &headLib, nil) },
 			func() plugin.EntryRootRecord { r, _ := plugin.EntryRootRecordOf(headLib); return r }()},
+		{"PR re-analysis, head resolved a record but no set", func(t *testing.T) *report.Report { return pr(t, bumped, nil, &moved) }, stored},
 		{"PR inherit fast path", func(t *testing.T) *report.Report {
 			return pr(t, func(b *report.Report) report.SBOM { return b.SBOM }, &headLib, &head)
 		}, stored},

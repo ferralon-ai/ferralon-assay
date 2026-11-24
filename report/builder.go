@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -206,12 +207,13 @@ func (b *Builder) WithLibraryEntrypoints(es ...plugin.ResolvedLibraryEntrypoints
 }
 
 // WithEntryRoots records the entrypoints[] records the lanes resolved, which beside the library
-// set carry what the lane inferred and what the caller denied. The first recorded for a lane
-// stands. A record stands in the report only while it states the same set the library entry points
-// do (see entrypointRecordsWith), so the two fields cannot disagree.
+// set carry what the lane inferred and what the caller denied. Every distinct record offered is
+// kept, in order: a lane's fresh record and the one a stored report carried may state different
+// sets, and the one that states the library set's own stands (see entrypointRecordsWith), so the
+// two fields cannot disagree.
 func (b *Builder) WithEntryRoots(rs ...plugin.EntryRootRecord) *Builder {
 	for _, r := range rs {
-		if !slices.ContainsFunc(b.entryRoots, func(x plugin.EntryRootRecord) bool { return x.Lane == r.Lane }) {
+		if !slices.ContainsFunc(b.entryRoots, func(x plugin.EntryRootRecord) bool { return reflect.DeepEqual(x, r) }) {
 			b.entryRoots = append(b.entryRoots, r)
 		}
 	}
@@ -487,12 +489,12 @@ func entrypointRecords(sets []plugin.ResolvedLibraryEntrypoints) []plugin.EntryR
 }
 
 // entrypointRecordsWith is entrypointRecords, with a lane's record from roots in place of the one
-// derived from the library set when it states that same set: the lane's own record adds what it
-// inferred and what the caller denied. A record of another set (an inherited one beside a fresh
-// library set) is dropped rather than allowed to drift from library_entrypoints. A lane with a
-// record in roots and no library set states the record as it is: the lane records its entry points
-// on assessments that judged no refutation, and library_entrypoints holds only the sets a refutation
-// rested on.
+// derived from the library set when it states that same set: the first record of the lane whose
+// bare form matches adds what it inferred and what the caller denied. A record of another set (an
+// inherited one beside a fresh library set) is dropped rather than allowed to drift from
+// library_entrypoints. A lane with a record in roots and no library set states the first of them as
+// it is: the lane records its entry points on assessments that judged no refutation, and
+// library_entrypoints holds only the sets a refutation rested on.
 func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plugin.EntryRootRecord) []plugin.EntryRootRecord {
 	records := entrypointRecords(sets)
 	for i, rec := range records {
@@ -505,8 +507,13 @@ func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plu
 			}
 		}
 	}
+	haveSet := map[string]bool{}
+	for _, rec := range records {
+		haveSet[rec.Lane] = true
+	}
 	for _, r := range roots {
-		if !slices.ContainsFunc(records, func(x plugin.EntryRootRecord) bool { return x.Lane == r.Lane }) {
+		if !haveSet[r.Lane] {
+			haveSet[r.Lane] = true
 			records = append(records, r)
 		}
 	}

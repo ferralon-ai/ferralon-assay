@@ -214,3 +214,38 @@ func assertNoEchoIngress(t *testing.T, ingresses []plugin.Ingress, handlers ...s
 		}
 	}
 }
+
+// TestEcho_AddressEscapedBindingIsNoIngress proves a handler bound through a package
+// var or a struct field whose address is passed on registers no ingress, and its sink
+// gets no path: the var's declaration and the field's composite literal are each its
+// only direct store, but setHandler stores a second handler through the address it is
+// passed, so the value registered is no one handler. The resolver is shared by chi,
+// gin and echo, so this one fixture guards it for all three.
+func TestEcho_AddressEscapedBindingIsNoIngress(t *testing.T) {
+	cases := []struct {
+		name, sink string
+		handlers   []string
+	}{
+		{"package var", "sinkEscapedVar().", []string{"escapedVarA().", "escapedVarB()."}},
+		{"struct field", "sinkEscapedField().", []string{"escapedFieldA().", "escapedFieldB()."}},
+	}
+	ingresses := echoIngresses(t)
+	var sinks []string
+	for _, c := range cases {
+		sinks = append(sinks, echoFixtureSCIP+c.sink)
+	}
+	res, err := ComputeTaint(context.Background(), plugin.ComputeTaintRequest{BuildDir: echoFixtureDir, Sinks: sinks})
+	if err != nil {
+		t.Fatalf("ComputeTaint: %v", err)
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assertNoEchoIngress(t, ingresses, c.handlers...)
+			for _, p := range res.Paths {
+				if p.Sink.SCIP == echoFixtureSCIP+c.sink {
+					t.Errorf("%s: no handler is registered through an escaped address, yet a path to %s exists from %q", c.name, c.sink, p.Ingress.SCIP)
+				}
+			}
+		})
+	}
+}

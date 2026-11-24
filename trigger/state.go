@@ -790,8 +790,11 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 
 	// A fresh row replaces the prior rows of its own instance: under a retried cut row's key, which
 	// holds only cut rows, all of them (the parent's and its siblings', which siblings re-assesses);
-	// under any other key, the completed row naming the same package. A cut row under such a key is
-	// a sibling the run did not reach, and stays. No row's position in the stored order matters.
+	// under any other key, the completed row naming the same package, or the key's only completed
+	// row when that names none: a parent that failed or stopped has no sibling rows, so a package-less
+	// row beside other completed rows is a failed sibling's. A cut row under such a key is a sibling
+	// the run did not reach, and stays. The merge reads no row's position in the stored order; the
+	// package a retry seeds the fresh row with does (the retry lanes take the first stored row).
 	fanned := map[string]bool{}
 	instance := map[string]string{}
 	for _, w := range todo {
@@ -801,6 +804,12 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	for key, re := range reFindings {
 		if re.Package != nil {
 			instance[key] = packageInstance(re.Package)
+		}
+	}
+	completed := map[string]int{}
+	for _, f := range prior.Advisories {
+		if f.UndeterminedReason != report.ReasonScanCutShort {
+			completed[f.Advisory.ID+"\x00"+f.Advisory.Source]++
 		}
 	}
 	var rows []report.AdvisoryFinding
@@ -813,7 +822,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			if fanned[key] {
 				continue
 			}
-			if f.UndeterminedReason != report.ReasonScanCutShort && (f.Package == nil || packageInstance(f.Package) == instance[key]) {
+			if f.UndeterminedReason != report.ReasonScanCutShort && ((f.Package != nil && packageInstance(f.Package) == instance[key]) || completed[key] == 1) {
 				continue
 			}
 		}

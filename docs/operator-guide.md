@@ -36,7 +36,7 @@ the main module, outside `example(s)`, `test(s)` and `testdata`) as an applicati
 all loaded and type-checked: it then takes no library package, and a refutation that holds because of
 that carries the assumption "treated as an application", naming how many main packages the build
 ships. `go:library=.` reads the build as a library instead, taking every importable package, `cmd`,
-example and test paths included. `library-entrypoints` (`-library-entrypoints`,
+example and test paths included, so it is wider than `auto`'s library reading of a build with no `main`. `library-entrypoints` (`-library-entrypoints`,
 `ASSAY_LIBRARY_ENTRYPOINTS`) is the alias for those clauses and takes the same statement without the
 prefix: `library-entrypoints: none` is `entrypoints: go:library=none`. Give both only when they say the
 same thing, the same mode over the same paths; two different statements stop the run before it

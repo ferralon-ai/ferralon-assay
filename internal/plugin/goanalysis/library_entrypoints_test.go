@@ -90,6 +90,10 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 		{"an exclusion of a path the build does not hold", "!pkg/nope", map[string]string{
 			"pkg/api/api.go": clean("api"),
 		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/api"}, []string{"!pkg/nope"}},
+		{"auto, a build with no main whose library under cmd reaches the module", "auto", map[string]string{
+			"cmd/tool/flags/flags.go": reaches("flags"),
+			"pkg/api/api.go":          clean("api"),
+		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/api"}, nil},
 		{"auto, a library under cmd reaches the module", "auto", map[string]string{
 			"cmd/tool/flags/flags.go": reaches("flags"),
 			"cmd/tool/main.go":        "package main\n\nimport \"example.com/m/cmd/tool/flags\"\n\nfunc main() { _ = flags.Get() }\n",

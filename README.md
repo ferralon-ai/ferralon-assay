@@ -245,8 +245,8 @@ Set `scan-timeout` (for example `30m`; on the command line, the `-scan-timeout` 
 scan. Analysis stops early enough to publish the report, and every advisory the scan did not reach is
 reported as not assessed, never as safe; the report headline says the scan was cut short. Set it
 below the job's `timeout-minutes`, leaving room for the steps that run before the scan, including the
-Action's own setup, so the scan ends itself first. With no `scan-timeout` there is no limit, but a job timeout or cancellation still
-stops analysis and gives the scan a few seconds to publish what it assessed. The Action's
+Action's own setup, so the scan ends itself first. The Action defaults `scan-timeout` to `15m`; `0` sets no limit (the command line has no limit
+unless one is set). Either way, a job timeout or cancellation still stops analysis and gives the scan a few seconds to publish what it assessed. The Action's
 `scan-truncated` output is `true` when either happened.
 
 ## Advisory corpus

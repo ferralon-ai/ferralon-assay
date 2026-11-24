@@ -1020,7 +1020,7 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 			return depVersions{}, []string{plugin.PartialReasonNoManifest}, nil
 		}
 		if !pinned {
-			return depVersions{Found: true}, []string{plugin.PartialReasonSourceUnpinned}, nil
+			return depVersions{Found: true, Replaced: moduleReplacementInBuild(ctx, buildDir, goWork, module)}, []string{plugin.PartialReasonSourceUnpinned}, nil
 		}
 		return singleVersion(v), nil, nil
 	case coordinate != "" && s.plugin != nil && s.plugin.Language() == language:
@@ -1074,6 +1074,17 @@ type depVersions struct {
 	// Annotations are the assumptions the resolver's answer rests on (plugin.Annotation). They
 	// qualify the answer without making it partial, so they gate nothing here.
 	Annotations []plugin.Annotation
+	// Replaced is where a replace directive sends a Go module the build requires but compiles from
+	// code no release of it describes: another module (a fork) or a local directory. nil otherwise.
+	Replaced *ModuleReplacement
+}
+
+// ModuleReplacement is a replace directive's target for a Go module the build compiles from code no
+// release of that module describes. Version is empty for a local directory.
+type ModuleReplacement struct {
+	Path      string `json:"path"`
+	Version   string `json:"version,omitempty"`
+	Directory bool   `json:"directory,omitempty"`
 }
 
 // singleVersion is a dependency whose source can carry one version only (a go.mod require, the
@@ -1426,9 +1437,12 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// ResolvedVersions is every distinct version the codebase carries of the adjudicated
 		// package; VersionsComplete reports that it covers every declaration. AlsoPresent is each
 		// other affected package the codebase declares. Read back by extractVersionAxis.
-		ResolvedVersions []string         `json:"resolved_versions,omitempty"`
-		VersionsComplete bool             `json:"versions_complete,omitempty"`
-		AlsoPresent      []presentPackage `json:"also_present,omitempty"`
+		ResolvedVersions []string `json:"resolved_versions,omitempty"`
+		// ReplacedBy is the fork or local directory the build compiles the adjudicated Go module
+		// from, which is why no version resolved. Read back by Replacement.
+		ReplacedBy       *ModuleReplacement `json:"replaced_by,omitempty"`
+		VersionsComplete bool               `json:"versions_complete,omitempty"`
+		AlsoPresent      []presentPackage   `json:"also_present,omitempty"`
 		// PresenceVersion is the version maliciousPresence matches against (presenceVersion
 		// above). Read back by extractPresenceVersion only.
 		PresenceVersion string   `json:"presence_version,omitempty"`
@@ -1470,6 +1484,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		WorkspacePlan:      plan,
 		ResolvedVersion:    resolved.Version,
 		ResolvedVersions:   resolved.Versions,
+		ReplacedBy:         resolved.Replaced,
 		VersionsComplete:   resolved.Complete,
 		AlsoPresent:        alsoPresent,
 		PresenceVersion:    presenceVersion,
@@ -2514,6 +2529,22 @@ func validAffectedRanges(rngs []affectedRange) ([]affectedRange, bool) {
 // branch when selecting a branch-correct fix baseline from a multi-range (backport) advisory.
 func ResolvedVersion(store artifact.Store, caseID string) (string, bool) {
 	return extractResolvedVersion(store, caseID)
+}
+
+// Replacement returns the fork or local directory the build compiles the adjudicated Go module from,
+// as codebase_inventory recorded it, or false when the module was not replaced that way.
+func Replacement(store artifact.Store, caseID string) (ModuleReplacement, bool) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return ModuleReplacement{}, false
+	}
+	var inv struct {
+		ReplacedBy *ModuleReplacement `json:"replaced_by"`
+	}
+	if json.Unmarshal(arts[0].Payload, &inv) != nil || inv.ReplacedBy == nil || inv.ReplacedBy.Path == "" {
+		return ModuleReplacement{}, false
+	}
+	return *inv.ReplacedBy, true
 }
 
 // RootSubject reports whether codebase_inventory adjudicated the advisory against the scanned

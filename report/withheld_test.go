@@ -18,6 +18,12 @@ func TestLimitPhrase(t *testing.T) {
 			"cgo in pkg:golang/example.com/c, which could reach pkg:golang/a, pkg:golang/b"},
 		{"more targets than it names", Limit{Reason: "cgo", Targets: []string{"pkg:golang/a", "pkg:golang/b", "pkg:golang/c", "pkg:golang/d", "pkg:golang/e"}},
 			"cgo, which could reach pkg:golang/a, pkg:golang/b, pkg:golang/c and 2 more"},
+		{"first-party target", Limit{Reason: "cgo", Package: "pkg:golang/example.com/c", Targets: []string{"", "pkg:golang/a"}},
+			"cgo in pkg:golang/example.com/c, which could reach this repository's own code, pkg:golang/a"},
+		{"only a first-party target", Limit{Reason: "cgo", Package: "pkg:golang/example.com/c", Targets: []string{""}},
+			"cgo in pkg:golang/example.com/c, which could reach this repository's own code"},
+		{"first-party target past the cut", Limit{Reason: "cgo", Targets: []string{"pkg:golang/a", "pkg:golang/b", "pkg:golang/c", ""}},
+			"cgo, which could reach pkg:golang/a, pkg:golang/b, pkg:golang/c and 1 more"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

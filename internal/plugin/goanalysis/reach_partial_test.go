@@ -26,7 +26,7 @@ func TestGovulncheckOrPartial(t *testing.T) {
 	env := []string{"GOWORK=off"}
 	cause := fmt.Errorf("loading packages: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}})
 	partialStream := []byte(`{"config":{}}` + "\n")
-	record, err := partialRunRecord(buildDir,
+	record, err := partialRunRecord(buildDir, "",
 		[]packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}},
 		func() ([]listedPackage, error) {
 			return []listedPackage{
@@ -123,7 +123,7 @@ func TestPartialRunRetry(t *testing.T) {
 	key := append([]string{buildDir}, env...)
 	perrs := []packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}
 	cause := fmt.Errorf("loading packages: %w", &fakeVulnPackageError{Errors: perrs})
-	record, err := partialRunRecord(buildDir, perrs,
+	record, err := partialRunRecord(buildDir, "", perrs,
 		func() ([]listedPackage, error) {
 			return []listedPackage{
 				{ImportPath: "example.com/m/a", Imports: []string{"example.com/c"}},
@@ -324,7 +324,7 @@ func TestPartialRunRecord(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var ran []string
-			b, err := partialRunRecord("/src", tc.perrs, func() ([]listedPackage, error) { return tc.graph, tc.listErr }, func(patterns []string) ([]byte, error) {
+			b, err := partialRunRecord("/src", "", tc.perrs, func() ([]listedPackage, error) { return tc.graph, tc.listErr }, func(patterns []string) ([]byte, error) {
 				ran = patterns
 				if tc.runErr != nil {
 					return nil, tc.runErr
@@ -384,7 +384,7 @@ func TestPartialRunRecordMachineFaults(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := partialRunRecord("/src", tt.perrs, func() ([]listedPackage, error) { return tt.graph, nil }, func([]string) ([]byte, error) {
+			_, err := partialRunRecord("/src", "", tt.perrs, func() ([]listedPackage, error) { return tt.graph, nil }, func([]string) ([]byte, error) {
 				t.Error("govulncheck ran for a partial run that could not be bounded")
 				return nil, nil
 			})
@@ -800,11 +800,11 @@ func TestPartialRunPastEmbedPatternMiss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unloadable, _, err := unloadablePackages(dir, failurePackageErrors(failed), graph)
+	unloadable, _, err := unloadablePackages(dir, moduleCacheRoot(), failurePackageErrors(failed), graph)
 	if err != nil || !slices.Equal(unloadable, []string{"example.com/m/cmd/bad"}) {
 		t.Fatalf("unloadable = %q, %v; want only the ill-typed root", unloadable, err)
 	}
-	if _, causes, _ := unloadablePackages(dir, failurePackageErrors(failed), graph); !strings.HasPrefix(causes["example.com/m/cmd/bad"], "cmd/bad/main.go:3:") {
+	if _, causes, _ := unloadablePackages(dir, moduleCacheRoot(), failurePackageErrors(failed), graph); !strings.HasPrefix(causes["example.com/m/cmd/bad"], "cmd/bad/main.go:3:") {
 		t.Errorf("cause = %q; want the type error, positioned relative to the build", causes["example.com/m/cmd/bad"])
 	}
 	excluded, kept := excludedRoots(graph, unloadable)
@@ -864,7 +864,7 @@ func TestUnloadablePackagesResolvesSymlinks(t *testing.T) {
 		t.Skipf("symlink: %v", err)
 	}
 	graph := []listedPackage{{ImportPath: "example.com/c", Dir: real, DepOnly: true}}
-	got, _, err := unloadablePackages(root, []packages.Error{{Pos: filepath.Join(link, "c.go") + ":4:8", Msg: "could not import C"}}, graph)
+	got, _, err := unloadablePackages(root, "", []packages.Error{{Pos: filepath.Join(link, "c.go") + ":4:8", Msg: "could not import C"}}, graph)
 	if err != nil || !slices.Equal(got, []string{"example.com/c"}) {
 		t.Errorf("got %v, %v; want example.com/c", got, err)
 	}
@@ -1052,7 +1052,8 @@ func TestPartialRunReadImports(t *testing.T) {
 // TestPackageErrorCause pins the cause a partial run's limit names for a package it could not load:
 // the netbird shape, a type error in a module cache file, reads relative to the module cache with
 // the version dropped; a failed cgo step, which carries no position, reads its first line after the
-// go command's header; a long message is cut, and URL credentials never survive.
+// go command's header, past any chain of includes that leads to it; a long message is cut, and
+// credentials never survive.
 func TestPackageErrorCause(t *testing.T) {
 	const buildDir, modCache = "/tmp/build", "/home/u/go/pkg/mod"
 	cases := []struct {
@@ -1072,6 +1073,18 @@ func TestPackageErrorCause(t *testing.T) {
 		{"credentials redacted",
 			packages.Error{Msg: "reading https://bob:s3cret@proxy.example/mod/@v/list: 401"},
 			"reading https://REDACTED@proxy.example/mod/@v/list: 401"},
+		{"a password holding an @ redacted whole",
+			packages.Error{Msg: "reading https://bob:p@ss@proxy.example/mod/@v/list: 401"},
+			"reading https://REDACTED@proxy.example/mod/@v/list: 401"},
+		{"credentials without a scheme redacted",
+			packages.Error{Msg: "proxy bob:s3cret@proxy.example/x refused"},
+			"proxy REDACTED@proxy.example/x refused"},
+		{"a query-string token redacted",
+			packages.Error{Msg: "fetching https://git.example/m.git?token=abc123 returned 403"},
+			"fetching https://git.example/m.git?token=REDACTED returned 403"},
+		{"a header nested in an include reads the missing header",
+			packages.Error{Msg: "# example.com/m/fuse\nIn file included from " + buildDir + "/fuse/c.go:4:\n                 from " + buildDir + "/fuse/d.go:2:\n/usr/include/fuse/fuse.h:9:10: fatal error: fuse_common.h: No such file or directory"},
+			"/usr/include/fuse/fuse.h:9:10: fatal error: fuse_common.h: No such file or directory"},
 		{"empty message", packages.Error{}, ""},
 	}
 	for _, tc := range cases {

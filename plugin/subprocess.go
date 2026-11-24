@@ -70,11 +70,17 @@ func discoverBinary(language string) (string, error) {
 func runSubprocessCall(ctx context.Context, bin, language string, metrics *pluginMetrics, req Request, env ...string) (*Response, error) {
 	start := time.Now()
 	resp, err := execSubprocess(ctx, bin, req, env...)
+	recordCall(ctx, language, metrics, req.Op, start, err)
+	return resp, err
+}
 
+// recordCall emits the call's count and duration. A request a kept process answers
+// (scanProcess) is metered here too, as one call.
+func recordCall(ctx context.Context, language string, metrics *pluginMetrics, op string, start time.Time, err error) {
 	attrs := []attribute.KeyValue{
 		attribute.String(attrCostClass, costClassCOGS),
 		attribute.String(attrLanguage, language),
-		attribute.String(attrPluginOp, string(req.Op)),
+		attribute.String(attrPluginOp, op),
 	}
 	if err != nil {
 		attrs = append(attrs, attribute.String(attrErrorType, errorType(err)))
@@ -82,7 +88,6 @@ func runSubprocessCall(ctx context.Context, bin, language string, metrics *plugi
 	set := metric.WithAttributes(attrs...)
 	metrics.callCount.Add(ctx, 1, set)
 	metrics.callDuration.Record(ctx, time.Since(start).Seconds(), set)
-	return resp, err
 }
 
 // execSubprocess performs one bounded subprocess exchange, shared by every language plugin's run:

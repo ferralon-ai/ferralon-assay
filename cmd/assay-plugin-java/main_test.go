@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -190,5 +191,47 @@ func TestRun_UndecodableGraphIsAnError(t *testing.T) {
 	out, _ := os.CreateTemp(t.TempDir(), "out")
 	if err := run(context.Background(), in, out); err == nil {
 		t.Fatal("an undecodable build graph must be a hard error")
+	}
+}
+
+// serve answers every request line in order until stdin closes; a failed request is answered with
+// Error set and the next one is still answered.
+func TestServe_AnswersEachRequestUntilStdinCloses(t *testing.T) {
+	t.Setenv(plugin.BuildGraphEnv, "")
+	var in bytes.Buffer
+	for _, req := range []plugin.Request{
+		{Protocol: plugin.ProtocolVersion, Op: plugin.OpResolveInventory, ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: t.TempDir()}},
+		{Protocol: plugin.ProtocolVersion, Op: "no_such_op"},
+		{Protocol: plugin.ProtocolVersion, Op: plugin.OpCapabilityManifest, CapabilityManifest: &plugin.CapabilityManifestRequest{}},
+	} {
+		line, err := json.Marshal(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in.Write(append(line, '\n'))
+	}
+	var out bytes.Buffer
+	if err := serve(javaanalysis.WithSession(context.Background()), &in, &out); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	var resps []plugin.Response
+	for _, line := range bytes.Split(bytes.TrimSpace(out.Bytes()), []byte("\n")) {
+		var r plugin.Response
+		if err := json.Unmarshal(line, &r); err != nil {
+			t.Fatalf("decode %s: %v", line, err)
+		}
+		resps = append(resps, r)
+	}
+	if len(resps) != 3 {
+		t.Fatalf("want 3 responses, got %d: %s", len(resps), out.String())
+	}
+	if resps[0].Error != "" || resps[0].Inventory == nil {
+		t.Errorf("first request: %+v", resps[0])
+	}
+	if resps[1].Error == "" {
+		t.Errorf("an unknown op must be answered with Error, got %+v", resps[1])
+	}
+	if resps[2].Error != "" || resps[2].Manifest == nil {
+		t.Errorf("the request after a failed one: %+v", resps[2])
 	}
 }

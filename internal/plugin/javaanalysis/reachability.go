@@ -35,10 +35,9 @@ import (
 // build's compiled classes plus the dependency closure instead (reachability_bytecode.go),
 // which is the only path that can list a sink in Searched.
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest, opts ...Option) (plugin.ReachabilityResult, error) {
-	// TODO(perf): this reparses the tree independently of CallGraph's internal
-	// loadProgram — acceptable for pass 1 (zero-egress, deterministic); CallGraph
-	// could instead return its program to avoid the second parse.
-	prog, err := loadProgram(req.BuildDir)
+	// Without a session (session.go) this parses the tree again, as CallGraph and FindIngresses
+	// each do; a session parses it once for every op it serves.
+	prog, err := sessionProgram(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}

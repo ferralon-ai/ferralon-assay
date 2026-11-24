@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
@@ -18,6 +19,11 @@ import (
 type javaPlugin struct {
 	bin string   // resolved path to the assay-plugin-java binary
 	env []string // KEY=VALUE pairs added to the subprocess environment
+
+	// keep asks for one subprocess kept for the plugin's life (WithJavaScanProcess), and scan is
+	// that process once the plugin is constructed.
+	keep bool
+	scan *scanProcess
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -72,6 +78,21 @@ func WithJavaRunCacheDir(dir string) JavaOption {
 	return func(p *javaPlugin) { p.env = append(p.env, javaRunCacheDirEnv+"="+dir) }
 }
 
+// WithJavaScanProcess keeps one analyzer subprocess for the plugin's life and sends it every
+// operation, in turn, instead of starting a process per operation. The process keeps the parsed
+// source tree, the call graph and the ingresses it built for the first request that needed them,
+// in memory only, so a scan's Reachability call per advisory no longer parses the tree and opens
+// every dependency JAR again. Use it on a plugin made for one scan over one checkout that does not
+// change while the scan runs, and Close the plugin when the scan ends. A request made while
+// another is in flight runs in its own process, as without the option.
+func WithJavaScanProcess() JavaOption {
+	return func(p *javaPlugin) { p.keep = true }
+}
+
+// JavaServeEnv, set to "1", starts cmd/assay-plugin-java in serve mode: it answers one request per
+// line until stdin closes, keeping a session between them (WithJavaScanProcess).
+const JavaServeEnv = brand.EnvPrefix + "_JAVA_SERVE"
+
 // javaRunCacheDirEnv is read by cmd/assay-plugin-java, which hands it to the analyzer.
 const javaRunCacheDirEnv = brand.EnvPrefix + "_JAVA_RUN_CACHE_DIR"
 
@@ -103,7 +124,7 @@ func withJavaEnv(key, value string) JavaOption {
 // discovery mirrors NewGoPlugin: an explicit path via WithJavaBinaryPath takes
 // precedence; otherwise exec.LookPath resolves BinaryName("java") on PATH.
 func NewJavaPlugin(opts ...JavaOption) (LanguagePlugin, error) {
-	p := &javaPlugin{env: []string{javaRunCacheDirEnv + "="}}
+	p := &javaPlugin{env: []string{javaRunCacheDirEnv + "=", JavaServeEnv + "="}}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -114,7 +135,19 @@ func NewJavaPlugin(opts ...JavaOption) (LanguagePlugin, error) {
 		}
 		p.bin = bin
 	}
+	if p.keep {
+		p.scan = &scanProcess{bin: p.bin, env: p.env}
+	}
 	return p, nil
+}
+
+// Close ends the subprocess WithJavaScanProcess keeps, waiting for a request in flight. Later
+// requests each run in their own process. Without the option it does nothing.
+func (p *javaPlugin) Close() error {
+	if p.scan == nil {
+		return nil
+	}
+	return p.scan.close()
 }
 
 func (*javaPlugin) Language() string { return "java" }
@@ -122,9 +155,17 @@ func (*javaPlugin) Language() string { return "java" }
 // run meters one language-plugin subprocess call around the
 // shared bounded exchange execSubprocess performs, via the single record site
 // runSubprocessCall that every language plugin's run funnels through (see subprocess.go) —
-// identical in shape to goPlugin.run/jsPlugin.run/pythonPlugin.run/dotnetPlugin.run.
+// identical in shape to goPlugin.run/jsPlugin.run/pythonPlugin.run/dotnetPlugin.run. A request
+// the kept process answers (WithJavaScanProcess) is metered through the same recordCall.
 func (p *javaPlugin) run(ctx context.Context, req Request) (*Response, error) {
 	p.ensureMetrics()
+	if p.scan != nil {
+		start := time.Now()
+		if resp, served, err := p.scan.exchange(ctx, req); served {
+			recordCall(ctx, p.Language(), &p.metrics, req.Op, start, err)
+			return resp, err
+		}
+	}
 	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req, p.env...)
 }
 

@@ -288,7 +288,8 @@ func compareGoModVersions(a, b string) (int, bool) {
 //     order and assumes nothing;
 //   - against a pseudo-version bound on the same base and major with another revision and another
 //     commit time, where commit time and version order agree: the order is commit time, and
-//     assumption names both revisions and the ancestry that order assumes (a contains b's revision when it was committed later, and does not when earlier).
+//     assumption names both revisions and the ancestry that order assumes (a contains b's revision
+//     when it was committed later, and does not when earlier).
 //
 // Every other installed pseudo-version stays unordered: one against a release above its base,
 // against a pseudo-version on another base or major (every vX.0.0 pseudo-version has an empty base),

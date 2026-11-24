@@ -194,11 +194,38 @@ func TestFinding_ReplacedModuleOnlyForForkRows(t *testing.T) {
 			t.Fatalf("got %s/%q, want undetermined/%q", f.Verdict, f.UndeterminedReason, report.ReasonOwnReleaseVersionUnknown)
 		}
 	})
+	// The scanned module is never a replacement, even when its own version is known and the row
+	// has no package, so it is never judged on replacedGrounds.
+	t.Run("the scanned module itself, version known", func(t *testing.T) {
+		fx := newReplacedFixture()
+		fx.inv["root"], fx.inv["resolved_version"] = true, "v1.9.0"
+		if f := fx.finding(t); f.Verdict == report.VerdictNotExploitable {
+			t.Fatalf("got not_exploitable (%s), want the scanned module held", f.Evidence.Detail)
+		}
+	})
 	t.Run("the row has a package", func(t *testing.T) {
 		store := artifact.NewMemStore()
+		putJSON(t, store, "x", artifact.TypeInventory, newReplacedFixture().inv)
+		if _, ok := moduleReplacement(store, "x", nil); !ok {
+			t.Fatal("moduleReplacement not held for the fork row with no package")
+		}
 		pkg := &report.Package{Ecosystem: "Go", Name: "k8s.io/kubernetes", Version: "v1.32.10", PURL: rmOrigin}
 		if _, ok := moduleReplacement(store, "x", pkg); ok {
 			t.Fatal("moduleReplacement held for a row with a package")
+		}
+	})
+	// A fork row held for another reason keeps that reason's detail: the fork detail explains only
+	// package_version_unresolved.
+	t.Run("held for another reason", func(t *testing.T) {
+		fx := newReplacedFixture()
+		fx.inv["partiality_flags"] = []string{}
+		fx.flags = []string{plugin.PartialReasonToolFailure}
+		f := fx.finding(t)
+		if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonAnalysisDidNotRun {
+			t.Fatalf("got %s/%q, want undetermined/%q", f.Verdict, f.UndeterminedReason, report.ReasonAnalysisDidNotRun)
+		}
+		if strings.Contains(f.Evidence.Detail, "The build compiles") {
+			t.Errorf("detail = %q, want no fork detail", f.Evidence.Detail)
 		}
 	})
 }

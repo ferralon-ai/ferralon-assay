@@ -176,6 +176,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				GuardSufficiency: guardSufficiencyFor(guards, advisoryGuardSufficiency(store, assessmentID)),
 			},
 		}
+		if pkg == nil && ownReleaseUnversioned(store, assessmentID) {
+			f.Evidence.Detail = ownReleaseCandidateDetail
+		}
 		// An advisory with no affected range for the admitted package is admitted at every version,
 		// so the path says nothing about whether this version carries the flaw. The path stays as
 		// evidence; the candidate-only annotations go with the verdict.

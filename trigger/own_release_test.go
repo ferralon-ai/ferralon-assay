@@ -75,3 +75,33 @@ func TestFinding_OwnReleaseVersionUnknown(t *testing.T) {
 		})
 	}
 }
+
+// TestFinding_OwnReleaseCandidateSaysVersionUnresolved pins that a reachable candidate on the scanned
+// project's own code, in a checkout whose release version was not established, stays a candidate and
+// says the version is unresolved. A versioned project and a dependency's advisory carry no such detail.
+func TestFinding_OwnReleaseCandidateSaysVersionUnresolved(t *testing.T) {
+	advisory := map[string]any{"purl": "pkg:golang/github.com/kubeedge/kubeedge", "affected_ranges": []map[string]string{{"upper_exclusive": "1.9.4"}}}
+	cases := []struct {
+		name       string
+		inv        map[string]any
+		pkg        *report.Package
+		wantDetail string
+	}{
+		{"own advisory, no version", map[string]any{"root": true}, nil, ownReleaseCandidateDetail},
+		{"own advisory, version known", map[string]any{"root": true, "resolved_version": "1.9.0"},
+			&report.Package{Ecosystem: "Go", Name: "github.com/kubeedge/kubeedge", Version: "1.9.0", Root: true}, ""},
+		{"a dependency's advisory", map[string]any{}, nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, aid := seedRangeCandidate(t, advisory, tc.inv)
+			f := finding(store, aid, report.Advisory{ID: "GO-2022-0500", Source: "osv"}, tc.pkg)
+			if f.Verdict != report.VerdictReachableCandidate {
+				t.Fatalf("verdict = %s/%q, want reachable_candidate", f.Verdict, f.UndeterminedReason)
+			}
+			if f.Evidence.Detail != tc.wantDetail {
+				t.Errorf("detail = %q, want %q", f.Evidence.Detail, tc.wantDetail)
+			}
+		})
+	}
+}

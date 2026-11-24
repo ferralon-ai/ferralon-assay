@@ -104,10 +104,58 @@ func replacedHeldDetail(store artifact.Store, assessmentID string, mods goModule
 		why = "The advisory also names a package the build may hold, so that code alone does not settle it."
 	case len(reasons) > 0 || emptyGraphUncalledComplete(store, assessmentID):
 		why = "Steps an analysis of that code rests on did not run, so it was not judged."
+		if steps, ok := namedDidNotRun(store, assessmentID, reasons); ok && !emptyGraphUncalledComplete(store, assessmentID) {
+			why = "Steps an analysis of that code rests on did not run: " + steps + ", so it was not judged."
+		}
 	default:
 		why = fmt.Sprintf("The analysis did not search every definition of %s from the entry points.", strings.Join(symbols, ", "))
 	}
 	return head + why + fmt.Sprintf(" It is settled by building %s from a release the advisory's ranges place, or by finding the advisory's vulnerable functions in the replacement's code with no path reaching them.", module)
+}
+
+// namedDidNotRun states the did-not-run limits holding a replaced row when each is one it can name:
+// the analyzer emitting no evidence about the advisory, or cgo code it did not analyze, listing the
+// first three packages declared and a count of the rest. It reports false when any other limit is
+// among them, and the caller keeps its general statement.
+func namedDidNotRun(store artifact.Store, assessmentID string, reasons []string) (string, bool) {
+	if len(reasons) == 0 {
+		return "", false
+	}
+	unknown, cgo := false, false
+	for _, r := range reasons {
+		switch r {
+		case plugin.PartialReasonAdvisoryUnknownToAnalyzer:
+			unknown = true
+		case plugin.PartialReasonCgo:
+			cgo = true
+		default:
+			return "", false
+		}
+	}
+	var steps []string
+	if cgo {
+		var pkgs []string
+		for _, r := range countingScoped(store, assessmentID, nil) {
+			name := strings.TrimPrefix(r.Package, "pkg:golang/")
+			if r.Reason == plugin.PartialReasonCgo && name != "" && !slices.Contains(pkgs, name) {
+				pkgs = append(pkgs, name)
+			}
+		}
+		switch {
+		case len(pkgs) == 0:
+			steps = append(steps, "cgo code of the build was not analyzed")
+		case len(pkgs) <= 3:
+			steps = append(steps, "cgo code of "+strings.Join(pkgs, ", ")+" was not analyzed")
+		case len(pkgs) == 4:
+			steps = append(steps, "cgo code of "+strings.Join(pkgs[:3], ", ")+" and 1 other package was not analyzed")
+		default:
+			steps = append(steps, fmt.Sprintf("cgo code of %s and %d other packages was not analyzed", strings.Join(pkgs[:3], ", "), len(pkgs)-3))
+		}
+	}
+	if unknown {
+		steps = append(steps, "the vulnerability analyzer emitted no evidence about the advisory")
+	}
+	return strings.Join(steps, ", and "), true
 }
 
 // resolvesInto reports whether the resolution attributed any symbol to the module key names. A lane

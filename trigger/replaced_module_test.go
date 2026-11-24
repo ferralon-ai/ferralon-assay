@@ -23,6 +23,7 @@ type replacedFixture struct {
 	flags      []string
 	mods       goModules
 	refutation *plugin.Refutation
+	scoped     []artifact.ScopedPartialityFlag
 }
 
 const (
@@ -38,6 +39,11 @@ const (
 	// github.com/dgrijalva/jwt-go/v4 beside github.com/dgrijalva/jwt-go.
 	rmSymV2 = "k8s.io/kubernetes/v2/pkg/volume.NewSpecFromVolume"
 )
+
+// rmCgo is the Go lane's scoped cgo limit on package path of module mod.
+func rmCgo(mod, path string) artifact.ScopedPartialityFlag {
+	return artifact.ScopedPartialityFlag{Reason: plugin.PartialReasonCgo, Package: "pkg:golang/" + mod, Path: path, Targets: []string{rmPURL}}
+}
 
 func newReplacedFixture() replacedFixture {
 	return replacedFixture{
@@ -70,7 +76,12 @@ func (fx replacedFixture) finding(t *testing.T) report.AdvisoryFinding {
 	}
 	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, adv)
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, fx.res)
-	seedFootprint(t, store, aid, fx.flags)
+	if fx.scoped != nil {
+		putJSON(t, store, aid, artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{
+			SchemaVersion: artifact.ExposureFootprintSchemaVersion, AssessmentID: aid, PartialityFlags: fx.flags, ScopedPartiality: fx.scoped})
+	} else {
+		seedFootprint(t, store, aid, fx.flags)
+	}
 	part := plugin.Complete()
 	if len(fx.flags) > 0 {
 		part = plugin.Partial(fx.flags...)
@@ -203,6 +214,48 @@ func TestFinding_ReplacedModule(t *testing.T) {
 		{"another step did not run", func(fx *replacedFixture) { fx.flags = append(fx.flags, plugin.PartialReasonToolFailure) },
 			"", report.ReasonPackageVersionUnresolved,
 			"Steps an analysis of that code rests on did not run, so it was not judged."},
+
+		// ferralon-ai/tracker#811: the steps that did not run are named when each is one the detail can
+		// state. ignite/cli's GHSA-w73w-5m7g-f7qc row is the first case's shape.
+		{"cgo code of more than three packages and an analyzer silent on the advisory", func(fx *replacedFixture) {
+			fx.flags = append(fx.flags, plugin.PartialReasonAdvisoryUnknownToAnalyzer)
+			fx.scoped = []artifact.ScopedPartialityFlag{
+				rmCgo("example.com/a", "example.com/a"), rmCgo("example.com/a", "example.com/a/sub"),
+				rmCgo("example.com/b", "example.com/b"), rmCgo("example.com/c", "example.com/c"),
+				rmCgo("example.com/d", "example.com/d"), rmCgo("example.com/e", "example.com/e"),
+			}
+		}, "", report.ReasonPackageVersionUnresolved,
+			"Steps an analysis of that code rests on did not run: cgo code of example.com/a, example.com/b, example.com/c and 2 other packages was not analyzed, " +
+				"and the vulnerability analyzer emitted no evidence about the advisory, so it was not judged."},
+		{"cgo code of four packages", func(fx *replacedFixture) {
+			fx.scoped = []artifact.ScopedPartialityFlag{
+				rmCgo("example.com/a", "example.com/a"), rmCgo("example.com/b", "example.com/b"),
+				rmCgo("example.com/c", "example.com/c"), rmCgo("example.com/d", "example.com/d"),
+			}
+		}, "", report.ReasonPackageVersionUnresolved,
+			"Steps an analysis of that code rests on did not run: cgo code of example.com/a, example.com/b, example.com/c and 1 other package was not analyzed, so it was not judged."},
+		{"cgo code of up to three packages", func(fx *replacedFixture) {
+			fx.scoped = []artifact.ScopedPartialityFlag{rmCgo("example.com/a", "example.com/a"), rmCgo("example.com/b", "example.com/b")}
+		}, "", report.ReasonPackageVersionUnresolved,
+			"Steps an analysis of that code rests on did not run: cgo code of example.com/a, example.com/b was not analyzed, so it was not judged."},
+		{"an analyzer silent on the advisory", func(fx *replacedFixture) {
+			fx.flags = append(fx.flags, plugin.PartialReasonAdvisoryUnknownToAnalyzer)
+		}, "", report.ReasonPackageVersionUnresolved,
+			"Steps an analysis of that code rests on did not run: the vulnerability analyzer emitted no evidence about the advisory, so it was not judged."},
+		// Any limit the detail cannot name keeps the general statement.
+		{"a named step beside one it cannot name", func(fx *replacedFixture) {
+			fx.flags = append(fx.flags, plugin.PartialReasonAdvisoryUnknownToAnalyzer, plugin.PartialReasonToolFailure)
+		}, "", report.ReasonPackageVersionUnresolved,
+			"Steps an analysis of that code rests on did not run, so it was not judged."},
+		// The case order holds: a symbol the fork does not define is stated before any step that did
+		// not run.
+		{"a symbol the fork does not define, beside steps that did not run", func(fx *replacedFixture) {
+			delete(fx.res.Matched, rmSymB)
+			fx.res.Resolved, fx.searched = fx.res.Resolved[:1], fx.searched[:1]
+			fx.flags = append(fx.flags, plugin.PartialReasonAdvisoryUnknownToAnalyzer)
+			fx.scoped = []artifact.ScopedPartialityFlag{rmCgo("example.com/a", "example.com/a")}
+		}, "", report.ReasonPackageVersionUnresolved,
+			"The build's code of k8s.io/kubernetes does not define " + rmSymB + ". A replacement can rename or move the vulnerable code, so that is not taken as a fix."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

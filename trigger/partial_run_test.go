@@ -45,6 +45,9 @@ func TestFinding_OwnAdvisoryOnPartialRun(t *testing.T) {
 			if f.Evidence.Detail != want {
 				t.Fatalf("detail = %q, want %q (reason %s)", f.Evidence.Detail, want, f.UndeterminedReason)
 			}
+			if tc.wantDetail != "" && f.UndeterminedReason != report.ReasonOwnReleaseVersionUnknown {
+				t.Errorf("reason = %q, want %s", f.UndeterminedReason, report.ReasonOwnReleaseVersionUnknown)
+			}
 		})
 	}
 }

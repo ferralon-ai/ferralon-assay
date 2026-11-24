@@ -271,6 +271,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		b.AddFinding(f)
 		b.WithLibraryEntrypoints(libraryEntrypoints(st, assessmentID)...)
+		b.WithEntryRoots(entryRoots(st, assessmentID)...)
 		if note, ok := limitNoteFor(f); ok {
 			b.AddPartiality(note)
 		}

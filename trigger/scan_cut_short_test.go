@@ -44,6 +44,7 @@ const (
 
 // stoppingPlugin is refutingGoPlugin with a stop: Reachability for the advisory stopAt, or the
 // inventory when stopAt is "inventory", cancels the scan's analysis context from inside the call.
+// A MatchOnly request is disqualification discovery's, not the analysis, and never stops.
 type stoppingPlugin struct {
 	refutingGoPlugin
 	stop context.CancelFunc
@@ -86,6 +87,9 @@ func (p stoppingPlugin) ResolveInventory(ctx context.Context, req plugin.Resolve
 }
 
 func (p stoppingPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	if req.MatchOnly {
+		return p.refutingGoPlugin.Reachability(ctx, req)
+	}
 	if p.calls != nil {
 		p.calls.add(req.VulnID)
 	}

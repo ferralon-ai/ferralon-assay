@@ -238,8 +238,8 @@ findings:
   - advisory: GHSA-x527-x647-q7gg
     package: "golang.org/x/crypto@v0.32.0"
     truth: reachable
-    floor: reachable_candidate
-    note: "govulncheck: golang.org/x/crypto/ssh.NewServerConn reached from modules/graceful.*Server.Serve"
+    floor: undetermined
+    note: "GHSA range <0.52.0; GO-2026-5023 introduced 0.43.0, where VerifiedPublicKeyCallback first appears, so govulncheck reports nothing at v0.32.0 (ferralon-ai/tracker#884)"
   - advisory: CVE-2026-46597
     package: "golang.org/x/crypto@v0.32.0"
     truth: reachable

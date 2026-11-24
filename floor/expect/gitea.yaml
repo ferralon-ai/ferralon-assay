@@ -6076,26 +6076,9 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: reachable_candidate
-    path_review:
-      path:
-        - code.gitea.io/gitea/modules/graceful.Server.Serve
-        - github.com/gliderlabs/ssh.Server.Serve
-        - github.com/gliderlabs/ssh.Server.HandleConn
-        - golang.org/x/crypto/ssh.NewServerConn
-      hops: 4
-      path_sha: 461154aabe426d10
-      status: unreviewed
-      bound_to:
-        target: gitea@fcbbc24cc43811f2fc2f99b2f88060bc360ec38f
-        component: golang.org/x/crypto@v0.32.0
-        symbol: golang.org/x/crypto/ssh.NewServerConn
-        symbol_confidence: high
-        analysis:
-          assay_version: ferralon-assay/main-0be8b407dd78
-          assay_commit: 0be8b407dd7808c27834c519489057768137264a
-          corpus_release: corpus-92d72057330c
-          go_version: go1.23.12
+      verdict: undetermined
+      reason: advisory_unknown_to_analyzer
+    gap: '#884'
   - advisory:
       - CVE-2026-46597
       - GHSA-q4h4-gmj2-qvw2

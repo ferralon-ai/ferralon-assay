@@ -344,8 +344,10 @@ inputs:
       -advisory-corpus. Use this when the workflow materializes the corpus itself; it takes
       precedence over advisory-corpus-repo, whose fetch step is then skipped entirely. The corpus
       supplies advisory facts; it does not change which advisories the scan evaluates. Findings are
-      ranked by EPSS/KEV from the signals.json at the directory's root when it has one (and carry
-      no priority when it has none); nothing is fetched or verified for it. Empty (default) = no
+      ranked by EPSS/KEV from the signals.json at the directory's root when it has one, and
+      assessed in that order (KEV-listed first, then by EPSS), so a scan cut short by scan-timeout
+      has assessed the likeliest-exploited first; they carry no priority, and keep the work set's
+      order, when it has none; nothing is fetched or verified for it. Empty (default) = no
       corpus.
     required: false
     default: ""

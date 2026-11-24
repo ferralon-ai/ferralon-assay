@@ -608,19 +608,27 @@ func priorityFor(adv report.Advisory, sig *intel.Signals, claims *intel.Claims) 
 func rankWith(b *report.Builder, sig *intel.Signals, workSet []assessment.VulnRef, src pipeline.AdvisorySource) {
 	claims := new(intel.Claims)
 	if sig != nil {
-		ids := make([]string, 0, len(workSet))
-		for _, v := range workSet {
-			ids = append(ids, v.ID)
-		}
-		// An id whose record does not resolve still claims itself.
-		pipeline.LookupEach(src, ids, func(id string, facts pipeline.AdvisoryFacts, _ bool) {
-			claims.Add(id, facts.Aliases...)
-		})
+		claimWorkSet(claims, workSet, src)
 		for _, f := range b.Build().Advisories {
 			claims.Add(f.Advisory.ID, f.Advisory.Aliases...)
 		}
 	}
 	b.WithPriority(func(adv report.Advisory) *report.Priority { return priorityFor(adv, sig, claims) })
+}
+
+// claimWorkSet adds every advisory in workSet to claims by its id and the aliases src lists for
+// it, and returns those aliases by id. An id whose record does not resolve still claims itself.
+func claimWorkSet(claims *intel.Claims, workSet []assessment.VulnRef, src pipeline.AdvisorySource) map[string][]string {
+	ids := make([]string, 0, len(workSet))
+	for _, v := range workSet {
+		ids = append(ids, v.ID)
+	}
+	aliases := make(map[string][]string, len(ids))
+	pipeline.LookupEach(src, ids, func(id string, facts pipeline.AdvisoryFacts, _ bool) {
+		claims.Add(id, facts.Aliases...)
+		aliases[id] = facts.Aliases
+	})
+	return aliases
 }
 
 // withSignals records, on the provenance p a run is about to hand its Builder, which signals file

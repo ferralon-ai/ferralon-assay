@@ -942,24 +942,47 @@ func TestCVEWatch_RetryThatStopsReplacesParentRow(t *testing.T) {
 	}
 }
 
-// TestCVEWatch_RetryThatStopsAgainReturnsKeyToCutOnly: a cut sibling stored above the parent seeds a
-// retry with no package; when that retry stops, its cut row replaces the parent's, so the key holds
-// only cut rows again and the next run fans it out.
+// TestCVEWatch_RetryThatStopsAgainReturnsKeyToCutOnly: a retry that stops again leaves its key
+// holding only cut rows, so the next run fans it out. Stopped in analysis, the retry names the
+// parent, and its cut row replaces the parent's beside the cut sibling. Stopped before its first
+// pass, it names no instance; beside one packaged row and otherwise cut rows it takes that row as
+// the parent's, even when it is a completed sibling's, in either stored order and either lane.
 func TestCVEWatch_RetryThatStopsAgainReturnsKeyToCutOnly(t *testing.T) {
-	store := cutSiblingBaseline(t, siblingSource{}, "corpus", 2)
-	slices.SortStableFunc(store.state.Report.Advisories, func(a, b report.AdvisoryFinding) int {
-		return cmp.Compare(btoi(b.UndeterminedReason == report.ReasonScanCutShort), btoi(a.UndeterminedReason == report.ReasonScanCutShort))
+	t.Run("in analysis beside a cut sibling", func(t *testing.T) {
+		store := cutSiblingBaseline(t, siblingSource{}, "corpus", 2)
+		slices.SortStableFunc(store.state.Report.Advisories, func(a, b report.AdvisoryFinding) int {
+			return cmp.Compare(btoi(b.UndeterminedReason == report.ReasonScanCutShort), btoi(a.UndeterminedReason == report.ReasonScanCutShort))
+		})
+		analysis, cancel := context.WithCancelCause(context.Background())
+		t.Cleanup(func() { cancel(nil) })
+		p := stopOnNthPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: 1}
+		res := retryStored(t, store, "not fetched", p, analysis)
+		rows := rowsByID(res.Report)["GO-S-1"]
+		if len(rows) != 2 || len(cutIDs(res.Report)) != 2 {
+			t.Errorf("rows = %+v, want two cut rows and no completed one", rows)
+		}
+		if notes := cutShortNotes(res.Report); len(notes) != 1 || !strings.HasPrefix(notes[0].Detail, "2 of 2 advisories") {
+			t.Errorf("scan_cut_short notes = %+v, want one for 2 of 2", notes)
+		}
 	})
-	analysis, cancel := context.WithCancelCause(context.Background())
-	t.Cleanup(func() { cancel(nil) })
-	p := stopOnNthPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: 1}
-	res := retryStored(t, store, "not fetched", p, analysis)
-	rows := rowsByID(res.Report)["GO-S-1"]
-	if len(rows) != 2 || len(cutIDs(res.Report)) != 2 {
-		t.Errorf("rows = %+v, want two cut rows and no completed one", rows)
-	}
-	if notes := cutShortNotes(res.Report); len(notes) != 1 || !strings.HasPrefix(notes[0].Detail, "2 of 2 advisories") {
-		t.Errorf("scan_cut_short notes = %+v, want one for 2 of 2", notes)
+	for _, lane := range []string{"not fetched", "restated"} {
+		for _, siblingFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("before its first pass beside a completed sibling/%s/sibling first=%v", lane, siblingFirst), func(t *testing.T) {
+				store := completedSiblingBaseline(t, false, siblingFirst)
+				for i, f := range store.state.Report.Advisories {
+					if f.Package != nil && f.Package.Name == "example.com/lib" {
+						store.state.Report.Advisories[i] = cutShortFinding(assessment.VulnRef{ID: "GO-S-1", Source: "corpus"})
+					}
+				}
+				analysis, cancel := context.WithCancelCause(context.Background())
+				cancel(errTestStop)
+				res := retryStored(t, store, lane, refutingGoPlugin{inventory: plugin.Complete()}, analysis)
+				rows := rowsByID(res.Report)["GO-S-1"]
+				if len(rows) != 2 || len(cutIDs(res.Report)) != 2 {
+					t.Errorf("rows = %+v, want two cut rows and no completed one", rows)
+				}
+			})
+		}
 	}
 }
 

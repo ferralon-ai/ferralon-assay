@@ -36,7 +36,7 @@ const (
 
 var errScanStopped = errors.New("the scan was stopped before it finished (a job timeout, a cancellation, or an interrupt); if it was a job timeout, raise the job's timeout-minutes to give it more time")
 
-// scanTimeout resolves -scan-timeout / ASSAY_SCAN_TIMEOUT. Zero means no time limit: unset, a
+// scanTimeout resolves -scan-timeout / ASSAY_SCAN_TIMEOUT. Zero means no time limit: unset or 0, a
 // scan runs until it finishes or the runner stops it.
 func (f *runFlags) scanTimeout() (time.Duration, error) {
 	v := flagOrEnv(*f.scanTimeoutRaw, os.Getenv(envScanTimeout))
@@ -44,8 +44,8 @@ func (f *runFlags) scanTimeout() (time.Duration, error) {
 		return 0, nil
 	}
 	d, err := time.ParseDuration(v)
-	if err != nil || d <= 0 {
-		return 0, fmt.Errorf("-scan-timeout=%q: want a positive duration such as 30m", v)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("-scan-timeout=%q: want a positive duration such as 30m, or 0 for no limit", v)
 	}
 	return d, nil
 }

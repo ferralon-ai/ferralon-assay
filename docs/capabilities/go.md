@@ -199,7 +199,7 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Trigger.** `plugin.Open` reached from entry roots.
 
-**Effect.** `plugin_load`, run-wide did-not-run. A row whose refutation rests on the build importing none of the advisory's vulnerable packages is still `not_exploitable`, with the assumption "Go plugins loaded at run time are separate builds and were not assessed": a plugin may hold the package, but it cannot put it in this build. Every other refutation stays withheld, since a loaded plugin can call back into the build's exported code.
+**Effect.** `plugin_load`, run-wide did-not-run. When every refutation a row rests on, for each module the advisory names, is that the build imports none of the module's vulnerable packages, `plugin_load` does not withhold it: the row clears as `not_exploitable` unless another limit withholds it, with the assumption "Go plugins loaded at run time are separate builds and were not assessed". A plugin may hold the package, but it cannot put it in this build. A row resting on any call-path refutation stays withheld, since a loaded plugin can call back into the build's exported code.
 
 ### GO-LIBRARY-ESCAPE
 

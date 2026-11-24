@@ -18,6 +18,7 @@ func TestFinding_GoPluginLoadModuleLevel(t *testing.T) {
 		basis       string
 		assume      bool
 		footprint   []string
+		beside      *plugin.Refutation
 		wantVerdict report.Verdict
 		wantReason  string
 	}{
@@ -51,6 +52,23 @@ func TestFinding_GoPluginLoadModuleLevel(t *testing.T) {
 			wantVerdict: report.VerdictUndetermined,
 			wantReason:  report.ReasonAnalysisDidNotRun,
 		},
+		{
+			name:        "beside another module not imported, with the assumption, clears",
+			basis:       plugin.RefutationAnalyzerPackageNotImported,
+			assume:      true,
+			footprint:   []string{plugin.PartialReasonPluginLoad},
+			beside:      &plugin.Refutation{Basis: plugin.RefutationAnalyzerPackageNotImported, Package: "pkg:golang/golang.org/x/text", Detail: "not imported", Assumptions: []string{plugin.AssumptionPluginsNotAssessed}},
+			wantVerdict: report.VerdictNotExploitable,
+		},
+		{
+			name:        "beside another module's call-path refutation it stays undetermined",
+			basis:       plugin.RefutationAnalyzerPackageNotImported,
+			assume:      true,
+			footprint:   []string{plugin.PartialReasonPluginLoad},
+			beside:      &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/golang.org/x/text", Detail: "no call path"},
+			wantVerdict: report.VerdictUndetermined,
+			wantReason:  report.ReasonAnalysisDidNotRun,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -60,6 +78,10 @@ func TestFinding_GoPluginLoadModuleLevel(t *testing.T) {
 				fx.reach.Refutation.Assumptions = []string{plugin.AssumptionPluginsNotAssessed}
 			}
 			fx.footprint = tc.footprint
+			if tc.beside != nil {
+				fx.affected = []string{"pkg:golang/golang.org/x/net", "pkg:golang/golang.org/x/text"}
+				fx.reach.Refutations = []plugin.Refutation{*tc.beside}
+			}
 			f := fx.finding(t)
 			if f.Verdict != tc.wantVerdict || f.UndeterminedReason != tc.wantReason {
 				t.Fatalf("got %s/%q, want %s/%q", f.Verdict, f.UndeterminedReason, tc.wantVerdict, tc.wantReason)

@@ -1435,7 +1435,7 @@ var scopeStatedLimits = map[string]bool{
 // footprint. They drop only while the assessment holds an analyzer refutation on the admitted
 // package, and every other limit stays.
 func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg *report.Package, reasons []string) []string {
-	if !slices.ContainsFunc(reasons, func(r string) bool { return scopeStatedLimits[r] }) {
+	if !slices.ContainsFunc(reasons, func(r string) bool { return scopeStatedLimits[r] || r == plugin.PartialReasonPluginLoad }) {
 		return reasons
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
@@ -1450,12 +1450,23 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	case plugin.RefutationAnalyzerPackageNotImported:
 		// "No build file imports the package" is a claim about every platform, so it does not stand
 		// beside a file another platform builds that may call into the module. It reads the files cgo
-		// off drops too, so the cgo-off limits still clear.
+		// off drops too, so the cgo-off limits still clear. A plugin the program loads with cgo on is
+		// a separate build, which cannot make this one import the package, so plugin_load clears
+		// too once the refutation carries that as its assumption. A refutation the ground rests on
+		// beside it must carry it too: a call-path refutation of another module is the claim a
+		// loaded plugin can contradict.
 		drops = map[string]bool{plugin.PartialReasonPluginLoadCgoOff: true, plugin.PartialReasonCgoFilesDropped: true}
+		if assumesPluginsSeparate(*r) && !slices.ContainsFunc(refutedBeside(store, assessmentID, reach), func(b plugin.Refutation) bool { return !assumesPluginsSeparate(b) }) {
+			drops[plugin.PartialReasonPluginLoad] = true
+		}
 	default:
 		return reasons
 	}
 	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return drops[r] })
+}
+
+func assumesPluginsSeparate(r plugin.Refutation) bool {
+	return slices.Contains(r.Assumptions, plugin.AssumptionPluginsNotAssessed)
 }
 
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a

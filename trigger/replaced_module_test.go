@@ -119,6 +119,20 @@ func TestFinding_ReplacedModule(t *testing.T) {
 			fx.res.Resolved, fx.searched = fx.res.Resolved[:1], fx.searched[:1]
 		}, "", report.ReasonPackageVersionUnresolved,
 			"The build's code of k8s.io/kubernetes does not define " + rmSymB + ". A replacement can rename or move the vulnerable code, so that is not taken as a fix."},
+		{"a symbol the fork does not define, the resolution short only of it", func(fx *replacedFixture) {
+			delete(fx.res.Matched, rmSymB)
+			fx.res.Resolved, fx.searched = fx.res.Resolved[:1], fx.searched[:1]
+			fx.res.Partiality = plugin.Partial(plugin.PartialReasonAdvisorySymbolUnresolved)
+		}, "", report.ReasonPackageVersionUnresolved,
+			"The build's code of k8s.io/kubernetes does not define " + rmSymB + ". A replacement can rename or move the vulnerable code, so that is not taken as a fix."},
+		// A resolution that did not read all its code has not shown a symbol it missed is undefined.
+		{"a symbol unmatched by a resolution that did not finish", func(fx *replacedFixture) {
+			delete(fx.res.Matched, rmSymB)
+			fx.res.Resolved, fx.searched = fx.res.Resolved[:1], fx.searched[:1]
+			fx.res.Partiality = plugin.Partial(plugin.PartialReasonToolFailure)
+			fx.flags = append(fx.flags, plugin.PartialReasonToolFailure)
+		}, "", report.ReasonPackageVersionUnresolved,
+			"Steps an analysis of that code rests on did not run, so it was not judged."},
 		{"a symbol defined only outside the module", func(fx *replacedFixture) {
 			fx.res.Origins[rmSCIPB] = "pkg:golang/github.com/other/mod@v1.0.0"
 		}, "", report.ReasonPackageVersionUnresolved,

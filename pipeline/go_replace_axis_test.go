@@ -27,6 +27,7 @@ func TestGoModuleAxisHonoursReplace(t *testing.T) {
 		wantUnpinned bool
 		wantDisqual  bool
 		wantReason   string
+		wantReplaced *ModuleReplacement // the replaced_by the inventory records
 	}{
 		{
 			name:        "E1 a version replace of the module is the version the build compiles",
@@ -48,12 +49,14 @@ func TestGoModuleAxisHonoursReplace(t *testing.T) {
 			replace:      "replace golang.org/x/text => github.com/example/text v0.3.8\n",
 			wantUnpinned: true,
 			wantReason:   ReasonInsufficient,
+			wantReplaced: &ModuleReplacement{Path: "github.com/example/text", Version: "v0.3.8"},
 		},
 		{
 			name:         "E3 a local-directory replace is declared with no version",
 			replace:      "replace golang.org/x/text => ./third_party/text\n",
 			wantUnpinned: true,
 			wantReason:   ReasonInsufficient,
+			wantReplaced: &ModuleReplacement{Path: "./third_party/text", Directory: true},
 		},
 		{
 			// example.com/a is fork-replaced and example.com/b sits past its fix. Were the replaced
@@ -64,6 +67,7 @@ func TestGoModuleAxisHonoursReplace(t *testing.T) {
 			goMod:        "module example.com/app\n\ngo 1.22\n\nrequire (\n\texample.com/a v1.0.0\n\texample.com/b v1.6.0\n)\n\nreplace example.com/a => github.com/example/a v1.0.0\n",
 			wantUnpinned: true,
 			wantReason:   ReasonInsufficient,
+			wantReplaced: &ModuleReplacement{Path: "github.com/example/a", Version: "v1.0.0"},
 		},
 		{
 			name:        "E4 without a replace the require version disqualifies",
@@ -118,6 +122,10 @@ func TestGoModuleAxisHonoursReplace(t *testing.T) {
 			}
 			if got := slices.Contains(inv.PartialityFlags, plugin.PartialReasonSourceUnpinned); got != tt.wantUnpinned {
 				t.Errorf("source_unpinned flagged = %v, want %v (flags %v)", got, tt.wantUnpinned, inv.PartialityFlags)
+			}
+			got, recorded := Replacement(store, caseID)
+			if recorded != (tt.wantReplaced != nil) || recorded && got != *tt.wantReplaced {
+				t.Errorf("replaced_by = %+v (recorded %v), want %+v", got, recorded, tt.wantReplaced)
 			}
 			res := runDisqual(t, store, caseID)
 			if res.Disqualified != tt.wantDisqual || res.Reason != tt.wantReason {

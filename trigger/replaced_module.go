@@ -78,7 +78,7 @@ func replacedHeldDetail(store artifact.Store, assessmentID string, mods goModule
 	case keyed && resErr == nil && !resolvesInto(res, key):
 		why = fmt.Sprintf("The analysis does not locate the advisory's symbols inside the build's code of %s, so whether that code defines %s was not determined.",
 			module, strings.Join(symbols, ", "))
-	case keyed && resErr == nil && len(undefinedIn(symbols, res, key)) > 0:
+	case keyed && resErr == nil && resolutionRead(res) && len(undefinedIn(symbols, res, key)) > 0:
 		why = fmt.Sprintf("The build's code of %s does not define %s. A replacement can rename or move the vulnerable code, so that is not taken as a fix.",
 			module, strings.Join(undefinedIn(symbols, res, key), ", "))
 	case keyed && namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), key, mods, nil):
@@ -101,6 +101,24 @@ func resolvesInto(res plugin.SymbolResolutionResult, key pkgKey) bool {
 		}
 	}
 	return false
+}
+
+// resolutionRead reports whether the resolution read all the code it indexes, so that a symbol it did
+// not match is undefined there rather than unread. Its only allowed shortfall is a symbol it could not
+// resolve, which is that same absence.
+func resolutionRead(res plugin.SymbolResolutionResult) bool {
+	if res.Partiality.Complete {
+		return true
+	}
+	if len(res.Partiality.Scoped) > 0 {
+		return false
+	}
+	for _, r := range res.Partiality.Reasons {
+		if r != plugin.PartialReasonAdvisorySymbolUnresolved {
+			return false
+		}
+	}
+	return true
 }
 
 // undefinedIn returns the symbols that resolved to no code of the module key names.

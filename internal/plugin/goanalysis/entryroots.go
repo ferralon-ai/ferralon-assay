@@ -21,8 +21,8 @@ func (e entrypoints) disclosure(pkgs []*packages.Package, buildDir string) *plug
 
 // inferredEntrypoints is what auto nominates with nothing declared: the importable packages outside
 // autoExcludedElements as libraries, and the build's main packages as mains. A main is any package
-// the build compiles as main (isMain), not shippedMains: the record shows the customer every
-// program the build holds, examples and tests included, to be narrowed by a "!" selector, where
+// the build compiles as main (isMain), not shippedMains: the record lists every program the
+// build holds, examples and tests included, for information, and every one is an entry point, where
 // shippedMains is the program view's own judgment of which of them ship.
 func inferredEntrypoints(pkgs []*packages.Package) map[string][]string {
 	libs, mains := []string{}, []string{}

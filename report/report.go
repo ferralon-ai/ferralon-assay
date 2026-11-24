@@ -1190,11 +1190,14 @@ type Report struct {
 	// ecosystem.
 	LibraryEntrypoints []plugin.ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
 	// Entrypoints are the entry points each lane analysed, one record per lane that reported a set,
-	// rendered from the same resolved set as LibraryEntrypoints where both state one. A Go record
-	// also lists what the lane inferred (inferred: its importable library packages and the build's
-	// main packages) and the declared "!" selectors that removed a library package (denied), on every
-	// Go report that assessed an advisory, whether or not a refutation was judged. effective is the
-	// library set; mains are always entry points and no selector narrows them. Sorted by lane.
+	// rendered from the same resolved set as LibraryEntrypoints where both state one. effective is
+	// the library packages Assay treats as callable from outside the build, which a refutation is
+	// judged against. The search itself roots every main's main and init and the exported API of
+	// every package ./... matches, "!"-denied packages included; a partial run searches only the
+	// roots its limit names. A Go record also lists what the lane inferred (inferred: its importable
+	// library packages and the build's main packages, listed for information: no selector narrows a
+	// main) and the declared "!" selectors that removed a library package (denied), on every Go
+	// report whose packages loaded, whether or not a refutation was judged. Sorted by lane.
 	Entrypoints []plugin.EntryRootRecord `json:"entrypoints,omitempty"`
 	// DependencyCode records whether a JS scan read its dependencies' code and, when a fetch
 	// failed and the scan fell back to reading none, the cause. Set on every JavaScript scan;

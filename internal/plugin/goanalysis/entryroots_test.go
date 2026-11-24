@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
@@ -147,5 +148,27 @@ func TestWithoutLoad(t *testing.T) {
 	}
 	if res := withoutLoad(cached, base, dir, other, counting); res.EntryRoots == nil || loads != 2 {
 		t.Errorf("a new statement did not resolve: roots %+v, loads %d", res.EntryRoots, loads)
+	}
+
+	// Statements that differ only in Base, or only in mode, are distinct keys: each resolves and
+	// records its own set.
+	nominated := plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsPaths, Include: []string{"pkg"}, Base: dir}
+	rebased := nominated
+	rebased.Base = filepath.Join(dir, "pkg")
+	added := nominated
+	added.Mode = plugin.LibraryEntrypointsAuto
+	var recs []*plugin.EntryRootRecord
+	for _, e := range []plugin.LibraryEntrypoints{nominated, rebased, added} {
+		recs = append(recs, withoutLoad(cached, base, dir, e, counting).EntryRoots)
+	}
+	if loads != 5 {
+		t.Errorf("loads after three statements differing in base or mode = %d, want 5", loads)
+	}
+	for i := range recs {
+		for j := i + 1; j < len(recs); j++ {
+			if recs[i] == nil || recs[j] == nil || reflect.DeepEqual(recs[i], recs[j]) {
+				t.Errorf("statements %d and %d share a record: %+v, %+v", i, j, recs[i], recs[j])
+			}
+		}
 	}
 }

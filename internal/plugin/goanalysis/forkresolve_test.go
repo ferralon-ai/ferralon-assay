@@ -2,6 +2,8 @@ package goanalysis
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -150,6 +152,47 @@ func TestReplacedResolution(t *testing.T) {
 			wantUnresolve: true,
 		},
 		{
+			name: "a dotted directory of the replaced module the fork lacks stays required",
+			files: map[string]string{
+				"go.mod":        "module example.com/app\n\ngo 1.22\n\nrequire example.com/vuln v0.0.0\n\nreplace example.com/vuln => ./_fork\n",
+				"main.go":       app,
+				"_fork/go.mod":  forkMod,
+				"_fork/vuln.go": fork,
+			},
+			symbols:       []string{v3, "example.com/vuln/v2.5/foo.F", "example.com/vuln/v2.5.F"},
+			wantOK:        true,
+			wantMatched:   []string{v3},
+			wantUnresolve: true,
+		},
+		{
+			name: "a dotted directory of the fork's tree stays required",
+			files: map[string]string{
+				"go.mod":            "module example.com/app\n\ngo 1.22\n\nrequire example.com/vuln v0.0.0\n\nreplace example.com/vuln => ./_fork\n",
+				"main.go":           app,
+				"_fork/go.mod":      forkMod,
+				"_fork/vuln.go":     fork,
+				"_fork/v2.Foo/f.go": "package foo\n\nfunc Bar() {}\n",
+			},
+			symbols:       []string{v3, "example.com/vuln/v2.Foo.Bar"},
+			wantOK:        true,
+			wantMatched:   []string{v3},
+			wantUnresolve: true,
+		},
+		{
+			name: "a qualifier compiled from the main module stays required",
+			files: map[string]string{
+				"go.mod":         "module example.com/app\n\ngo 1.22\n\nrequire example.com/vuln v0.0.0\n\nreplace example.com/vuln => ./_fork\n",
+				"main.go":        "package main\n\nimport (\n\t\"example.com/app/inner\"\n\t\"example.com/vuln\"\n)\n\nfunc main() { _ = vuln.MapClaims{}; inner.G() }\n",
+				"inner/inner.go": "package inner\n\nfunc G() {}\n",
+				"_fork/go.mod":   forkMod,
+				"_fork/vuln.go":  fork,
+			},
+			symbols:       []string{v3, "example.com/app/inner.F"},
+			wantOK:        true,
+			wantMatched:   []string{v3},
+			wantUnresolve: true,
+		},
+		{
 			name: "a partial load does not narrow",
 			files: map[string]string{
 				"go.mod":        "module example.com/app\n\ngo 1.22\n\nrequire example.com/vuln v0.0.0\n\nreplace example.com/vuln => ./_fork\n",
@@ -256,6 +299,53 @@ func TestReplacedResolution(t *testing.T) {
 			}
 			if got := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonAdvisorySymbolUnresolved); got != tc.wantUnresolve {
 				t.Errorf("unresolved reason = %v, want %v (partiality %+v)", got, tc.wantUnresolve, res.Partiality)
+			}
+		})
+	}
+}
+
+// TestReplaceSources: a replacement whose tree cannot be read holds every path below its module, and a
+// go.work replace on a module outside the build list holds its source path.
+func TestReplaceSources(t *testing.T) {
+	const v4 = "example.com/vuln/v4"
+	type replace = struct{ Path, Version, Dir string }
+	unreadable := t.TempDir()
+	if err := os.Chmod(unreadable, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(unreadable, 0o755) })
+	cases := []struct {
+		name    string
+		treeDir string
+		goWork  string
+		want    bool
+	}{
+		{name: "a readable tree without the vN directory does not hold it", treeDir: t.TempDir()},
+		{name: "a replacement with no directory holds it", want: true},
+		{name: "an unreadable tree holds it", treeDir: unreadable, want: true},
+		{name: "a go.work replace outside the build list holds it", treeDir: t.TempDir(), goWork: "go 1.22\n\nuse .\n\nreplace example.com/vuln/v4 => ./_v4\n", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.treeDir == unreadable && os.Geteuid() == 0 {
+				t.Skip("root reads any directory")
+			}
+			files := map[string]string{"go.mod": "module example.com/app\n\ngo 1.22\n"}
+			if tc.goWork != "" {
+				files["go.work"] = tc.goWork
+			}
+			buildDir := writeTree(t, files)
+			work := ""
+			if tc.goWork != "" {
+				work = filepath.Join(buildDir, "go.work")
+			}
+			mods := []listedModule{{Path: "example.com/vuln", Replace: &replace{Path: "example.com/fork", Dir: tc.treeDir}}}
+			held, err := replaceSources(buildDir, work, mods)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := held(v4); got != tc.want {
+				t.Errorf("held(%s) = %v, want %v", v4, got, tc.want)
 			}
 		})
 	}

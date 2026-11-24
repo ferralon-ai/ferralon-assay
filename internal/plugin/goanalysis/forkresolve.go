@@ -262,15 +262,19 @@ func replaceSources(buildDir, goWork string, mods []listedModule) (func(string) 
 			// A package path of the replaced module itself that the replacement lacks is code the fork
 			// renamed or removed, not code outside the build. Only a major-version suffix (m.Path/vN)
 			// of a module path carrying none names another module, and only when the replacement's
-			// tree has no vN directory, which would make every path below it the module's own. The
-			// element is read up to its first dot as well, since qualifiers also reads "vN.T" as a
-			// path element.
+			// tree has no vN directory (and no directory of the element as written), which would make
+			// every path below it the module's own. qualifiers also reads "vN.T.M" as package "vN.T",
+			// so a last element is read up to a dot that an identifier follows; a dot inside a path
+			// ("v2.5/x") or before a digit ("v2.5") is part of the module's own element.
 			if _, major, _ := module.SplitPathVersion(m.Path); major != "" {
 				return true
 			}
-			first, _, _ := strings.Cut(rel, "/")
-			first, _, _ = strings.Cut(first, ".")
-			if _, major, ok := module.SplitPathVersion(m.Path + "/" + first); !ok || major == "" {
+			first, _, nested := strings.Cut(rel, "/")
+			elem := first
+			if v, name, dot := strings.Cut(first, "."); !nested && dot && name != "" && isIdentStart(name[0]) {
+				elem = v
+			}
+			if _, major, ok := module.SplitPathVersion(m.Path + "/" + elem); !ok || major == "" {
 				return true
 			}
 			dir := m.Replace.Dir
@@ -280,10 +284,16 @@ func replaceSources(buildDir, goWork string, mods []listedModule) (func(string) 
 			if dir == "" {
 				return true
 			}
-			if _, err := os.Stat(filepath.Join(dir, first)); !errors.Is(err, os.ErrNotExist) {
-				return true
+			for _, e := range []string{elem, first} {
+				if _, err := os.Stat(filepath.Join(dir, e)); !errors.Is(err, os.ErrNotExist) {
+					return true
+				}
 			}
 		}
 		return false
 	}, nil
+}
+
+func isIdentStart(c byte) bool {
+	return c == '_' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }

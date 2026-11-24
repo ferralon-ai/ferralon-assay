@@ -1,6 +1,8 @@
 package goanalysis
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +10,7 @@ import (
 	"go/types"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1120,5 +1123,86 @@ func TestPartialRunLimitsNameTheCause(t *testing.T) {
 	run.Causes = nil
 	if limits := partialRunLimits(run); len(limits) != 1 || strings.Contains(limits[0].Path, "(") {
 		t.Errorf("limits = %+v; want no cause named", limits)
+	}
+}
+
+// TestPartialGovulncheckShortensUnderTheScanModCache pins that a partial run renders a cause in a
+// dependency as its module path, reading the module cache the way the go command does under the
+// scan's env rather than the host's: the build here reads its dependency from a module cache only
+// that env names.
+func TestPartialGovulncheckShortensUnderTheScanModCache(t *testing.T) {
+	proxy, modCache := t.TempDir(), t.TempDir()
+	writeModuleZip(t, filepath.Join(proxy, "example.com", "dep", "@v"), "example.com/dep", "v1.0.0", map[string]string{
+		"go.mod": "module example.com/dep\n\ngo 1.22\n",
+		"dep.go": "package dep\n\nfunc F() {}\n",
+	})
+	dir := writeTree(t, map[string]string{
+		"go.mod":            "module example.com/m\n\ngo 1.22\n\nrequire example.com/dep v1.0.0\n",
+		"main.go":           "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.F() }\n",
+		"cmd/other/main.go": "package main\n\nfunc main() {}\n",
+	})
+	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod -modcacherw", "GOTOOLCHAIN=local", "GOSUMDB=off",
+		"GOMODCACHE="+modCache, "GOPROXY=file://"+filepath.ToSlash(proxy), "GOPRIVATE=", "GONOPROXY=", "GONOSUMDB=")
+	download := exec.Command("go", "mod", "download", "example.com/dep")
+	download.Dir, download.Env = dir, env
+	if out, err := download.CombinedOutput(); err != nil {
+		t.Fatalf("go mod download: %v\n%s", err, out)
+	}
+	if host := moduleCacheRoot(); host == modCache {
+		t.Fatalf("host module cache %q is the scan's; the test cannot tell them apart", host)
+	}
+	failure := fmt.Errorf("loading packages: %w", &fakeVulnPackageError{Errors: []packages.Error{
+		{Pos: filepath.Join(modCache, "example.com", "dep@v1.0.0", "dep.go") + ":3:1", Msg: "undefined: pointer"},
+	}})
+	var ran []string
+	out, err := partialGovulncheckWith(context.Background(), dir, env, failure, func(_ context.Context, _ string, _, patterns []string) ([]byte, error) {
+		ran = patterns
+		return []byte(`{"config":{}}` + "\n"), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var run partialRun
+	if err := json.Unmarshal(out, &run); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(ran, []string{"example.com/m/cmd/other"}) {
+		t.Errorf("kept roots %q; want only the root that does not import the dependency", ran)
+	}
+	if got, want := run.Causes["example.com/dep"], "example.com/dep/dep.go:3:1: undefined: pointer"; got != want {
+		t.Errorf("cause = %q, want %q", got, want)
+	}
+}
+
+// writeModuleZip writes version of module mod, holding files, to dir as a GOPROXY=file:// proxy
+// serves it.
+func writeModuleZip(t *testing.T, dir, mod, version string, files map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range files {
+		w, err := zw.Create(mod + "@" + version + "/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string][]byte{
+		"list":            []byte(version + "\n"),
+		version + ".info": []byte(`{"Version":"` + version + `"}`),
+		version + ".mod":  []byte(files["go.mod"]),
+		version + ".zip":  buf.Bytes(),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

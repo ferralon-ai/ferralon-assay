@@ -311,10 +311,16 @@ func (p listedPackage) purl() string {
 // the roots it keeps. A cause it records names a module cache path as the go command under env
 // resolves the cache.
 func partialGovulncheck(ctx context.Context, buildDir string, env []string, failure error) ([]byte, error) {
+	return partialGovulncheckWith(ctx, buildDir, env, failure, govulncheckStream)
+}
+
+// partialGovulncheckWith is partialGovulncheck with the run over the kept roots made by stream.
+func partialGovulncheckWith(ctx context.Context, buildDir string, env []string, failure error,
+	stream func(ctx context.Context, buildDir string, env, patterns []string) ([]byte, error)) ([]byte, error) {
 	return partialRunRecord(buildDir, lofModCache(ctx, buildDir, env), failurePackageErrors(failure), func() ([]listedPackage, error) {
 		return listBuildPackages(ctx, buildDir, env)
 	}, func(patterns []string) ([]byte, error) {
-		return govulncheckStream(ctx, buildDir, env, patterns)
+		return stream(ctx, buildDir, env, patterns)
 	})
 }
 

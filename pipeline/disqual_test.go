@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -229,6 +230,40 @@ func TestRun_StructuredOutsideRange_Disqualifies(t *testing.T) {
 	}
 	if res.Reason != ReasonVersionNotInRange {
 		t.Fatalf("Reason = %q, want %q", res.Reason, ReasonVersionNotInRange)
+	}
+}
+
+// A pseudo-version pin placed past a pseudo-version fix on the same base disqualifies only
+// under the commit-time assumption, and the stage records that assumption for the verdict.
+func TestRun_PseudoVersionPastSameBaseFix_RecordsAssumption(t *testing.T) {
+	store := artifact.NewMemStore()
+	caseID := "case-pseudo"
+	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
+		"vuln_id":         "GO-2021-0113",
+		"source":          "osv",
+		"affected_ranges": []map[string]string{{"upper_exclusive": "v0.3.8-0.20220101000000-aaaaaaaaaaaa"}},
+		"trust_tier":      "first_party",
+	})
+	pin := "v0.3.8-0.20230101000000-bbbbbbbbbbbb"
+	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
+		"repo":              "r",
+		"revision":          "rev",
+		"resolved_version":  pin,
+		"resolved_versions": []string{pin},
+		"versions_complete": true,
+	})
+
+	res := runDisqual(t, store, caseID)
+	if !res.Disqualified || res.Reason != ReasonVersionNotInRange {
+		t.Fatalf("got disqualified=%v reason=%q, want true %q", res.Disqualified, res.Reason, ReasonVersionNotInRange)
+	}
+	if len(res.Assumptions) != 1 {
+		t.Fatalf("Assumptions = %q, want one entry", res.Assumptions)
+	}
+	for _, want := range []string{"bbbbbbbbbbbb", "aaaaaaaaaaaa", "does not prove ancestry"} {
+		if !strings.Contains(res.Assumptions[0], want) {
+			t.Errorf("assumption %q does not contain %q", res.Assumptions[0], want)
+		}
 	}
 }
 

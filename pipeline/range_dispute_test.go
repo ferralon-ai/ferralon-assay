@@ -248,7 +248,7 @@ func TestRangeDispute_AnalyzerOnAToolchainRow(t *testing.T) {
 			c := &assessment.Assessment{ID: caseID, Request: assessment.Request{Vulnerability: assessment.VulnRef{ID: "GO-2099-0001"}}}
 			s := disqualificationDiscovery{src: disputeSource{}, plugin: p}
 			rngs := []affectedRange{{Scheme: "go-toolchain"}}
-			dispute, _ := s.rangeDispute(context.Background(), c, store, "", "", versionAxis{Versions: []string{"1.21.0"}, Complete: true}, rngs, tc.others)
+			dispute, _, _ := s.rangeDispute(context.Background(), c, store, "", "", versionAxis{Versions: []string{"1.21.0"}, Complete: true}, rngs, tc.others)
 			if asked := len(reqs) == 1; asked != tc.asked {
 				t.Fatalf("Reachability requests = %+v, want asked=%v", reqs, tc.asked)
 			}
@@ -322,12 +322,49 @@ func TestRangeDispute_AliasProjection(t *testing.T) {
 			putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, tc.adv)
 			c := &assessment.Assessment{ID: caseID}
 			s := disqualificationDiscovery{src: disputeSource{"CVE-2099-0001": tc.alias}}
-			dispute, note := s.rangeDispute(context.Background(), c, store, "", "", versionAxis{Versions: tc.axis, Complete: true}, nil, tc.others)
+			dispute, note, _ := s.rangeDispute(context.Background(), c, store, "", "", versionAxis{Versions: tc.axis, Complete: true}, nil, tc.others)
 			if note != "" {
 				t.Fatalf("note = %q, want none with no analyzer", note)
 			}
 			if (dispute != "") != tc.disputed {
 				t.Fatalf("dispute = %q, want disputed=%v", dispute, tc.disputed)
+			}
+		})
+	}
+}
+
+// An alias record that places the version outside only under the same assumption about a
+// pseudo-version's ancestry agrees under it: the clear stands and states the assumption, whichever
+// record it comes from. One that places the version inside still withdraws it.
+func TestRangeDispute_AliasUnderAssumption(t *testing.T) {
+	const bound = "v1.5.4-0.20240701034025-d67f41855da4"
+	const installed = "v1.5.4-0.20240801000000-aaaaaaaaaaaa"
+	pseudoFixed := Range{Introduced: "v1.5.3", Fixed: bound, FixedVersion: bound}
+	for _, tc := range []struct {
+		name     string
+		row      AdvisoryFacts
+		alias    AdvisoryFacts
+		disputed bool
+		// attributed: the line names the alias's bound, not one the row's own record carries.
+		attributed bool
+	}{
+		{"alias identical", disputeRecord([]string{"GHSA-w67g-5rqw-f597"}, pseudoFixed), disputeRecord([]string{"GO-2026-6278"}, pseudoFixed), false, false},
+		{"only the alias rests on the assumption", disputeRecord([]string{"GHSA-w67g-5rqw-f597"}, Range{Fixed: "v1.5.3", FixedVersion: "v1.5.3"}), disputeRecord([]string{"GO-2026-6278"}, pseudoFixed), false, true},
+		{"alias includes", disputeRecord([]string{"GHSA-w67g-5rqw-f597"}, pseudoFixed), disputeRecord([]string{"GO-2026-6278"}, Range{Introduced: "v1.5.3", Fixed: "v1.5.5", FixedVersion: "v1.5.5"}), true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runDisputeDisqual(t, "GO-2026-6278", disputeSource{"GO-2026-6278": tc.row, "GHSA-w67g-5rqw-f597": tc.alias}, nil, installed)
+			if tc.disputed {
+				if res.Disqualified || res.RangeDisputed == "" || len(res.Assumptions) != 0 {
+					t.Fatalf("got %+v, want a proceeding row naming the dispute and no assumption", res)
+				}
+				return
+			}
+			if !res.Disqualified || res.Reason != ReasonVersionNotInRange || res.RangeDisputed != "" || len(res.Assumptions) != 1 || !strings.Contains(res.Assumptions[0], "aaaaaaaaaaaa") {
+				t.Fatalf("got %+v, want %s standing with one assumption about %s", res, ReasonVersionNotInRange, installed)
+			}
+			if got := strings.HasPrefix(res.Assumptions[0], "per GHSA-w67g-5rqw-f597: "); got != tc.attributed {
+				t.Fatalf("assumption %q attributed to the alias = %v, want %v", res.Assumptions[0], got, tc.attributed)
 			}
 		})
 	}

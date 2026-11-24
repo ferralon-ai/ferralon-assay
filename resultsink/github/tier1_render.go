@@ -52,6 +52,7 @@ func renderTier1Body(r report.Report) string {
 	// Only the did-not-run arm; inherent limits go to the shared footer below.
 	b.WriteString(partialityCallout(r))
 	b.WriteString(assumptionsCallout(r))
+	b.WriteString(entrypointsCallout(r))
 
 	b.WriteString(countsTable(c))
 	b.WriteString(undeterminedCauseTable(c))

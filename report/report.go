@@ -1085,6 +1085,10 @@ const (
 	// ReasonPackageVersionUnresolved: the advisory reached the verdict without a package whose
 	// installed version was resolved, so nothing establishes which code the build carries.
 	ReasonPackageVersionUnresolved = "package_version_unresolved"
+	// ReasonOwnReleaseVersionUnknown: the advisory is on the scanned project itself, and the
+	// project's own release version was not established, so nothing places this checkout inside or
+	// outside the advisory's affected range.
+	ReasonOwnReleaseVersionUnknown = "own_release_version_unknown"
 	// ReasonAdvisorySymbolAbsent: the advisory names no vulnerable symbol and no analyzer refuted
 	// the package as a whole, so there was nothing to search for.
 	ReasonAdvisorySymbolAbsent = "advisory_symbol_absent"

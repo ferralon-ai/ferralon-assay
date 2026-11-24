@@ -337,7 +337,7 @@ func laneUnlistedRecord(t *testing.T, input string) plugin.EntryRootRecord {
 // TestEntrypointRecords_FullJSRecordBeatsUnlisted: of two js records offered under one statement, the
 // one that reports what the lane inferred stands over one from a run that read no closure, in either
 // order, and a record of another statement never displaces it: its Input would be on this report.
-// Of two full records the first stands, and the same clauses in another order are one statement.
+// A record whose Input does not parse never displaces one that does. Of two full records the first stands, and the same clauses in another order are one statement.
 func TestEntrypointRecords_FullJSRecordBeatsUnlisted(t *testing.T) {
 	const in = "!js:bin=bin:storybook"
 	unlisted := laneUnlistedRecord(t, in)
@@ -359,16 +359,20 @@ func TestEntrypointRecords_FullJSRecordBeatsUnlisted(t *testing.T) {
 	abFull.Input = "!js:bin=bin:b,!js:bin=bin:a"
 	abFull.Inferred = map[string][]string{plugin.EntryKindBin: {"bin:a", "bin:b"}, plugin.EntryKindScript: {}}
 
+	unparsable := full
+	unparsable.Input = "::bad"
+
 	for name, tc := range map[string]struct {
 		roots []plugin.EntryRootRecord
 		want  plugin.EntryRootRecord
 	}{
-		"two full records, the first stands":  {[]plugin.EntryRootRecord{full, fullLater}, full},
-		"reordered clauses are one statement": {[]plugin.EntryRootRecord{ab, abFull}, abFull},
-		"unlisted first":                      {[]plugin.EntryRootRecord{unlisted, full}, full},
-		"full first":                          {[]plugin.EntryRootRecord{full, unlisted}, full},
-		"another statement does not displace": {[]plugin.EntryRootRecord{unlisted, other}, unlisted},
-		"another statement, other order":      {[]plugin.EntryRootRecord{other, unlisted}, other},
+		"an unparsable statement does not displace": {[]plugin.EntryRootRecord{unlisted, unparsable}, unlisted},
+		"two full records, the first stands":        {[]plugin.EntryRootRecord{full, fullLater}, full},
+		"reordered clauses are one statement":       {[]plugin.EntryRootRecord{ab, abFull}, abFull},
+		"unlisted first":                            {[]plugin.EntryRootRecord{unlisted, full}, full},
+		"full first":                                {[]plugin.EntryRootRecord{full, unlisted}, full},
+		"another statement does not displace":       {[]plugin.EntryRootRecord{unlisted, other}, unlisted},
+		"another statement, other order":            {[]plugin.EntryRootRecord{other, unlisted}, other},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := NewBuilder(Subject{ResolvedCommit: "c"}).WithEntryRoots(tc.roots...).Build()

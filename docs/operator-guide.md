@@ -115,6 +115,7 @@ and a limit it does list is not the reason the analysis did not run.
 |---|---|
 | `analysis_did_not_run` | A step the verdict rests on failed or did not run. The scan-level `partiality` notes name the step; when the step failed outright, the row's detail also carries the redacted error. |
 | `package_version_unresolved` | The package's installed version was not resolved, so nothing establishes which code the build carries. |
+| `own_release_version_unknown` | The advisory is on your repository's own code, and the release version of this checkout was not established, so nothing places it inside or outside the advisory's affected versions. For a Go module the version is read from a full semver tag on the checked-out commit itself (`sub/v1.2.3` for a module in directory `sub`), so it is known only when the scan runs on a tagged release commit with its tags fetched (`fetch-tags: true` on `actions/checkout`). A pull request's merge commit, or any untagged commit, has no release version. A Go project with no release version can still be placed when the advisory names the commit that fixed it and the checkout's history contains that commit; a shallow checkout (the `actions/checkout` default) cannot show whether it does, so the row says so and names the remedy, `fetch-depth: 0`. Other ecosystems read it from a version the manifest states outright. Other limits the scan lists may still apply once the version is known. |
 | `advisory_symbol_absent` | The advisory names no vulnerable symbol, so there was nothing to search for. |
 | `vulnerable_symbol_unresolved` | The advisory names vulnerable symbols, and not every one was located in the affected package and searched. |
 | `advisory_unknown_to_analyzer` | The analyzer reported nothing about the advisory at all. |
@@ -227,8 +228,8 @@ For a Go standard-library advisory, the question is about the Go **you** build w
 necessarily the Go the scanner analyzes with. The scan resolves your toolchain as one fact, from the
 first source that yields a usable version:
 
-1. **Your declaration** — `-subject-go-version` on the CLI (for example `go1.21.3`), or the
-   `ASSAY_SUBJECT_GO_VERSION` environment variable. Exact.
+1. **Your declaration** — `-subject-go-version` on the CLI (for example `go1.21.3`), the
+   `ASSAY_SUBJECT_GO_VERSION` environment variable, or the Action input `subject-go-version`. Exact.
 2. **Your `go.mod` `go` line** — a **minimum**, not an exact version. Every go command from 1.21 on
    refuses to build your module with an older Go, whatever `GOTOOLCHAIN` says. A go command before
    1.21 does not enforce the `go` line, so `go 1.17` may have been built by go1.16.5. The `go` line
@@ -272,8 +273,9 @@ toolchain. What to know:
 
 - **Findings appear that a scan under the scanner's Go does not show.** A repository on an older Go
   has standard-library vulnerabilities a newer Go does not have.
-- **It needs an exact toolchain.** `go.mod` floors are not enough. The Action has no input for the
-  declaration, so set `ASSAY_SUBJECT_GO_VERSION` in the `env:` of the step that runs the Action.
+- **It needs an exact toolchain.** `go.mod` floors are not enough. In the Action, set the input
+  `subject-go-version` (for example `go1.22.5`); an `ASSAY_SUBJECT_GO_VERSION` in the `env:` of the
+  step that runs the Action also works, and the input wins when both are set.
   Without an exact toolchain the analysis runs under the scanner's, and that is not an error.
 - **It never fails the scan.** If the toolchain can't be downloaded or can't load your module, the
   analysis falls back to the scanner's toolchain and the advisory stays `undetermined`. The report
@@ -314,7 +316,7 @@ under conditions the job does not reproduce:
 | The build's explicit profile selection in `-P` syntax: its `-P` list together with `settings.xml` `<activeProfiles>` (for example `release,!docs`, or `,` for none) | `-subject-maven-profiles` | `ASSAY_SUBJECT_MAVEN_PROFILES` |
 
 The flag wins over the environment variable. The Action has no inputs for these; set the variables in
-the `env:` of the step that runs it, as for `ASSAY_SUBJECT_GO_VERSION`. With `-build-graph auto`, a
+the `env:` of the step that runs it. With `-build-graph auto`, a
 stated profile selection is passed to Maven as `-P`, and stating one for a Gradle build fails the run.
 With a graph file, the file must record the same statements.
 

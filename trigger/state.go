@@ -665,10 +665,12 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	type watched struct {
 		ref assessment.VulnRef
 		key string
-		// fan assesses the sibling instances a baseline assesses with the advisory, and its rows
-		// replace every stored row under the key: a newly-relevant advisory, or a stored
-		// scan_cut_short row whose key holds only cut rows.
+		// fan assesses the sibling instances a baseline assesses with the advisory: a newly-relevant
+		// advisory, or a stored scan_cut_short row whose key holds only cut rows.
 		fan bool
+		// osv is the OSV query's package for a newly-relevant advisory, used only when the
+		// assessment adjudicated no instance (an undetermined row still records none).
+		osv *report.Package
 	}
 	var todo []watched
 	cutKeys := cutOnlyKeys(prior)
@@ -681,7 +683,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if _, ok := keyed[key]; ok {
 			continue
 		}
-		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, key, true})
+		pkg := a.Package
+		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, key, true, &pkg})
 		keyed[key] = struct{}{}
 	}
 	for _, f := range retry {
@@ -689,7 +692,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if _, ok := keyed[key]; ok {
 			continue
 		}
-		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, key, cutKeys[key]})
+		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, key, cutKeys[key], nil})
 		keyed[key] = struct{}{}
 	}
 	// Most likely exploited first, so a stop reaches the least likely last. A stable sort: with no
@@ -723,6 +726,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// adjudicated is the instance an assessment's first pass selected, known even when its analysis
 	// then stopped or failed.
 	adjudicated := map[string]*report.Package{}
+	// fannedOut is each key whose sibling-instance pass ran, so its rows stand for every instance.
+	fannedOut := map[string]bool{}
 	// assess assesses todo[i] and keys the finding under its key, the row it replaces.
 	assess := func(i int) {
 		ref, key := todo[i].ref, todo[i].key
@@ -748,9 +753,18 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
-		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
+		advisory, instancePkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
+		pkg := instancePkg
+		if pkg == nil {
+			pkg = todo[i].osv
+		}
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
+			// The toolchain is not an SBOM dependency, so an undetermined row takes the instance
+			// the assessment adjudicated (nil for a toolchain subject), never the OSV query's
+			// package: pairing the advisory's top-level module with a go1.x.y toolchain release
+			// would emit a coordinate that does not exist.
+			f.Package = instancePkg
 			notes = append(notes, note)
 		}
 		reFindings[key] = f
@@ -761,6 +775,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			undetermined[advisory.ID] = true
 		}
 		if todo[i].fan {
+			fannedOut[key] = true
 			sibs, sibNotes := siblingInstanceFindings(analysis, areq, st, assessmentID, assessOpts, prior.SBOM.Packages, mods, invNotes)
 			for _, sf := range sibs {
 				if sf.UndeterminedReason == report.ReasonScanCutShort {
@@ -792,7 +807,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 
 	// A fresh row replaces the prior rows of its own instance. Under a retried cut row's key, which
 	// holds only cut rows, that is all of them (the parent's and its siblings', which siblings
-	// re-assesses), and under a newly-relevant advisory's key, which the run fans out the same way.
+	// re-assesses), and under a newly-relevant advisory's key once its sibling pass ran.
 	// Under any other key the retry names the instance by its package (the one its first pass
 	// adjudicated, or the fresh row's), and a prior row is the instance's when:
 	//   - it is the key's only row;
@@ -810,7 +825,10 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	fanned := map[string]bool{}
 	instance := map[string]string{}
 	for _, w := range todo {
-		fanned[w.key] = w.fan
+		// A cut-only key's rows all give way, whatever the retry's outcome. A newly-relevant
+		// advisory's do once its sibling pass ran; a parent that stopped or failed before it
+		// replaces only its own row, as a retry's does.
+		fanned[w.key] = cutKeys[w.key] || fannedOut[w.key]
 		instance[w.key] = packageInstance(adjudicated[w.key])
 	}
 	for key, re := range reFindings {

@@ -35,16 +35,19 @@ import (
 const govulncheckPartialKind = "govulncheck-partial"
 
 // govulncheckPartialMarker identifies a partial run record; an entry without it is no record.
-const govulncheckPartialMarker = "govulncheck-partial/v3"
+const govulncheckPartialMarker = "govulncheck-partial/v4"
 
 // partialRun is a govulncheck run over the build less Excluded, the roots of ./... that are or
 // import a package in Unloadable, which the full run's load could not read. Modules names each
 // unloadable package's module as a scoped limit does (modulePURL). Hidden names the module of every
 // package in Excluded's import closure (hiddenModules), or is nil when that closure is unknown.
+// Causes holds, for each unloadable package, the first error the load reported for it
+// (packageErrorCause).
 type partialRun struct {
 	Marker     string            `json:"marker"`
 	Unloadable []string          `json:"unloadable"`
 	Modules    map[string]string `json:"modules"`
+	Causes     map[string]string `json:"causes,omitempty"`
 	Excluded   []string          `json:"excluded"`
 	Hidden     []string          `json:"hidden,omitempty"`
 	Stream     []byte            `json:"stream"`
@@ -329,7 +332,7 @@ func partialRunRecord(buildDir string, perrs []packages.Error, list func() ([]li
 	if err != nil {
 		return nil, err
 	}
-	unloadable, err := unloadablePackages(buildDir, perrs, graph)
+	unloadable, causes, err := unloadablePackages(buildDir, perrs, graph)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +358,7 @@ func partialRunRecord(buildDir string, perrs []packages.Error, list func() ([]li
 			modules[p.ImportPath] = p.purl()
 		}
 	}
-	return json.Marshal(partialRun{Marker: govulncheckPartialMarker, Unloadable: unloadable, Modules: modules, Excluded: excluded,
+	return json.Marshal(partialRun{Marker: govulncheckPartialMarker, Unloadable: unloadable, Modules: modules, Causes: causes, Excluded: excluded,
 		Hidden: hiddenModules(graph, excluded), Stream: out})
 }
 
@@ -393,13 +396,14 @@ func hiddenModules(graph []listedPackage, excluded []string) []string {
 // posFile matches a go/packages error position, file:line or file:line:col.
 var posFile = regexp.MustCompile(`^(.+?):\d+(?::\d+)?$`)
 
-// unloadablePackages returns the import paths of the packages perrs name, sorted. An error names
+// unloadablePackages returns the import paths of the packages perrs name, sorted, and for each the
+// first of perrs that names it, as packageErrorCause renders it. An error names
 // its package by the directory of its position (relative to buildDir when not absolute), or, with
 // none (a failed cgo or compile step), by the "# importpath" line the go command heads its output
 // with. An error that names no package of graph is a partialRunRefusal, since what it hides is then
 // unknown. A directory that cannot be resolved for a reason of the machine is a plain error: the
 // same call may succeed later.
-func unloadablePackages(buildDir string, perrs []packages.Error, graph []listedPackage) ([]string, error) {
+func unloadablePackages(buildDir string, perrs []packages.Error, graph []listedPackage) ([]string, map[string]string, error) {
 	byDir := map[string][]string{}
 	listed := map[string]bool{}
 	for _, p := range graph {
@@ -407,12 +411,14 @@ func unloadablePackages(buildDir string, perrs []packages.Error, graph []listedP
 		if p.Dir != "" {
 			dir, err := realDir(p.Dir)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			byDir[dir] = append(byDir[dir], p.ImportPath)
 		}
 	}
 	var out []string
+	causes := map[string]string{}
+	modCache := moduleCacheRoot()
 	for _, pe := range perrs {
 		var named []string
 		if m := posFile.FindStringSubmatch(pe.Pos); m != nil {
@@ -422,7 +428,7 @@ func unloadablePackages(buildDir string, perrs []packages.Error, graph []listedP
 			}
 			dir, err := realDir(filepath.Dir(file))
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			named = byDir[dir]
 		} else if pe.Pos == "" {
@@ -433,12 +439,50 @@ func unloadablePackages(buildDir string, perrs []packages.Error, graph []listedP
 			}
 		}
 		if len(named) == 0 {
-			return nil, &partialRunRefusal{fmt.Errorf("package error names no listed package: %s", pe.Error())}
+			return nil, nil, &partialRunRefusal{fmt.Errorf("package error names no listed package: %s", pe.Error())}
+		}
+		for _, p := range named {
+			if _, ok := causes[p]; !ok {
+				causes[p] = packageErrorCause(pe, buildDir, modCache)
+			}
 		}
 		out = append(out, named...)
 	}
 	slices.Sort(out)
-	return slices.Compact(out), nil
+	return slices.Compact(out), causes, nil
+}
+
+// urlUserinfo matches the credentials a URL in a go command error can carry (a private proxy or
+// VCS remote spelled with userinfo), which a report row must not repeat.
+var urlUserinfo = regexp.MustCompile(`//[^/\s@]*@`)
+
+// packageErrorCauseLimit bounds a cause packageErrorCause renders, in runes.
+const packageErrorCauseLimit = 160
+
+// packageErrorCause renders a package error as the cause a limit names: its position made relative
+// as FailureText makes it (shortenPos), then the first line of its message. An error with no
+// position (a failed cgo or compile step) opens with the go command's "# importpath" header, so its
+// first line after the header is read instead, with the path it starts with shortened the same way.
+// The text is one line, at most packageErrorCauseLimit runes, with any URL credentials redacted.
+func packageErrorCause(pe packages.Error, buildDir, modCache string) string {
+	var lines []string
+	for _, line := range strings.Split(pe.Msg, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "# ") {
+			lines = append(lines, line)
+		}
+	}
+	text := ""
+	if len(lines) > 0 {
+		text = shortenPos(lines[0], buildDir, modCache)
+	}
+	if pe.Pos != "" {
+		text = shortenPos(pe.Pos, buildDir, modCache) + ": " + text
+	}
+	text = urlUserinfo.ReplaceAllString(strings.Join(strings.Fields(text), " "), "//REDACTED@")
+	if r := []rune(text); len(r) > packageErrorCauseLimit {
+		text = string(r[:packageErrorCauseLimit-1]) + "…"
+	}
+	return text
 }
 
 // realDir is dir with symbolic links resolved, so that two spellings of one directory (macOS's /var
@@ -600,8 +644,8 @@ func unversionedOnPartialRun(res plugin.ReachabilityResult, scanned vulnScan, pk
 }
 
 // partialRunLimits discloses a partial run as tool_failure limits, one per module of a package the
-// run could not load (Package as a scoped limit names it), each naming those packages and the roots
-// the run left out. Each is bounded to Hidden, the modules the code left out can reach, and unbounded
+// run could not load (Package as a scoped limit names it), each naming those packages, the first
+// error the load reported for them, and the roots the run left out. Each is bounded to Hidden, the modules the code left out can reach, and unbounded
 // when that is unknown.
 func partialRunLimits(run *partialRun) []plugin.ScopedReason {
 	byModule := map[string][]string{}
@@ -610,15 +654,30 @@ func partialRunLimits(run *partialRun) []plugin.ScopedReason {
 	}
 	var limits []plugin.ScopedReason
 	for _, mod := range slices.Sorted(maps.Keys(byModule)) {
+		loaded := nameList(byModule[mod])
+		if cause := run.cause(byModule[mod]); cause != "" {
+			loaded += " (" + cause + ")"
+		}
 		limits = append(limits, plugin.ScopedReason{
 			Reason:  plugin.PartialReasonToolFailure,
 			Package: mod,
 			Path: fmt.Sprintf("govulncheck could not load %s; it searched the build less the roots that are or import a package it could not load: %s",
-				nameList(byModule[mod]), nameList(run.Excluded)),
+				loaded, nameList(run.Excluded)),
 			Targets: slices.Clone(run.Hidden),
 		})
 	}
 	return limits
+}
+
+// cause returns the first error the load reported for the first of pkgs that has one, "" when none
+// does (a record written before the run kept causes).
+func (run *partialRun) cause(pkgs []string) string {
+	for _, p := range pkgs {
+		if c := run.Causes[p]; c != "" {
+			return c
+		}
+	}
+	return ""
 }
 
 // nameList joins names, naming at most five.

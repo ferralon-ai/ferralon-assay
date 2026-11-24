@@ -30,10 +30,12 @@ type disputeTarget struct {
 
 // aliasRangeDispute returns the first alias record that names a judged package with a usable range
 // set placing one of that package's versions inside it. A record that does not name the package, or
-// whose ranges are absent or unusable, says nothing about the version and disputes nothing.
-func aliasRangeDispute(src AdvisorySource, aliases []string, targets []disputeTarget) (string, bool) {
+// whose ranges are absent or unusable, says nothing about the version and disputes nothing. A record
+// that places a version outside only under an assumption about a pseudo-version's ancestry agrees
+// under that assumption, which is returned with the record's id so the clear states it.
+func aliasRangeDispute(src AdvisorySource, aliases []string, targets []disputeTarget) (dispute string, assumptions []aliasAssumption, disputed bool) {
 	if src == nil {
-		return "", false
+		return "", nil, false
 	}
 	for _, id := range aliases {
 		facts, ok := src.Lookup(id)
@@ -49,13 +51,34 @@ func aliasRangeDispute(src AdvisorySource, aliases []string, targets []disputeTa
 				rngs = t.project(purl, rngs)
 			}
 			for _, v := range t.versions {
-				if outside, known := versionOutsideRanges(v, rngs); !known || !outside {
-					return fmt.Sprintf("advisory %s does not place %s outside its affected range", id, v), true
+				outside, as, known := versionOutsideRangesAssuming(v, rngs)
+				if !known || !outside {
+					return fmt.Sprintf("advisory %s does not place %s outside its affected range", id, v), nil, true
+				}
+				for _, line := range as {
+					if a := (aliasAssumption{advisory: id, line: line}); !slices.Contains(assumptions, a) {
+						assumptions = append(assumptions, a)
+					}
 				}
 			}
 		}
 	}
-	return "", false
+	return "", assumptions, false
+}
+
+// aliasAssumption is an assumption line an alias record's agreement rests on, with that record's id:
+// the line names the record's bound, which the row's own record may not carry.
+type aliasAssumption struct {
+	advisory, line string
+}
+
+// statedFor is the line as the row states it: unqualified when the row's own placement already
+// rests on it, else attributed to the alias record that carries the bound it names.
+func (a aliasAssumption) statedFor(own []string) string {
+	if slices.Contains(own, a.line) {
+		return a.line
+	}
+	return "per " + a.advisory + ": " + a.line
 }
 
 // factsRangesFor projects a record's ranges for one package exactly as advisory_intake projects the
@@ -126,7 +149,9 @@ func analyzerRangeDispute(ctx context.Context, p plugin.LanguagePlugin, req plug
 // rangeDispute withdraws a version-axis disqualification that another source contradicts: an alias
 // record of the same advisory, then the Go analyzer's own database. It returns the contradicting
 // source, or, when the analyzer could not be consulted, a note the cleared row discloses.
-func (s disqualificationDiscovery) rangeDispute(ctx context.Context, c *assessment.Assessment, store artifact.Store, buildDir, goWork string, axis versionAxis, rngs []affectedRange, others []presentRanges) (dispute, note string) {
+// assumptions are the alias records' own assumption lines when they agree only under one; they are
+// meaningful only when dispute is empty.
+func (s disqualificationDiscovery) rangeDispute(ctx context.Context, c *assessment.Assessment, store artifact.Store, buildDir, goWork string, axis versionAxis, rngs []affectedRange, others []presentRanges) (dispute, note string, assumptions []aliasAssumption) {
 	module, coordinate := disputedPackage(store, c.ID)
 	src := s.src
 	if src == nil {
@@ -143,19 +168,20 @@ func (s disqualificationDiscovery) rangeDispute(ctx context.Context, c *assessme
 				return r
 			}})
 	}
-	if d, ok := aliasRangeDispute(src, extractAliases(store, c.ID), targets); ok {
-		return d, ""
+	d, assumptions, ok := aliasRangeDispute(src, extractAliases(store, c.ID), targets)
+	if ok {
+		return d, "", nil
 	}
 	if s.plugin == nil || s.plugin.Language() != "go" {
-		return "", ""
+		return "", "", assumptions
 	}
 	// The analyzer matches the toolchain against the one it scanned with, so a toolchain row asks
 	// it only about the other modules the version axis judged.
 	toolchain := toolchainSubject(admittedPackagePURL(store, c.ID), rngs)
 	if toolchain && !slices.ContainsFunc(others, func(o presentRanges) bool { return o.Module != "" }) || !toolchain && module == "" {
-		return "", ""
+		return "", "", assumptions
 	}
-	return analyzerRangeDispute(ctx, s.plugin, plugin.ReachabilityRequest{
+	dispute, note = analyzerRangeDispute(ctx, s.plugin, plugin.ReachabilityRequest{
 		MatchOutsideToolchain: toolchain,
 		BuildDir:              buildDir,
 		GoWork:                goWork,
@@ -164,6 +190,10 @@ func (s disqualificationDiscovery) rangeDispute(ctx context.Context, c *assessme
 		GoToolchainFloor:      inventoryGoFloor(store, c.ID),
 		Package:               admittedPackagePURL(store, c.ID),
 	})
+	if dispute != "" {
+		return dispute, note, nil
+	}
+	return "", note, assumptions
 }
 
 // disputedPackage is the package the version axis judged: the one select-by-target chose, else the

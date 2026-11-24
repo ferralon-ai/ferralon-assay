@@ -1726,6 +1726,10 @@ type DisqualResult struct {
 	Source *RefuteSource `json:"source,omitempty"`
 	// FixCommit is the commit a ReasonFixCommitInHistory refute found in the scanned history.
 	FixCommit string `json:"fix_commit,omitempty"`
+	// Assumptions are the lines a ReasonVersionNotInRange refute rests on: an installed
+	// pseudo-version placed outside a range only under an assumption about its revision's ancestry
+	// (compareGoModVersionsAssuming). Empty when the refute rests on version order alone.
+	Assumptions []string `json:"assumptions,omitempty"`
 	// RangeDisputed, on a row that proceeds, names the source that contradicted a version-axis
 	// disqualification: an alias record of the advisory, or the analyzer's own database.
 	RangeDisputed string `json:"range_disputed,omitempty"`
@@ -2238,20 +2242,25 @@ func disqualify(rngs []affectedRange, rangeKnown bool, ver string, verKnown bool
 // disqualifyEvery is disqualify over every version the codebase carries. The version axis refutes
 // only when the set is complete and each version, of the selected package and of every other
 // affected package present, is provably outside its own ranges; the symbol axis is disqualify's,
-// unchanged.
-func disqualifyEvery(rngs []affectedRange, rangeKnown bool, axis versionAxis, axisKnown bool, others []presentRanges, symbol string, symbolKnown bool) (bool, string) {
+// unchanged. assumptions are the lines a version-axis refute rests on (versionOutsideRangesAssuming),
+// in first-seen order; a refute that rests on none returns none.
+func disqualifyEvery(rngs []affectedRange, rangeKnown bool, axis versionAxis, axisKnown bool, others []presentRanges, symbol string, symbolKnown bool) (bool, string, []string) {
 	if disq, reason := disqualify(rngs, rangeKnown, "", false, symbol, symbolKnown); disq {
-		return disq, reason
+		return disq, reason, nil
 	}
-	if !axisKnown || !everyVersionOutside(axis.Versions, axis.Complete, rngs, rangeKnown) {
-		return false, ReasonInsufficient
+	if !axisKnown {
+		return false, ReasonInsufficient, nil
+	}
+	assumptions, ok := everyVersionOutsideAssuming(axis.Versions, axis.Complete, rngs, rangeKnown, nil)
+	if !ok {
+		return false, ReasonInsufficient, nil
 	}
 	for _, o := range others {
-		if !everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown) {
-			return false, ReasonInsufficient
+		if assumptions, ok = everyVersionOutsideAssuming(o.Versions, o.Complete, o.Ranges, o.RangeKnown, assumptions); !ok {
+			return false, ReasonInsufficient, nil
 		}
 	}
-	return true, ReasonVersionNotInRange
+	return true, ReasonVersionNotInRange, assumptions
 }
 
 func everyVersionOutside(vers []string, complete bool, rngs []affectedRange, rangeKnown bool) bool {
@@ -2266,12 +2275,32 @@ func everyVersionOutside(vers []string, complete bool, rngs []affectedRange, ran
 	return true
 }
 
+// everyVersionOutsideAssuming is everyVersionOutside that also places versions whose order rests on
+// an assumption, appending each such line to assumptions once.
+func everyVersionOutsideAssuming(vers []string, complete bool, rngs []affectedRange, rangeKnown bool, assumptions []string) ([]string, bool) {
+	if !complete || len(vers) == 0 || !rangeKnown {
+		return nil, false
+	}
+	for _, v := range vers {
+		outside, more, ok := versionOutsideRangesAssuming(v, rngs)
+		if !ok || !outside {
+			return nil, false
+		}
+		for _, a := range more {
+			if !slices.Contains(assumptions, a) {
+				assumptions = append(assumptions, a)
+			}
+		}
+	}
+	return assumptions, true
+}
+
 // VersionOutsideRange reports whether ver is provably outside the affected set
 // affects<upper, under the given comparator scheme ("" / "gomod" | "maven" | "npm").
 // It is the exported seam external callers use to
 // share the disqualification axis's exact version semantics: ok=false means the
-// version or bound is invalid, a prerelease the scheme cannot order, or unparseable,
-// and the predicate must fail OPEN (inv.5), never fabricate a not-affected.
+// version or bound is invalid, a prerelease the scheme cannot order, unparseable, or a
+// Go pseudo-version placed only under an assumption, and the predicate must fail OPEN (inv.5), never fabricate a not-affected.
 // Single-sources versionOutsideRange.
 func VersionOutsideRange(ver, upperExclusive, scheme string) (outside bool, ok bool) {
 	return versionOutsideRange(ver, affectedRange{UpperExclusive: upperExclusive, Scheme: scheme})
@@ -2284,37 +2313,66 @@ func VersionOutsideRange(ver, upperExclusive, scheme string) (outside bool, ok b
 // ambiguous/unparseable/uncertain the whole set fails OPEN (ok=false) — a disjoint set never
 // fabricates a not-affected. A version provably INSIDE any one range is definitively still affected
 // (ok=true, outside=false), regardless of the other ranges. An empty set is not a proof of anything
-// (ok=false).
+// (ok=false). A placement outside that rests on an assumption is not a proof here either (ok=false);
+// only versionOutsideRangesAssuming returns it.
 func versionOutsideRanges(ver string, rngs []affectedRange) (outside bool, ok bool) {
-	if len(rngs) == 0 {
+	outside, assumptions, ok := versionOutsideRangesAssuming(ver, rngs)
+	if outside && len(assumptions) > 0 {
 		return false, false
 	}
+	return outside, ok
+}
+
+// versionOutsideRangesAssuming is versionOutsideRanges that also places ver outside a range where
+// the placement rests on an assumption (versionOutsideRangeAssuming). assumptions are those lines,
+// one per distinct assumption, and are set only when ver is outside.
+func versionOutsideRangesAssuming(ver string, rngs []affectedRange) (outside bool, assumptions []string, ok bool) {
+	if len(rngs) == 0 {
+		return false, nil, false
+	}
 	for _, rng := range capOpenLastAffected(rngs) {
-		out, rok := versionOutsideRange(ver, rng)
+		out, assumption, rok := versionOutsideRangeAssuming(ver, rng)
 		if !rok {
-			return false, false // uncertainty in any range ⇒ OPEN
+			return false, nil, false // uncertainty in any range ⇒ OPEN
 		}
 		if !out {
-			return false, true // provably inside this range ⇒ still affected
+			return false, nil, true // provably inside this range ⇒ still affected
+		}
+		if assumption != "" && !slices.Contains(assumptions, assumption) {
+			assumptions = append(assumptions, assumption)
 		}
 	}
-	return true, true // provably outside every range
+	return true, assumptions, true // provably outside every range
 }
 
 // versionOutsideUpper reports whether ver is provably at or past rng's upper-exclusive bound
 // (affects<upper). It reads only UpperExclusive and Scheme; versionOutsideRange adds the other bounds.
 func versionOutsideUpper(ver string, rng affectedRange) (outside bool, ok bool) {
+	outside, assumption, ok := versionOutsideUpperAssuming(ver, rng)
+	if outside && assumption != "" {
+		return false, false
+	}
+	return outside, ok
+}
+
+// versionOutsideUpperAssuming is versionOutsideUpper that also places an installed Go pseudo-version
+// whose order rests on an assumption, returned as one line (compareGoModVersionsAssuming).
+func versionOutsideUpperAssuming(ver string, rng affectedRange) (outside bool, assumption string, ok bool) {
 	if rng.Scheme == "maven" {
-		return mavenVersionOutsideRange(ver, rng.UpperExclusive)
+		out, ok := mavenVersionOutsideRange(ver, rng.UpperExclusive)
+		return out, "", ok
 	}
 	if rng.Scheme == "npm" {
-		return npmDisqualifyOutside(ver, rng.UpperExclusive)
+		out, ok := npmDisqualifyOutside(ver, rng.UpperExclusive)
+		return out, "", ok
 	}
 	if rng.Scheme == "pypi" {
-		return pypiVersionOutsideRange(ver, rng.UpperExclusive)
+		out, ok := pypiVersionOutsideRange(ver, rng.UpperExclusive)
+		return out, "", ok
 	}
 	if rng.Scheme == "nuget" {
-		return nugetVersionOutsideRange(ver, rng.UpperExclusive)
+		out, ok := nugetVersionOutsideRange(ver, rng.UpperExclusive)
+		return out, "", ok
 	}
 	// "go-toolchain": Go stdlib/toolchain RELEASE versions (go1.21.3), DISTINCT from the default
 	// gomod path below (module semver via golang.org/x/mod/semver, which requires a leading "v"
@@ -2322,14 +2380,14 @@ func versionOutsideUpper(ver string, rng affectedRange) (outside bool, ok bool) 
 	// is "golang"/"gomod"/"" — and advisories carry it EXPLICITLY (there is no module PURL for the
 	// toolchain, so schemeFromPURL never derives it). See go_toolchain_version.go.
 	if rng.Scheme == "go-toolchain" {
-		return goToolchainVersionOutsideRange(ver, rng.UpperExclusive)
+		out, ok := goToolchainVersionOutsideRange(ver, rng.UpperExclusive)
+		return out, "", ok
 	}
-	upper := rng.UpperExclusive
-	cmp, ok := compareGoModVersions(ver, upper)
+	cmp, assumption, ok := compareGoModVersionsAssuming(ver, rng.UpperExclusive)
 	if !ok {
-		return false, false
+		return false, "", false
 	}
-	return cmp >= 0, true
+	return cmp >= 0, assumption, true
 }
 
 // extractAffectedRange reads the advisory's full affected set (one or more disjoint ranges) from
@@ -2781,15 +2839,21 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	symbol, symbolKnown := extractSymbolSignal(store, c.ID)
 
 	others := extractAlsoPresent(store, c.ID)
-	disqualified, reason := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown)
-	res := DisqualResult{Disqualified: disqualified, Reason: reason}
+	disqualified, reason, assumptions := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown)
+	res := DisqualResult{Disqualified: disqualified, Reason: reason, Assumptions: assumptions}
 	if disqualified && reason == ReasonVersionNotInRange {
-		dispute, note := s.rangeDispute(ctx, c, store, buildDir, goWork.File, axis, rngs, others)
+		dispute, note, aliasAssumptions := s.rangeDispute(ctx, c, store, buildDir, goWork.File, axis, rngs, others)
 		if dispute != "" {
 			disqualified = false
 			res = DisqualResult{Reason: ReasonInsufficient, RangeDisputed: dispute}
 		} else {
 			res.CrossCheck = note
+			own := res.Assumptions
+			for _, a := range aliasAssumptions {
+				if line := a.statedFor(own); !slices.Contains(res.Assumptions, line) {
+					res.Assumptions = append(res.Assumptions, line)
+				}
+			}
 		}
 	}
 	// A disputed row cannot be re-cleared here: a version-axis disqualification needs a resolved

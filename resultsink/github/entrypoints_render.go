@@ -2,6 +2,7 @@ package github
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -14,17 +15,28 @@ const entrypointsShown = 5
 
 // entrypointLines renders one line per lane that reported its entry points (report.Entrypoints):
 // whether the set was inferred or declared, the roots it analysed by kind, and any declared
-// selector that matched nothing. Returns nil when no lane reported a set. Every name comes from the
-// scanned repository or the caller, so each renders inside a code span.
+// selector that matched nothing. Under an override it also shows what the lane inferred before the
+// override (only the kinds the override changed) and the "!" selectors that removed something.
+// Returns nil when no lane reported a set. Every name comes from the scanned repository or the
+// caller, so each renders inside a code span.
 func entrypointLines(r report.Report) []string {
 	out := make([]string, 0, len(r.Entrypoints))
 	for _, e := range r.Entrypoints {
 		var b strings.Builder
 		b.WriteString(plainName(e.Lane) + ": ")
-		if e.Source == plugin.LibraryEntrypointsSourceDeclared {
+		unlisted := entryUnlisted(e)
+		switch {
+		case e.Source == plugin.LibraryEntrypointsSourceDeclared:
 			fmt.Fprintf(&b, "declared, resolved as %s", mdCode(e.Input))
-		} else {
+		case unlisted:
+			b.WriteString("nothing declared")
+		default:
 			b.WriteString("inferred, nothing declared")
+		}
+		if unlisted {
+			b.WriteString("; entry points not listed because dependency code was not read.")
+			out = append(out, b.String())
+			continue
 		}
 		kinds := make([]string, 0, len(e.Effective))
 		for k := range e.Effective {
@@ -33,6 +45,22 @@ func entrypointLines(r report.Report) []string {
 		slices.Sort(kinds)
 		for _, k := range kinds {
 			b.WriteString("; " + entrypointKind(k, e.Effective[k]))
+		}
+		if entryOverridden(e) {
+			// A kind the record does not report as analysed is outside the override's reach (the go
+			// lane infers its mains but reports only the library set), so it is not "changed".
+			for _, k := range slices.Sorted(maps.Keys(e.Inferred)) {
+				if eff, ok := e.Effective[k]; ok && !slices.Equal(e.Inferred[k], eff) {
+					b.WriteString("; inferred before the override: " + entrypointKind(k, e.Inferred[k]))
+				}
+			}
+			if len(e.Denied) > 0 {
+				denied := make([]string, 0, len(e.Denied))
+				for _, s := range e.Denied {
+					denied = append(denied, mdCode(s))
+				}
+				b.WriteString("; removed by: " + strings.Join(denied, ", "))
+			}
 		}
 		// Only an unmatched include withholds verdicts; an unmatched "!" exclude removes nothing.
 		var includes, excludes []string
@@ -56,6 +84,27 @@ func entrypointLines(r report.Report) []string {
 		return nil
 	}
 	return out
+}
+
+// entryOverridden reports whether the caller's declaration shaped the record: a declared source, or
+// an input that says something other than auto.
+func entryOverridden(e plugin.EntryRootRecord) bool {
+	return e.Source == plugin.LibraryEntrypointsSourceDeclared || (e.Input != "" && e.Input != plugin.LibraryEntrypointsAuto)
+}
+
+// entryUnlisted reports a js record the lane emitted without reading dependency code: it reports no
+// inferred set and every kind in Effective is empty, which says nothing was listed, not that there
+// are none. Only js records are checked: an empty go set (a declared none) is a real answer.
+func entryUnlisted(e plugin.EntryRootRecord) bool {
+	if e.Lane != plugin.EntryLaneJS || e.Inferred != nil {
+		return false
+	}
+	for _, roots := range e.Effective {
+		if len(roots) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func entrypointKind(kind string, roots []string) string {

@@ -89,7 +89,8 @@ func siblingInstanceFindings(analysis context.Context, areq assessment.Request, 
 // finding maps one advisory's S1–S6 artifacts into a single report.AdvisoryFinding,
 // applying the deterministic verdict rule (inv. 5):
 //
-//   - disqualification_discovery disqualified  → VerdictDisqualified.
+//   - disqualification_discovery disqualified  → VerdictDisqualified, or VerdictNotExploitable
+//     on the same basis carrying the stage's Assumptions when the disqualification rests on one.
 //   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate, or
 //     VerdictUndetermined/advisory_range_absent with the path kept when the advisory
 //     carries no affected range the version axis can bound for the admitted package, or
@@ -138,6 +139,13 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				Basis:  disqualBasis(res.Reason),
 				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck),
 			},
+		}
+		// A version placed outside only under an assumption about a pseudo-version's ancestry is
+		// not proven out of scope: it is refuted under that stated assumption.
+		if len(res.Assumptions) > 0 {
+			f.Verdict = report.VerdictNotExploitable
+			f.Evidence.Detail = versionOutsideAssumingDetail + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck)
+			f.Evidence.Assumptions = res.Assumptions
 		}
 	case hasCandidate(store, assessmentID):
 		shown, shownFromTaint, shownOK := evidencePath(store, assessmentID)
@@ -1075,6 +1083,10 @@ func disqualBasis(reason string) verdict.NonExploitableBasis {
 		return verdict.BasisNone
 	}
 }
+
+// versionOutsideAssumingDetail is the detail of a version-axis refute that holds only under the
+// row's stated assumptions about a pseudo-version's ancestry.
+const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumption about a pseudo-version's ancestry"
 
 // disqualDetail renders the customer-visible grounds for a disqualification. Each reason code
 // gets its own arm: the version and symbol axes record an adjudicated comparison that cleared

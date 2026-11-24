@@ -239,7 +239,7 @@ findings:
     package: "golang.org/x/crypto@v0.32.0"
     truth: reachable
     floor: undetermined
-    note: "GHSA range <0.52.0; GO-2026-5023 introduced 0.43.0, where VerifiedPublicKeyCallback first appears, so govulncheck reports nothing at v0.32.0 (ferralon-ai/tracker#884)"
+    note: "GHSA range <0.52.0; GO-2026-5023 introduced 0.43.0, where VerifiedPublicKeyCallback first appears, so govulncheck reports nothing at v0.32.0; truth pending ferralon-ai/tracker#884"
   - advisory: CVE-2026-46597
     package: "golang.org/x/crypto@v0.32.0"
     truth: reachable

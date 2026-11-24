@@ -26,6 +26,9 @@ type Context interface {
 	MultipartForm() (*http.Form, error)
 	QueryString() string
 	RealIP() string
+	// Scheme is the request's scheme, read from X-Forwarded-Proto and its variants when
+	// the connection is not TLS: a value the client sent.
+	Scheme() string
 	Bind(i interface{}) error
 	// Path is the registered route path: no request data.
 	Path() string

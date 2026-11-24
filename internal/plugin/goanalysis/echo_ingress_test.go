@@ -65,7 +65,7 @@ var echoForms = []struct {
 // result (for Bind, its bound target) to sink<name>.
 var echoAccessors = []string{
 	"Param", "ParamValues", "QueryParam", "QueryParams", "FormValue", "FormParams", "Request", "Cookie", "Bind",
-	"Cookies", "FormFile", "MultipartForm", "QueryString", "RealIP",
+	"Cookies", "FormFile", "MultipartForm", "QueryString", "RealIP", "Scheme",
 }
 
 func echoIngresses(t *testing.T) []plugin.Ingress {
@@ -111,6 +111,14 @@ func TestEcho_RouteIngressHeadsTaintTrace(t *testing.T) {
 	}
 	for _, a := range echoAccessors {
 		want[echoFixtureSCIP+"sink"+a+"()."] = echoFixtureSCIP + "server#accessorsForm()."
+	}
+	// A custom context embedding echo.Context promotes the accessors it does not
+	// override: each is a call on the embedding struct, not on the interface.
+	for _, a := range []string{"CustomParam", "CustomRealIP"} {
+		want[echoFixtureSCIP+"sink"+a+"()."] = echoFixtureSCIP + "server#customForm()."
+	}
+	for _, a := range []string{"CustomAsserted", "CustomMethod"} {
+		want[echoFixtureSCIP+"sink"+a+"()."] = echoFixtureSCIP + "server#customAssertedForm()."
 	}
 	negSinks := []string{
 		echoFixtureSCIP + "sinkNotRequestData().",

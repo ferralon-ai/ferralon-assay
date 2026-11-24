@@ -321,16 +321,30 @@ type goModules map[string]bool
 // and that errs only toward "in the build", which keeps an advisory blocking. A narrower source,
 // such as the packages a build actually loads, would err toward collapsing; it qualifies only if
 // it is the build's complete package set.
+//
+// Any Go or scan-wide limit makes the list unknown, except a nested module whose limit names it and
+// everything its go.mod requires (boundedNestedModule). That module is resolved apart from the build,
+// so the build's own list is still whole; its named modules join the list, so an advisory naming one
+// of them counts it as in the build rather than outside it.
 func goModulesOf(sbom report.SBOM, limits []report.PartialityNote) goModules {
 	if sbom.GoBuildList != plugin.BuildListGoModGraph || sbom.GoMainModule == "" {
 		return nil
 	}
+	var nested []string
 	for _, n := range limits {
-		if n.Ecosystem == "" || n.Ecosystem == "Go" {
+		if n.Ecosystem != "" && n.Ecosystem != "Go" {
+			continue
+		}
+		paths, ok := boundedNestedModule(n)
+		if !ok {
 			return nil
 		}
+		nested = append(nested, paths...)
 	}
 	mods := goModules{sbom.GoMainModule: true}
+	for _, path := range nested {
+		mods[path] = true
+	}
 	for _, path := range sbom.GoWorkspaceModules {
 		mods[path] = true
 	}
@@ -345,6 +359,26 @@ func goModulesOf(sbom report.SBOM, limits []report.PartialityNote) goModules {
 		}
 	}
 	return mods
+}
+
+// boundedNestedModule returns the module paths a Go inventory nested-module limit names, and whether
+// it is bounded: scoped to one directory, with Targets naming the module and every module its go.mod
+// requires (a go 1.17 or later go.mod; the inventory leaves an older one's Targets empty). The limit
+// the inventory declares when its walk of the checkout was incomplete has no directory and may have
+// missed a module, so it is not bounded, and neither is a target that is not a Go package URL.
+func boundedNestedModule(n report.PartialityNote) ([]string, bool) {
+	if n.Reason != plugin.PartialReasonNestedModule || n.Path == "" || len(n.Targets) == 0 {
+		return nil, false
+	}
+	paths := make([]string, 0, len(n.Targets))
+	for _, t := range n.Targets {
+		path, ok := strings.CutPrefix(t, "pkg:golang/")
+		if !ok || path == "" {
+			return nil, false
+		}
+		paths = append(paths, path)
+	}
+	return paths, true
 }
 
 // holding returns the module that holds an import path: the longest module path that is the path

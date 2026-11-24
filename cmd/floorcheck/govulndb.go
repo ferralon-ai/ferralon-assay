@@ -251,7 +251,7 @@ func cutVulnDB(ctx context.Context, src vulnDBSource, names map[string]bool, out
 			return nil, err
 		}
 		var buf bytes.Buffer
-		if err := json.Indent(&buf, data, "", "  "); err != nil {
+		if err := json.Indent(&buf, bytes.TrimSpace(data), "", "  "); err != nil {
 			return nil, fmt.Errorf("ID/%s.json: %w", e.ID, err)
 		}
 		files["ID/"+e.ID+".json"] = append(buf.Bytes(), '\n')

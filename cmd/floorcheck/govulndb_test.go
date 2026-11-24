@@ -115,6 +115,29 @@ func TestCutVulnDB(t *testing.T) {
 	}
 }
 
+// TestCutVulnDBIdempotent pins that a slice cut from a slice is byte-identical, so re-cutting a
+// committed slice (as a re-baseline does from a local database) moves no pin by itself.
+func TestCutVulnDBIdempotent(t *testing.T) {
+	names := map[string]bool{"CVE-1": true, "GO-2": true}
+	first, second := t.TempDir(), t.TempDir()
+	for _, c := range []struct{ from, out string }{{upstreamDB(t), first}, {first, second}} {
+		src, err := newVulnDBSource(c.from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cutVulnDB(context.Background(), src, names, c.out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := treeDigest(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := treeDigest(second); a != b {
+		t.Errorf("a slice cut from a slice digests %s, the slice %s", b, a)
+	}
+}
+
 func readJSON(t *testing.T, p string, v any) {
 	t.Helper()
 	data, err := os.ReadFile(p)

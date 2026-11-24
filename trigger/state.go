@@ -566,6 +566,12 @@ func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *repo
 // assessment that judged a refutation, so a baseline of path-only or cgo-unresolved rows holds none
 // (its entrypoints[] record is not read: those rows do not rest on the statement).
 // A recorded statement that does not parse counts as another.
+//
+// The js lane's statement is compared the same way, from the js record of entrypoints[]: every js
+// assessment records its statement (a JavaScript refutation is judged against the override, so the
+// record is the statement the rows rest on, whether or not an override removed anything). A report
+// with no js record reads as auto. A scan of another language states none for js, so it never reads
+// as a restatement of what a js lane recorded.
 func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
 	was := plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}
 	for _, r := range stored.LibraryEntrypoints {
@@ -577,7 +583,29 @@ func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
 			return true
 		}
 	}
-	return !pipeline.SameLibraryStatement(was, pipeline.LibraryStatementOf(opts...))
+	if !pipeline.SameLibraryStatement(was, pipeline.LibraryStatementOf(opts...)) {
+		return true
+	}
+	return jsRestated(stored, opts)
+}
+
+// jsRestated reports whether the run states a js entry-point override other than the one the stored
+// Report's js record was resolved from.
+func jsRestated(stored *report.Report, opts []pipeline.AssessOption) bool {
+	var was *plugin.EntryOverride
+	for _, r := range stored.Entrypoints {
+		if r.Lane != plugin.EntryLaneJS {
+			continue
+		}
+		parsed, err := plugin.ParseEntryOverrides(r.Input)
+		if err != nil {
+			return true
+		}
+		if o, ok := parsed[plugin.EntryLaneJS]; ok {
+			was = &o
+		}
+	}
+	return !pipeline.SameEntryOverride(was, pipeline.JSStatementOf(opts...))
 }
 
 // restatedRetry is the stored rows a cve-watch run assesses again because the entry-point statement

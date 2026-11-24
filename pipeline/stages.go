@@ -3059,6 +3059,16 @@ func (s reachabilityIngress) entrypointsFor(store artifact.Store, caseID string)
 	return &e, nil
 }
 
+// entryOverrideFor is the override of the entrypoints input that the lane reads from its request,
+// nil for a lane that reads none or an input that states nothing for it. Only the js lane reads one.
+// entrypointsFor has already refused what the lane cannot honour.
+func (s reachabilityIngress) entryOverrideFor() *plugin.EntryOverride {
+	if s.plugin == nil || s.plugin.Language() != plugin.EntryLaneJS {
+		return nil
+	}
+	return JSEntryOverride(s.entrypoints)
+}
+
 // reachAttribution is what countedReachPaths attributes a Go reach path by: the names of the
 // selected affected package, every other affected package the build carries joined to its ranges,
 // and the scanned project's module path.
@@ -3254,6 +3264,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		Package:            admittedPackagePURL(store, c.ID),
 		DependencyCache:    depCache,
 		LibraryEntrypoints: entrypoints,
+		EntryOverride:      s.entryOverrideFor(),
 	})
 	if err != nil {
 		return err

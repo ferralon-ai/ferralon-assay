@@ -29,6 +29,7 @@ func TestRouteEntrypoints(t *testing.T) {
 		in       string
 		scanLane string
 		want     *plugin.LibraryEntrypoints
+		wantJS   bool
 		wantErr  string
 	}{
 		{name: "nothing stated", in: "", scanLane: "go"},
@@ -58,7 +59,14 @@ func TestRouteEntrypoints(t *testing.T) {
 		{name: "go library beside go main", in: "go:library=none go:main=cmd/x", scanLane: "go", wantErr: "lane go " + refusal},
 		{name: "java", in: "java:main=class:com.acme.Main", scanLane: "java", wantErr: "lane java " + refusal},
 		{name: "kotlin", in: "!kotlin:handler=src/A.kt", scanLane: "kotlin", wantErr: "lane kotlin " + refusal},
-		{name: "js", in: "!js:bin=bin:storybook", scanLane: "js", wantErr: "lane js " + refusal},
+		{name: "js bin deny", in: "!js:bin=bin:storybook", scanLane: "js", wantJS: true},
+		{name: "js script deny", in: "!js:script=npm:x/y.js", scanLane: "js", wantJS: true},
+		{name: "js bin deny on a go scan still routes", in: "!js:bin=bin:storybook", scanLane: "go", wantJS: true},
+		{name: "js module deny", in: "!js:module=src/a.js", scanLane: "js", wantErr: "js:module cannot be overridden"},
+		{name: "js module none", in: "js:module=none", scanLane: "js", wantErr: "js:module cannot be overridden"},
+		{name: "js bin allow", in: "js:bin=bin:x", scanLane: "js", wantErr: "not accepted yet for js"},
+		{name: "js bin none", in: "js:bin=none", scanLane: "js", wantErr: "not accepted yet for js"},
+		{name: "js script allow", in: "js:script=npm:x/y.js", scanLane: "js", wantErr: "not accepted yet for js"},
 		{name: "python", in: "python:none", scanLane: "python", wantErr: "lane python " + refusal},
 		{name: "dotnet", in: "dotnet:main=none", scanLane: "dotnet", wantErr: "lane dotnet " + refusal},
 		{name: "a clause for a lane the scan does not run", in: "js:none", scanLane: "go", wantErr: "lane js " + refusal},
@@ -66,8 +74,8 @@ func TestRouteEntrypoints(t *testing.T) {
 		{name: "js lane auto", in: "js:auto", scanLane: "js"},
 		{name: "js lane auto, scan elsewhere", in: "js:auto", scanLane: "go"},
 		{name: "java kind auto", in: "java:main=auto", scanLane: "java"},
-		{name: "js auto with a deny", in: "js:auto !js:x", scanLane: "js", wantErr: "lane js " + refusal},
-		{name: "js auto with a path", in: "js:auto js:x", scanLane: "js", wantErr: "lane js " + refusal},
+		{name: "js auto with a lane-wide deny", in: "js:auto !js:x", scanLane: "js", wantJS: true},
+		{name: "js auto with a path", in: "js:auto js:x", scanLane: "js", wantErr: "not accepted yet for js"},
 		{name: "java kind auto beside a kind deny", in: "java:main=auto !java:handler=x", scanLane: "java", wantErr: "lane java " + refusal},
 		{name: "every lane auto", in: "go:auto java:auto kotlin:auto js:auto python:auto dotnet:auto", scanLane: "java"},
 		{name: "bare none, go scan", in: "none", scanLane: "go", wantErr: "write go:library=none"},
@@ -97,6 +105,9 @@ func TestRouteEntrypoints(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("routed = %+v, want %+v", got, tc.want)
+			}
+			if gotJS := JSEntryOverride(m); (gotJS != nil) != tc.wantJS && tc.in != "none" {
+				t.Errorf("js override = %+v, want one: %v", gotJS, tc.wantJS)
 			}
 		})
 	}
@@ -129,8 +140,8 @@ func TestRouteEntrypoints_KindAutoEveryLane(t *testing.T) {
 				}
 
 				deny := auto + " !" + lane + ":" + kind + "=x/y"
-				if lane == "go" && kind == "library" {
-					continue // the one clause a lane reads
+				if lane == "go" && kind == "library" || lane == "js" && kind != "module" {
+					continue // the clauses a lane reads
 				}
 				m, err = plugin.ParseEntryOverrides(deny)
 				if err != nil {

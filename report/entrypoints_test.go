@@ -245,3 +245,50 @@ func TestEntryRootsCarryInferredAndDenied(t *testing.T) {
 		t.Errorf("Upgrade dropped the record: %+v (%v)", got.Entrypoints, err)
 	}
 }
+
+// TestJSEntryRootsDoNotDrift: the js lane's record has no library_entrypoints twin to derive it
+// from, so it is kept as recorded: through the builder, a stored report's round trip, an inheriting
+// builder and beside the go lane's record, in lane order.
+func TestJSEntryRootsDoNotDrift(t *testing.T) {
+	js := plugin.EntryRootRecord{
+		Lane: plugin.EntryLaneJS, Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!js:bin=bin:storybook",
+		Effective: map[string][]string{plugin.EntryKindBin: {}, plugin.EntryKindScript: {"npm:tool/index.js"}},
+		Inferred:  map[string][]string{plugin.EntryKindBin: {"bin:storybook"}, plugin.EntryKindScript: {"npm:tool/index.js"}},
+		Denied:    []string{"!bin:storybook"},
+	}
+	lib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{"example.com/m/api"}}
+	goRec, _ := plugin.EntryRootRecordOf(lib)
+
+	recorded := NewBuilder(Subject{ResolvedCommit: "c"}).WithEntryRoots(js).Build()
+	both := NewBuilder(Subject{ResolvedCommit: "c"}).WithLibraryEntrypoints(lib).WithEntryRoots(js).Build()
+	for name, tc := range map[string]struct {
+		r    Report
+		want []plugin.EntryRootRecord
+	}{
+		"js alone":       {recorded, []plugin.EntryRootRecord{js}},
+		"beside the go":  {both, []plugin.EntryRootRecord{goRec, js}},
+		"recorded twice": {NewBuilder(Subject{ResolvedCommit: "c"}).WithEntryRoots(js).WithEntryRoots(js).Build(), []plugin.EntryRootRecord{js}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !reflect.DeepEqual(tc.r.Entrypoints, tc.want) {
+				t.Errorf("Entrypoints = %+v, want %+v", tc.r.Entrypoints, tc.want)
+			}
+		})
+	}
+
+	raw, err := json.Marshal(both)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read Report
+	if err := json.Unmarshal(raw, &read); err != nil {
+		t.Fatal(err)
+	}
+	next := NewBuilder(Subject{ResolvedCommit: "d"}).WithLibraryEntrypoints(read.LibraryEntrypoints...).WithEntryRoots(read.Entrypoints...).Build()
+	if !reflect.DeepEqual(next.Entrypoints, both.Entrypoints) {
+		t.Errorf("inherited entrypoints %+v, want %+v", next.Entrypoints, both.Entrypoints)
+	}
+	if got, err := Upgrade(read); err != nil || !reflect.DeepEqual(got.Entrypoints, both.Entrypoints) {
+		t.Errorf("Upgrade changed the records: %+v (%v)", got.Entrypoints, err)
+	}
+}

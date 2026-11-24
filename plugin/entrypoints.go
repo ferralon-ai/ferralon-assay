@@ -257,6 +257,38 @@ func EntryOverrideForLibraryEntrypoints(le LibraryEntrypoints) EntryOverride {
 	}
 }
 
+// RemovalOnlyRefusal reports why a lane that accepts removal of entry points only cannot honour o,
+// or "" when it can. overridable are the kinds the lane lets the caller remove; a clause of another
+// kind that asks for anything is refused, and one that states the default (plain auto) is not. An
+// allow, a "none" and a nominated list are refused at every scope: the lane would have to resolve
+// what the caller adds, and it does not yet. The reason is for the caller, not for the lane.
+func RemovalOnlyRefusal(o EntryOverride, overridable ...string) string {
+	plain := func(k KindOverride) bool {
+		return (k.Mode == "" || k.Mode == LibraryEntrypointsAuto) && len(k.Include) == 0 && len(k.Exclude) == 0
+	}
+	removalOnly := func(k KindOverride) bool {
+		return (k.Mode == "" || k.Mode == LibraryEntrypointsAuto) && len(k.Include) == 0
+	}
+	for _, kind := range sortedKeys(o.Kinds) {
+		if ko := o.Kinds[kind]; !slices.Contains(overridable, kind) && !plain(ko) {
+			return fmt.Sprintf("%s:%s cannot be overridden: only %s entry points can be removed", o.Lane, kind, strings.Join(overridable, " and "))
+		}
+	}
+	for _, kind := range sortedKeys(o.Kinds) {
+		if !removalOnly(o.Kinds[kind]) {
+			return notAcceptedYet(o.Lane)
+		}
+	}
+	if !removalOnly(o.KindOverride) {
+		return notAcceptedYet(o.Lane)
+	}
+	return ""
+}
+
+func notAcceptedYet(lane string) string {
+	return fmt.Sprintf("allow and none clauses are not accepted yet for %s, which accepts removal only: write !<selector>, for example !%s:bin=bin:<name>", lane, lane)
+}
+
 // entryScope accumulates the tokens of one scope while parsing.
 type entryScope struct {
 	auto, none       bool

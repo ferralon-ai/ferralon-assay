@@ -2,6 +2,7 @@ package jsanalysis
 
 import (
 	"context"
+	"slices"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -29,9 +30,21 @@ import (
 //
 // A load failure is a hard error (inv.4).
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
-	cg, closure, err := callGraphAndClosure(ctx, req.BuildDir, req.DependencyCache)
+	override, err := entryOverrideOf(req.EntryOverride)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
+	}
+	cg, closure, err := callGraphAndClosure(ctx, req.BuildDir, req.DependencyCache, override)
+	if err != nil {
+		return plugin.ReachabilityResult{}, err
+	}
+	var entryRoots *plugin.EntryRootRecord
+	switch {
+	case closure != nil && closure.Entry != nil:
+		entryRoots = closure.Entry
+	case override != nil:
+		// No closure was read to apply the statement to; it is recorded all the same.
+		entryRoots = unlistedRecord(override)
 	}
 	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: req.BuildDir})
 	if err != nil {
@@ -88,12 +101,17 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 			Detail:      "no installed copy of the package is loaded by a parsed first-party module, by a binary or module a package.json script or launch file names, or by anything those load",
 		}
 	}
+	if refutation != nil && closure != nil && len(closure.Removed) > 0 {
+		// The closure was built without the roots the caller removed, so the clear rests on that
+		// statement as well as on the load bound.
+		refutation.Assumptions = append(slices.Clone(refutation.Assumptions), overrideAssumption(override.Input, closure.Removed))
+	}
 	if len(reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
-		return plugin.ReachabilityResult{Partiality: plugin.Complete(), Paths: paths, Refutation: refutation}, nil
+		return plugin.ReachabilityResult{Partiality: plugin.Complete(), Paths: paths, Refutation: refutation, EntryRoots: entryRoots}, nil
 	}
 	part := plugin.Partial(sortedReasons(reasons)...)
 	part.Scoped = cg.Partiality.Scoped
-	return plugin.ReachabilityResult{Partiality: part, Paths: paths, Refutation: refutation}, nil
+	return plugin.ReachabilityResult{Partiality: part, Paths: paths, Refutation: refutation, EntryRoots: entryRoots}, nil
 }
 
 // ingressFirstPath finds the shortest path to sink from a discovered ingress, falling back

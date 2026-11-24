@@ -1,0 +1,533 @@
+[
+  {
+    "path": "github.com/andybalholm/brotli",
+    "vulns": [
+      {
+        "id": "GO-2026-6888",
+        "modified": "2026-11-05T22:55:15Z",
+        "fixed": "1.2.7"
+      }
+    ]
+  },
+  {
+    "path": "github.com/aws/aws-sdk-go",
+    "vulns": [
+      {
+        "id": "GO-2022-0635",
+        "modified": "2024-12-12T22:00:07Z"
+      },
+      {
+        "id": "GO-2022-0646",
+        "modified": "2024-12-13T15:52:31Z"
+      }
+    ]
+  },
+  {
+    "path": "github.com/docker/docker",
+    "vulns": [
+      {
+        "id": "GO-2026-4883",
+        "modified": "2026-11-23T20:03:11Z"
+      },
+      {
+        "id": "GO-2026-4887",
+        "modified": "2026-11-23T20:03:11Z"
+      }
+    ]
+  },
+  {
+    "path": "github.com/go-acme/lego/v4",
+    "vulns": [
+      {
+        "id": "GO-2025-3847",
+        "modified": "2025-08-11T17:25:05Z",
+        "fixed": "4.25.2"
+      }
+    ]
+  },
+  {
+    "path": "github.com/go-jose/go-jose/v3",
+    "vulns": [
+      {
+        "id": "GO-2026-4945",
+        "modified": "2026-05-26T22:49:18Z",
+        "fixed": "3.0.5"
+      }
+    ]
+  },
+  {
+    "path": "github.com/go-jose/go-jose/v4",
+    "vulns": [
+      {
+        "id": "GO-2026-4945",
+        "modified": "2026-05-26T22:49:18Z",
+        "fixed": "4.1.4"
+      }
+    ]
+  },
+  {
+    "path": "github.com/go-viper/mapstructure",
+    "vulns": [
+      {
+        "id": "GO-2025-3787",
+        "modified": "2025-07-28T19:56:54Z"
+      },
+      {
+        "id": "GO-2025-3900",
+        "modified": "2025-08-29T14:52:35Z"
+      }
+    ]
+  },
+  {
+    "path": "github.com/go-viper/mapstructure/v2",
+    "vulns": [
+      {
+        "id": "GO-2025-3787",
+        "modified": "2025-07-28T19:56:54Z",
+        "fixed": "2.3.0"
+      },
+      {
+        "id": "GO-2025-3900",
+        "modified": "2025-08-29T14:52:35Z",
+        "fixed": "2.4.0"
+      }
+    ]
+  },
+  {
+    "path": "github.com/klauspost/compress",
+    "vulns": [
+      {
+        "id": "GO-2026-5841",
+        "modified": "2026-07-27T16:16:22Z",
+        "fixed": "1.18.7"
+      },
+      {
+        "id": "GO-2026-6865",
+        "modified": "2026-11-05T22:54:32Z",
+        "fixed": "1.20.2"
+      }
+    ]
+  },
+  {
+    "path": "github.com/moby/moby",
+    "vulns": [
+      {
+        "id": "GO-2026-4883",
+        "modified": "2026-11-23T20:03:11Z"
+      },
+      {
+        "id": "GO-2026-4887",
+        "modified": "2026-11-23T20:03:11Z"
+      }
+    ]
+  },
+  {
+    "path": "github.com/moby/moby/v2",
+    "vulns": [
+      {
+        "id": "GO-2026-4883",
+        "modified": "2026-11-23T20:03:11Z",
+        "fixed": "2.0.0-beta.8"
+      },
+      {
+        "id": "GO-2026-4887",
+        "modified": "2026-11-23T20:03:11Z",
+        "fixed": "2.0.0-beta.8"
+      }
+    ]
+  },
+  {
+    "path": "github.com/quic-go/quic-go",
+    "vulns": [
+      {
+        "id": "GO-2025-4017",
+        "modified": "2025-11-05T18:41:07Z",
+        "fixed": "0.54.1"
+      },
+      {
+        "id": "GO-2025-4233",
+        "modified": "2025-12-15T20:37:41Z",
+        "fixed": "0.57.0"
+      },
+      {
+        "id": "GO-2026-5676",
+        "modified": "2026-07-07T16:52:19Z",
+        "fixed": "0.59.1"
+      }
+    ]
+  },
+  {
+    "path": "github.com/redis/go-redis",
+    "vulns": [
+      {
+        "id": "GO-2025-3540",
+        "modified": "2025-03-26T17:24:24Z"
+      },
+      {
+        "id": "GO-2025-3540",
+        "modified": "2025-03-26T17:24:24Z"
+      },
+      {
+        "id": "GO-2025-3540",
+        "modified": "2025-03-26T17:24:24Z"
+      }
+    ]
+  },
+  {
+    "path": "github.com/redis/go-redis/v7",
+    "vulns": [
+      {
+        "id": "GO-2025-3540",
+        "modified": "2025-03-26T17:24:24Z"
+      }
+    ]
+  },
+  {
+    "path": "github.com/redis/go-redis/v8",
+    "vulns": [
+      {
+        "id": "GO-2025-3540",
+        "modified": "2025-03-26T17:24:24Z"
+      }
+    ]
+  },
+  {
+    "path": "github.com/redis/go-redis/v9",
+    "vulns": [
+      {
+        "id": "GO-2025-3540",
+        "modified": "2025-03-26T17:24:24Z",
+        "fixed": "9.5.5"
+      },
+      {
+        "id": "GO-2025-3540",
+        "modified": "2025-03-26T17:24:24Z",
+        "fixed": "9.6.3"
+      },
+      {
+        "id": "GO-2025-3540",
+        "modified": "2025-03-26T17:24:24Z",
+        "fixed": "9.7.3"
+      }
+    ]
+  },
+  {
+    "path": "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc",
+    "vulns": [
+      {
+        "id": "GO-2026-6508",
+        "modified": "2026-09-28T16:43:40Z",
+        "fixed": "0.21.0"
+      }
+    ]
+  },
+  {
+    "path": "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp",
+    "vulns": [
+      {
+        "id": "GO-2026-4985",
+        "modified": "2026-05-26T22:48:49Z",
+        "fixed": "0.19.0"
+      }
+    ]
+  },
+  {
+    "path": "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp",
+    "vulns": [
+      {
+        "id": "GO-2026-4985",
+        "modified": "2026-05-26T22:48:49Z",
+        "fixed": "1.43.0"
+      }
+    ]
+  },
+  {
+    "path": "go.opentelemetry.io/otel/exporters/otlp/otlptrace",
+    "vulns": [
+      {
+        "id": "GO-2026-6505",
+        "modified": "2026-10-01T20:23:56Z",
+        "fixed": "1.45.0"
+      }
+    ]
+  },
+  {
+    "path": "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc",
+    "vulns": [
+      {
+        "id": "GO-2026-6505",
+        "modified": "2026-10-01T20:23:56Z",
+        "fixed": "1.45.0"
+      }
+    ]
+  },
+  {
+    "path": "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp",
+    "vulns": [
+      {
+        "id": "GO-2026-4985",
+        "modified": "2026-05-26T22:48:49Z",
+        "fixed": "1.43.0"
+      },
+      {
+        "id": "GO-2026-6505",
+        "modified": "2026-10-01T20:23:56Z",
+        "fixed": "1.45.0"
+      }
+    ]
+  },
+  {
+    "path": "go.opentelemetry.io/otel/exporters/zipkin",
+    "vulns": [
+      {
+        "id": "GO-2026-6505",
+        "modified": "2026-10-01T20:23:56Z",
+        "fixed": "1.45.0"
+      }
+    ]
+  },
+  {
+    "path": "go.opentelemetry.io/otel/sdk",
+    "vulns": [
+      {
+        "id": "GO-2026-4394",
+        "modified": "2026-11-23T20:02:36Z",
+        "fixed": "1.40.0"
+      },
+      {
+        "id": "GO-2026-5426",
+        "modified": "2026-07-24T18:35:55Z",
+        "fixed": "1.43.0"
+      },
+      {
+        "id": "GO-2026-6505",
+        "modified": "2026-10-01T20:23:56Z",
+        "fixed": "1.45.0"
+      },
+      {
+        "id": "GO-2026-6616",
+        "modified": "2026-10-01T20:24:10Z",
+        "fixed": "1.33.0"
+      }
+    ]
+  },
+  {
+    "path": "go.opentelemetry.io/otel/sdk/log",
+    "vulns": [
+      {
+        "id": "GO-2026-6615",
+        "modified": "2026-10-01T20:24:10Z",
+        "fixed": "0.21.0"
+      }
+    ]
+  },
+  {
+    "path": "golang.org/x/crypto",
+    "vulns": [
+      {
+        "id": "GO-2026-5932",
+        "modified": "2026-11-02T22:01:43Z",
+        "fixed": "0.58.1-0.20261009181718-2f1f834330b2"
+      }
+    ]
+  },
+  {
+    "path": "golang.org/x/crypto/openpgp",
+    "vulns": [
+      {
+        "id": "GO-2026-5932",
+        "modified": "2026-11-02T22:01:43Z"
+      }
+    ]
+  },
+  {
+    "path": "golang.org/x/net",
+    "vulns": [
+      {
+        "id": "GO-2025-3503",
+        "modified": "2026-04-16T20:42:32Z",
+        "fixed": "0.36.0"
+      },
+      {
+        "id": "GO-2026-4918",
+        "modified": "2026-05-07T19:21:40Z",
+        "fixed": "0.53.0"
+      },
+      {
+        "id": "GO-2026-5026",
+        "modified": "2026-11-23T20:03:04Z",
+        "fixed": "0.57.0"
+      },
+      {
+        "id": "GO-2026-6603",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "0.60.0"
+      },
+      {
+        "id": "GO-2026-6610",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "0.60.0"
+      },
+      {
+        "id": "GO-2026-6611",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "0.60.0"
+      },
+      {
+        "id": "GO-2026-6612",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "0.60.0"
+      },
+      {
+        "id": "GO-2026-6617",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "0.60.0"
+      }
+    ]
+  },
+  {
+    "path": "golang.org/x/text",
+    "vulns": [
+      {
+        "id": "GO-2026-5970",
+        "modified": "2026-08-10T22:42:36Z",
+        "fixed": "0.39.0"
+      }
+    ]
+  },
+  {
+    "path": "google.golang.org/grpc",
+    "vulns": [
+      {
+        "id": "GO-2026-6061",
+        "modified": "2026-07-27T15:30:50Z",
+        "fixed": "1.82.1"
+      },
+      {
+        "id": "GO-2026-6348",
+        "modified": "2026-09-15T18:39:25Z",
+        "fixed": "1.83.1"
+      },
+      {
+        "id": "GO-2026-6441",
+        "modified": "2026-09-15T18:39:25Z",
+        "fixed": "1.83.1"
+      }
+    ]
+  },
+  {
+    "path": "stdlib",
+    "vulns": [
+      {
+        "id": "GO-2022-1037",
+        "modified": "2024-05-20T16:03:47Z",
+        "fixed": "1.19.2"
+      },
+      {
+        "id": "GO-2023-1568",
+        "modified": "2024-05-20T16:03:47Z",
+        "fixed": "1.20.1"
+      },
+      {
+        "id": "GO-2023-1705",
+        "modified": "2024-05-20T16:03:47Z",
+        "fixed": "1.20.3"
+      },
+      {
+        "id": "GO-2023-2041",
+        "modified": "2024-05-20T16:03:47Z",
+        "fixed": "1.21.1"
+      },
+      {
+        "id": "GO-2023-2382",
+        "modified": "2024-05-20T16:03:47Z",
+        "fixed": "1.21.5"
+      },
+      {
+        "id": "GO-2024-2599",
+        "modified": "2024-05-20T16:03:47Z",
+        "fixed": "1.22.1"
+      },
+      {
+        "id": "GO-2024-2888",
+        "modified": "2024-06-04T22:48:55Z",
+        "fixed": "1.22.4"
+      },
+      {
+        "id": "GO-2025-3503",
+        "modified": "2026-04-16T20:42:32Z",
+        "fixed": "1.24.1"
+      },
+      {
+        "id": "GO-2026-4918",
+        "modified": "2026-05-07T19:21:40Z",
+        "fixed": "1.26.3"
+      },
+      {
+        "id": "GO-2026-5026",
+        "modified": "2026-11-23T20:03:04Z",
+        "fixed": "1.27.0-rc.3"
+      },
+      {
+        "id": "GO-2026-6603",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "1.26.9"
+      },
+      {
+        "id": "GO-2026-6603",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "1.27.2"
+      },
+      {
+        "id": "GO-2026-6610",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "1.26.9"
+      },
+      {
+        "id": "GO-2026-6610",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "1.27.2"
+      },
+      {
+        "id": "GO-2026-6611",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "1.26.9"
+      },
+      {
+        "id": "GO-2026-6611",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "1.27.2"
+      },
+      {
+        "id": "GO-2026-6612",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "1.26.9"
+      },
+      {
+        "id": "GO-2026-6612",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "1.27.2"
+      },
+      {
+        "id": "GO-2026-6617",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "1.26.9"
+      },
+      {
+        "id": "GO-2026-6617",
+        "modified": "2026-10-08T22:31:09Z",
+        "fixed": "1.27.2"
+      }
+    ]
+  },
+  {
+    "path": "toolchain",
+    "vulns": [
+      {
+        "id": "GO-2023-1839",
+        "modified": "2024-05-20T16:03:47Z",
+        "fixed": "1.20.5"
+      }
+    ]
+  }
+]

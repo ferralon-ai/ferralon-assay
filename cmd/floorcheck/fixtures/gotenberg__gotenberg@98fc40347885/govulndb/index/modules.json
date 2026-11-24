@@ -1,0 +1,21 @@
+[
+  {
+    "path": "github.com/gotenberg/gotenberg/v7",
+    "vulns": [
+      {
+        "id": "GO-2026-5060",
+        "modified": "2026-06-22T19:28:57Z"
+      }
+    ]
+  },
+  {
+    "path": "github.com/gotenberg/gotenberg/v8",
+    "vulns": [
+      {
+        "id": "GO-2026-5060",
+        "modified": "2026-06-22T19:28:57Z",
+        "fixed": "8.34.0"
+      }
+    ]
+  }
+]

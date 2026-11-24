@@ -317,10 +317,11 @@ func unrowedAdvisories(baseline *report.Report, advisories []assessment.VulnRef)
 // assessments run under req.Analysis, as the slow path's do: an advisory the scan stopped
 // before assessing gets a scan_cut_short row, and cause is that stop (ownStop), "" when the
 // pass cut none.
-func assessUnrowed(ctx context.Context, req PRInheritRequest, advisories []assessment.VulnRef) (findings []report.AdvisoryFinding, notes []report.PartialityNote, cause string) {
+func assessUnrowed(ctx context.Context, req PRInheritRequest, baseline *report.Report, advisories []assessment.VulnRef) (findings []report.AdvisoryFinding, notes []report.PartialityNote, cause string) {
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
+	advisories = bySignal(advisories, req.Advisories, baseline.Advisories, req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...))
 	passes := newAdvisoryPasses(analysis, requestsFor(advisories, req.Codebase), assessOpts)
 	defer passes.close()
 	for i, adv := range advisories {
@@ -381,9 +382,10 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// assessed again, not inherited.
 	entryChanged := restated(baseline, req.AssessOptions)
 	cut := 0
-	passes := newAdvisoryPasses(analysis, requestsFor(req.Advisories, req.Codebase), assessOpts)
+	advisories := bySignal(req.Advisories, req.Advisories, baseline.Advisories, req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...))
+	passes := newAdvisoryPasses(analysis, requestsFor(advisories, req.Codebase), assessOpts)
 	defer passes.close()
-	for i, adv := range req.Advisories {
+	for i, adv := range advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
@@ -671,7 +673,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	for i, w := range todo {
 		refs[i] = w.ref
 	}
-	prios := signalPriorities(refs, append(slices.Clone(req.Advisories), refs...), req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...))
+	prios := signalPriorities(refs, append(slices.Clone(req.Advisories), refs...), prior.Advisories, req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...))
 	order := make([]int, len(todo))
 	for i := range order {
 		order[i] = i

@@ -345,10 +345,12 @@ func TestRangeDispute_AliasUnderAssumption(t *testing.T) {
 		row      AdvisoryFacts
 		alias    AdvisoryFacts
 		disputed bool
+		// attributed: the line names the alias's bound, not one the row's own record carries.
+		attributed bool
 	}{
-		{"alias identical", disputeRecord([]string{"GHSA-w67g-5rqw-f597"}, pseudoFixed), disputeRecord([]string{"GO-2026-6278"}, pseudoFixed), false},
-		{"only the alias rests on the assumption", disputeRecord([]string{"GHSA-w67g-5rqw-f597"}, Range{Fixed: "v1.5.3", FixedVersion: "v1.5.3"}), disputeRecord([]string{"GO-2026-6278"}, pseudoFixed), false},
-		{"alias includes", disputeRecord([]string{"GHSA-w67g-5rqw-f597"}, pseudoFixed), disputeRecord([]string{"GO-2026-6278"}, Range{Introduced: "v1.5.3", Fixed: "v1.5.5", FixedVersion: "v1.5.5"}), true},
+		{"alias identical", disputeRecord([]string{"GHSA-w67g-5rqw-f597"}, pseudoFixed), disputeRecord([]string{"GO-2026-6278"}, pseudoFixed), false, false},
+		{"only the alias rests on the assumption", disputeRecord([]string{"GHSA-w67g-5rqw-f597"}, Range{Fixed: "v1.5.3", FixedVersion: "v1.5.3"}), disputeRecord([]string{"GO-2026-6278"}, pseudoFixed), false, true},
+		{"alias includes", disputeRecord([]string{"GHSA-w67g-5rqw-f597"}, pseudoFixed), disputeRecord([]string{"GO-2026-6278"}, Range{Introduced: "v1.5.3", Fixed: "v1.5.5", FixedVersion: "v1.5.5"}), true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := runDisputeDisqual(t, "GO-2026-6278", disputeSource{"GO-2026-6278": tc.row, "GHSA-w67g-5rqw-f597": tc.alias}, nil, installed)
@@ -360,6 +362,9 @@ func TestRangeDispute_AliasUnderAssumption(t *testing.T) {
 			}
 			if !res.Disqualified || res.Reason != ReasonVersionNotInRange || res.RangeDisputed != "" || len(res.Assumptions) != 1 || !strings.Contains(res.Assumptions[0], "aaaaaaaaaaaa") {
 				t.Fatalf("got %+v, want %s standing with one assumption about %s", res, ReasonVersionNotInRange, installed)
+			}
+			if got := strings.HasPrefix(res.Assumptions[0], "per GHSA-w67g-5rqw-f597: "); got != tc.attributed {
+				t.Fatalf("assumption %q attributed to the alias = %v, want %v", res.Assumptions[0], got, tc.attributed)
 			}
 		})
 	}

@@ -32,8 +32,8 @@ type disputeTarget struct {
 // set placing one of that package's versions inside it. A record that does not name the package, or
 // whose ranges are absent or unusable, says nothing about the version and disputes nothing. A record
 // that places a version outside only under an assumption about a pseudo-version's ancestry agrees
-// under that assumption, which is returned so the clear states it.
-func aliasRangeDispute(src AdvisorySource, aliases []string, targets []disputeTarget) (dispute string, assumptions []string, disputed bool) {
+// under that assumption, which is returned with the record's id so the clear states it.
+func aliasRangeDispute(src AdvisorySource, aliases []string, targets []disputeTarget) (dispute string, assumptions []aliasAssumption, disputed bool) {
 	if src == nil {
 		return "", nil, false
 	}
@@ -55,8 +55,8 @@ func aliasRangeDispute(src AdvisorySource, aliases []string, targets []disputeTa
 				if !known || !outside {
 					return fmt.Sprintf("advisory %s does not place %s outside its affected range", id, v), nil, true
 				}
-				for _, a := range as {
-					if !slices.Contains(assumptions, a) {
+				for _, line := range as {
+					if a := (aliasAssumption{advisory: id, line: line}); !slices.Contains(assumptions, a) {
 						assumptions = append(assumptions, a)
 					}
 				}
@@ -64,6 +64,21 @@ func aliasRangeDispute(src AdvisorySource, aliases []string, targets []disputeTa
 		}
 	}
 	return "", assumptions, false
+}
+
+// aliasAssumption is an assumption line an alias record's agreement rests on, with that record's id:
+// the line names the record's bound, which the row's own record may not carry.
+type aliasAssumption struct {
+	advisory, line string
+}
+
+// statedFor is the line as the row states it: unqualified when the row's own placement already
+// rests on it, else attributed to the alias record that carries the bound it names.
+func (a aliasAssumption) statedFor(own []string) string {
+	if slices.Contains(own, a.line) {
+		return a.line
+	}
+	return "per " + a.advisory + ": " + a.line
 }
 
 // factsRangesFor projects a record's ranges for one package exactly as advisory_intake projects the
@@ -136,7 +151,7 @@ func analyzerRangeDispute(ctx context.Context, p plugin.LanguagePlugin, req plug
 // source, or, when the analyzer could not be consulted, a note the cleared row discloses.
 // assumptions are the alias records' own assumption lines when they agree only under one; they are
 // meaningful only when dispute is empty.
-func (s disqualificationDiscovery) rangeDispute(ctx context.Context, c *assessment.Assessment, store artifact.Store, buildDir, goWork string, axis versionAxis, rngs []affectedRange, others []presentRanges) (dispute, note string, assumptions []string) {
+func (s disqualificationDiscovery) rangeDispute(ctx context.Context, c *assessment.Assessment, store artifact.Store, buildDir, goWork string, axis versionAxis, rngs []affectedRange, others []presentRanges) (dispute, note string, assumptions []aliasAssumption) {
 	module, coordinate := disputedPackage(store, c.ID)
 	src := s.src
 	if src == nil {

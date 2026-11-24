@@ -2848,9 +2848,10 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 			res = DisqualResult{Reason: ReasonInsufficient, RangeDisputed: dispute}
 		} else {
 			res.CrossCheck = note
+			own := res.Assumptions
 			for _, a := range aliasAssumptions {
-				if !slices.Contains(res.Assumptions, a) {
-					res.Assumptions = append(res.Assumptions, a)
+				if line := a.statedFor(own); !slices.Contains(res.Assumptions, line) {
+					res.Assumptions = append(res.Assumptions, line)
 				}
 			}
 		}

@@ -8,9 +8,9 @@ import (
 // Limit is one limit of the analysis that withheld a verdict: its reason code and, for a limit
 // scoped to part of the build, the package holding the code the analysis could not see, the place
 // inside it, and the packages that code could reach. Package and Targets are package URLs without a
-// version; a target of "" is first-party code. A limit with only a Reason holds for the whole run. A limit with Others stands for that
-// many scoped limits of its reason that the row does not list one by one; the scan's partiality
-// notes carry the package and path of each.
+// version; a target of "" is first-party code. A limit with only a Reason holds for the whole run.
+// A limit with Others stands for that many scoped limits of its reason that the row does not list
+// one by one; the scan's partiality notes carry the package and path of each.
 type Limit struct {
 	Reason  string   `json:"reason"`
 	Package string   `json:"package,omitempty"`

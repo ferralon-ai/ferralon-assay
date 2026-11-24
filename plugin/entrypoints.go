@@ -261,8 +261,11 @@ func EntryOverrideForLibraryEntrypoints(le LibraryEntrypoints) EntryOverride {
 // or "" when it can. overridable are the kinds the lane lets the caller remove; a clause of another
 // kind that asks for anything is refused, and one that states the default (plain auto) is not. An
 // allow, a "none" and a nominated list are refused at every scope: the lane would have to resolve
-// what the caller adds, and it does not yet. The reason is for the caller, not for the lane.
-func RemovalOnlyRefusal(o EntryOverride, overridable ...string) string {
+// what the caller adds, and it does not yet. A lane-wide removal must start with one of
+// laneSelectors, the selector forms that name a root of the lane across kinds; any other selector
+// can never match one and is refused with a pointer to them. The reason is for the caller, not for
+// the lane.
+func RemovalOnlyRefusal(o EntryOverride, overridable []string, laneSelectors ...string) string {
 	plain := func(k KindOverride) bool {
 		return (k.Mode == "" || k.Mode == LibraryEntrypointsAuto) && len(k.Include) == 0 && len(k.Exclude) == 0
 	}
@@ -281,6 +284,13 @@ func RemovalOnlyRefusal(o EntryOverride, overridable ...string) string {
 	}
 	if !removalOnly(o.KindOverride) {
 		return notAcceptedYet(o.Lane)
+	}
+	if len(laneSelectors) > 0 {
+		for _, sel := range o.Exclude {
+			if !slices.ContainsFunc(laneSelectors, func(p string) bool { return strings.HasPrefix(sel, p) }) {
+				return fmt.Sprintf("!%s:%s can never match: a %s entry point is named by %s", o.Lane, sel, o.Lane, strings.Join(laneSelectors, " or "))
+			}
+		}
 	}
 	return ""
 }

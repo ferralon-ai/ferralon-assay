@@ -124,7 +124,7 @@ func TestReachability_NoOverrideUnchanged(t *testing.T) {
 
 // TestReachability_EntryOverrideRefused: the lane refuses what it cannot honour instead of ignoring it.
 func TestReachability_EntryOverrideRefused(t *testing.T) {
-	for _, in := range []string{"js:bin=bin:x", "!js:module=src/a.js", "js:none"} {
+	for _, in := range []string{"js:bin=bin:x", "!js:module=src/a.js", "js:none", "!js:src/cli.js"} {
 		f, cache := entryFixture(t)
 		_, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: f.dir, Symbols: []string{"npm:idle@1.0.0#bad"}, DependencyCache: cache, EntryOverride: jsOverride(t, in)})
 		if err == nil {
@@ -144,6 +144,72 @@ func TestReachability_EntryOverrideDropsItsOwnVeto(t *testing.T) {
 		closurePkg("used", map[string]string{"index.js": "exports.make = function make() { return { go() {} }; };\n"}),
 		closurePkg("idle", map[string]string{"index.js": "exports.bad = function bad() {};\n"}),
 		closurePkg("tool", map[string]string{"package.json": `{"name":"tool","version":"1.0.0","main":"index.js","bin":{"tool":""}}`}),
+	)
+	cache := f.diskCache(t)
+	for _, tc := range []struct {
+		override    string
+		wantRefuted bool
+	}{{"", false}, {"!js:bin=bin:tool", true}} {
+		req := plugin.ReachabilityRequest{BuildDir: f.dir, Symbols: []string{"npm:idle@1.0.0#bad"}, Package: "pkg:npm/idle@1.0.0", DependencyCache: cache}
+		if tc.override != "" {
+			req.EntryOverride = jsOverride(t, tc.override)
+		}
+		res, err := Reachability(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := res.Refutation != nil; got != tc.wantRefuted {
+			t.Errorf("override %q: refuted = %v, want %v", tc.override, got, tc.wantRefuted)
+		}
+		if tc.override != "" && !slices.Equal(res.EntryRoots.Denied, []string{"!bin:tool"}) {
+			t.Errorf("denied = %q", res.EntryRoots.Denied)
+		}
+	}
+}
+
+// TestReachability_EntryOverrideKeepsItsOwnCache: under one run cache a removing override and the
+// default each get their own closure, whichever runs first. A default run that read the narrowed
+// closure would clear on an assumption it never stated.
+func TestReachability_EntryOverrideKeepsItsOwnCache(t *testing.T) {
+	for _, order := range [][]string{{"!js:bin=bin:tool", ""}, {"", "!js:bin=bin:tool"}} {
+		f, cache := entryFixture(t)
+		ctx := WithRunCacheDir(context.Background(), t.TempDir())
+		for _, override := range order {
+			req := plugin.ReachabilityRequest{BuildDir: f.dir, Symbols: []string{"npm:idle@1.0.0#bad"}, Package: "pkg:npm/idle@1.0.0", DependencyCache: cache}
+			if override != "" {
+				req.EntryOverride = jsOverride(t, override)
+			}
+			res, err := Reachability(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := res.Refutation != nil, override != ""; got != want {
+				t.Fatalf("order %q, override %q: refuted = %v, want %v", order, override, got, want)
+			}
+			if override == "" {
+				if len(res.EntryRoots.Denied) > 0 || !slices.Equal(res.EntryRoots.Effective[plugin.EntryKindBin], []string{"npm:tool/bin/tool.js"}) {
+					t.Errorf("order %q: the default run's record carries a removal: %+v", order, res.EntryRoots)
+				}
+				continue
+			}
+			last := res.Refutation.Assumptions[len(res.Refutation.Assumptions)-1]
+			if !strings.Contains(last, override) {
+				t.Errorf("order %q: last assumption %q does not state %q", order, last, override)
+			}
+		}
+	}
+}
+
+// TestReachability_EntryOverrideDropsTheUnparsedFileVeto: a bin whose file the lane does not parse
+// withholds every clear until the caller removes it.
+func TestReachability_EntryOverrideDropsTheUnparsedFileVeto(t *testing.T) {
+	f := newDepFixture(t, map[string]string{
+		"index.js":     "const used = require('used');\nused.make().go();\n",
+		"package.json": `{"name":"app","version":"1.0.0","scripts":{"start":"tool --serve"}}`,
+	},
+		closurePkg("used", map[string]string{"index.js": "exports.make = function make() { return { go() {} }; };\n"}),
+		closurePkg("idle", map[string]string{"index.js": "exports.bad = function bad() {};\n"}),
+		closurePkg("tool", map[string]string{"package.json": `{"name":"tool","version":"1.0.0","bin":{"tool":"bin/tool.sh"}}`, "bin/tool.sh": "#!/bin/sh\n"}),
 	)
 	cache := f.diskCache(t)
 	for _, tc := range []struct {

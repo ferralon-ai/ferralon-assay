@@ -212,8 +212,10 @@ inputs:
       JavaScript lane takes '!' clauses that remove a script binary or script file it inferred from
       package.json, e.g. "!js:bin=bin:storybook". Any other clause that asks for something stops the
       run before it analyses anything, with the reason, and a clause that says 'auto' changes nothing.
-      A scan of another language ignores a clause for go or js. A not_exploitable verdict that holds only because of what you declared
-      carries that on the report as an assumption. library-entrypoints is the alias for go:library=;
+      A scan of another language ignores a clause for go or js that the lane would accept; a clause
+      no lane can honour (a js allow, 'none' or js:module clause, for one) stops the run on any scan.
+      A not_exploitable verdict that holds only because of what you declared carries that on the
+      report as an assumption. library-entrypoints is the alias for go:library=;
       give both only when they say the same thing.
     required: false
     default: ""

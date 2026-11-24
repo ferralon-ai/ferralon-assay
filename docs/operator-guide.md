@@ -57,7 +57,8 @@ from `package.json` scripts: `!js:bin=bin:<name>` takes out a binary a script ru
 `!js:bin=npm:<package>/<file>` or `!js:script=npm:<package>/<file>` takes out the file a binary or a
 script starts. A `package_not_loaded` clear that holds only because of a removal carries it on the
 report as an assumption, and on a JavaScript report `entrypoints[]` records what the lane inferred,
-what stands and the `!` selectors that removed something. A first-party module is always an entry
+what stands and the `!` selectors that removed something. A `!` clause with no kind must start with `npm:` or `bin:`, since a bare path names no
+script entry point and would never match; it stops the run. A first-party module is always an entry
 point, so `js:module` clauses, and `js:` clauses that add or say `none`, stop the run. Any other clause
 that asks for something, for another lane, for the Go lane as a whole or for its mains and handlers,
 stops the run before it analyses anything: `lane java does not accept entry-point overrides yet`. A bare `none` names every lane, so it binds the lane the scan runs

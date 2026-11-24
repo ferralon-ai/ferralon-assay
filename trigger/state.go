@@ -570,8 +570,9 @@ func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *repo
 // The js lane's statement is compared the same way, from the js record of entrypoints[]: every js
 // assessment records its statement (a JavaScript refutation is judged against the override, so the
 // record is the statement the rows rest on, whether or not an override removed anything). A report
-// with no js record reads as auto. A scan of another language states none for js, so it never reads
-// as a restatement of what a js lane recorded.
+// with no js record reads as auto. A scan of another language states the default for js, so a
+// stored js record that removed something reads as restated: the rows were reached under a removal
+// this run does not state.
 func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
 	was := plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}
 	for _, r := range stored.LibraryEntrypoints {

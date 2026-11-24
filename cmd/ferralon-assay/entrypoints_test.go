@@ -77,7 +77,7 @@ func TestEntrypointsOptions(t *testing.T) {
 		{name: "a clause for a lane the scan does not run", lang: "go", env: "js:none", wantErr: []string{"lane js does not accept entry-point overrides yet"}},
 		{name: "js lane auto on a js scan", lang: "js", env: "js:auto", wantStated: true},
 		{name: "java kind auto", lang: "java", env: "java:main=auto", wantStated: true},
-		{name: "js lane auto with a deny", lang: "js", env: "js:auto,!js:x", wantStated: true},
+		{name: "js lane auto with a deny", lang: "js", env: "js:auto,!js:bin:x", wantStated: true},
 		{name: "bare none on a go scan", lang: "go", env: "none", wantErr: []string{"write go:library=none"}},
 		{name: "bare none on a java scan", lang: "java", env: "none", wantErr: []string{"lane java does not accept entry-point overrides yet"}},
 		{name: "bare none on a scan no lane runs", lang: "cfamily", env: "none", wantStated: true},

@@ -14,6 +14,10 @@ import (
 // an entry point.
 var jsOverridable = []string{plugin.EntryKindBin, plugin.EntryKindScript}
 
+// jsLaneSelectors are the selector forms that name a js root across kinds. A lane-wide path selector
+// matches none of them.
+var jsLaneSelectors = []string{"npm:", "bin:"}
+
 // entryOverrideOf is the override the closure is built under, nil for none. It refuses what the lane
 // cannot honour, as the host's routing does: the request crosses a process boundary, and a lane that
 // ignored a statement it cannot read would analyse another set of entry points than the caller
@@ -25,7 +29,7 @@ func entryOverrideOf(o *plugin.EntryOverride) (*plugin.EntryOverride, error) {
 	if o.Lane != "" && o.Lane != plugin.EntryLaneJS {
 		return nil, fmt.Errorf("jsanalysis: entry override addresses lane %q, not js", o.Lane)
 	}
-	if why := plugin.RemovalOnlyRefusal(*o, jsOverridable...); why != "" {
+	if why := plugin.RemovalOnlyRefusal(*o, jsOverridable, jsLaneSelectors...); why != "" {
 		return nil, fmt.Errorf("jsanalysis: entry override: %s", why)
 	}
 	removes := len(o.Exclude) > 0

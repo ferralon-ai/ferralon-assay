@@ -74,7 +74,9 @@ assumptions:
 - no `plugin.Open` loads code at run time. A reachable one is declared as `plugin_load`. In a build
   with cgo off it loads nothing, and is declared as `plugin_load:cgo_off`: a `not_exploitable` row
   beside it says in its detail that it holds for `CGO_ENABLED=0` and that a build with cgo on was
-  not checked. On a platform that has no plugins nothing is declared;
+  not checked. With cgo on, a `not_exploitable` row resting on the build importing none of the
+  advisory's vulnerable packages carries the assumption that plugins are separate builds and were
+  not assessed. On a platform that has no plugins nothing is declared;
 - the analyzed program has the same packages and build configuration as the one govulncheck loads.
 
 A build with cgo off compiles none of its cgo files. Each one is read for calls into the advisory's

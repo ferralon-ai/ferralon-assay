@@ -59,6 +59,9 @@ var echoForms = []struct {
 	{"non-constant Group prefix", "server#dynamicForm().", "/dynamic/:id", "sinkDynamic"},
 	{"WrapHandler", "wrappedHandler#ServeHTTP().", "/wraph", "sinkWrapH"},
 	{"WrapHandler(http.HandlerFunc)", "server#netForm().", "/wrapf", "sinkWrapF"},
+	{"handler in a package var", "init$1().", "/var/:id", "sinkVar"},
+	{"handler in a struct field", "fieldForm().", "/field", "sinkField"},
+	{"handler from a factory", "makeHandler$1().", "/factory/:id", "sinkFactory"},
 }
 
 // echoAccessors lists each modeled echo.Context accessor; accessorsForm hands its
@@ -115,6 +118,7 @@ func TestEcho_RouteIngressHeadsTaintTrace(t *testing.T) {
 	negSinks := []string{
 		echoFixtureSCIP + "sinkNotRequestData().",
 		echoFixtureSCIP + "sinkNeverRegistered().",
+		echoFixtureSCIP + "sinkUnbound().",
 		echoFixtureSCIP + "sinkMiddleware().",
 		echoFixtureSCIP + "sinkLookalike().",
 	}
@@ -151,11 +155,16 @@ func TestEcho_RouteIngressHeadsTaintTrace(t *testing.T) {
 // that no router registers yields no ingress of any kind, and neither does
 // middleware: Pre, Use and Group middleware, the route middleware after a route's
 // handler, the handler closures each returns, and net/http middleware adapted by
-// WrapMiddleware.
+// WrapMiddleware. Nor is a handler bound so that the registered value is no one
+// function: a package var stored twice, a struct field holding two handlers, or a
+// factory returning its parameter.
 func TestEcho_UnregisteredHandlerAndMiddlewareAreNoIngress(t *testing.T) {
 	assertNoEchoIngress(t, echoIngresses(t),
 		"server#neverRegistered().",
 		"unregisteredFunc().",
+		"reboundA().", "reboundB().", // a package var stored twice
+		"twoA().", "twoB().", // a struct field holding two handlers
+		"paramHandler().", // returned by a factory that returns its parameter
 		"preMiddleware().", "preMiddleware$1().",
 		"useMiddleware().", "useMiddleware$1().",
 		"groupMiddleware().", "groupMiddleware$1().",
@@ -169,10 +178,13 @@ func TestEcho_UnregisteredHandlerAndMiddlewareAreNoIngress(t *testing.T) {
 // WrapHandler: the router-path clause), not the HandlerFunc adapter's ServeHTTP (a
 // handler reaching WrapHandler as an http.HandlerFunc in a variable, through
 // fwdRouter: the adapter clause), and not the closures echo's WrapHandler and
-// WrapMiddleware build.
+// WrapMiddleware build. The one exception is the closure the look-alike WrapHandler
+// returns: the look-alike is first-party code here, so it is a handler factory whose
+// closure is what echo calls, never unwrapped to the handler it takes.
 func TestEcho_OwnHandlersAndAdaptersAreNoIngress(t *testing.T) {
+	const lookalikeClosure = "scip-go gomod tegron.test/echomod/lookalike . tegron.test/echomod/lookalike/WrapHandler$1()."
 	for _, in := range echoIngresses(t) {
-		if in.Kind == "http_route" && !strings.HasPrefix(in.Symbol.SCIP, echoFixtureSCIP) {
+		if in.Kind == "http_route" && !strings.HasPrefix(in.Symbol.SCIP, echoFixtureSCIP) && in.Symbol.SCIP != lookalikeClosure {
 			t.Errorf("http_route ingress outside the fixture: %s (selector %q)", in.Symbol.SCIP, in.Selector)
 		}
 	}

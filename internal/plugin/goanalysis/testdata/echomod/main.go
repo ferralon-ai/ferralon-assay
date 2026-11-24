@@ -209,6 +209,7 @@ func main() {
 	e.Match([]string{"GET", "POST"}, "/match", s.matchForm)
 	e.GET("/mw/:id", s.routeMWForm, routeMiddleware, echo.WrapMiddleware(netMiddleware))
 	e.POST("/accessors", s.accessorsForm)
+	registerBound(e)
 
 	api := e.Group("/api", groupMiddleware)
 	api.Use(groupMiddleware)

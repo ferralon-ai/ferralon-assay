@@ -11,20 +11,12 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// resolvedEntrypoints is the entry-point disclosure of one build: the library set and the record
-// of it entrypoints[] states.
-type resolvedEntrypoints struct {
-	Library *plugin.ResolvedLibraryEntrypoints `json:"library"`
-	Roots   *plugin.EntryRootRecord            `json:"roots"`
-}
-
-// disclosure renders e, resolved over pkgs, as the result records it.
-func (e entrypoints) disclosure(pkgs []*packages.Package, buildDir string) resolvedEntrypoints {
-	lib := e.record()
-	rec, _ := plugin.EntryRootRecordOf(*lib)
+// disclosure renders e, resolved over pkgs, as the record entrypoints[] states.
+func (e entrypoints) disclosure(pkgs []*packages.Package, buildDir string) *plugin.EntryRootRecord {
+	rec, _ := plugin.EntryRootRecordOf(*e.record())
 	rec.Inferred = inferredEntrypoints(pkgs)
 	rec.Denied = e.denied(pkgs, buildDir)
-	return resolvedEntrypoints{Library: lib, Roots: &rec}
+	return &rec
 }
 
 // inferredEntrypoints is what auto nominates with nothing declared: the importable packages outside
@@ -78,12 +70,18 @@ func (e entrypoints) denied(pkgs []*packages.Package, buildDir string) []string 
 	return slices.Compact(out)
 }
 
-// withoutLoad records the entry points of a build no refutation made this request load. The record
-// is one per tree and statement per run: the run cache holds it, so the load a path advisory
+// withoutLoad records the entrypoints[] record of a build no refutation made this request load. The
+// record is one per tree and statement per run: the run cache holds it, so the load a path advisory
 // would not otherwise make happens for the first advisory only. A load that fails records nothing
-// and fails nothing: the advisory's result is what it was without the record.
+// and fails nothing: the advisory's result is what it was without the record. It sets EntryRoots
+// alone: the top-level library_entrypoints stays what a refutation judged, as the stored report's
+// restated check reads it.
 func withoutLoad(ctx context.Context, res plugin.ReachabilityResult, buildDir string, entry plugin.LibraryEntrypoints, load func() (*LoadResult, error)) plugin.ReachabilityResult {
-	key := append(loadCacheKey(ctx, buildDir), "entryroots", "base="+entry.Base, "statement="+entry.String())
+	stmt, err := json.Marshal(entry)
+	if err != nil {
+		return res
+	}
+	key := append(loadCacheKey(ctx, buildDir), "entryroots", string(stmt))
 	b, err := runCached(ctx, "entryroots", key, func() ([]byte, error) {
 		loaded, err := load()
 		if err != nil {
@@ -94,10 +92,10 @@ func withoutLoad(ctx context.Context, res plugin.ReachabilityResult, buildDir st
 	if err != nil {
 		return res
 	}
-	var d resolvedEntrypoints
-	if json.Unmarshal(b, &d) != nil || d.Library == nil {
+	var rec plugin.EntryRootRecord
+	if json.Unmarshal(b, &rec) != nil || rec.Lane == "" {
 		return res
 	}
-	res.LibraryEntrypoints, res.EntryRoots = d.Library, d.Roots
+	res.EntryRoots = &rec
 	return res
 }

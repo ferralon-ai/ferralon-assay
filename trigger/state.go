@@ -562,7 +562,9 @@ func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *repo
 
 // restated reports whether the run states a go library entry-point statement other than the one the
 // stored Report's refutations rest on, so the rows it holds were reached under another one. A Report
-// that records no golang set is read as auto: the lane records its set whenever a refutation exists.
+// that records no golang set is read as auto: the lane records library_entrypoints only on an
+// assessment that judged a refutation, so a baseline of path-only or cgo-unresolved rows holds none
+// (its entrypoints[] record is not read: those rows do not rest on the statement).
 // A recorded statement that does not parse counts as another.
 func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
 	was := plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}

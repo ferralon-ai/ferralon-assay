@@ -488,8 +488,11 @@ func entrypointRecords(sets []plugin.ResolvedLibraryEntrypoints) []plugin.EntryR
 
 // entrypointRecordsWith is entrypointRecords, with a lane's record from roots in place of the one
 // derived from the library set when it states that same set: the lane's own record adds what it
-// inferred and what the caller denied, and a record of another set (an inherited one beside a fresh
-// library set) is dropped rather than allowed to drift from library_entrypoints.
+// inferred and what the caller denied. A record of another set (an inherited one beside a fresh
+// library set) is dropped rather than allowed to drift from library_entrypoints. A lane with a
+// record in roots and no library set states the record as it is: the lane records its entry points
+// on assessments that judged no refutation, and library_entrypoints holds only the sets a refutation
+// rested on.
 func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plugin.EntryRootRecord) []plugin.EntryRootRecord {
 	records := entrypointRecords(sets)
 	for i, rec := range records {
@@ -502,6 +505,12 @@ func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plu
 			}
 		}
 	}
+	for _, r := range roots {
+		if !slices.ContainsFunc(records, func(x plugin.EntryRootRecord) bool { return x.Lane == r.Lane }) {
+			records = append(records, r)
+		}
+	}
+	sortRecordsByLane(records)
 	return records
 }
 

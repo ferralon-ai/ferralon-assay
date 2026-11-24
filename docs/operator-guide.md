@@ -42,7 +42,8 @@ holds only because of what you declared carries that declaration on the report a
 the Report lists the sets under `library_entrypoints`. On every Go report that assessed an advisory,
 `entrypoints[]` also records, beside the packages analysed (`effective`), what Assay inferred with
 nothing declared (`inferred`: the importable library packages and the build's `main` packages) and
-the `!` selectors that took one out (`denied`), so you can read the guess before you override it.
+the `!` selectors that took a library package out (`denied`), so you can read the guess before you
+override it. Mains are always entry points: `entrypoints` narrows or extends library packages only.
 
 `entrypoints` takes clauses of the form `<lane>:<selector>` or `<lane>:<kind>=<selector>`, over the
 lanes `go`, `java`, `kotlin`, `js`, `python` and `dotnet`. A bare `auto` changes nothing, and neither

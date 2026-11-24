@@ -78,10 +78,14 @@ func TestReconciledResult_EntryRootsOnEveryAssessment(t *testing.T) {
 				t.Fatalf("refutation = %+v, want one: %v", res.Refutation, tc.refuted)
 			}
 			lib, rec := res.LibraryEntrypoints, res.EntryRoots
-			if lib == nil || rec == nil {
-				t.Fatalf("library_entrypoints %+v, entry roots %+v: want both recorded", lib, rec)
+			if rec == nil {
+				t.Fatal("entry roots not recorded")
 			}
-			if lib.Source != tc.source || !slices.Equal(lib.Packages, tc.effective) || !slices.Equal(lib.Unmatched, tc.unmatched) {
+			// library_entrypoints stays what it was: a set only where a refutation was judged.
+			if tc.refuted != (lib != nil) {
+				t.Fatalf("library_entrypoints = %+v, want one: %v", lib, tc.refuted)
+			}
+			if lib != nil && (lib.Source != tc.source || !slices.Equal(lib.Packages, tc.effective) || !slices.Equal(lib.Unmatched, tc.unmatched)) {
 				t.Errorf("library_entrypoints = %+v, want source %q packages %q unmatched %q", lib, tc.source, tc.effective, tc.unmatched)
 			}
 			if rec.Lane != plugin.EntryLaneGo || rec.Source != tc.source || rec.Input != entry.String() {

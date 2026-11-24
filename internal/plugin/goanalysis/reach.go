@@ -251,15 +251,15 @@ func libraryView(ctx context.Context, scanned vulnScan, g reconcileGraph, buildD
 			return plugin.ReachabilityResult{}, evidence, fmt.Errorf("load for withholding a refutation: %w", err)
 		}
 		entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir)
+		res.EntryRoots = entrypoints.disclosure(loaded.Packages, buildDir)
 		if loaded.cgoUnresolved {
 			res.Refutation = nil
 			res.Partiality = withReason(res.Partiality, plugin.PartialReasonCgoUnresolved)
 		} else {
 			res = withholdRefutation(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env, entrypoints)
 			res = restateNotImported(ctx, res, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env)
+			res.LibraryEntrypoints = entrypoints.record()
 		}
-		d := entrypoints.disclosure(loaded.Packages, buildDir)
-		res.LibraryEntrypoints, res.EntryRoots = d.Library, d.Roots
 	} else {
 		res = withoutLoad(ctx, res, buildDir, entry, load)
 	}

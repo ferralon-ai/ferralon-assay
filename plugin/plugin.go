@@ -795,6 +795,13 @@ const (
 	RefutationPackageNotLoaded = "package_not_loaded"
 )
 
+// AssumptionPluginsNotAssessed is the assumption the Go lane attaches to an
+// analyzer_package_not_imported refutation when the program reaches plugin.Open with cgo on
+// (plugin_load). A plugin is a separate build: it may hold the vulnerable package, but it cannot
+// make this build contain a package the build does not import. A refutation resting on call paths
+// does not get it, since a loaded plugin can call back into this build's exported code.
+const AssumptionPluginsNotAssessed = "Go plugins loaded at run time are separate builds and were not assessed"
+
 // --- whole-graph dependency inventory (§4.1) ---
 
 // ResolveInventoryRequest carries the buildable module to resolve the whole dependency graph for.

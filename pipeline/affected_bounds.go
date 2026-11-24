@@ -286,12 +286,13 @@ func compareGoModVersions(a, b string) (int, bool) {
 // commits that commit contains. An installed pseudo-version a is ordered in two cases only:
 //   - above a release at or below its own base: a descends from that base, which is ordinary version
 //     order and assumes nothing;
-//   - against a pseudo-version bound on the same base with another revision and another commit time:
-//     the order is commit time, and assumption names both revisions and the ancestry that order
-//     assumes (a contains b's revision when it was committed later, and does not when earlier).
+//   - against a pseudo-version bound on the same base and major with another revision and another
+//     commit time, where commit time and version order agree: the order is commit time, and
+//     assumption names both revisions and the ancestry that order assumes (a contains b's revision when it was committed later, and does not when earlier).
 //
 // Every other installed pseudo-version stays unordered: one against a release above its base,
-// against a pseudo-version on another base, or against the same revision at another time.
+// against a pseudo-version on another base or major (every vX.0.0 pseudo-version has an empty base),
+// or against the same revision at another time.
 func compareGoModVersionsAssuming(a, b string) (int, string, bool) {
 	cb, bok := canonicalGoModVersion(b)
 	if !semver.IsValid(a) || !bok {
@@ -314,7 +315,7 @@ func compareGoModVersionsAssuming(a, b string) (int, string, bool) {
 	revA, errA := module.PseudoVersionRev(a)
 	revB, errB := module.PseudoVersionRev(cb)
 	baseB, errBase := module.PseudoVersionBase(cb)
-	if errA != nil || errB != nil || errBase != nil || baseA != baseB {
+	if errA != nil || errB != nil || errBase != nil || baseA != baseB || semver.Major(a) != semver.Major(cb) {
 		return 0, "", false
 	}
 	if revA == revB {
@@ -325,7 +326,7 @@ func compareGoModVersionsAssuming(a, b string) (int, string, bool) {
 	}
 	timeA, errA := module.PseudoVersionTime(a)
 	timeB, errB := module.PseudoVersionTime(cb)
-	if errA != nil || errB != nil || timeA.Equal(timeB) {
+	if errA != nil || errB != nil || timeA.Compare(timeB) != cmp {
 		return 0, "", false
 	}
 	relation, order := "contains", "later"

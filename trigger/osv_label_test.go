@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -186,4 +187,69 @@ func TestCVEWatch_NewOSVAdvisoryParentStopKeepsSiblingRow(t *testing.T) {
 			t.Errorf("undetermined osv row %v has reason %q, want %q", f.Package, f.UndeterminedReason, report.ReasonScanCutShort)
 		}
 	}
+}
+
+// TestCVEWatch_NewOSVAdvisoryUnresolvedParentMatchesBaseline: the parent example.com/lib is replaced
+// by a directory, so its version is unresolved and the assessment names no package for it; OSV
+// flags GO-S-1 against the resolved example.com/lib/v2. The osv rows are the baseline's: the parent
+// stays package-less and package_version_unresolved, never the sibling's coordinate and version.
+func TestCVEWatch_NewOSVAdvisoryUnresolvedParentMatchesBaseline(t *testing.T) {
+	dir := writeGoMod(t, "module example.com/target\n\ngo 1.21\n\nrequire (\n\texample.com/lib v1.2.0\n\texample.com/lib/v2 v2.0.0\n)\n\nreplace example.com/lib => ./lib\n")
+	opts := func() []pipeline.AssessOption {
+		return []pipeline.AssessOption{
+			pipeline.WithCheckout(fixedCheckout{dir: dir, lang: "go"}),
+			pipeline.WithPlugin(splitVerdictPlugin{refutingGoPlugin{inventory: plugin.Complete()}}),
+			pipeline.WithAdvisorySource(splitVerdictSource{}),
+		}
+	}
+	store := &memStore{}
+	if _, err := RunBaseline(context.Background(), store, BaselineRequest{
+		Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "base-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		Advisories:    passAdvisories("GO-S-1"),
+		AssessOptions: opts(),
+	}); err != nil {
+		t.Fatalf("RunBaseline: %v", err)
+	}
+	baseline := instanceOutcomes(store.state.Report.Advisories, "corpus")
+	if !slices.Contains(baseline, "<none> undetermined package_version_unresolved") {
+		t.Fatalf("fixture: baseline rows %v carry no package-less unresolved parent", baseline)
+	}
+	var osv []OSVAdvisory
+	for _, f := range store.state.Report.Advisories {
+		if f.Package != nil && f.Package.Name == "example.com/lib/v2" {
+			osv = append(osv, OSVAdvisory{ID: "GO-S-1", Package: *f.Package})
+		}
+	}
+	if len(osv) != 1 {
+		t.Fatalf("fixture: baseline has %d example.com/lib/v2 rows, want 1", len(osv))
+	}
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{result: OSVResult{Advisories: osv}}, CVEWatchRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: opts(),
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if got := instanceOutcomes(res.Report.Advisories, osvSource); !slices.Equal(got, baseline) {
+		t.Errorf("osv rows = %v, want the baseline's %v", got, baseline)
+	}
+}
+
+// instanceOutcomes lists GO-S-1's rows from source as "package@version verdict reason", sorted.
+func instanceOutcomes(rows []report.AdvisoryFinding, source string) []string {
+	var out []string
+	for _, f := range rows {
+		if f.Advisory.ID != "GO-S-1" || f.Advisory.Source != source {
+			continue
+		}
+		name := "<none>"
+		if f.Package != nil {
+			name = f.Package.Name + "@" + f.Package.Version
+		}
+		out = append(out, strings.TrimSpace(name+" "+string(f.Verdict)+" "+f.UndeterminedReason))
+	}
+	slices.Sort(out)
+	return out
 }

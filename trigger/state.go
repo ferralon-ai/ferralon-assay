@@ -668,9 +668,6 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		// fan assesses the sibling instances a baseline assesses with the advisory: a newly-relevant
 		// advisory, or a stored scan_cut_short row whose key holds only cut rows.
 		fan bool
-		// osv is the OSV query's package for a newly-relevant advisory, used only when the
-		// assessment adjudicated no instance (an undetermined row still records none).
-		osv *report.Package
 	}
 	var todo []watched
 	cutKeys := cutOnlyKeys(prior)
@@ -683,8 +680,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if _, ok := keyed[key]; ok {
 			continue
 		}
-		pkg := a.Package
-		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, key, true, &pkg})
+		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, key, true})
 		keyed[key] = struct{}{}
 	}
 	for _, f := range retry {
@@ -692,7 +688,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if _, ok := keyed[key]; ok {
 			continue
 		}
-		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, key, cutKeys[key], nil})
+		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, key, cutKeys[key]})
 		keyed[key] = struct{}{}
 	}
 	// Most likely exploited first, so a stop reaches the least likely last. A stable sort: with no
@@ -753,18 +749,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
-		advisory, instancePkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
-		pkg := instancePkg
-		if pkg == nil {
-			pkg = todo[i].osv
-		}
+		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
-			// The toolchain is not an SBOM dependency, so an undetermined row takes the instance
-			// the assessment adjudicated (nil for a toolchain subject), never the OSV query's
-			// package: pairing the advisory's top-level module with a go1.x.y toolchain release
-			// would emit a coordinate that does not exist.
-			f.Package = instancePkg
 			notes = append(notes, note)
 		}
 		reFindings[key] = f

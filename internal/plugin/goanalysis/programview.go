@@ -96,10 +96,16 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 		return nil
 	}
 	// The run found no call into any module, but the refutation names the first alone; every other
-	// module the advisory was matched to is ruled out by the same checks, or the view is empty.
+	// module the advisory was matched to is ruled out by the same checks, or the view is empty. A
+	// module ruled out only for the scanned platform adds its scope to the view's detail.
+	var scopes []string
 	for _, m := range findingModules(slices.Concat(scanned.findings, prog.findings)) {
-		if other := "pkg:golang/" + m; other != library.Package && !programRulesOut(ctx, ruled, run, other, scanned, loaded, g, buildDir, env) {
-			return nil
+		if other := "pkg:golang/" + m; other != library.Package {
+			scope, ok := programRulesOut(ctx, ruled, run, other, scanned, loaded, g, buildDir, env)
+			if !ok {
+				return nil
+			}
+			scopes = append(scopes, scope)
 		}
 	}
 	module := mains[0].Module.Path
@@ -111,21 +117,22 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 		}
 	}
 	refutation := *ruled.Refutation
-	refutation.Detail = "started from the main and init of " + strings.Join(binaries, ", ") + " only: " + refutation.Detail
+	refutation.Detail = "started from the main and init of " + strings.Join(binaries, ", ") + " only: " + refutation.Detail + strings.Join(scopes, "")
 	refutation.Assumptions = nil
 	return &plugin.ProgramView{Module: module, Binaries: binaries, Refutation: refutation}
 }
 
 // programRulesOut reports whether the program view's checks hold for module, another module the
 // advisory was matched to than the one ruled refutes: the run declares no limit that says a step did
-// not run for it, and neither a file the build left out nor a call reflection makes may reach it. A
-// check that keeps the refutation only with a scope of its own does not rule it out, since the
-// view's detail states the refuted module's scope alone. run is the program run's partiality before
-// those checks ran for the refuted module: a scope they kept the refutation with is that module's,
-// not a step the run left undone for this one.
-func programRulesOut(ctx context.Context, ruled plugin.ReachabilityResult, run plugin.Partiality, module string, scanned vulnScan, loaded *LoadResult, g reconcileGraph, buildDir string, env []string) bool {
+// not run for it, and neither a file the build left out nor a call reflection makes may reach it.
+// When the left-out-file check keeps the refutation only for the scanned platform, it returns the
+// scope that check stated, for the view's detail to carry; any other change to the refutation does
+// not rule the module out. run is the program run's partiality before those checks ran for the
+// refuted module: a scope they kept the refutation with is that module's, not a step the run left
+// undone for this one.
+func programRulesOut(ctx context.Context, ruled plugin.ReachabilityResult, run plugin.Partiality, module string, scanned vulnScan, loaded *LoadResult, g reconcileGraph, buildDir string, env []string) (string, bool) {
 	if programRunPartial(run, module) {
-		return false
+		return "", false
 	}
 	r := *ruled.Refutation
 	r.Package = module
@@ -133,7 +140,14 @@ func programRulesOut(ctx context.Context, ruled plugin.ReachabilityResult, run p
 	one.Refutation = &r
 	one = withholdForLeftOutFiles(ctx, one, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env)
 	one = withholdForReflectReach(one, scanned, g.ReflectReach)
-	return one.Refutation != nil && one.Refutation.Detail == r.Detail
+	if one.Refutation == nil {
+		return "", false
+	}
+	scope, ok := strings.CutPrefix(one.Refutation.Detail, r.Detail)
+	if !ok || scope != "" && !strings.HasPrefix(scope, "; scope: decided for ") {
+		return "", false
+	}
+	return scope, true
 }
 
 // inherentReasons are the run-wide limits the program run may declare and still answer: the call

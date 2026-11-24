@@ -292,7 +292,8 @@ func TestProgramView_OtherPlatformScope(t *testing.T) {
 
 // TestProgramView_SecondModuleOwnScope: with the first module's refutation scoped to another
 // platform, a second module the advisory was matched to is still checked for left-out files and
-// reflection of its own, and any of them leaves no view.
+// reflection of its own. A left-out file that keeps it only for the scanned platform adds its scope
+// to the view's detail; reflection, or a left-out file the check cannot trace, leaves no view.
 func TestProgramView_SecondModuleOwnScope(t *testing.T) {
 	base := map[string]string{
 		"go.mod":                 "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/vulnmod v0.0.0\n\texample.com/xmod v0.0.0\n)\n\nreplace example.com/vulnmod => ./_vulnmod\n\nreplace example.com/xmod => ./_xmod\n",
@@ -311,15 +312,17 @@ func TestProgramView_SecondModuleOwnScope(t *testing.T) {
 	defer func(prev func(context.Context, string, []string, []string) ([]byte, error)) { programStream = prev }(programStream)
 	programStream = func(context.Context, string, []string, []string) ([]byte, error) { return []byte(out), nil }
 	for _, tc := range []struct {
-		name    string
-		extra   map[string]string
-		reflect map[string][]string
-		want    bool
+		name      string
+		extra     map[string]string
+		reflect   map[string][]string
+		want      bool
+		wantScope bool
 	}{
-		{"second module not called", nil, nil, true},
-		{"second module called from another platform's file", map[string]string{"cmd/tool/x_windows.go": "package main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, false},
-		{"second module called behind a build tag", map[string]string{"cmd/tool/x_tag.go": "//go:build sometag\n\npackage main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, false},
-		{"reflection reaches the second module", nil, map[string][]string{"example.com/xmod": {"Bad"}}, false},
+		{"second module not called", nil, nil, true, false},
+		{"second module called from another platform's file", map[string]string{"cmd/tool/x_windows.go": "package main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, true, true},
+		{"second module called behind a build tag", map[string]string{"cmd/tool/x_tag.go": "//go:build sometag\n\npackage main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, true, true},
+		{"second module called from a file the build left out for no build constraint", map[string]string{"_leftout/x.go": "package main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, false, false},
+		{"reflection reaches the second module", nil, map[string][]string{"example.com/xmod": {"Bad"}}, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			files := map[string]string{}
@@ -334,6 +337,15 @@ func TestProgramView_SecondModuleOwnScope(t *testing.T) {
 			load, err := LoadProgram(ctx, dir)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if _, ok := tc.extra["_leftout/x.go"]; ok {
+				for i, p := range load.Packages {
+					if isMain(p) {
+						c := *p
+						c.IgnoredFiles = append(slices.Clone(c.IgnoredFiles), filepath.Join(dir, "_leftout", "x.go"))
+						load.Packages[i] = &c
+					}
+				}
 			}
 			loaded := func() (*LoadResult, error) { return load, nil }
 			env := append(os.Environ(), "GOWORK=off")
@@ -350,8 +362,14 @@ func TestProgramView_SecondModuleOwnScope(t *testing.T) {
 			if (v != nil) != tc.want {
 				t.Fatalf("program view = %+v, want present %v", v, tc.want)
 			}
-			if v != nil && !strings.Contains(v.Refutation.Detail, "scope: decided for GOOS=") {
-				t.Errorf("program view detail %q does not state the platform scope", v.Refutation.Detail)
+			if v == nil {
+				return
+			}
+			if !strings.Contains(v.Refutation.Detail, "may call into example.com/vulnmod") {
+				t.Errorf("program view detail %q does not state the first module's platform scope", v.Refutation.Detail)
+			}
+			if got := strings.Contains(v.Refutation.Detail, "may call into example.com/xmod"); got != tc.wantScope {
+				t.Errorf("program view detail %q states the second module's platform scope: %v, want %v", v.Refutation.Detail, got, tc.wantScope)
 			}
 		})
 	}

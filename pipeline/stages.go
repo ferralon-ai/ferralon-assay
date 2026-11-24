@@ -213,7 +213,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 		advisoryIntake{src: cfg.Source},
 		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
 		maliciousPresence{},
-		disqualificationDiscovery{},
+		disqualificationDiscovery{src: cfg.Source, plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability},
 	}
 	if cfg.DependencyAcquisition != nil {
 		stages = append(stages, dependencyAcquisition{acq: cfg.DependencyAcquisition, plugin: cfg.Plugin})
@@ -323,8 +323,8 @@ type AdvisoryFacts struct {
 	// Aliases are the advisory's alternate identifiers (CVE / GHSA ids), exactly as OSV
 	// records them. They are the keys the offline EPSS/KEV prioritization snapshot
 	// (package intel) is looked up by — EPSS and KEV are CVE-keyed, so a GO-/GHSA-keyed
-	// advisory only carries a likelihood signal through its CVE alias. Advisory-only
-	// context; aliases NEVER decide a verdict (inv. 5).
+	// advisory only carries a likelihood signal through its CVE alias. Aliases NEVER decide a
+	// verdict (inv. 5): the one other use, rangeDispute, may only withdraw a disqualification.
 	Aliases []string
 	// UpperExclusive is the single clean "affects < X" semver bound, or "" when the advisory
 	// has no single upper-exclusive range the disqualification predicate can use soundly.
@@ -1703,7 +1703,13 @@ func extractMaliciousAffectedVersions(store artifact.Store, caseID string) (vers
 
 // --- Stage 3: disqualification_discovery --------------------------------------
 
-type disqualificationDiscovery struct{}
+type disqualificationDiscovery struct {
+	// src and plugin, when set, are the other sources a version-axis disqualification must not
+	// contradict: the advisory's alias records and the Go analyzer's own database (rangeDispute).
+	src              AdvisorySource
+	plugin           plugin.LanguagePlugin
+	subjectToolchain bool
+}
 
 func (disqualificationDiscovery) Name() string              { return "disqualification_discovery" }
 func (disqualificationDiscovery) Status() assessment.Status { return assessment.StatusInventory }
@@ -1724,6 +1730,12 @@ type DisqualResult struct {
 	// pseudo-version placed outside a range only under an assumption about its revision's ancestry
 	// (compareGoModVersionsAssuming). Empty when the refute rests on version order alone.
 	Assumptions []string `json:"assumptions,omitempty"`
+	// RangeDisputed, on a row that proceeds, names the source that contradicted a version-axis
+	// disqualification: an alias record of the advisory, or the analyzer's own database.
+	RangeDisputed string `json:"range_disputed,omitempty"`
+	// CrossCheck, on a version-axis disqualification, discloses that the analyzer's own database
+	// could not be consulted, and why; the disqualification stands on the corpus range alone.
+	CrossCheck string `json:"cross_check,omitempty"`
 	// FixCommitUnanswered is the fix commit of an advisory on the scanned project's own package
 	// that everything but the scanned history would clear, when that history could not say whether
 	// it holds the commit (a shallow checkout). Set only when Disqualified is false.
@@ -2829,6 +2841,17 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	others := extractAlsoPresent(store, c.ID)
 	disqualified, reason, assumptions := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown)
 	res := DisqualResult{Disqualified: disqualified, Reason: reason, Assumptions: assumptions}
+	if disqualified && reason == ReasonVersionNotInRange {
+		dispute, note := s.rangeDispute(ctx, c, store, buildDir, goWork.File, axis, rngs, others)
+		if dispute != "" {
+			disqualified = false
+			res = DisqualResult{Reason: ReasonInsufficient, RangeDisputed: dispute}
+		} else {
+			res.CrossCheck = note
+		}
+	}
+	// A disputed row cannot be re-cleared here: a version-axis disqualification needs a resolved
+	// version, and fixCommitClears refuses any.
 	if !disqualified {
 		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) {
 			cleared, unanswered := fixCommitClears(rngs, rangeKnown, axis.Versions, others,
@@ -2870,6 +2893,17 @@ func settledByDisqualification(store artifact.Store, assessmentID string) (bool,
 		return false, nil
 	}
 	return res.Disqualified, nil
+}
+
+// rangeDisputed reports whether disqualification discovery withdrew a version-axis clear on a
+// contradicting source.
+func rangeDisputed(store artifact.Store, assessmentID string) bool {
+	arts, err := store.Query(assessmentID, artifact.TypeDiscovery)
+	if err != nil || len(arts) == 0 {
+		return false
+	}
+	var res DisqualResult
+	return json.Unmarshal(arts[0].Payload, &res) == nil && res.RangeDisputed != ""
 }
 
 // SettledByDisqualification reports whether disqualification_discovery recorded the assessment as
@@ -3070,7 +3104,11 @@ func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, 
 //     establish the build's Go release from the analyzer's, and the lane would exclude release-tagged
 //     files on that say-so.
 func (s reachabilityIngress) requestedToolchain(store artifact.Store, caseID string) string {
-	if !s.subjectToolchain {
+	return requestedToolchain(s.subjectToolchain, store, caseID)
+}
+
+func requestedToolchain(subjectToolchain bool, store artifact.Store, caseID string) string {
+	if !subjectToolchain {
 		return ""
 	}
 	fact, ok := Toolchain(store, caseID)
@@ -3084,6 +3122,10 @@ func (s reachabilityIngress) requestedToolchain(store artifact.Store, caseID str
 // it, or "" when it recorded none. It only ever narrows the files the analyzer reads as compiled, so
 // unlike requestedToolchain it needs neither the flag nor an exact fact.
 func (s reachabilityIngress) toolchainFloor(store artifact.Store, caseID string) string {
+	return inventoryGoFloor(store, caseID)
+}
+
+func inventoryGoFloor(store artifact.Store, caseID string) string {
 	arts, err := store.Query(caseID, artifact.TypeInventory)
 	if err != nil || len(arts) == 0 {
 		return ""
@@ -3133,6 +3175,9 @@ type reachAttribution struct {
 	selected []string
 	others   []presentRanges
 	project  string
+	// rangeDisputed is set when disqualification discovery withdrew a version-axis clear because
+	// another source contradicted the advisory's ranges. Those ranges then cannot drop a path.
+	rangeDisputed bool
 }
 
 // readReachAttribution reads the reachAttribution for a Go assessment. The selected package is the
@@ -3158,7 +3203,7 @@ func readReachAttribution(store artifact.Store, caseID string) (reachAttribution
 		}
 		sel = advisoryAffectedPackage{Module: module}
 	}
-	a := reachAttribution{project: inv.Module, others: extractAlsoPresent(store, caseID)}
+	a := reachAttribution{project: inv.Module, others: extractAlsoPresent(store, caseID), rangeDisputed: rangeDisputed(store, caseID)}
 	for _, n := range []string{sel.Module, sel.Coordinate} {
 		if n != "" {
 			a.selected = append(a.selected, n)
@@ -3173,7 +3218,9 @@ func readReachAttribution(store artifact.Store, caseID string) (reachAttribution
 // has no dot, and the selected package wins a tie. A sink with no import path, one inside the
 // scanned project, or one no affected package owns is unattributed and counts as the selected
 // package's. A path is dropped only when its owner is another affected package whose every version
-// in the build is provably outside that package's ranges (everyVersionOutside). The kept paths are
+// in the build is provably outside that package's ranges (everyVersionOutside), and never on a row
+// whose ranges were disputed: the dispute does not say which package it placed inside, so a path into
+// any of them may be the one it found. The kept paths are
 // ordered the selected package's own, then unattributed, then other packages', each group in its
 // input order.
 func countedReachPaths(paths []plugin.ReachPath, a reachAttribution) []plugin.ReachPath {
@@ -3188,7 +3235,7 @@ func countedReachPaths(paths []plugin.ReachPath, a reachAttribution) []plugin.Re
 		case a.isSibling(o.Module):
 			// Another major version of the selected module is its own package instance, with its own
 			// finding: its code is never this one's path.
-		case everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown):
+		case !a.rangeDisputed && everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown):
 		default:
 			other = append(other, p)
 		}

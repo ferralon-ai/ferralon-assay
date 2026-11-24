@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -688,5 +689,32 @@ func TestEntryOverrideForLibraryEntrypointsInput(t *testing.T) {
 		if got := EntryOverrideForLibraryEntrypoints(lib).Input; got != want {
 			t.Errorf("Input(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestEntryRootRecord_InferredAndDeniedJSON: the new fields are additive and omitted when empty, so a
+// record that states neither serializes as it did, and one that does serializes them by kind.
+func TestEntryRootRecord_InferredAndDeniedJSON(t *testing.T) {
+	lib := ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{"example.com/m/api"}}
+	rec, ok := EntryRootRecordOf(lib)
+	if !ok {
+		t.Fatal("no record for golang")
+	}
+	if rec.Inferred != nil || rec.Denied != nil {
+		t.Errorf("EntryRootRecordOf states inferred %v denied %v, want neither", rec.Inferred, rec.Denied)
+	}
+	bare, _ := json.Marshal(rec)
+	if want := `{"lane":"go","source":"auto","input":"auto","effective":{"library":["example.com/m/api"]}}`; string(bare) != want {
+		t.Errorf("bare record = %s, want %s", bare, want)
+	}
+	rec.Inferred = map[string][]string{EntryKindLibrary: {"example.com/m/api"}, EntryKindMain: {"example.com/m/cmd/t"}}
+	rec.Denied = []string{"!pkg/lib"}
+	full, _ := json.Marshal(rec)
+	want := `{"lane":"go","source":"auto","input":"auto","effective":{"library":["example.com/m/api"]},"inferred":{"library":["example.com/m/api"],"main":["example.com/m/cmd/t"]},"denied":["!pkg/lib"]}`
+	if string(full) != want {
+		t.Errorf("full record = %s, want %s", full, want)
+	}
+	if got, _ := json.Marshal(lib); string(got) != `{"ecosystem":"golang","source":"auto","input":"auto","packages":["example.com/m/api"]}` {
+		t.Errorf("library_entrypoints = %s", got)
 	}
 }

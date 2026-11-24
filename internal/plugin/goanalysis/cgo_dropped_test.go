@@ -331,6 +331,14 @@ func TestReconciledResult_WithholdsWhenCgoUnresolved(t *testing.T) {
 			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonCgoUnresolved); declared != unresolved {
 				t.Errorf("result declares %s = %v, want %v (partiality %+v)", plugin.PartialReasonCgoUnresolved, declared, unresolved, res.Partiality)
 			}
+			// entrypoints[] states the lane's set either way; library_entrypoints only where a
+			// refutation was judged, so a withheld one leaves it unset (restated reads it as auto).
+			if res.EntryRoots == nil {
+				t.Error("entry roots not recorded")
+			}
+			if (res.LibraryEntrypoints != nil) == unresolved {
+				t.Errorf("library_entrypoints = %+v with cgo unresolved = %v", res.LibraryEntrypoints, unresolved)
+			}
 		})
 	}
 }

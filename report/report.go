@@ -1085,6 +1085,10 @@ const (
 	// ReasonPackageVersionUnresolved: the advisory reached the verdict without a package whose
 	// installed version was resolved, so nothing establishes which code the build carries.
 	ReasonPackageVersionUnresolved = "package_version_unresolved"
+	// ReasonOwnReleaseVersionUnknown: the advisory is on the scanned project itself, and the
+	// project's own release version was not established, so nothing places this checkout inside or
+	// outside the advisory's affected range.
+	ReasonOwnReleaseVersionUnknown = "own_release_version_unknown"
 	// ReasonAdvisorySymbolAbsent: the advisory names no vulnerable symbol and no analyzer refuted
 	// the package as a whole, so there was nothing to search for.
 	ReasonAdvisorySymbolAbsent = "advisory_symbol_absent"
@@ -1185,10 +1189,19 @@ type Report struct {
 	BuildGraph *BuildGraph `json:"build_graph,omitempty"`
 	// LibraryEntrypoints are the sets of the build's packages the scan treated as callable by code
 	// outside the build, one per ecosystem, and whether each was inferred or declared. A lane
-	// resolves one only to judge a refutation such a caller may contradict. Sorted by ecosystem.
+	// records one only when it judged a refutation such a caller may contradict, so a report whose
+	// assessments held none states none here; Entrypoints states the set regardless. Sorted by
+	// ecosystem.
 	LibraryEntrypoints []plugin.ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
 	// Entrypoints are the entry points each lane analysed, one record per lane that reported a set,
-	// rendered from the same resolved set as LibraryEntrypoints. Sorted by lane.
+	// rendered from the same resolved set as LibraryEntrypoints where both state one. effective is
+	// the library packages Assay treats as callable from outside the build, which a refutation is
+	// judged against. The search itself roots every main's main and init and the exported API of
+	// every package ./... matches, "!"-denied packages included; a partial run searches only the
+	// roots its limit names. A Go record also lists what the lane inferred (inferred: its importable
+	// library packages and the build's main packages, listed for information: no selector narrows a
+	// main) and the declared "!" selectors that removed a library package (denied), on every Go
+	// report whose packages loaded, whether or not a refutation was judged. Sorted by lane.
 	Entrypoints []plugin.EntryRootRecord `json:"entrypoints,omitempty"`
 	// DependencyCode records whether a JS scan read its dependencies' code and, when a fetch
 	// failed and the scan fell back to reading none, the cause. Set on every JavaScript scan;

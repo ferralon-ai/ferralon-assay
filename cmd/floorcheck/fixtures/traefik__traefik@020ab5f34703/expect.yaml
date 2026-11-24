@@ -138,14 +138,16 @@ findings:
     note: "govulncheck: go.opentelemetry.io/otel/sdk/resource.WithProcessCommandArgs, go.opentelemetry.io/otel/sdk/trace.*recordingSpan.AddEvent, go.opentelemetry.io/otel/sdk/trace.*recordingSpan.End, go.opentelemetry.io/otel/sdk/trace.Shutdown$1, go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.IsRecording, go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.SetAttributes, go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.SetStatus, go.opentelemetry.io/otel/sdk/trace.nonRecordingSpan.TracerProvider reached from pkg/middlewares/capture.*readCounter.Read"
   - advisory: CVE-2026-33997
     package: "github.com/docker/docker@v27.1.1+incompatible"
-    truth: reachable
-    floor: reachable_candidate
-    note: "govulncheck: github.com/docker/docker/api.init, github.com/docker/docker/api/types/swarm/runtime.init, github.com/docker/docker/api/types/system.init, github.com/docker/docker/api/types/versions.init, github.com/docker/docker/client.*Client.Close, github.com/docker/docker/client.WithDialContext, github.com/docker/docker/errdefs.errNotFound.Unwrap, github.com/docker/docker/errdefs.errUnauthorized.Unwrap reached from pkg/provider/docker.init"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: matched at module level only; the vulnerable packages are never imported"
   - advisory: CVE-2026-34040
     package: "github.com/docker/docker@v27.1.1+incompatible"
-    truth: reachable
-    floor: reachable_candidate
-    note: "govulncheck: github.com/docker/docker/api/types/swarm/runtime.init, github.com/docker/docker/api/types/time.GetTimestamp, github.com/docker/docker/api/types/versions.LessThan, github.com/docker/docker/client.*Client.ServiceList, github.com/docker/docker/client.WithHost, github.com/docker/docker/errdefs.errCancelled.Cause, github.com/docker/docker/errdefs.errInvalidParameter.Unwrap, github.com/docker/docker/errdefs.init reached from pkg/provider/docker.init"
+    truth: unreachable
+    floor: not_exploitable
+    basis: vulnerable_symbol_absent
+    note: "govulncheck: matched at module level only; the vulnerable packages are never imported"
   - advisory: GHSA-78h2-9frx-2jm8
     package: "github.com/go-jose/go-jose/v4@v4.0.4"
     truth: reachable

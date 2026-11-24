@@ -1,6 +1,8 @@
 package goanalysis
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +10,7 @@ import (
 	"go/types"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -26,7 +29,7 @@ func TestGovulncheckOrPartial(t *testing.T) {
 	env := []string{"GOWORK=off"}
 	cause := fmt.Errorf("loading packages: %w", &fakeVulnPackageError{Errors: []packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}})
 	partialStream := []byte(`{"config":{}}` + "\n")
-	record, err := partialRunRecord(buildDir,
+	record, err := partialRunRecord(buildDir, "",
 		[]packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}},
 		func() ([]listedPackage, error) {
 			return []listedPackage{
@@ -123,7 +126,7 @@ func TestPartialRunRetry(t *testing.T) {
 	key := append([]string{buildDir}, env...)
 	perrs := []packages.Error{{Pos: "/mod/c/c.go:3:8", Msg: "could not import C"}}
 	cause := fmt.Errorf("loading packages: %w", &fakeVulnPackageError{Errors: perrs})
-	record, err := partialRunRecord(buildDir, perrs,
+	record, err := partialRunRecord(buildDir, "", perrs,
 		func() ([]listedPackage, error) {
 			return []listedPackage{
 				{ImportPath: "example.com/m/a", Imports: []string{"example.com/c"}},
@@ -324,7 +327,7 @@ func TestPartialRunRecord(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var ran []string
-			b, err := partialRunRecord("/src", tc.perrs, func() ([]listedPackage, error) { return tc.graph, tc.listErr }, func(patterns []string) ([]byte, error) {
+			b, err := partialRunRecord("/src", "", tc.perrs, func() ([]listedPackage, error) { return tc.graph, tc.listErr }, func(patterns []string) ([]byte, error) {
 				ran = patterns
 				if tc.runErr != nil {
 					return nil, tc.runErr
@@ -384,7 +387,7 @@ func TestPartialRunRecordMachineFaults(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := partialRunRecord("/src", tt.perrs, func() ([]listedPackage, error) { return tt.graph, nil }, func([]string) ([]byte, error) {
+			_, err := partialRunRecord("/src", "", tt.perrs, func() ([]listedPackage, error) { return tt.graph, nil }, func([]string) ([]byte, error) {
 				t.Error("govulncheck ran for a partial run that could not be bounded")
 				return nil, nil
 			})
@@ -800,9 +803,12 @@ func TestPartialRunPastEmbedPatternMiss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unloadable, err := unloadablePackages(dir, failurePackageErrors(failed), graph)
+	unloadable, _, err := unloadablePackages(dir, moduleCacheRoot(), failurePackageErrors(failed), graph)
 	if err != nil || !slices.Equal(unloadable, []string{"example.com/m/cmd/bad"}) {
 		t.Fatalf("unloadable = %q, %v; want only the ill-typed root", unloadable, err)
+	}
+	if _, causes, _ := unloadablePackages(dir, moduleCacheRoot(), failurePackageErrors(failed), graph); !strings.HasPrefix(causes["example.com/m/cmd/bad"], "cmd/bad/main.go:3:") {
+		t.Errorf("cause = %q; want the type error, positioned relative to the build", causes["example.com/m/cmd/bad"])
 	}
 	excluded, kept := excludedRoots(graph, unloadable)
 	if !slices.Equal(excluded, []string{"example.com/m/cmd/bad"}) || !slices.Equal(kept, []string{"example.com/m/cmd/ui"}) {
@@ -861,7 +867,7 @@ func TestUnloadablePackagesResolvesSymlinks(t *testing.T) {
 		t.Skipf("symlink: %v", err)
 	}
 	graph := []listedPackage{{ImportPath: "example.com/c", Dir: real, DepOnly: true}}
-	got, err := unloadablePackages(root, []packages.Error{{Pos: filepath.Join(link, "c.go") + ":4:8", Msg: "could not import C"}}, graph)
+	got, _, err := unloadablePackages(root, "", []packages.Error{{Pos: filepath.Join(link, "c.go") + ":4:8", Msg: "could not import C"}}, graph)
 	if err != nil || !slices.Equal(got, []string{"example.com/c"}) {
 		t.Errorf("got %v, %v; want example.com/c", got, err)
 	}
@@ -1043,5 +1049,160 @@ func TestPartialRunReadImports(t *testing.T) {
 	}
 	if got := (&partialRun{Unloadable: []string{"p"}, Hidden: []string{"pkg:golang/stdlib"}}).readImports(); !slices.Equal(got, []string{"p"}) {
 		t.Errorf("Hidden known: %v, want [p]", got)
+	}
+}
+
+// TestPackageErrorCause pins the cause a partial run's limit names for a package it could not load:
+// the netbird shape, a type error in a module cache file, reads relative to the module cache with
+// the version dropped; a failed cgo step, which carries no position, reads its first line after the
+// go command's header, past any chain of includes that leads to it; a long message is cut, and
+// credentials never survive.
+func TestPackageErrorCause(t *testing.T) {
+	const buildDir, modCache = "/tmp/build", "/home/u/go/pkg/mod"
+	cases := []struct {
+		name string
+		pe   packages.Error
+		want string
+	}{
+		{"type error in the module cache",
+			packages.Error{Pos: modCache + "/github.com/wailsapp/wails/v3@v3.0.0-alpha.9/pkg/application/menu_linux.go:7:12", Msg: "undefined: pointer"},
+			"github.com/wailsapp/wails/v3/pkg/application/menu_linux.go:7:12: undefined: pointer"},
+		{"failed cgo step",
+			packages.Error{Msg: "# github.com/hanwen/go-fuse/fuse\n" + buildDir + "/vendor/fuse/c.go:4:10: fatal error: fuse.h: No such file or directory\ncompilation terminated."},
+			"vendor/fuse/c.go:4:10: fatal error: fuse.h: No such file or directory"},
+		{"multi-line message keeps its first line",
+			packages.Error{Pos: buildDir + "/a/a.go:1:1", Msg: "cannot use x\n\tmore detail"},
+			"a/a.go:1:1: cannot use x"},
+		{"credentials redacted",
+			packages.Error{Msg: "reading https://bob:s3cret@proxy.example/mod/@v/list: 401"},
+			"reading https://REDACTED@proxy.example/mod/@v/list: 401"},
+		{"a password holding an @ redacted whole",
+			packages.Error{Msg: "reading https://bob:p@ss@proxy.example/mod/@v/list: 401"},
+			"reading https://REDACTED@proxy.example/mod/@v/list: 401"},
+		{"credentials without a scheme redacted",
+			packages.Error{Msg: "proxy bob:s3cret@proxy.example/x refused"},
+			"proxy REDACTED@proxy.example/x refused"},
+		{"a query-string token redacted",
+			packages.Error{Msg: "fetching https://git.example/m.git?token=abc123 returned 403"},
+			"fetching https://git.example/m.git?token=REDACTED returned 403"},
+		{"a header nested in an include reads the missing header",
+			packages.Error{Msg: "# example.com/m/fuse\nIn file included from " + buildDir + "/fuse/c.go:4:\n                 from " + buildDir + "/fuse/d.go:2:\n/usr/include/fuse/fuse.h:9:10: fatal error: fuse_common.h: No such file or directory"},
+			"/usr/include/fuse/fuse.h:9:10: fatal error: fuse_common.h: No such file or directory"},
+		{"empty message", packages.Error{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := packageErrorCause(tc.pe, buildDir, modCache); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	long := packageErrorCause(packages.Error{Msg: strings.Repeat("x", 400)}, buildDir, modCache)
+	if r := []rune(long); len(r) != packageErrorCauseLimit || !strings.HasSuffix(long, "…") {
+		t.Errorf("long cause is %d runes (%q...); want %d ending in an ellipsis", len(r), long[:20], packageErrorCauseLimit)
+	}
+}
+
+// TestPartialRunLimitsNameTheCause pins that a partial run's limit says why govulncheck could not load
+// the packages it names, from the first of them the run kept a cause for, and reads as before for a
+// record that kept none.
+func TestPartialRunLimitsNameTheCause(t *testing.T) {
+	run := &partialRun{
+		Unloadable: []string{"github.com/wailsapp/wails/v3/pkg/application", "github.com/wailsapp/wails/v3/pkg/events"},
+		Modules: map[string]string{
+			"github.com/wailsapp/wails/v3/pkg/application": "github.com/wailsapp/wails/v3",
+			"github.com/wailsapp/wails/v3/pkg/events":      "github.com/wailsapp/wails/v3",
+		},
+		Causes:   map[string]string{"github.com/wailsapp/wails/v3/pkg/events": "pkg/events/e.go:1:1: undefined: pointer"},
+		Excluded: []string{"example.com/m/client/ui"},
+	}
+	limits := partialRunLimits(run)
+	if len(limits) != 1 || !strings.Contains(limits[0].Path, "govulncheck could not load github.com/wailsapp/wails/v3/pkg/application, github.com/wailsapp/wails/v3/pkg/events (pkg/events/e.go:1:1: undefined: pointer);") {
+		t.Fatalf("limits = %+v; want one naming the load error", limits)
+	}
+	run.Causes = nil
+	if limits := partialRunLimits(run); len(limits) != 1 || strings.Contains(limits[0].Path, "(") {
+		t.Errorf("limits = %+v; want no cause named", limits)
+	}
+}
+
+// TestPartialGovulncheckShortensUnderTheScanModCache pins that a partial run renders a cause in a
+// dependency as its module path, reading the module cache the way the go command does under the
+// scan's env rather than the host's: the build here reads its dependency from a module cache only
+// that env names.
+func TestPartialGovulncheckShortensUnderTheScanModCache(t *testing.T) {
+	proxy, modCache := t.TempDir(), t.TempDir()
+	writeModuleZip(t, filepath.Join(proxy, "example.com", "dep", "@v"), "example.com/dep", "v1.0.0", map[string]string{
+		"go.mod": "module example.com/dep\n\ngo 1.22\n",
+		"dep.go": "package dep\n\nfunc F() {}\n",
+	})
+	dir := writeTree(t, map[string]string{
+		"go.mod":            "module example.com/m\n\ngo 1.22\n\nrequire example.com/dep v1.0.0\n",
+		"main.go":           "package main\n\nimport \"example.com/dep\"\n\nfunc main() { dep.F() }\n",
+		"cmd/other/main.go": "package main\n\nfunc main() {}\n",
+	})
+	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod -modcacherw", "GOTOOLCHAIN=local", "GOSUMDB=off",
+		"GOMODCACHE="+modCache, "GOPROXY=file://"+filepath.ToSlash(proxy), "GOPRIVATE=", "GONOPROXY=", "GONOSUMDB=")
+	download := exec.Command("go", "mod", "download", "example.com/dep")
+	download.Dir, download.Env = dir, env
+	if out, err := download.CombinedOutput(); err != nil {
+		t.Fatalf("go mod download: %v\n%s", err, out)
+	}
+	if host := moduleCacheRoot(); host == modCache {
+		t.Fatalf("host module cache %q is the scan's; the test cannot tell them apart", host)
+	}
+	failure := fmt.Errorf("loading packages: %w", &fakeVulnPackageError{Errors: []packages.Error{
+		{Pos: filepath.Join(modCache, "example.com", "dep@v1.0.0", "dep.go") + ":3:1", Msg: "undefined: pointer"},
+	}})
+	var ran []string
+	out, err := partialGovulncheckWith(context.Background(), dir, env, failure, func(_ context.Context, _ string, _, patterns []string) ([]byte, error) {
+		ran = patterns
+		return []byte(`{"config":{}}` + "\n"), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var run partialRun
+	if err := json.Unmarshal(out, &run); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(ran, []string{"example.com/m/cmd/other"}) {
+		t.Errorf("kept roots %q; want only the root that does not import the dependency", ran)
+	}
+	if got, want := run.Causes["example.com/dep"], "example.com/dep/dep.go:3:1: undefined: pointer"; got != want {
+		t.Errorf("cause = %q, want %q", got, want)
+	}
+}
+
+// writeModuleZip writes version of module mod, holding files, to dir as a GOPROXY=file:// proxy
+// serves it.
+func writeModuleZip(t *testing.T, dir, mod, version string, files map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, body := range files {
+		w, err := zw.Create(mod + "@" + version + "/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string][]byte{
+		"list":            []byte(version + "\n"),
+		version + ".info": []byte(`{"Version":"` + version + `"}`),
+		version + ".mod":  []byte(files["go.mod"]),
+		version + ".zip":  buf.Bytes(),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

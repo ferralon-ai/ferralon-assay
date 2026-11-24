@@ -155,3 +155,142 @@ func TestLibraryEntrypoints_EveryRunMode(t *testing.T) {
 		})
 	}
 }
+
+// rootsGoPlugin is entrypointsGoPlugin with the lane also recording the entrypoints[] record.
+type rootsGoPlugin struct {
+	entrypointsGoPlugin
+	roots *plugin.EntryRootRecord
+}
+
+func (p rootsGoPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	res, err := p.entrypointsGoPlugin.Reachability(ctx, req)
+	res.EntryRoots = p.roots
+	return res, err
+}
+
+// TestEntryRoots_ReadsReachabilityRecord: the lane's entrypoints[] record comes off the reachability
+// artifact with its inferred and denied entries, and is empty when the lane recorded none.
+func TestEntryRoots_ReadsReachabilityRecord(t *testing.T) {
+	want := &plugin.EntryRootRecord{
+		Lane: plugin.EntryLaneGo, Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!pkg/lib",
+		Effective: map[string][]string{plugin.EntryKindLibrary: {"example.com/m/pkg/api"}},
+		Inferred: map[string][]string{
+			plugin.EntryKindLibrary: {"example.com/m/pkg/api", "example.com/m/pkg/lib"},
+			plugin.EntryKindMain:    {"example.com/m/cmd/tool"},
+		},
+		Denied: []string{"!pkg/lib"},
+	}
+	store := artifact.NewMemStore()
+	seedReachArtifact(t, store, "a", plugin.CallGraphResult{Partiality: plugin.Complete()}, plugin.ReachabilityResult{Partiality: plugin.Complete(), EntryRoots: want})
+	if got := entryRoots(store, "a"); len(got) != 1 || !reflect.DeepEqual(got[0], *want) {
+		t.Errorf("entryRoots = %+v, want [%+v]", got, *want)
+	}
+	seedReachArtifact(t, store, "b", plugin.CallGraphResult{Partiality: plugin.Complete()}, plugin.ReachabilityResult{Partiality: plugin.Complete()})
+	if got := entryRoots(store, "b"); got != nil {
+		t.Errorf("entryRoots with none recorded = %+v, want nil", got)
+	}
+}
+
+// TestEntryRoots_EveryRunMode: each run mode states the inferred and denied entry points of the
+// pass that resolved them, else the stored report's, and entrypoints[] never drifts from
+// library_entrypoints.
+func TestEntryRoots_EveryRunMode(t *testing.T) {
+	recordOf := func(lib plugin.ResolvedLibraryEntrypoints, denied ...string) plugin.EntryRootRecord {
+		rec, _ := plugin.EntryRootRecordOf(lib)
+		rec.Inferred = map[string][]string{
+			plugin.EntryKindLibrary: {"example.com/target/lib", "example.com/target/other"},
+			plugin.EntryKindMain:    {"example.com/target/cmd/tool"},
+		}
+		rec.Denied = denied
+		return rec
+	}
+	headLib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!lib", Packages: []string{"example.com/target/other"}}
+	storedLib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{"example.com/target/lib", "example.com/target/other"}}
+	head, stored := recordOf(headLib, "!lib"), recordOf(storedLib)
+	// A head pass over a changed package set that resolved a record and no set.
+	movedLib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{"example.com/target/lib", "example.com/target/new"}}
+	moved := recordOf(movedLib)
+	options := func(t *testing.T, lib *plugin.ResolvedLibraryEntrypoints, roots *plugin.EntryRootRecord) []pipeline.AssessOption {
+		return []pipeline.AssessOption{
+			pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
+			pipeline.WithPlugin(rootsGoPlugin{
+				entrypointsGoPlugin: entrypointsGoPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, resolved: lib},
+				roots:               roots,
+			}),
+		}
+	}
+	pr := func(t *testing.T, sbom func(*report.Report) report.SBOM, lib *plugin.ResolvedLibraryEntrypoints, roots *plugin.EntryRootRecord) *report.Report {
+		store, baseline := groundedBaseline()
+		baseline.LibraryEntrypoints = []plugin.ResolvedLibraryEntrypoints{storedLib}
+		baseline.Entrypoints = []plugin.EntryRootRecord{stored}
+		res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+			Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+			Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+			PRSBOM:        sbom(baseline),
+			Advisories:    []assessment.VulnRef{wiringAdvisory},
+			AssessOptions: options(t, lib, roots),
+		})
+		if err != nil {
+			t.Fatalf("RunPRInherit: %v", err)
+		}
+		return res.Report
+	}
+	bumped := func(*report.Report) report.SBOM {
+		return report.SBOM{Packages: []report.Package{{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.3.5"}}}
+	}
+	cveWatch := func(t *testing.T, lib *plugin.ResolvedLibraryEntrypoints, roots *plugin.EntryRootRecord) *report.Report {
+		store, _ := seedBaseline(t)
+		store.state.Report.LibraryEntrypoints = []plugin.ResolvedLibraryEntrypoints{storedLib}
+		store.state.Report.Entrypoints = []plugin.EntryRootRecord{stored}
+		store.state.Cursor = ""
+		osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
+		res, err := RunCVEWatch(context.Background(), store, osv, CVEWatchRequest{
+			Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+			Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+			AssessOptions: options(t, lib, roots),
+		})
+		if err != nil {
+			t.Fatalf("RunCVEWatch: %v", err)
+		}
+		if res.Report == nil {
+			t.Fatal("CVE-watch ran no earnest pass")
+		}
+		return res.Report
+	}
+	cases := []struct {
+		name string
+		run  func(t *testing.T) *report.Report
+		want plugin.EntryRootRecord
+	}{
+		{"baseline", func(t *testing.T) *report.Report {
+			rep, err := buildBaselineReport(context.Background(), BaselineRequest{
+				Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
+				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				Advisories:    []assessment.VulnRef{wiringAdvisory},
+				AssessOptions: options(t, &headLib, &head),
+			})
+			if err != nil {
+				t.Fatalf("buildBaselineReport: %v", err)
+			}
+			return rep
+		}, head},
+		{"PR re-analysis, head resolved", func(t *testing.T) *report.Report { return pr(t, bumped, &headLib, &head) }, head},
+		{"PR re-analysis, head resolved none", func(t *testing.T) *report.Report { return pr(t, bumped, nil, nil) }, stored},
+		{"PR re-analysis, head resolved a set but no record", func(t *testing.T) *report.Report { return pr(t, bumped, &headLib, nil) },
+			func() plugin.EntryRootRecord { r, _ := plugin.EntryRootRecordOf(headLib); return r }()},
+		{"PR re-analysis, head resolved a record but no set", func(t *testing.T) *report.Report { return pr(t, bumped, nil, &moved) }, stored},
+		{"PR inherit fast path", func(t *testing.T) *report.Report {
+			return pr(t, func(b *report.Report) report.SBOM { return b.SBOM }, &headLib, &head)
+		}, stored},
+		{"CVE-watch, pass resolved", func(t *testing.T) *report.Report { return cveWatch(t, &headLib, &head) }, head},
+		{"CVE-watch, pass resolved none", func(t *testing.T) *report.Report { return cveWatch(t, nil, nil) }, stored},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := tc.run(t)
+			if len(r.Entrypoints) != 1 || !reflect.DeepEqual(r.Entrypoints[0], tc.want) {
+				t.Errorf("entrypoints = %+v, want [%+v]", r.Entrypoints, tc.want)
+			}
+		})
+	}
+}

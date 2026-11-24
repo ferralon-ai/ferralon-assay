@@ -336,3 +336,48 @@ func TestEntrypointsInput_RestatedEdges(t *testing.T) {
 		t.Errorf("restatedRetry = %+v, want only A", got)
 	}
 }
+
+// TestRestated_BaselineEntrypointsRecord: restated reads the statement from library_entrypoints
+// alone. A baseline whose assessments judged no refutation (path-only rows, or a build whose cgo
+// did not resolve) holds an entrypoints[] record of the Go lane but no library_entrypoints, and
+// reads as auto: it inherits under auto and re-assesses under any other statement, whatever its
+// entrypoints[] record says.
+func TestRestated_BaselineEntrypointsRecord(t *testing.T) {
+	record := func(input string) []plugin.EntryRootRecord {
+		return []plugin.EntryRootRecord{{
+			Lane: plugin.EntryLaneGo, Source: plugin.LibraryEntrypointsSourceDeclared, Input: input,
+			Effective: map[string][]string{plugin.EntryKindLibrary: {"example.com/m/pkg/api"}},
+			Inferred: map[string][]string{
+				plugin.EntryKindLibrary: {"example.com/m/pkg/api", "example.com/m/pkg/lib"},
+				plugin.EntryKindMain:    {"example.com/m/cmd/tool"},
+			},
+			Denied: []string{"!pkg/lib"},
+		}}
+	}
+	cases := []struct {
+		name     string
+		baseline report.Report
+		input    string
+		want     bool
+	}{
+		{"path-only baseline, same statement", report.Report{Entrypoints: record("auto")}, "auto", false},
+		{"path-only baseline, changed statement", report.Report{Entrypoints: record("auto")}, "!pkg/lib", true},
+		{"path-only baseline, an entrypoints record of another statement does not restate auto", report.Report{Entrypoints: record("!pkg/lib")}, "auto", false},
+		{"cgo-unresolved baseline, same statement", report.Report{Entrypoints: record("auto")}, "auto", false},
+		{"cgo-unresolved baseline, changed statement", report.Report{Entrypoints: record("auto")}, "none", true},
+		{"refutation baseline, same declared statement",
+			report.Report{LibraryEntrypoints: []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Input: "!pkg/lib"}}, Entrypoints: record("!pkg/lib")}, "!pkg/lib", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			le, err := plugin.ParseLibraryEntrypoints(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := []pipeline.AssessOption{pipeline.WithPlugin(fakeInventoryPlugin{lang: "go"}), pipeline.WithLibraryEntrypoints(le)}
+			if got := restated(&tc.baseline, opts); got != tc.want {
+				t.Errorf("restated = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,19 +46,47 @@ func fixCommitGit(ctx context.Context, dir string, args ...string) (string, erro
 	return strings.TrimSpace(string(out)), err
 }
 
-// headContainsCommit reports whether commit is HEAD or one of its ancestors in the repository
-// containing dir. It is true only on a positive answer from a complete history: a shallow
-// repository, a commit the object store does not hold, and any git failure all read as false,
-// which says the question went unanswered and never that the commit is missing from the history.
-func headContainsCommit(ctx context.Context, dir, commit string) bool {
+// historyAnswer is what the checkout's history says about whether it contains a commit.
+type historyAnswer int
+
+const (
+	// historyUnanswered: the checkout cannot say, because its history is shallow or git failed.
+	historyUnanswered historyAnswer = iota
+	// historyContains: the commit is HEAD or one of its ancestors.
+	historyContains
+	// historyLacks: the history is complete and the commit is not in it.
+	historyLacks
+)
+
+// headContainsCommit answers whether commit is HEAD or one of its ancestors in the repository
+// containing dir. Only a complete history answers either way. A shallow repository has cut its
+// ancestry off, so it leaves the question unanswered, as does any git failure. A complete history
+// that does not hold the commit at all lacks it, since it holds every ancestor of HEAD.
+func headContainsCommit(ctx context.Context, dir, commit string) historyAnswer {
 	if dir == "" || !fullCommitID.MatchString(commit) {
-		return false
+		return historyUnanswered
 	}
 	if shallow, err := fixCommitGit(ctx, dir, "rev-parse", "--is-shallow-repository"); err != nil || shallow != "false" {
-		return false
+		return historyUnanswered
 	}
 	_, err := fixCommitGit(ctx, dir, "merge-base", "--is-ancestor", commit, "HEAD")
-	return err == nil
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return historyContains
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return historyLacks
+	}
+	// merge-base fails the same way for a commit the store does not hold and for a HEAD that names
+	// no commit; only the first is an answer, and only when the store holds every commit HEAD's
+	// history names. A store that has lost some (an alternate gone, a corrupt pack) may have lost
+	// the fix with them; walking the history fails on the first missing commit.
+	if _, err := fixCommitGit(ctx, dir, "cat-file", "-e", commit); errors.As(err, &exit) && exit.ExitCode() == 1 {
+		if _, err := fixCommitGit(ctx, dir, "rev-list", "--quiet", "HEAD"); err == nil {
+			return historyLacks
+		}
+	}
+	return historyUnanswered
 }
 
 // goVersionTag returns the ref of the tag that publishes version of the Go module mod from the
@@ -134,32 +163,36 @@ func rangeEnteredBeforeFix(ctx context.Context, dir, mod, commit, lower string) 
 //     commit the advisory names closes one range and says nothing about a later one.
 //
 // inHistory is asked only when the ranges and the other packages allow a clearance, and
-// enteredBeforeFix only after inHistory said yes.
-func fixCommitClears(rngs []affectedRange, rangeKnown bool, versions []string, others []presentRanges, inHistory func() bool, enteredBeforeFix func(lower string) bool) bool {
+// enteredBeforeFix only after inHistory said yes. unanswered reports that everything else allowed
+// the clearance and inHistory could not say, so the history the checkout lacks decides the advisory.
+func fixCommitClears(rngs []affectedRange, rangeKnown bool, versions []string, others []presentRanges, inHistory func() historyAnswer, enteredBeforeFix func(lower string) bool) (cleared, unanswered bool) {
 	if !rangeKnown || len(rngs) == 0 || len(versions) > 0 {
-		return false
+		return false, false
 	}
 	for _, r := range rngs {
 		if r.UpperExclusive == "" {
-			return false
+			return false, false
 		}
 	}
 	for _, o := range others {
 		if !everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown) {
-			return false
+			return false, false
 		}
 	}
-	if !inHistory() {
-		return false
+	switch inHistory() {
+	case historyUnanswered:
+		return false, true
+	case historyLacks:
+		return false, false
 	}
 	if len(rngs) > 1 {
 		for _, r := range rngs {
 			if r.LowerInclusive != "" && r.LowerInclusive != "0" && !enteredBeforeFix(r.LowerInclusive) {
-				return false
+				return false, false
 			}
 		}
 	}
-	return true
+	return true, false
 }
 
 // rootOwnsAdvisoryPackage reports whether the package the advisory was adjudicated on is the

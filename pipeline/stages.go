@@ -1732,6 +1732,10 @@ type DisqualResult struct {
 	// CrossCheck, on a version-axis disqualification, discloses that the analyzer's own database
 	// could not be consulted, and why; the disqualification stands on the corpus range alone.
 	CrossCheck string `json:"cross_check,omitempty"`
+	// FixCommitUnanswered is the fix commit of an advisory on the scanned project's own package
+	// that everything but the scanned history would clear, when that history could not say whether
+	// it holds the commit (a shallow checkout). Set only when Disqualified is false.
+	FixCommitUnanswered string `json:"fix_commit_unanswered,omitempty"`
 }
 
 // RefuteSource names the record a refute relied on. Advisory is always set. Corpus and Record are
@@ -2791,14 +2795,19 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	// A disputed row cannot be re-cleared here: a version-axis disqualification needs a resolved
 	// version, and fixCommitClears refuses any.
 	if !disqualified {
-		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) &&
-			fixCommitClears(rngs, rangeKnown, axis.Versions, others,
-				func() bool { return headContainsCommit(ctx, buildDir, commit) },
+		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) {
+			cleared, unanswered := fixCommitClears(rngs, rangeKnown, axis.Versions, others,
+				func() historyAnswer { return headContainsCommit(ctx, buildDir, commit) },
 				func(lower string) bool {
 					return rangeEnteredBeforeFix(ctx, buildDir, rootGoModule(store, c.ID, buildDir), commit, lower)
-				}) {
-			disqualified = true
-			res = DisqualResult{Disqualified: true, Reason: ReasonFixCommitInHistory, FixCommit: commit}
+				})
+			switch {
+			case cleared:
+				disqualified = true
+				res = DisqualResult{Disqualified: true, Reason: ReasonFixCommitInHistory, FixCommit: commit}
+			case unanswered:
+				res.FixCommitUnanswered = commit
+			}
 		}
 	}
 	if disqualified {

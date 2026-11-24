@@ -543,7 +543,7 @@ func TestActionScanTimeoutDefault(t *testing.T) {
 	if in.Default != "15m" {
 		t.Fatalf("scan-timeout default = %q, want 15m", in.Default)
 	}
-	if want := envScanTimeout + ": ${{ inputs.scan-timeout }}"; !strings.Contains(string(body), want) {
+	if want := envScanTimeout + ": ${{ inputs.scan-timeout || '15m' }}"; !strings.Contains(string(body), want) {
 		t.Fatalf("action.yml does not forward the input as %q", want)
 	}
 	t.Setenv(envScanTimeout, in.Default)

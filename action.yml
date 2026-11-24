@@ -319,7 +319,7 @@ inputs:
       gives the scan a few seconds to publish what it assessed; the scan-truncated output says
       whether it was cut short. VERSION REQUIREMENT: a scanner release that reads
       ASSAY_SCAN_TIMEOUT; one that predates it ignores the variable, and one that predates the 0
-      value rejects it.
+      value fails the run on it. An explicitly empty value also means 15m.
     required: false
     default: "15m"
   issue:
@@ -829,8 +829,9 @@ runs:
         ASSAY_DEPENDENCY_CODE: ${{ inputs.dependency-code }}
         ASSAY_DEPENDENCY_CACHE: ${{ inputs.dependency-code != 'off' && steps.depcache.outputs.cache-dir || '' }}
         ASSAY_DEPENDENCY_UNCREDENTIALED_CACHE: ${{ inputs.dependency-code != 'off' && steps.depcache.outputs.uncredentialed-dir || '' }}
-        # 0 sets no limit. An env var, so a scanner release that predates it ignores it.
-        ASSAY_SCAN_TIMEOUT: ${{ inputs.scan-timeout }}
+        # 0 sets no limit; empty (a caller forwarding an unset input) falls back to the 15m default.
+        # An env var, so a scanner release that predates it ignores it.
+        ASSAY_SCAN_TIMEOUT: ${{ inputs.scan-timeout || '15m' }}
         GITHUB_TOKEN: ${{ github.token }}
         # Route every ${{ }} value through the step env and reference it as a shell $VAR below,
         # never interpolating `${{ inputs.* }}` directly into the run script. A directly-inlined

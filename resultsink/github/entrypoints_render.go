@@ -20,9 +20,9 @@ func entrypointLines(r report.Report) []string {
 	out := make([]string, 0, len(r.Entrypoints))
 	for _, e := range r.Entrypoints {
 		var b strings.Builder
-		b.WriteString(e.Lane + ": ")
+		b.WriteString(plainName(e.Lane) + ": ")
 		if e.Source == plugin.LibraryEntrypointsSourceDeclared {
-			fmt.Fprintf(&b, "declared by the `entrypoints` input %s", mdCode(e.Input))
+			fmt.Fprintf(&b, "declared, resolved as %s", mdCode(e.Input))
 		} else {
 			b.WriteString("inferred, nothing declared")
 		}
@@ -39,7 +39,7 @@ func entrypointLines(r report.Report) []string {
 			for i, s := range e.Unmatched {
 				um[i] = mdCode(s)
 			}
-			fmt.Fprintf(&b, "; matched nothing: %s", strings.Join(um, ", "))
+			fmt.Fprintf(&b, "; matched nothing, so verdicts resting on it are withheld: %s", strings.Join(um, ", "))
 		}
 		b.WriteString(".")
 		out = append(out, b.String())
@@ -51,21 +51,39 @@ func entrypointLines(r report.Report) []string {
 }
 
 func entrypointKind(kind string, roots []string) string {
+	label := plainName(kind)
+	if kind == plugin.EntryKindLibrary {
+		label = "library packages callable from outside the build"
+	}
 	if len(roots) == 0 {
-		return kind + ": none"
+		return label + ": none"
 	}
 	shown := make([]string, 0, min(len(roots), entrypointsShown))
 	for _, s := range roots[:min(len(roots), entrypointsShown)] {
 		shown = append(shown, mdCode(s))
 	}
-	line := fmt.Sprintf("%s (%d): %s", kind, len(roots), strings.Join(shown, ", "))
+	line := fmt.Sprintf("%s (%d): %s", label, len(roots), strings.Join(shown, ", "))
 	if n := len(roots) - len(shown); n > 0 {
 		line += fmt.Sprintf(" and %d more", n)
 	}
 	return line
 }
 
-const entrypointsLead = "**Entry points.** The analysis treated these as where execution can start; set the `entrypoints` input to override them:"
+const entrypointsLead = "**Entry points.** Beyond the build's own programs, the analysis treated these as entry points; set the `entrypoints` input to change them:"
+
+// plainName renders a lane or kind name as plain text when it is a bare lowercase word, as every
+// name the lanes emit is, and inside a code span otherwise.
+func plainName(s string) string {
+	for _, r := range s {
+		if r < 'a' || r > 'z' {
+			return mdCode(s)
+		}
+	}
+	if s == "" {
+		return mdCode(s)
+	}
+	return s
+}
 
 // entrypointsBlock renders the lanes' entry points for the Tier-0 job-summary panel, or "" when no
 // lane reported a set.

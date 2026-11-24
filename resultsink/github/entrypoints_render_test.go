@@ -33,13 +33,13 @@ func TestBothSurfaces_Entrypoints(t *testing.T) {
 		none bool
 	}{
 		{name: "inferred", sets: []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{"example.com/m/lib"}}},
-			want: []string{"go: inferred, nothing declared; library (1): `example.com/m/lib`."}},
+			want: []string{"go: inferred, nothing declared; library packages callable from outside the build (1): `example.com/m/lib`."}},
 		{name: "inferred set is capped and counted", sets: []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: many}},
-			want: []string{"library (7): `example.com/m/a`, `example.com/m/b`, `example.com/m/c`, `example.com/m/d`, `example.com/m/e` and 2 more."}},
+			want: []string{"library packages callable from outside the build (7): `example.com/m/a`, `example.com/m/b`, `example.com/m/c`, `example.com/m/d`, `example.com/m/e` and 2 more."}},
 		{name: "declared none", sets: []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "none", Packages: []string{}}},
-			want: []string{"go: declared by the `entrypoints` input `none`; library: none."}},
+			want: []string{"go: declared, resolved as `none`; library packages callable from outside the build: none."}},
 		{name: "declared with an unmatched selector", sets: []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "example.com/m/lib,!example.com/m/gone", Packages: []string{"example.com/m/lib"}, Unmatched: []string{"!example.com/m/gone"}}},
-			want: []string{"go: declared by the `entrypoints` input `example.com/m/lib,!example.com/m/gone`; library (1): `example.com/m/lib`; matched nothing: `!example.com/m/gone`."}},
+			want: []string{"go: declared, resolved as `example.com/m/lib,!example.com/m/gone`; library packages callable from outside the build (1): `example.com/m/lib`; matched nothing, so verdicts resting on it are withheld: `!example.com/m/gone`."}},
 		{name: "metacharacters stay literal", sets: []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "[x](https://example.invalid) a`b", Packages: []string{"<img src=x>"}}},
 			want: []string{"``[x](https://example.invalid) a`b``", "`<img src=x>`"}},
 		{name: "no lane reported a set", none: true},
@@ -67,5 +67,18 @@ func TestBothSurfaces_Entrypoints(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A lane or kind name outside the bare lowercase vocabulary renders inside a code span, never as markup.
+func TestBothSurfaces_EntrypointsOddNames(t *testing.T) {
+	r := entrypointsReport()
+	r.Entrypoints = []plugin.EntryRootRecord{{Lane: "Go*x", Source: plugin.LibraryEntrypointsSourceAuto, Effective: map[string][]string{"K!nd": {"a"}}}}
+	for surface, s := range bothSurfaces(t, r) {
+		for _, w := range []string{"`Go*x`: inferred", "`K!nd` (1): `a`"} {
+			if !strings.Contains(s, w) {
+				t.Errorf("%s: missing %q\n---\n%s", surface, w, s)
+			}
+		}
 	}
 }

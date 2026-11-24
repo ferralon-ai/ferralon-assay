@@ -96,7 +96,7 @@ func replacedHeldDetail(store artifact.Store, assessmentID string, mods goModule
 			strings.Join(symbols, ", "))
 	case keyed && resErr == nil && !resolvesInto(res, key):
 		why = fmt.Sprintf("The analysis does not locate the advisory's symbols inside the build's code of %s, so whether that code defines %s was not determined.",
-			module, strings.Join(symbols, ", "))
+			module, strings.Join(inBuild(symbols, res), ", "))
 	case keyed && resErr == nil && resolutionRead(res) && len(undefinedIn(inBuild(symbols, res), res, key)) > 0:
 		why = fmt.Sprintf("The build's code of %s does not define %s. A replacement can rename or move the vulnerable code, so that is not taken as a fix.",
 			module, strings.Join(undefinedIn(inBuild(symbols, res), res, key), ", "))

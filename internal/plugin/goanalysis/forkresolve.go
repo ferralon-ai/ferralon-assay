@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 	"golang.org/x/tools/go/packages"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -197,8 +198,9 @@ func outsideBuild(sym string, compiled map[string]*packages.Package, held func(s
 }
 
 // replaceSources returns whether an import path is the source side of a replace directive of the
-// build: a replaced module of the build list whose path is the import path, or holds it as a package
-// directory of the replacement's tree; or a replace directive of the build's go.mod or go.work, on a
+// build: a replaced module of the build list whose path is the import path, or holds it as one of its
+// own package paths, or holds it under a major-version suffix that is a package directory of the
+// replacement's tree; or a replace directive of the build's go.mod or go.work, on a
 // module the build list does not hold, whose source path holds it. A replacement whose tree cannot be
 // read holds every import path below its module path.
 func replaceSources(buildDir, goWork string, mods []listedModule) (func(string) bool, error) {
@@ -255,6 +257,16 @@ func replaceSources(buildDir, goWork string, mods []listedModule) (func(string) 
 			}
 			rel := strings.TrimPrefix(p[len(m.Path):], "/")
 			if rel == "" {
+				return true
+			}
+			// A package path of the replaced module itself that the replacement lacks is code the fork
+			// renamed or removed, not code outside the build. Only a major-version suffix (m.Path/vN)
+			// names another module, which a replacement's tree may still hold as a directory. The
+			// element is read up to its first dot as well, since qualifiers also reads "vN.T" as a
+			// path element.
+			first, _, _ := strings.Cut(rel, "/")
+			first, _, _ = strings.Cut(first, ".")
+			if _, major, ok := module.SplitPathVersion(m.Path + "/" + first); !ok || major == "" {
 				return true
 			}
 			dir := m.Replace.Dir

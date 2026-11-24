@@ -107,6 +107,44 @@ func TestReplacedResolution(t *testing.T) {
 			wantUnresolve: true,
 		},
 		{
+			name: "a package of the replaced module the fork lacks stays required",
+			files: map[string]string{
+				"go.mod":             "module example.com/app\n\ngo 1.22\n\nrequire example.com/vuln v0.0.0\n\nreplace example.com/vuln => ./_fork\n",
+				"main.go":            "package main\n\nimport (\n\t\"example.com/vuln\"\n\t\"example.com/vuln/decoder\"\n)\n\nfunc main() { _ = vuln.MapClaims{}; decoder.Decode() }\n",
+				"_fork/go.mod":       forkMod,
+				"_fork/vuln.go":      fork,
+				"_fork/decoder/d.go": "package decoder\n\nfunc Decode() {}\n",
+			},
+			symbols:       []string{v3, "example.com/vuln/dec.Decode"},
+			wantOK:        true,
+			wantMatched:   []string{v3},
+			wantUnresolve: true,
+		},
+		{
+			name: "a partial load does not narrow",
+			files: map[string]string{
+				"go.mod":        "module example.com/app\n\ngo 1.22\n\nrequire example.com/vuln v0.0.0\n\nreplace example.com/vuln => ./_fork\n",
+				"main.go":       app,
+				"broken.go":     "package main\n\nvar _ int = \"x\"\n",
+				"_fork/go.mod":  forkMod,
+				"_fork/vuln.go": fork,
+			},
+			symbols:       []string{v3, v4},
+			wantOK:        true,
+			wantMatched:   []string{v3},
+			wantUnresolve: true,
+		},
+		{
+			name: "a replacement compiled with errors is not read",
+			files: map[string]string{
+				"go.mod":        "module example.com/app\n\ngo 1.22\n\nrequire example.com/vuln v0.0.0\n\nreplace example.com/vuln => ./_fork\n",
+				"main.go":       app,
+				"_fork/go.mod":  forkMod,
+				"_fork/vuln.go": fork + "\nvar _ int = \"x\"\n",
+			},
+			symbols: []string{v3},
+		},
+		{
 			name: "fork without the symbol leaves it unresolved",
 			files: map[string]string{
 				"go.mod":        "module example.com/app\n\ngo 1.22\n\nrequire example.com/vuln v0.0.0\n\nreplace example.com/vuln => ./_fork\n",

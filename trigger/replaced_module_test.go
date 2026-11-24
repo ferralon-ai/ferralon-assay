@@ -24,6 +24,7 @@ type replacedFixture struct {
 	mods       goModules
 	refutation *plugin.Refutation
 	scoped     []artifact.ScopedPartialityFlag
+	graph      *plugin.CallGraphResult
 }
 
 const (
@@ -67,6 +68,12 @@ func newReplacedFixture() replacedFixture {
 
 func (fx replacedFixture) finding(t *testing.T) report.AdvisoryFinding {
 	t.Helper()
+	store, aid := fx.seed(t)
+	return findingInBuild(store, aid, report.Advisory{ID: "GO-2026-0001", Source: "osv"}, nil, fx.mods)
+}
+
+func (fx replacedFixture) seed(t *testing.T) (artifact.Store, string) {
+	t.Helper()
 	store := artifact.NewMemStore()
 	const aid = "kubeedge-k8s"
 	putJSON(t, store, aid, artifact.TypeInventory, fx.inv)
@@ -86,13 +93,16 @@ func (fx replacedFixture) finding(t *testing.T) report.AdvisoryFinding {
 	if len(fx.flags) > 0 {
 		part = plugin.Partial(fx.flags...)
 	}
-	seedReachArtifact(t, store, aid,
-		plugin.CallGraphResult{
-			Partiality: plugin.Complete(),
-			Edges:      []plugin.CallEdge{depEdge("github.com/kubeedge/kubeedge/cmd.main", "github.com/kubeedge/kubeedge/edge.Run")},
-		},
+	graph := plugin.CallGraphResult{
+		Partiality: plugin.Complete(),
+		Edges:      []plugin.CallEdge{depEdge("github.com/kubeedge/kubeedge/cmd.main", "github.com/kubeedge/kubeedge/edge.Run")},
+	}
+	if fx.graph != nil {
+		graph = *fx.graph
+	}
+	seedReachArtifact(t, store, aid, graph,
 		plugin.ReachabilityResult{Partiality: part, Searched: fx.searched, Refutation: fx.refutation})
-	return findingInBuild(store, aid, report.Advisory{ID: "GO-2026-0001", Source: "osv"}, nil, fx.mods)
+	return store, aid
 }
 
 const (
@@ -195,6 +205,13 @@ func TestFinding_ReplacedModule(t *testing.T) {
 			fx.searched = nil
 		}, "", report.ReasonPackageVersionUnresolved,
 			"The analysis does not locate the advisory's symbols inside the build's code of k8s.io/kubernetes, so whether that code defines " + rmSymA + ", " + rmSymB + " was not determined."},
+		// A symbol outside the build is not named as one the analysis failed to locate.
+		{"the Go lane's dependency result, one symbol outside the build", func(fx *replacedFixture) {
+			fx.symbols = append(fx.symbols, rmSymV2)
+			fx.res = plugin.SymbolResolutionResult{Partiality: fx.res.Partiality, OutsideBuild: []string{rmSymV2}}
+			fx.searched = nil
+		}, "", report.ReasonPackageVersionUnresolved,
+			"The analysis does not locate the advisory's symbols inside the build's code of k8s.io/kubernetes, so whether that code defines " + rmSymA + ", " + rmSymB + " was not determined."},
 		{"every symbol resolved only outside the module", func(fx *replacedFixture) {
 			fx.res.Origins[rmSCIPA] = "pkg:golang/github.com/other/mod@v1.0.0"
 			fx.res.Origins[rmSCIPB] = "pkg:golang/github.com/other/mod@v1.0.0"
@@ -247,6 +264,14 @@ func TestFinding_ReplacedModule(t *testing.T) {
 			fx.flags = append(fx.flags, plugin.PartialReasonAdvisoryUnknownToAnalyzer, plugin.PartialReasonToolFailure)
 		}, "", report.ReasonPackageVersionUnresolved,
 			"Steps an analysis of that code rests on did not run, so it was not judged."},
+		// A symbol outside the build is not named as one the fork does not define.
+		{"a symbol the fork does not define, beside one outside the build", func(fx *replacedFixture) {
+			fx.symbols = append(fx.symbols, rmSymV2)
+			fx.res.OutsideBuild = []string{rmSymV2}
+			delete(fx.res.Matched, rmSymB)
+			fx.res.Resolved, fx.searched = fx.res.Resolved[:1], fx.searched[:1]
+		}, "", report.ReasonPackageVersionUnresolved,
+			"The build's code of k8s.io/kubernetes does not define " + rmSymB + ". A replacement can rename or move the vulnerable code, so that is not taken as a fix."},
 		// The case order holds: a symbol the fork does not define is stated before any step that did
 		// not run.
 		{"a symbol the fork does not define, beside steps that did not run", func(fx *replacedFixture) {
@@ -283,6 +308,25 @@ func TestFinding_ReplacedModule(t *testing.T) {
 				t.Errorf("detail = %q, want %q", f.Evidence.Detail, tt.detail)
 			}
 		})
+	}
+}
+
+// TestReplacedHeldDetail_EmptyGraph: an empty call graph not called complete is a step that did not
+// run which the detail cannot name, so a nameable limit beside it keeps the general statement. The
+// finding path classifies such a row analysis_did_not_run before the fork detail, so the detail is
+// called directly.
+func TestReplacedHeldDetail_EmptyGraph(t *testing.T) {
+	fx := newReplacedFixture()
+	fx.flags = append(fx.flags, plugin.PartialReasonAdvisoryUnknownToAnalyzer)
+	fx.graph = &plugin.CallGraphResult{Partiality: plugin.Partial(plugin.PartialReasonCgo)}
+	store, aid := fx.seed(t)
+	r, ok := moduleReplacement(store, aid, nil)
+	if !ok {
+		t.Fatal("no replacement recorded")
+	}
+	const want = rmForkHead + "Steps an analysis of that code rests on did not run, so it was not judged." + rmForkTail
+	if got := replacedHeldDetail(store, aid, fx.mods, r); got != want {
+		t.Errorf("detail = %q, want %q", got, want)
 	}
 }
 

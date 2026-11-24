@@ -179,8 +179,10 @@ func TestHeadContainsCommit(t *testing.T) {
 			if err := os.Rename(h.dir, h.dir+".gone"); err != nil {
 				t.Fatal(err)
 			}
-			if got := fixtureGit(t, clone, "rev-parse", "--is-shallow-repository"); got != "false" {
-				t.Fatalf("clone is shallow: %s", got)
+			// git may first complain about the missing alternate; the answer is the last line.
+			out := fixtureGit(t, clone, "rev-parse", "--is-shallow-repository")
+			if got := out[strings.LastIndex(out, "\n")+1:]; got != "false" {
+				t.Fatalf("clone is shallow: %s", out)
 			}
 			return clone, h.fix
 		}, historyUnanswered},

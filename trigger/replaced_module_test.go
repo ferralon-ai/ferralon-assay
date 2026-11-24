@@ -123,10 +123,18 @@ func TestFinding_ReplacedModule(t *testing.T) {
 			fx.res.Origins[rmSCIPB] = "pkg:golang/github.com/other/mod@v1.0.0"
 		}, "", report.ReasonPackageVersionUnresolved,
 			"The build's code of k8s.io/kubernetes does not define " + rmSymB + ". A replacement can rename or move the vulnerable code, so that is not taken as a fix."},
-		{"no symbol resolved", func(fx *replacedFixture) {
-			fx.res.Matched, fx.res.Resolved, fx.res.Origins, fx.searched = nil, nil, nil, nil
+		// The Go lane's ResolveDependencySymbols indexes only the build's own packages: for a dependency
+		// it returns its partiality and nothing else. That is no evidence about what the fork defines.
+		{"the Go lane's dependency result", func(fx *replacedFixture) {
+			fx.res = plugin.SymbolResolutionResult{Partiality: fx.res.Partiality}
+			fx.searched = nil
 		}, "", report.ReasonPackageVersionUnresolved,
-			"The build's code of k8s.io/kubernetes does not define " + rmSymA + ", " + rmSymB + ". A replacement can rename or move the vulnerable code, so that is not taken as a fix."},
+			"The analysis does not locate the advisory's symbols inside the build's code of k8s.io/kubernetes, so whether that code defines " + rmSymA + ", " + rmSymB + " was not determined."},
+		{"every symbol resolved only outside the module", func(fx *replacedFixture) {
+			fx.res.Origins[rmSCIPA] = "pkg:golang/github.com/other/mod@v1.0.0"
+			fx.res.Origins[rmSCIPB] = "pkg:golang/github.com/other/mod@v1.0.0"
+		}, "", report.ReasonPackageVersionUnresolved,
+			"The analysis does not locate the advisory's symbols inside the build's code of k8s.io/kubernetes, so whether that code defines " + rmSymA + ", " + rmSymB + " was not determined."},
 		{"a defined symbol not searched", func(fx *replacedFixture) { fx.searched = fx.searched[:1] }, "", report.ReasonPackageVersionUnresolved,
 			"The analysis did not search every definition of " + rmSymA + ", " + rmSymB + " from the entry points."},
 		{"an unvetted symbol set", func(fx *replacedFixture) { fx.provenance = "diff-lexed" }, "", report.ReasonPackageVersionUnresolved,

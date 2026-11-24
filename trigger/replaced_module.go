@@ -75,6 +75,9 @@ func replacedHeldDetail(store artifact.Store, assessmentID string, mods goModule
 		why = "The advisory names no vulnerable symbol to look for in that code."
 	case !vettedSymbols(store, assessmentID):
 		why = "The advisory's vulnerable symbols are not a vetted set, so their absence from every path is not evidence."
+	case keyed && resErr == nil && !resolvesInto(res, key):
+		why = fmt.Sprintf("The analysis does not locate the advisory's symbols inside the build's code of %s, so whether that code defines %s was not determined.",
+			module, strings.Join(symbols, ", "))
 	case keyed && resErr == nil && len(undefinedIn(symbols, res, key)) > 0:
 		why = fmt.Sprintf("The build's code of %s does not define %s. A replacement can rename or move the vulnerable code, so that is not taken as a fix.",
 			module, strings.Join(undefinedIn(symbols, res, key), ", "))
@@ -86,6 +89,18 @@ func replacedHeldDetail(store artifact.Store, assessmentID string, mods goModule
 		why = fmt.Sprintf("The analysis did not search every definition of %s from the entry points.", strings.Join(symbols, ", "))
 	}
 	return head + why + fmt.Sprintf(" It is settled by building %s from a release the advisory's ranges place, or by finding the advisory's vulnerable functions in the replacement's code with no path reaching them.", module)
+}
+
+// resolvesInto reports whether the resolution attributed any symbol to the module key names. A lane
+// that does not resolve inside a dependency's code (Go's, which indexes only the build's own packages)
+// returns no origins for it, and an empty result there says nothing about what that code defines.
+func resolvesInto(res plugin.SymbolResolutionResult, key pkgKey) bool {
+	for _, origin := range res.Origins {
+		if inAdmitted(origin, key, false) {
+			return true
+		}
+	}
+	return false
 }
 
 // undefinedIn returns the symbols that resolved to no code of the module key names.

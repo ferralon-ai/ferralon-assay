@@ -788,33 +788,41 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.SetRelationships(prior.SBOM.Relationships)
 	b.SetGoBuildList(prior.SBOM)
 
-	// A retried cut row's key holds only cut rows, and its fresh rows replace them all: the parent's
-	// and its siblings'.
+	// A fresh row replaces the prior rows of its own instance: under a retried cut row's key, which
+	// holds only cut rows, all of them (the parent's and its siblings', which siblings re-assesses);
+	// under any other key, the completed row naming the same package. A cut row under such a key is
+	// a sibling the run did not reach, and stays. No row's position in the stored order matters.
 	fanned := map[string]bool{}
+	instance := map[string]string{}
 	for _, w := range todo {
 		fanned[w.key] = w.cut
+		instance[w.key] = packageInstance(w.pkg)
 	}
-	replaced := map[string]bool{}
+	for key, re := range reFindings {
+		if re.Package != nil {
+			instance[key] = packageInstance(re.Package)
+		}
+	}
 	var rows []report.AdvisoryFinding
-	for i := range prior.Advisories {
-		f := prior.Advisories[i]
+	for _, f := range prior.Advisories {
 		if supersededByFresh(f, freshIDs) {
 			continue
 		}
 		key := f.Advisory.ID + "\x00" + f.Advisory.Source
-		if re, ok := reFindings[key]; ok {
-			rows = append(rows, re)
-			delete(reFindings, key)
-			replaced[key] = true
-			continue
-		}
-		if replaced[key] && fanned[key] {
-			continue
+		if _, ok := reFindings[key]; ok {
+			if fanned[key] {
+				continue
+			}
+			if f.UndeterminedReason != report.ReasonScanCutShort && (f.Package == nil || packageInstance(f.Package) == instance[key]) {
+				continue
+			}
 		}
 		rows = append(rows, f)
 	}
-	for _, re := range reFindings {
-		rows = append(rows, re)
+	for _, w := range todo {
+		if re, ok := reFindings[w.key]; ok {
+			rows = append(rows, re)
+		}
 	}
 	rows = append(rows, siblings...)
 	for _, f := range rows {
@@ -854,6 +862,15 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		return nil, DependencyFetchRun{}, err
 	}
 	return &rep, DependencyFetchRun{Assessed: sortedAdvisories(assessed), Packages: packages, Undetermined: undetermined}, nil
+}
+
+// packageInstance identifies the package instance a row concerns: ecosystem, name and version, empty
+// for a row that names none.
+func packageInstance(p *report.Package) string {
+	if p == nil {
+		return ""
+	}
+	return p.Ecosystem + "\x00" + p.Name + "\x00" + p.Version
 }
 
 // assessedPackages names every package an assessment concerns, as DependencyFetchRun.Packages

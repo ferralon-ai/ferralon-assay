@@ -233,3 +233,144 @@ func TestProgramView(t *testing.T) {
 		t.Error("a module-level finding was traced from a main")
 	}
 }
+
+// TestProgramView_OtherPlatformScope: a file built only for another platform that calls into the
+// first module keeps the view's refutation with that platform scope, and the scope it adds is not a
+// step the program run left undone for a second module the advisory was matched to.
+func TestProgramView_OtherPlatformScope(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":                 "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"_vulnmod/go.mod":        "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go":    "package vulnmod\n\nfunc Bad() {}\n",
+		"pkg/lib/lib.go":         "package lib\n\nimport \"example.com/vulnmod\"\n\nfunc Get() func() { return vulnmod.Bad }\n",
+		"cmd/tool/main.go":       "package main\n\nfunc main() {}\n",
+		"cmd/tool/main_plan9.go": "package main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n",
+	})
+	ctx := context.Background()
+	load, err := LoadProgram(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded := func() (*LoadResult, error) { return load, nil }
+	env := append(os.Environ(), "GOWORK=off")
+	g, err := reconcileCallGraph(ctx, dir, nil, loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}
+	second := vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/xmod", Version: "v0.0.0", Package: "example.com/xmod"}}}
+	firstOut := `{"finding":{"osv":"GO-1","trace":[{"module":"example.com/vulnmod","version":"v0.0.0","package":"example.com/vulnmod"}]}}`
+	secondOut := `{"finding":{"osv":"GO-1","trace":[{"module":"example.com/xmod","version":"v0.0.0","package":"example.com/xmod"}]}}`
+	defer func(prev func(context.Context, string, []string, []string) ([]byte, error)) { programStream = prev }(programStream)
+	for _, tc := range []struct {
+		name     string
+		findings []vulnFinding
+		out      string
+		partial  plugin.Partiality
+		want     bool
+	}{
+		{"one module", []vulnFinding{first}, firstOut, plugin.Partiality{Complete: true}, true},
+		{"two modules", []vulnFinding{first, second}, firstOut + "\n" + secondOut, plugin.Partiality{Complete: true}, true},
+		{"two modules, the run declares a limit bounded to the second", []vulnFinding{first, second}, firstOut + "\n" + secondOut,
+			plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonCgo, Package: "pkg:golang/example.com/xmod", Targets: []string{"pkg:golang/example.com/xmod"}}}}, false},
+	} {
+		programStream = func(context.Context, string, []string, []string) ([]byte, error) { return []byte(tc.out), nil }
+		scanned := vulnScan{findings: tc.findings, vulnID: "GO-1"}
+		in := g
+		in.CallGraph.Partiality = tc.partial
+		evidence := evidenceResult(scanned.findings, in.CallGraph, env)
+		v := programView(ctx, plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonLibraryEscape)}, evidence, scanned, in, dir, env, loaded)
+		if (v != nil) != tc.want {
+			t.Errorf("%s: program view = %+v, want present %v", tc.name, v, tc.want)
+			continue
+		}
+		if v != nil && !strings.Contains(v.Refutation.Detail, "scope: decided for GOOS=") {
+			t.Errorf("%s: program view detail %q does not state the platform scope", tc.name, v.Refutation.Detail)
+		}
+	}
+}
+
+// TestProgramView_SecondModuleOwnScope: with the first module's refutation scoped to another
+// platform, a second module the advisory was matched to is still checked for left-out files and
+// reflection of its own. A left-out file that keeps it only for the scanned platform adds its scope
+// to the view's detail; reflection, or a left-out file the check cannot trace, leaves no view.
+func TestProgramView_SecondModuleOwnScope(t *testing.T) {
+	base := map[string]string{
+		"go.mod":                 "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/vulnmod v0.0.0\n\texample.com/xmod v0.0.0\n)\n\nreplace example.com/vulnmod => ./_vulnmod\n\nreplace example.com/xmod => ./_xmod\n",
+		"_vulnmod/go.mod":        "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go":    "package vulnmod\n\nfunc Bad() {}\n",
+		"_xmod/go.mod":           "module example.com/xmod\n\ngo 1.22\n",
+		"_xmod/xmod.go":          "package xmod\n\nfunc Bad() {}\n",
+		"pkg/lib/lib.go":         "package lib\n\nimport \"example.com/vulnmod\"\n\nfunc Get() func() { return vulnmod.Bad }\n",
+		"cmd/tool/main.go":       "package main\n\nfunc main() {}\n",
+		"cmd/tool/main_plan9.go": "package main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n",
+	}
+	first := vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}
+	second := vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/xmod", Version: "v0.0.0", Package: "example.com/xmod"}}}
+	out := `{"finding":{"osv":"GO-1","trace":[{"module":"example.com/vulnmod","version":"v0.0.0","package":"example.com/vulnmod"}]}}` + "\n" +
+		`{"finding":{"osv":"GO-1","trace":[{"module":"example.com/xmod","version":"v0.0.0","package":"example.com/xmod"}]}}`
+	defer func(prev func(context.Context, string, []string, []string) ([]byte, error)) { programStream = prev }(programStream)
+	programStream = func(context.Context, string, []string, []string) ([]byte, error) { return []byte(out), nil }
+	for _, tc := range []struct {
+		name      string
+		extra     map[string]string
+		reflect   map[string][]string
+		want      bool
+		wantScope bool
+	}{
+		{"second module not called", nil, nil, true, false},
+		{"second module called from another platform's file", map[string]string{"cmd/tool/x_windows.go": "package main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, true, true},
+		{"second module called behind a build tag", map[string]string{"cmd/tool/x_tag.go": "//go:build sometag\n\npackage main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, true, true},
+		{"second module called from a file the build left out for no build constraint", map[string]string{"_leftout/x.go": "package main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, false, false},
+		{"reflection reaches the second module", nil, map[string][]string{"example.com/xmod": {"Bad"}}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{}
+			for k, v := range base {
+				files[k] = v
+			}
+			for k, v := range tc.extra {
+				files[k] = v
+			}
+			dir := writeTree(t, files)
+			ctx := context.Background()
+			load, err := LoadProgram(ctx, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := tc.extra["_leftout/x.go"]; ok {
+				for i, p := range load.Packages {
+					if isMain(p) {
+						c := *p
+						c.IgnoredFiles = append(slices.Clone(c.IgnoredFiles), filepath.Join(dir, "_leftout", "x.go"))
+						load.Packages[i] = &c
+					}
+				}
+			}
+			loaded := func() (*LoadResult, error) { return load, nil }
+			env := append(os.Environ(), "GOWORK=off")
+			g, err := reconcileCallGraph(ctx, dir, nil, loaded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.reflect != nil {
+				g.ReflectReach = tc.reflect
+			}
+			scanned := vulnScan{findings: []vulnFinding{first, second}, vulnID: "GO-1"}
+			evidence := evidenceResult(scanned.findings, g.CallGraph, env)
+			v := programView(ctx, plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonLibraryEscape)}, evidence, scanned, g, dir, env, loaded)
+			if (v != nil) != tc.want {
+				t.Fatalf("program view = %+v, want present %v", v, tc.want)
+			}
+			if v == nil {
+				return
+			}
+			if !strings.Contains(v.Refutation.Detail, "may call into example.com/vulnmod") {
+				t.Errorf("program view detail %q does not state the first module's platform scope", v.Refutation.Detail)
+			}
+			if got := strings.Contains(v.Refutation.Detail, "may call into example.com/xmod"); got != tc.wantScope {
+				t.Errorf("program view detail %q states the second module's platform scope: %v, want %v", v.Refutation.Detail, got, tc.wantScope)
+			}
+		})
+	}
+}

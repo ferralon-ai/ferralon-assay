@@ -269,6 +269,7 @@ func renderSummary(r report.Report, fetch []resultsink.DependencyFetchNote) stri
 	b.WriteString(partialityBlock(r))
 	b.WriteString(dependencyFetchBlock(fetch))
 	b.WriteString(assumptionsBlock(r))
+	b.WriteString(entrypointsBlock(r))
 
 	b.WriteString(countsTable(c))
 	b.WriteString(undeterminedCauseTable(c))

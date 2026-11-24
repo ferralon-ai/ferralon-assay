@@ -1564,7 +1564,14 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 			// The standard library or a dependency module holds the advisory's package: its code is
 			// not in the index, and a first-party symbol that shares a name with an advisory symbol
 			// is not the advisory's.
+			// A dependency module the build compiles from a replacement is read where the build compiles
+			// it: no release of the module describes that code.
 			if moduleFilter == "" && (isToolchainPackage(pkgFilter) || dependencyHolds(ctx, req.BuildDir, pkgFilter)) {
+				if !isToolchainPackage(pkgFilter) {
+					if res, ok := replacedResolution(ctx, req.BuildDir, pkgFilter, req.AdvisorySymbols); ok {
+						return res, nil
+					}
+				}
 				return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
 			}
 			// Another major version of the advisory's module in the build is a package instance of

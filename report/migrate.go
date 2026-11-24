@@ -133,7 +133,7 @@ func UndeterminedDetail(reason string) string {
 	case ReasonPackageVersionUnresolved:
 		return "the installed version of the affected package could not be resolved, so no verdict was established"
 	case ReasonOwnReleaseVersionUnknown:
-		return "this advisory is on this repository's own code, and the release version of this checkout could not be established, so nothing places it inside or outside the advisory's affected versions and no verdict was established"
+		return "this advisory is on this repository's own code, and the release version of this checkout could not be established, so nothing places it inside or outside the advisory's affected versions and no verdict was established. A Go module's release version is read from a full semver release tag on the checked-out commit, so the checkout needs its tags; other ecosystems read it from a version the manifest states outright. Other steps of the analysis may also have been limited; the scan's limits list them"
 	case ReasonAdvisorySymbolAbsent:
 		return "the advisory names no vulnerable function to search for, so no verdict was established"
 	case ReasonVulnerableSymbolUnresolved:

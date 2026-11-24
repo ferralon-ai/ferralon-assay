@@ -1694,7 +1694,10 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 //
 // The positive-grounds reasons (notExploitableGrounds) are scoped to the finding's own package
 // ecosystem: they are about that package's admission and symbols, not the Go toolchain. So is
-// dependency_not_fetched, which is about the package's dependency code.
+// dependency_not_fetched, which is about the package's dependency code. own_release_version_unknown
+// is about the checkout's own release version, which no scan-level limit states; its row names no
+// package, so its note is scoped to no ecosystem, as a package_version_unresolved row's is when it
+// names none.
 func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	switch {
 	case f.Verdict != report.VerdictUndetermined,
@@ -1704,7 +1707,7 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 		return report.PartialityNote{}, false
 	}
 	switch f.UndeterminedReason {
-	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
+	case report.ReasonPackageVersionUnresolved, report.ReasonOwnReleaseVersionUnknown, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
 		report.ReasonAdvisorySymbolsUnvetted, report.ReasonAdvisoryRangeAbsent, report.ReasonDependencyNotFetched:
 		note := report.PartialityNote{Reason: f.UndeterminedReason}
 		if f.Package != nil {

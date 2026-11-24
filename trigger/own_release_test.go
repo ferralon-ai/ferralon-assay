@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -12,7 +13,9 @@ import (
 // advisory on the scanned module itself, whose ranges name the module's own releases and carry no
 // fix commit, in a checkout whose own release version was not established. The row is held for
 // that missing version, whatever steps beside it also did not run. A row whose version is known, or
-// whose advisory is on a dependency, keeps the reason it had.
+// whose advisory is on a dependency, keeps the reason it had. The held row owes a scan-level note
+// naming the missing version, which no other limit states, scoped to no ecosystem since it names no
+// package.
 func TestFinding_OwnReleaseVersionUnknown(t *testing.T) {
 	kubeedge := plugin.Partial(plugin.PartialReasonAdvisoryUnknownToAnalyzer, plugin.PartialReasonPluginLoad, plugin.PartialReasonCgo)
 	cases := []struct {
@@ -48,6 +51,17 @@ func TestFinding_OwnReleaseVersionUnknown(t *testing.T) {
 			f := finding(store, aid, report.Advisory{ID: "GO-2022-0500", Source: "osv"}, pkg)
 			if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != tc.want {
 				t.Fatalf("got %s/%q, want undetermined/%q (%s)", f.Verdict, f.UndeterminedReason, tc.want, f.Evidence.Detail)
+			}
+			note, owes := limitNoteFor(f)
+			switch tc.want {
+			case report.ReasonOwnReleaseVersionUnknown, report.ReasonPackageVersionUnresolved:
+				if !owes || !reflect.DeepEqual(note, report.PartialityNote{Reason: tc.want}) {
+					t.Errorf("note = %+v, %v; want an unscoped %s note", note, owes, tc.want)
+				}
+			default:
+				if owes {
+					t.Errorf("note = %+v; want none: the scan's own limits carry %s", note, tc.want)
+				}
 			}
 		})
 	}

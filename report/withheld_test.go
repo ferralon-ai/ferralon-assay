@@ -55,6 +55,19 @@ func TestWithheldDetail(t *testing.T) {
 }
 
 // TestValidate_WithheldBy: limits ride only on a row the analysis withheld.
+// TestWithheldDetail_KeepsALongPath pins that a limit's Path reaches the row whole: a partial run's
+// limit names up to five packages before the load error it reports for them, and a cut would drop
+// the error first.
+func TestWithheldDetail_KeepsALongPath(t *testing.T) {
+	cause := "(github.com/wailsapp/wails/v3/pkg/application/menu_linux.go:7:12: undefined: pointer)"
+	path := "govulncheck could not load " + strings.Repeat("github.com/wailsapp/wails/v3/pkg/application, ", 4) +
+		"github.com/wailsapp/wails/v3/pkg/events and 3 more " + cause + "; it searched the build less the roots that are or import a package it could not load: example.com/m/client/ui"
+	got := WithheldDetail(ReasonRefutationWithheld, []Limit{{Reason: "tool_failure", Package: "pkg:golang/github.com/wailsapp/wails/v3", Path: path}})
+	if !strings.Contains(got, cause) || !strings.HasSuffix(got, "example.com/m/client/ui") {
+		t.Errorf("detail lost the cause or the roots: %q", got)
+	}
+}
+
 func TestValidate_WithheldBy(t *testing.T) {
 	limits := []Limit{{Reason: "library_escape"}}
 	cases := []struct {

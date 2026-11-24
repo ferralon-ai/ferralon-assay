@@ -78,9 +78,11 @@ func headContainsCommit(ctx context.Context, dir, commit string) historyAnswer {
 		return historyLacks
 	}
 	// merge-base fails the same way for a commit the store does not hold and for a HEAD that names
-	// no commit; only the first is an answer.
+	// no commit; only the first is an answer, and only when the store holds every commit HEAD's
+	// history names. A store that has lost some (an alternate gone, a corrupt pack) may have lost
+	// the fix with them; walking the history fails on the first missing commit.
 	if _, err := fixCommitGit(ctx, dir, "cat-file", "-e", commit); errors.As(err, &exit) && exit.ExitCode() == 1 {
-		if _, err := fixCommitGit(ctx, dir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err == nil {
+		if _, err := fixCommitGit(ctx, dir, "rev-list", "--quiet", "HEAD"); err == nil {
 			return historyLacks
 		}
 	}

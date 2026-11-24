@@ -166,6 +166,24 @@ func TestHeadContainsCommit(t *testing.T) {
 			fixtureGit(t, h.dir, "symbolic-ref", "HEAD", "refs/heads/unborn")
 			return h.dir, h.fix
 		}, historyUnanswered},
+		{"HEAD names no commit, asked about a commit the store does not hold", func(t *testing.T) (string, string) {
+			h := newFixHistory(t, nil)
+			fixtureGit(t, h.dir, "symbolic-ref", "HEAD", "refs/heads/unborn")
+			return h.dir, strings.Repeat("0123456789", 4)
+		}, historyUnanswered},
+		{"a full clone whose borrowed object store is gone", func(t *testing.T) (string, string) {
+			h := newFixHistory(t, nil)
+			clone := t.TempDir()
+			fixtureGit(t, clone, "clone", "-q", "--shared", h.dir, ".")
+			fixtureGit(t, clone, "commit", "-q", "--allow-empty", "-m", "local")
+			if err := os.Rename(h.dir, h.dir+".gone"); err != nil {
+				t.Fatal(err)
+			}
+			if got := fixtureGit(t, clone, "rev-parse", "--is-shallow-repository"); got != "false" {
+				t.Fatalf("clone is shallow: %s", got)
+			}
+			return clone, h.fix
+		}, historyUnanswered},
 		{"no directory", func(t *testing.T) (string, string) {
 			return "", strings.Repeat("0123456789", 4)
 		}, historyUnanswered},

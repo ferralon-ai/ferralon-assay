@@ -552,6 +552,14 @@ type ReachabilityRequest struct {
 	// importer may contradict resolves its entry points from it and reports them in
 	// ReachabilityResult.LibraryEntrypoints.
 	LibraryEntrypoints *LibraryEntrypoints `json:"library_entrypoints,omitempty"`
+	// MatchOnly asks only whether the lane's own vulnerability database places VulnID against the
+	// build, answered in ReachabilityResult.AnalyzerMatched; the lane derives no paths, refutations or
+	// searched sinks. A lane with no database of its own answers false, which changes nothing.
+	MatchOnly bool `json:"match_only,omitempty"`
+	// MatchOutsideToolchain, beside MatchOnly, counts only a match against a module other than the
+	// Go toolchain's standard library: the lane matches the toolchain against the one it scanned
+	// with, not the build's.
+	MatchOutsideToolchain bool `json:"match_outside_toolchain,omitempty"`
 }
 
 // --- result payloads ---
@@ -727,11 +735,19 @@ type ReachabilityResult struct {
 	// LibraryEntrypoints is the entry-point set the lane resolved from
 	// ReachabilityRequest.LibraryEntrypoints, when it resolved one.
 	LibraryEntrypoints *ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
+	// EntryRoots is the same set as the report's entrypoints[] states it, with the entry points the
+	// lane inferred and the declared "!" selectors that removed one. Set with or without
+	// LibraryEntrypoints, on every assessment whose lane loaded the build.
+	EntryRoots *EntryRootRecord `json:"entry_roots,omitempty"`
 	// ProgramView is a refutation the lane's program view holds when the library view holds none:
 	// the build's shipped programs, started from their own main and init alone, cannot reach the
 	// advisory's vulnerable code, though the module used as a library may. The lane never sets it
 	// beside a library-view Refutation, and it never replaces or weakens that view.
 	ProgramView *ProgramView `json:"program_view,omitempty"`
+	// AnalyzerMatched, answering a MatchOnly request, reports that the lane's own vulnerability
+	// database matched VulnID against a module version the build uses. A run that covered only part
+	// of the build still reports a match, and says it was partial in Partiality.
+	AnalyzerMatched bool `json:"analyzer_matched,omitempty"`
 }
 
 // ProgramView is the program view's ruling on one advisory: its refutation, and the shipped binaries

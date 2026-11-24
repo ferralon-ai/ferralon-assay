@@ -92,7 +92,10 @@ func siblingInstanceFindings(analysis context.Context, areq assessment.Request, 
 //   - disqualification_discovery disqualified  → VerdictDisqualified.
 //   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate, or
 //     VerdictUndetermined/advisory_range_absent with the path kept when the advisory
-//     carries no affected range the version axis can bound for the admitted package.
+//     carries no affected range the version axis can bound for the admitted package, or
+//     VerdictUndetermined/own_release_version_unknown with the path kept when the advisory is
+//     on the unversioned project itself and only its fix commit, which the checkout's
+//     history could not place, would decide it (ownFixCommitUnanswered).
 //   - neither, and the empty path set is not evidence about the subject (see
 //     undeterminedReason) or has no positive grounds (see
 //     notExploitableGrounds)                    → VerdictUndetermined, no basis.
@@ -133,7 +136,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			Verdict:  report.VerdictDisqualified,
 			Evidence: report.EvidenceSummary{
 				Basis:  disqualBasis(res.Reason),
-				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source),
+				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck),
 			},
 		}
 	case hasCandidate(store, assessmentID):
@@ -176,6 +179,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				GuardSufficiency: guardSufficiencyFor(guards, advisoryGuardSufficiency(store, assessmentID)),
 			},
 		}
+		if pkg == nil && ownReleaseUnversioned(store, assessmentID) {
+			f.Evidence.Detail = ownReleaseCandidateDetail
+		}
 		// An advisory with no affected range for the admitted package is admitted at every version,
 		// so the path says nothing about whether this version carries the flaw. The path stays as
 		// evidence; the candidate-only annotations go with the verdict.
@@ -189,6 +195,18 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				CallPath:         frames,
 				MitigatingGuards: guards,
 				AdvisoryBounds:   advisoryBounds(store, assessmentID),
+			}
+		} else if commit := ownFixCommitUnanswered(store, assessmentID, pkg); commit != "" {
+			// The advisory is on the project itself, whose version nothing established, and only the
+			// history the checkout lacks could place the fix commit. The path stays as evidence.
+			f.Verdict = report.VerdictUndetermined
+			f.UndeterminedReason = report.ReasonOwnReleaseVersionUnknown
+			f.Evidence = report.EvidenceSummary{
+				Detail:           ownFixCommitUnansweredDetail(commit),
+				ReachablePath:    path,
+				EntryPoint:       entry,
+				CallPath:         frames,
+				MitigatingGuards: guards,
 			}
 		}
 	default:
@@ -1006,6 +1024,15 @@ func refuteAttribution(src *pipeline.RefuteSource) string {
 	return " (per " + strings.Join(parts, ", ") + ")"
 }
 
+// crossCheckNote discloses on a version-axis disqualification that the analyzer's own vulnerability
+// database could not be consulted, so the clear rests on the corpus range alone.
+func crossCheckNote(note string) string {
+	if note == "" {
+		return ""
+	}
+	return "; not cross-checked: " + note
+}
+
 // maxFeedName bounds the record-declared feed name carried into customer-visible detail.
 const maxFeedName = 64
 
@@ -1325,7 +1352,31 @@ func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.P
 // advisory_unknown_to_analyzer. When every did-not-run limit is one an analyzer declares only after
 // its search ran and came back empty (refutationWithheldReasons), the reason is
 // refutation_withheld: the steps ran, and the search did not cover all the code the build may run.
+// When the advisory is on the scanned project itself and the project's own release version was not
+// established (ownReleaseUnversioned), the reason is own_release_version_unknown, whichever of these
+// it would otherwise be.
 func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
+	reason, ok := didNotRunReason(store, assessmentID, pkg)
+	if ok && pkg == nil && ownReleaseUnversioned(store, assessmentID) {
+		return report.ReasonOwnReleaseVersionUnknown, true
+	}
+	return reason, ok
+}
+
+// ownReleaseUnversioned reports that the advisory is on the scanned project itself and the
+// project's own release version was not established. Such an advisory's affected range names
+// releases of this project, so nothing places this checkout inside or outside it, and the
+// reason a row is held is that missing version, whatever steps beside it also did not run.
+func ownReleaseUnversioned(store artifact.Store, assessmentID string) bool {
+	if !pipeline.RootSubject(store, assessmentID) {
+		return false
+	}
+	_, versioned := pipeline.ResolvedVersion(store, assessmentID)
+	return !versioned
+}
+
+// didNotRunReason is analysisDidNotRun without the own-release case.
+func didNotRunReason(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
 	if emptyGraphUncalledComplete(store, assessmentID) {
 		return report.ReasonAnalysisDidNotRun, true
 	}
@@ -1681,7 +1732,10 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 //
 // The positive-grounds reasons (notExploitableGrounds) are scoped to the finding's own package
 // ecosystem: they are about that package's admission and symbols, not the Go toolchain. So is
-// dependency_not_fetched, which is about the package's dependency code.
+// dependency_not_fetched, which is about the package's dependency code. own_release_version_unknown
+// is about the checkout's own release version, which no scan-level limit states; its row names no
+// package, so its note is scoped to no ecosystem, as a package_version_unresolved row's is when it
+// names none.
 func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	switch {
 	case f.Verdict != report.VerdictUndetermined,
@@ -1691,7 +1745,7 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 		return report.PartialityNote{}, false
 	}
 	switch f.UndeterminedReason {
-	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
+	case report.ReasonPackageVersionUnresolved, report.ReasonOwnReleaseVersionUnknown, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
 		report.ReasonAdvisorySymbolsUnvetted, report.ReasonAdvisoryRangeAbsent, report.ReasonDependencyNotFetched:
 		note := report.PartialityNote{Reason: f.UndeterminedReason}
 		if f.Package != nil {

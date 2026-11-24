@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 type runCacheDirKey struct{}
@@ -35,6 +36,13 @@ func RunCacheDir(ctx context.Context) string {
 // run cache when one exists. A failed compute is never stored. A cache that cannot be read or written
 // degrades to computing, never to an error. Writes go through a rename so a concurrent reader sees
 // either nothing or a whole entry.
+//
+// One process at a time computes a key: the scan's two advisory passes run plugin processes side by
+// side, and two cold computes of a whole-tree result (a govulncheck run, a symbol index) hold twice
+// the memory to produce one entry. Only results kept in the run cache are covered: the reconcile call
+// graph is built outside it, so a first-pass request that loads the program would pair two loads.
+// A process that finds the key being computed waits for it and reads the entry; when the computing
+// process fails or dies, the waiter computes it itself.
 func runCached(ctx context.Context, kind string, key []string, compute func() ([]byte, error)) ([]byte, error) {
 	dir := RunCacheDir(ctx)
 	if dir == "" {
@@ -44,6 +52,14 @@ func runCached(ctx context.Context, kind string, key []string, compute func() ([
 	if b, err := os.ReadFile(path); err == nil {
 		return b, nil
 	}
+	if unlock := lockRunCacheEntry(ctx, path); unlock != nil {
+		defer unlock()
+		if b, err := os.ReadFile(path); err == nil {
+			return b, nil
+		}
+	} else if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	b, err := compute()
 	if err != nil {
 		return nil, err
@@ -51,6 +67,10 @@ func runCached(ctx context.Context, kind string, key []string, compute func() ([
 	writeRunCacheEntry(dir, kind, path, b)
 	return b, nil
 }
+
+// runCacheLockPoll is how often a process waiting on another's compute of a run cache entry retries
+// the lock.
+const runCacheLockPoll = 50 * time.Millisecond
 
 // runCachePath is where the run cache in dir keeps the entry of kind for key.
 func runCachePath(dir, kind string, key []string) string {

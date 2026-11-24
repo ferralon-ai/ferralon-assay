@@ -1350,9 +1350,14 @@ func symbolDescriptor(obj types.Object) string {
 
 // receiverTypeName returns the bare named-type name of a method receiver,
 // stripping any pointer indirection so (*T) and T share a stable receiver token.
+// A receiver declared through an alias (type A = T; func (A) M()) names T, the
+// type the method belongs to: the alias's own String is package-qualified, and a
+// slash in a descriptor misplaces the package boundary every reader of the id
+// finds at its last slash.
 func receiverTypeName(t types.Type) string {
+	t = types.Unalias(t)
 	if ptr, ok := t.(*types.Pointer); ok {
-		t = ptr.Elem()
+		t = types.Unalias(ptr.Elem())
 	}
 	if named, ok := t.(*types.Named); ok {
 		return named.Obj().Name()

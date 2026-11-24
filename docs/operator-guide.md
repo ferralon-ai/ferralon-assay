@@ -99,6 +99,7 @@ and a limit it does list is not the reason the analysis did not run.
 |---|---|
 | `analysis_did_not_run` | A step the verdict rests on failed or did not run. The scan-level `partiality` notes name the step; when the step failed outright, the row's detail also carries the redacted error. |
 | `package_version_unresolved` | The package's installed version was not resolved, so nothing establishes which code the build carries. |
+| `own_release_version_unknown` | The advisory is on your repository's own code, and the release version of this checkout was not established, so nothing places it inside or outside the advisory's affected versions. |
 | `advisory_symbol_absent` | The advisory names no vulnerable symbol, so there was nothing to search for. |
 | `vulnerable_symbol_unresolved` | The advisory names vulnerable symbols, and not every one was located in the affected package and searched. |
 | `advisory_unknown_to_analyzer` | The analyzer reported nothing about the advisory at all. |

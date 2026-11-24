@@ -1325,7 +1325,31 @@ func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.P
 // advisory_unknown_to_analyzer. When every did-not-run limit is one an analyzer declares only after
 // its search ran and came back empty (refutationWithheldReasons), the reason is
 // refutation_withheld: the steps ran, and the search did not cover all the code the build may run.
+// When the advisory is on the scanned project itself and the project's own release version was not
+// established (ownReleaseUnversioned), the reason is own_release_version_unknown, whichever of these
+// it would otherwise be.
 func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
+	reason, ok := didNotRunReason(store, assessmentID, pkg)
+	if ok && pkg == nil && ownReleaseUnversioned(store, assessmentID) {
+		return report.ReasonOwnReleaseVersionUnknown, true
+	}
+	return reason, ok
+}
+
+// ownReleaseUnversioned reports that the advisory is on the scanned project itself and the
+// project's own release version was not established. Such an advisory's affected range names
+// releases of this project, so nothing places this checkout inside or outside it, and the
+// reason a row is held is that missing version, whatever steps beside it also did not run.
+func ownReleaseUnversioned(store artifact.Store, assessmentID string) bool {
+	if !pipeline.RootSubject(store, assessmentID) {
+		return false
+	}
+	_, versioned := pipeline.ResolvedVersion(store, assessmentID)
+	return !versioned
+}
+
+// didNotRunReason is analysisDidNotRun without the own-release case.
+func didNotRunReason(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
 	if emptyGraphUncalledComplete(store, assessmentID) {
 		return report.ReasonAnalysisDidNotRun, true
 	}

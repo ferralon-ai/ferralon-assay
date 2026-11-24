@@ -94,7 +94,7 @@ func CauseOfReason(reason string) UndeterminedCause {
 	switch reason {
 	case ReasonScanCutShort, ReasonDependencyNotFetched:
 		return CauseScanIncomplete
-	case ReasonPackageVersionUnresolved, ReasonAnalysisDidNotRun, ReasonBuildContextNotCompared:
+	case ReasonPackageVersionUnresolved, ReasonOwnReleaseVersionUnknown, ReasonAnalysisDidNotRun, ReasonBuildContextNotCompared:
 		return CauseMissingContext
 	case ReasonAdvisoryUnknownToAnalyzer, ReasonRefutationWithheld, ReasonAdvisorySymbolAbsent,
 		ReasonVulnerableSymbolUnresolved, ReasonAdvisorySymbolsUnvetted, ReasonAdvisoryRangeAbsent:

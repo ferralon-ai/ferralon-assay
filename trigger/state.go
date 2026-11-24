@@ -661,6 +661,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// no earlier assessment already keys.
 	type watched struct {
 		ref assessment.VulnRef
+		// pkg is the OSV query's package for a newly-relevant advisory. A retry has none: a key's
+		// stored rows cannot say which of them is the instance the assessment adjudicates, so the
+		// retry labels its row with that instance, as a baseline does.
 		pkg *report.Package
 		key string
 		// cut is a stored scan_cut_short row: its assessment fans out to the sibling instances a
@@ -684,7 +687,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if _, ok := keyed[key]; ok {
 			continue
 		}
-		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key, cutKeys[key]})
+		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, nil, key, cutKeys[key]})
 		keyed[key] = struct{}{}
 	}
 	// Most likely exploited first, so a stop reaches the least likely last. A stable sort: with no
@@ -715,11 +718,17 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// siblings are the rows for the other instances of a retried cut row's advisory; they key
 	// under the parent's key, so they are appended beside the rows the parent replaces.
 	var siblings []report.AdvisoryFinding
+	// adjudicated is the instance a retry's first pass selected, known even when its analysis then
+	// stopped or failed.
+	adjudicated := map[string]*report.Package{}
 	// assess assesses todo[i] and keys the finding under its key, the row it replaces.
 	assess := func(i int) {
 		ref, pkg, key := todo[i].ref, todo[i].pkg, todo[i].key
 		areq := reqs[i]
 		workSet = append(workSet, ref)
+		if sst, sid := passes.settledStore(i); sst != nil && pkg == nil {
+			_, adjudicated[key] = advisoryFromArtifacts(sst, sid, areq, prior.SBOM.Packages)
+		}
 		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
 			reFindings[key] = cutShortFinding(ref)
@@ -739,7 +748,6 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
 		advisory, tcPkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
 		if pkg == nil {
-			// A stored scan_cut_short row names no package, so resolve it as a baseline does.
 			pkg = tcPkg
 		}
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(st, assessmentID))
@@ -790,8 +798,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 
 	// A fresh row replaces the prior rows of its own instance. Under a retried cut row's key, which
 	// holds only cut rows, that is all of them (the parent's and its siblings', which siblings
-	// re-assesses). Under any other key the retry names the instance by its package, from the row it
-	// seeds with or the fresh row, and a prior row is the instance's when:
+	// re-assesses). Under any other key the retry names the instance by its package (the OSV query's,
+	// the one its first pass adjudicated, or the fresh row's), and a prior row is the instance's when:
 	//   - it is the key's only row;
 	//   - it names that package;
 	//   - it names none, the retry named a package that no stored row names, and the key's
@@ -803,13 +811,15 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// Every other row stays, a sibling's the run did not reach or one the stored rows cannot tell
 	// from the instance's. A retry that names no package beside a row that does keeps that row, bar
 	// the last rule: a failed sibling stored above its parent looks the same as a failed parent
-	// stored above its sibling. The merge reads no row's position in the stored order; the package a
-	// retry seeds the fresh row with does (the retry lanes take the first stored row).
+	// stored above its sibling. The merge reads no row's position in the stored order.
 	fanned := map[string]bool{}
 	instance := map[string]string{}
 	for _, w := range todo {
 		fanned[w.key] = w.cut
 		instance[w.key] = packageInstance(w.pkg)
+		if w.pkg == nil {
+			instance[w.key] = packageInstance(adjudicated[w.key])
+		}
 	}
 	for key, re := range reFindings {
 		if re.Package != nil {

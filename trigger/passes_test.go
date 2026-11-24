@@ -818,10 +818,16 @@ func TestCVEWatch_RetryKeepsCutSiblingWhateverTheStoredOrder(t *testing.T) {
 // lists the ID for reassessment, "restated" stores an entry-point statement the run does not state.
 func retryStored(t *testing.T, store *memStore, lane string, p plugin.LanguagePlugin, analysis context.Context) *CVEWatchResult {
 	t.Helper()
+	return retryStoredFrom(t, store, lane, p, siblingSource{}, analysis)
+}
+
+// retryStoredFrom is retryStored with the advisory facts read from src.
+func retryStoredFrom(t *testing.T, store *memStore, lane string, p plugin.LanguagePlugin, src pipeline.AdvisorySource, analysis context.Context) *CVEWatchResult {
+	t.Helper()
 	req := CVEWatchRequest{
 		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
 		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
-		AssessOptions: siblingAssessOpts(t, p, siblingSource{}),
+		AssessOptions: siblingAssessOpts(t, p, src),
 		Analysis:      analysis,
 	}
 	switch lane {
@@ -1004,14 +1010,12 @@ func rowKind(f report.AdvisoryFinding) string {
 // A key holding only cut rows is a retried cut row's: every row under it is replaced, and the run
 // assesses the sibling again, as a baseline does.
 //
-// The invariant gives way in one family of cells, where the stored rows cannot say which row is the
-// parent's: the retry names no package (it seeds from a package-less first row and stops or fails)
-// beside a row that names one, or the key's package-less rows differ (a cut row beside a failure
-// row, either of which may be the parent's). The run then keeps every stored row and adds the fresh
-// one: three rows, every stored one disclosed, none lost. A stale duplicate is the price of never
-// dropping a sibling's row on a guess. One guess is made, where the stop leaves cut rows only: a
-// stored completed row beside cut rows is taken as the parent's, since a wrong guess returns the key
-// to cut-only and the next run reassesses it.
+// Every stop and failure here comes in analysis, after the retry's first pass adjudicated the
+// parent, so the retry always names the parent's package, whatever the stored order. The invariant
+// gives way in one family of cells, where the stored rows cannot say which row is the parent's: the
+// key's package-less rows differ (a cut row beside a failure row, either of which may be the
+// parent's). The run then keeps every stored row and adds the fresh one: three rows, every stored one
+// disclosed, none lost. A stale duplicate is the price of never dropping a sibling's row on a guess.
 func TestCVEWatch_RetryRowMatrix(t *testing.T) {
 	base := completedSiblingBaseline(t, false, false)
 	var parent, sibling report.AdvisoryFinding
@@ -1074,12 +1078,6 @@ func TestCVEWatch_RetryRowMatrix(t *testing.T) {
 							}
 							st.Report = &rep
 							store.state = &st
-							// A completed sibling stored first seeds the retry with its package, and the stop
-							// or failure that carries none is then labeled with it: the positional seed (#898).
-							if siblingKind == "completed" && siblingFirst && outcome != "completes" && !cutOnly {
-								t.Skip("the retry seeds from the first stored row, a completed sibling's: the seed is positional (#898)")
-							}
-
 							var p plugin.LanguagePlugin = refutingGoPlugin{inventory: plugin.Complete()}
 							analysis := context.Background()
 							switch outcome {
@@ -1092,7 +1090,6 @@ func TestCVEWatch_RetryRowMatrix(t *testing.T) {
 								p = failFirstPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, calls: &atomic.Int32{}}
 							}
 							storedRows := slices.Clone(store.state.Report.Advisories)
-							seed := storedRows[0]
 							res := retryStored(t, store, lane, p, analysis)
 							got := kinds(rowsByID(res.Report)["GO-S-1"]...)
 
@@ -1111,17 +1108,8 @@ func TestCVEWatch_RetryRowMatrix(t *testing.T) {
 									want = append(want, rowKind(siblingRows[siblingKind]))
 								}
 							}
-							learned := outcome == "completes" || seed.Package != nil
-							namesPackage := parentKind == "completed" || siblingKind == "completed"
 							differ := siblingKind != "absent" && parentKind != "completed" && siblingKind != "completed" && parentKind != siblingKind
-							// A stop with no package beside one packaged row and cut rows: the packaged row is
-							// taken as the parent's. When it was the sibling's, the key is cut-only again and
-							// the next run reassesses it.
-							healed := !cutOnly && !learned && outcome == "stops" && namesPackage && parentKind != "failure" && siblingKind != "failure"
-							exception := !cutOnly && siblingKind != "absent" && !healed && ((!learned && namesPackage) || differ)
-							if healed {
-								want = []string{"cut", "cut"}
-							}
+							exception := !cutOnly && differ
 							if exception {
 								want = append([]string{fresh}, kinds(storedRows...)...)
 							}
@@ -1135,7 +1123,6 @@ func TestCVEWatch_RetryRowMatrix(t *testing.T) {
 								switch {
 								case exception:
 									keep = storedRows
-								case healed:
 								case siblingKind != "absent":
 									keep = []report.AdvisoryFinding{siblingRows[siblingKind]}
 								}
@@ -1212,16 +1199,37 @@ func TestCVEWatch_RetryOfStoredParentFailureLeavesNoFailureRow(t *testing.T) {
 	}
 }
 
-// TestCVEWatch_RetryThatLearnsNoPackageKeepsFailedSibling: a failed sibling stored above its parent
-// seeds a retry that stops with no package. The stored rows cannot say which is the parent's (the
-// accepted residue), so every stored row stays beside the fresh cut row: the failure row is not lost.
+// TestCVEWatch_RetryThatLearnsNoPackageKeepsFailedSibling: a failed sibling stored above its parent,
+// and a retry that stops. Stopped in analysis, the retry's first pass has named the parent, so the
+// parent's row gives way to the fresh cut row and the failure row stays. Stopped before its first
+// pass, the retry names no package and the stored rows cannot say which is the parent's (the accepted
+// residue), so every stored row stays beside the fresh cut row: the failure row is not lost.
 func TestCVEWatch_RetryThatLearnsNoPackageKeepsFailedSibling(t *testing.T) {
-	store := completedSiblingBaseline(t, true, true)
-	p, analysis := stopOnFirst(t)
-	res := retryStored(t, store, "not fetched", p, analysis)
-	rows := rowsByID(res.Report)["GO-S-1"]
-	if len(rows) != 3 || !slices.ContainsFunc(rows, func(f report.AdvisoryFinding) bool { return f.UndeterminedReason == report.ReasonAnalysisDidNotRun }) {
-		t.Errorf("rows = %+v, want the fresh cut row and both stored rows, the failure row among them", rows)
+	for _, tc := range []struct {
+		name string
+		want []string
+	}{
+		{"stops in analysis", []string{"cut", "failure"}},
+		{"stops before its first pass", []string{"completed:example.com/lib", "cut", "failure"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := completedSiblingBaseline(t, true, true)
+			p, analysis := stopOnFirst(t)
+			if tc.name == "stops before its first pass" {
+				ctx, cancel := context.WithCancelCause(context.Background())
+				cancel(errTestStop)
+				analysis = ctx
+			}
+			res := retryStored(t, store, "not fetched", p, analysis)
+			var got []string
+			for _, f := range rowsByID(res.Report)["GO-S-1"] {
+				got = append(got, rowKind(f))
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("rows = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

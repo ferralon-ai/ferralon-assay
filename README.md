@@ -170,7 +170,8 @@ Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-
 against a filesystem corpus, and `-subject-java-version` /
 `-subject-maven-profiles` to state the JVM and Maven profile selection your build uses (env
 `ASSAY_SUBJECT_JAVA_VERSION`, `ASSAY_SUBJECT_MAVEN_PROFILES`). `-subject-go-version` (env
-`ASSAY_SUBJECT_GO_VERSION`) states the target's exact Go toolchain; without it the scan reads the
+`ASSAY_SUBJECT_GO_VERSION`, Action input `subject-go-version`) states the target's exact Go
+toolchain; without it the scan reads the
 target's `go.mod`, and takes a release CI observed only when `ASSAY_TRUST_OBSERVED_GO=true`
 ([operator guide](docs/operator-guide.md)).
 
@@ -245,8 +246,8 @@ Set `scan-timeout` (for example `30m`; on the command line, the `-scan-timeout` 
 scan. Analysis stops early enough to publish the report, and every advisory the scan did not reach is
 reported as not assessed, never as safe; the report headline says the scan was cut short. Set it
 below the job's `timeout-minutes`, leaving room for the steps that run before the scan, including the
-Action's own setup, so the scan ends itself first. With no `scan-timeout` there is no limit, but a job timeout or cancellation still
-stops analysis and gives the scan a few seconds to publish what it assessed. The Action's
+Action's own setup, so the scan ends itself first. The Action defaults `scan-timeout` to `15m`; `0` sets no limit, on the command line too, which has no limit unless
+one is set. Either way, a job timeout or cancellation still stops analysis and gives the scan a few seconds to publish what it assessed. The Action's
 `scan-truncated` output is `true` when either happened.
 
 ## Advisory corpus

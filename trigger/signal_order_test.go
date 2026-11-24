@@ -214,3 +214,60 @@ func TestCVEWatch_StopLeavesLowerPriorityCutShort(t *testing.T) {
 		"GO-T-1": report.VerdictUndetermined,
 	}, "2 of 3 advisories were not assessed: test stop")
 }
+
+// The PR fast path assesses its unrowed advisories in signal order too, so a stop cuts the least
+// likely exploited.
+func TestInheritFastPath_StopLeavesLowerPriorityCutShort(t *testing.T) {
+	store := storedCorpus(nil, nil)
+	opts, analysis := stoppingOptions(t, "GO-T-2", stopAndWait)
+	res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		PRSBOM:        report.SBOM{Packages: slices.Clone(store.state.Report.SBOM.Packages)},
+		Advisories:    cutShortCorpus,
+		AssessOptions: opts,
+		Analysis:      analysis,
+		Signals:       orderSignals(t),
+	})
+	if err != nil {
+		t.Fatalf("RunPRInherit: %v", err)
+	}
+	if !res.Inherited {
+		t.Fatalf("took the slow path (changed = %q)", res.ChangedPackages)
+	}
+	checkCutShort(t, res.Report, map[string]report.Verdict{
+		"GO-T-3": report.VerdictNotExploitable,
+		"GO-T-2": report.VerdictUndetermined,
+		"GO-T-1": report.VerdictUndetermined,
+	}, "2 of 3 advisories were not assessed: test stop")
+}
+
+// PR re-analysis re-runs the work set in signal order, so a stop cuts the least likely exploited.
+func TestPRReanalysis_StopLeavesLowerPriorityCutShort(t *testing.T) {
+	opts, analysis := stoppingOptions(t, "GO-T-2", stopAndWait)
+	store, _ := groundedBaseline()
+	res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		PRSBOM:        report.SBOM{Packages: []report.Package{{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.3.5"}}},
+		Advisories:    append(slices.Clone(cutShortCorpus), wiringAdvisory),
+		AssessOptions: opts,
+		Analysis:      analysis,
+		Signals:       orderSignals(t),
+	})
+	if err != nil {
+		t.Fatalf("RunPRInherit: %v", err)
+	}
+	if res.Inherited {
+		t.Fatal("took the fast path; the head changed a package")
+	}
+	rows := rowsByID(res.Report)
+	if r := rows["GO-T-3"]; len(r) != 1 || r[0].UndeterminedReason == report.ReasonScanCutShort {
+		t.Errorf("GO-T-3, the likeliest exploited, rows = %+v, want one assessed row", r)
+	}
+	for _, id := range []string{"GO-T-2", "GO-T-1", wiringAdvisory.ID} {
+		if r := rows[id]; len(r) != 1 || r[0].UndeterminedReason != report.ReasonScanCutShort {
+			t.Errorf("%s rows = %+v, want one scan_cut_short row", id, r)
+		}
+	}
+}

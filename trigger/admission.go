@@ -213,9 +213,9 @@ func scheduleFor(advisories []assessment.VulnRef, bands map[string]Band) []Sched
 }
 
 // withSignalPriority returns scheduled with each advisory's signal priority set from sig. The
-// lookup is the one rankWith ranks the Report by: intel's Attribute join over the run's claims,
-// the work set's ids and the aliases src lists for them, so an alias join the Report would refuse
-// is no signal here. With no signals every priority stays zero and the order is untouched.
+// lookup is intel's Attribute join over the run's work set and the aliases src lists for it, as
+// rankWith claims them, so an alias join the Report would refuse is no signal here. With no
+// signals every priority stays zero and the order is untouched.
 func withSignalPriority(scheduled []ScheduledAdvisory, sig *intel.Signals, src pipeline.AdvisorySource) []ScheduledAdvisory {
 	if sig == nil {
 		return scheduled
@@ -224,22 +224,45 @@ func withSignalPriority(scheduled []ScheduledAdvisory, sig *intel.Signals, src p
 	for i, s := range scheduled {
 		refs[i] = s.Vuln
 	}
-	prios := signalPriorities(refs, refs, sig, src)
+	prios := signalPriorities(refs, refs, nil, sig, src)
 	for i := range scheduled {
 		scheduled[i].priority = prios[i]
 	}
 	return scheduled
 }
 
-// signalPriorities returns the signal priority of each of subjects, a subset of the run's
-// workSet (which claims the aliases the join compares against).
-func signalPriorities(subjects, workSet []assessment.VulnRef, sig *intel.Signals, src pipeline.AdvisorySource) []signalPriority {
+// bySignal returns subjects in assessment order: KEV-listed, then EPSS descending, then no signal,
+// ties in input order. With no signals it returns subjects as they came.
+func bySignal(subjects, workSet []assessment.VulnRef, rows []report.AdvisoryFinding, sig *intel.Signals, src pipeline.AdvisorySource) []assessment.VulnRef {
+	if sig == nil {
+		return subjects
+	}
+	prios := signalPriorities(subjects, workSet, rows, sig, src)
+	order := make([]int, len(subjects))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return prios[order[a]].before(prios[order[b]]) })
+	out := make([]assessment.VulnRef, len(subjects))
+	for i, j := range order {
+		out[i] = subjects[j]
+	}
+	return out
+}
+
+// signalPriorities returns the signal priority of each of subjects, a subset of the run's workSet.
+// The claims the join compares against are rankWith's: the work set's ids and aliases, and the ids
+// and aliases of rows, the Report rows the run carries over.
+func signalPriorities(subjects, workSet []assessment.VulnRef, rows []report.AdvisoryFinding, sig *intel.Signals, src pipeline.AdvisorySource) []signalPriority {
 	out := make([]signalPriority, len(subjects))
 	if sig == nil {
 		return out
 	}
 	claims := new(intel.Claims)
 	aliases := claimWorkSet(claims, workSet, src)
+	for _, f := range rows {
+		claims.Add(f.Advisory.ID, f.Advisory.Aliases...)
+	}
 	for i, v := range subjects {
 		m, ok := sig.Attribute(v.ID, aliases[v.ID], claims)
 		if !ok {

@@ -22,6 +22,7 @@ type replacedFixture struct {
 	searched   []string
 	flags      []string
 	mods       goModules
+	refutation *plugin.Refutation
 }
 
 const (
@@ -33,6 +34,9 @@ const (
 	rmSCIPB    = "scip-go gomod k8s.io/kubernetes v1.32.10 pkg/volume/NewSpecFromVolume()."
 	rmForkPath = "github.com/kubeedge/kubernetes"
 	rmForkVer  = "v1.32.10-kubeedge1"
+	// rmSymV2 is qualified by a package of another major version, as GHSA-w73w-5m7g-f7qc names
+	// github.com/dgrijalva/jwt-go/v4 beside github.com/dgrijalva/jwt-go.
+	rmSymV2 = "k8s.io/kubernetes/v2/pkg/volume.NewSpecFromVolume"
 )
 
 func newReplacedFixture() replacedFixture {
@@ -76,7 +80,7 @@ func (fx replacedFixture) finding(t *testing.T) report.AdvisoryFinding {
 			Partiality: plugin.Complete(),
 			Edges:      []plugin.CallEdge{depEdge("github.com/kubeedge/kubeedge/cmd.main", "github.com/kubeedge/kubeedge/edge.Run")},
 		},
-		plugin.ReachabilityResult{Partiality: part, Searched: fx.searched})
+		plugin.ReachabilityResult{Partiality: part, Searched: fx.searched, Refutation: fx.refutation})
 	return findingInBuild(store, aid, report.Advisory{ID: "GO-2026-0001", Source: "osv"}, nil, fx.mods)
 }
 
@@ -108,11 +112,47 @@ func TestFinding_ReplacedModule(t *testing.T) {
 			fx.inv["replaced_by"] = map[string]any{"path": "../staging/kubernetes", "directory": true}
 		}, "no path from any entry point reaches " + rmSymA + ", " + rmSymB + " in k8s.io/kubernetes, which the build compiles from " +
 			"the local directory ../staging/kubernetes; that code defines each of them", "", ""},
-		// A fork's version string reads like a release inside the advisory's ranges; it is never used.
-		{"the fork's version is never compared", func(fx *replacedFixture) {
+		// The fork's version string is a label in the detail only. That it is never compared against
+		// the advisory's ranges is pinned in pipeline's TestGoModuleAxisHonoursReplace E2.
+		{"the fork's version string is only a label", func(fx *replacedFixture) {
 			fx.inv["replaced_by"] = map[string]any{"path": rmForkPath, "version": "v0.0.1"}
 		}, "no path from any entry point reaches " + rmSymA + ", " + rmSymB + " in k8s.io/kubernetes, which the build compiles from " +
 			rmForkPath + " v0.0.1; that code defines each of them", "", ""},
+
+		// ferralon-ai/tracker#811: a symbol whose qualifying package is absent from the build's
+		// resolved package set (OutsideBuild) is not searched for, and the detail names only the
+		// symbols that were.
+		{"a symbol qualified by a package outside the build narrows", func(fx *replacedFixture) {
+			fx.symbols = append(fx.symbols, rmSymV2)
+			fx.res.OutsideBuild = []string{rmSymV2}
+		}, "no path from any entry point reaches " + rmSymA + ", " + rmSymB + " in k8s.io/kubernetes, which the build compiles from " +
+			rmForkPath + " " + rmForkVer + "; that code defines each of them", "", ""},
+		// The refutation side: the same symbol, its package held by the build (compiled, or the source
+		// of a replace), is required and unresolved, so the row stays held.
+		{"a symbol qualified by a package the build holds stays required", func(fx *replacedFixture) {
+			fx.symbols = append(fx.symbols, rmSymV2)
+			fx.res.Partiality = plugin.Partial(plugin.PartialReasonAdvisorySymbolUnresolved)
+		}, "", report.ReasonPackageVersionUnresolved,
+			"The build's code of k8s.io/kubernetes does not define " + rmSymV2 + ". A replacement can rename or move the vulnerable code, so that is not taken as a fix."},
+		{"every symbol qualified by a package outside the build", func(fx *replacedFixture) {
+			fx.res = plugin.SymbolResolutionResult{Partiality: plugin.Complete(), OutsideBuild: []string{rmSymA, rmSymB}}
+			fx.searched = nil
+		}, "", report.ReasonPackageVersionUnresolved,
+			"The build compiles no package named by " + rmSymA + ", " + rmSymB + ". A replacement can rename or move the vulnerable code, so that is not taken as a fix."},
+		// The lane's package-level refutation is never the ground: it carries no searched sink.
+		{"a package-level refutation with nothing searched", func(fx *replacedFixture) {
+			fx.searched = nil
+			fx.refutation = &plugin.Refutation{Basis: plugin.RefutationAnalyzerPackageNotImported, Package: rmPURL, Detail: "not imported"}
+		}, "", report.ReasonPackageVersionUnresolved,
+			"The analysis did not search every definition of " + rmSymA + ", " + rmSymB + " from the entry points."},
+		// plugin_load drops beside a package-level refutation carrying AssumptionPluginsNotAssessed,
+		// but only on an admitted package; a fork row has none, so the limit holds the row.
+		{"plugin_load beside a refutation assuming plugins not assessed", func(fx *replacedFixture) {
+			fx.flags = append(fx.flags, plugin.PartialReasonPluginLoad)
+			fx.refutation = &plugin.Refutation{Basis: plugin.RefutationAnalyzerPackageNotImported, Package: rmPURL, Detail: "not imported",
+				Assumptions: []string{plugin.AssumptionPluginsNotAssessed}}
+		}, "", report.ReasonPackageVersionUnresolved,
+			"Steps an analysis of that code rests on did not run, so it was not judged."},
 
 		{"a symbol the fork does not define", func(fx *replacedFixture) {
 			delete(fx.res.Matched, rmSymB)

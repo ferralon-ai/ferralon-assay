@@ -47,12 +47,28 @@ func replacedGrounds(store artifact.Store, assessmentID string, mods goModules, 
 	if err != nil {
 		return "", "", nil, false
 	}
+	searched := inBuild(symbols, res)
+	if len(searched) == 0 {
+		return "", "", nil, false
+	}
 	reach, _ := reachabilityResult(store, assessmentID)
-	if !searchedInPackage(symbols, nil, res, reach.Searched, admitted, false) {
+	if !searchedInPackage(symbols, res.OutsideBuild, res, reach.Searched, admitted, false) {
 		return "", "", nil, false
 	}
 	return fmt.Sprintf("no path from any entry point reaches %s in %s, which the build compiles from %s; that code defines each of them",
-		strings.Join(symbols, ", "), admitted.name, replacementLabel(r)), verdict.BasisSymbolUnreachable, refutationAssumptions(reach, admitted, false), true
+		strings.Join(searched, ", "), admitted.name, replacementLabel(r)), verdict.BasisSymbolUnreachable, refutationAssumptions(reach, admitted, false), true
+}
+
+// inBuild returns the advisory symbols the resolution did not place outside the build's resolved
+// package set (OutsideBuild): the ones the build may compile, which a search must cover.
+func inBuild(symbols []string, res plugin.SymbolResolutionResult) []string {
+	var out []string
+	for _, sym := range symbols {
+		if !slices.Contains(res.OutsideBuild, sym) {
+			out = append(out, sym)
+		}
+	}
+	return out
 }
 
 // replacedHeldDetail is the detail of a package_version_unresolved row whose module the build compiles
@@ -75,12 +91,15 @@ func replacedHeldDetail(store artifact.Store, assessmentID string, mods goModule
 		why = "The advisory names no vulnerable symbol to look for in that code."
 	case !vettedSymbols(store, assessmentID):
 		why = "The advisory's vulnerable symbols are not a vetted set, so their absence from every path is not evidence."
+	case resErr == nil && len(res.OutsideBuild) > 0 && len(inBuild(symbols, res)) == 0:
+		why = fmt.Sprintf("The build compiles no package named by %s. A replacement can rename or move the vulnerable code, so that is not taken as a fix.",
+			strings.Join(symbols, ", "))
 	case keyed && resErr == nil && !resolvesInto(res, key):
 		why = fmt.Sprintf("The analysis does not locate the advisory's symbols inside the build's code of %s, so whether that code defines %s was not determined.",
 			module, strings.Join(symbols, ", "))
-	case keyed && resErr == nil && resolutionRead(res) && len(undefinedIn(symbols, res, key)) > 0:
+	case keyed && resErr == nil && resolutionRead(res) && len(undefinedIn(inBuild(symbols, res), res, key)) > 0:
 		why = fmt.Sprintf("The build's code of %s does not define %s. A replacement can rename or move the vulnerable code, so that is not taken as a fix.",
-			module, strings.Join(undefinedIn(symbols, res, key), ", "))
+			module, strings.Join(undefinedIn(inBuild(symbols, res), res, key), ", "))
 	case keyed && namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), key, mods, nil):
 		why = "The advisory also names a package the build may hold, so that code alone does not settle it."
 	case len(reasons) > 0 || emptyGraphUncalledComplete(store, assessmentID):

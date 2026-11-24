@@ -19,21 +19,26 @@ import (
 func TestFinding_OwnReleaseVersionUnknown(t *testing.T) {
 	kubeedge := plugin.Partial(plugin.PartialReasonAdvisoryUnknownToAnalyzer, plugin.PartialReasonPluginLoad, plugin.PartialReasonCgo)
 	cases := []struct {
-		name string
-		inv  map[string]any
-		part plugin.Partiality
-		want string
+		name    string
+		inv     map[string]any
+		pkgless bool
+		part    plugin.Partiality
+		want    string
 	}{
-		{"own advisory, no version, steps did not run", map[string]any{"root": true}, kubeedge, report.ReasonOwnReleaseVersionUnknown},
-		{"own advisory, no version, analyzer silent alone", map[string]any{"root": true},
+		{"own advisory, no version, steps did not run", map[string]any{"root": true}, false, kubeedge, report.ReasonOwnReleaseVersionUnknown},
+		{"own advisory, no version, analyzer silent alone", map[string]any{"root": true}, false,
 			plugin.Partial(plugin.PartialReasonAdvisoryUnknownToAnalyzer), report.ReasonOwnReleaseVersionUnknown},
-		{"own advisory, no version, nothing else held", map[string]any{"root": true}, plugin.Complete(), report.ReasonOwnReleaseVersionUnknown},
-		{"own advisory, version known", map[string]any{"root": true, "resolved_version": "1.9.0"}, kubeedge, report.ReasonAnalysisDidNotRun},
-		{"a dependency's advisory, no version", map[string]any{}, kubeedge, report.ReasonAnalysisDidNotRun},
-		{"a dependency's advisory, no version, nothing else held", map[string]any{}, plugin.Complete(), report.ReasonPackageVersionUnresolved},
+		{"own advisory, no version, nothing else held", map[string]any{"root": true}, false, plugin.Complete(), report.ReasonOwnReleaseVersionUnknown},
+		{"own advisory, version known", map[string]any{"root": true, "resolved_version": "1.9.0"}, false, kubeedge, report.ReasonAnalysisDidNotRun},
+		{"own advisory, version known, row without a package", map[string]any{"root": true, "resolved_version": "1.9.0"}, true, kubeedge, report.ReasonAnalysisDidNotRun},
+		{"own advisory, no project version, row with a package", map[string]any{"root": true, "pkg_version": "1.9.0"}, false, kubeedge, report.ReasonAnalysisDidNotRun},
+		{"a dependency's advisory, no version", map[string]any{}, false, kubeedge, report.ReasonAnalysisDidNotRun},
+		{"a dependency's advisory, no version, nothing else held", map[string]any{}, false, plugin.Complete(), report.ReasonPackageVersionUnresolved},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			pkgVersion, _ := tc.inv["pkg_version"].(string)
+			delete(tc.inv, "pkg_version")
 			store := artifact.NewMemStore()
 			const aid = "own"
 			tc.inv["partiality_flags"] = []string{}
@@ -44,7 +49,11 @@ func TestFinding_OwnReleaseVersionUnknown(t *testing.T) {
 			putJSON(t, store, aid, artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{PartialityFlags: tc.part.Reasons})
 
 			var pkg *report.Package
-			if v, ok := tc.inv["resolved_version"].(string); ok {
+			v, ok := tc.inv["resolved_version"].(string)
+			if pkgVersion != "" {
+				v, ok = pkgVersion, true
+			}
+			if ok && !tc.pkgless {
 				pkg = &report.Package{Ecosystem: "Go", Name: "github.com/kubeedge/kubeedge", Version: v,
 					PURL: "pkg:golang/github.com/kubeedge/kubeedge@" + v, Root: true}
 			}

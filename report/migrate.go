@@ -108,8 +108,9 @@ func upgradeV1(r Report) Report {
 }
 
 // goToolchainOverride names the setting that resolves either Go toolchain reason, so a reader of the
-// row learns what to set rather than only what was missing.
-const goToolchainOverride = "; to resolve it, state the exact Go release this codebase builds with (for example go1.22.5) in the Action input `subject-go-version` (CLI `-subject-go-version`), with `subject-toolchain-reachability` left on"
+// row learns what to set rather than only what was missing. A declared release can still end here
+// when the analysis could not run under it, so the remedy is conditional and says so.
+const goToolchainOverride = "; if the exact Go release this codebase builds with is not yet declared, state it (for example go1.22.5) in the Action input subject-go-version (CLI -subject-go-version) and leave subject-toolchain-reachability on; if it is, the analysis could not run under that release"
 
 // UndeterminedDetail is the neutral one-line grounds-free explanation for an undetermined
 // finding, keyed by reason code. It states what was not established and never implies the

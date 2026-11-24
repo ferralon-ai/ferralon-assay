@@ -299,7 +299,7 @@ under conditions the job does not reproduce:
 | The build's explicit profile selection in `-P` syntax: its `-P` list together with `settings.xml` `<activeProfiles>` (for example `release,!docs`, or `,` for none) | `-subject-maven-profiles` | `ASSAY_SUBJECT_MAVEN_PROFILES` |
 
 The flag wins over the environment variable. The Action has no inputs for these; set the variables in
-the `env:` of the step that runs it, as for `ASSAY_SUBJECT_GO_VERSION`. With `-build-graph auto`, a
+the `env:` of the step that runs it. With `-build-graph auto`, a
 stated profile selection is passed to Maven as `-P`, and stating one for a Gradle build fails the run.
 With a graph file, the file must record the same statements.
 

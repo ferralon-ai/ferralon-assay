@@ -211,8 +211,8 @@ For a Go standard-library advisory, the question is about the Go **you** build w
 necessarily the Go the scanner analyzes with. The scan resolves your toolchain as one fact, from the
 first source that yields a usable version:
 
-1. **Your declaration** — `-subject-go-version` on the CLI (for example `go1.21.3`), or the
-   `ASSAY_SUBJECT_GO_VERSION` environment variable. Exact.
+1. **Your declaration** — `-subject-go-version` on the CLI (for example `go1.21.3`), the
+   `ASSAY_SUBJECT_GO_VERSION` environment variable, or the Action input `subject-go-version`. Exact.
 2. **Your `go.mod` `go` line** — a **minimum**, not an exact version. Every go command from 1.21 on
    refuses to build your module with an older Go, whatever `GOTOOLCHAIN` says. A go command before
    1.21 does not enforce the `go` line, so `go 1.17` may have been built by go1.16.5. The `go` line
@@ -256,8 +256,9 @@ toolchain. What to know:
 
 - **Findings appear that a scan under the scanner's Go does not show.** A repository on an older Go
   has standard-library vulnerabilities a newer Go does not have.
-- **It needs an exact toolchain.** `go.mod` floors are not enough. The Action has no input for the
-  declaration, so set `ASSAY_SUBJECT_GO_VERSION` in the `env:` of the step that runs the Action.
+- **It needs an exact toolchain.** `go.mod` floors are not enough. In the Action, set the input
+  `subject-go-version` (for example `go1.22.5`); an `ASSAY_SUBJECT_GO_VERSION` in the `env:` of the
+  step that runs the Action also works, and the input wins when both are set.
   Without an exact toolchain the analysis runs under the scanner's, and that is not an error.
 - **It never fails the scan.** If the toolchain can't be downloaded or can't load your module, the
   analysis falls back to the scanner's toolchain and the advisory stays `undetermined`. The report

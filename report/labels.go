@@ -83,7 +83,7 @@ func (c UndeterminedCause) NextAction() string {
 	case CauseEngineUndecided:
 		return "Keep for review: the analysis ran but cannot rule this advisory in or out yet."
 	case CauseToolchainConfig:
-		return "Set or declare the toolchain or configuration the scan needs, then run it again."
+		return "Declare the exact Go release your repository builds with (Action input subject-go-version, CLI -subject-go-version), then run the scan again."
 	}
 	return "Needs review: this reason code is not grouped yet."
 }

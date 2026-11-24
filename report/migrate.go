@@ -107,6 +107,10 @@ func upgradeV1(r Report) Report {
 	return out
 }
 
+// goToolchainOverride names the setting that resolves either Go toolchain reason, so a reader of the
+// row learns what to set rather than only what was missing.
+const goToolchainOverride = "; to resolve it, state the exact Go release this codebase builds with (for example go1.22.5) in the Action input `subject-go-version` (CLI `-subject-go-version`), with `subject-toolchain-reachability` left on"
+
 // UndeterminedDetail is the neutral one-line grounds-free explanation for an undetermined
 // finding, keyed by reason code. It states what was not established and never implies the
 // codebase is unaffected. An unrecognized code falls through to the raw code rather than to
@@ -115,9 +119,9 @@ func upgradeV1(r Report) Report {
 func UndeterminedDetail(reason string) string {
 	switch reason {
 	case ReasonGoToolchainUnresolved:
-		return "the Go toolchain version this codebase builds with could not be determined, so no verdict was established for an advisory affecting the toolchain itself"
+		return "the Go toolchain version this codebase builds with could not be determined, so no verdict was established for an advisory affecting the toolchain itself" + goToolchainOverride
 	case ReasonGoToolchainNotScanned:
-		return "the analysis did not run under this codebase's own Go toolchain version, so no verdict was established for an advisory affecting the toolchain itself"
+		return "the analysis did not run under this codebase's own Go toolchain version, so no verdict was established for an advisory affecting the toolchain itself" + goToolchainOverride
 	case ReasonAnalysisDidNotRun:
 		return "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
 	case ReasonPackageVersionUnresolved:

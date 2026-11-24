@@ -172,8 +172,8 @@ func TestRangeDispute_AnalyzerDatabase(t *testing.T) {
 			tc.p.realResolverPlugin = realResolverPlugin{lang: "go"}
 			tc.p.reqs = &reqs
 			res := runDisputeDisqual(t, "GHSA-w67g-5rqw-f597", src, tc.p, "v1.5.3")
-			if len(reqs) != 1 || !reqs[0].MatchOnly || reqs[0].VulnID != "GO-2026-6278" {
-				t.Fatalf("Reachability requests = %+v, want one MatchOnly request for GO-2026-6278", reqs)
+			if len(reqs) != 1 || !reqs[0].MatchOnly || reqs[0].MatchOutsideToolchain || reqs[0].VulnID != "GO-2026-6278" {
+				t.Fatalf("Reachability requests = %+v, want one MatchOnly request for GO-2026-6278 counting every match", reqs)
 			}
 			if tc.disputed {
 				if res.Disqualified || res.Reason != ReasonInsufficient || !strings.Contains(res.RangeDisputed, tc.wantText) {

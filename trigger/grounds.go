@@ -45,6 +45,9 @@ import (
 func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) (detail, reason string, basis verdict.NonExploitableBasis, assumptions []string, ok bool) {
 	admitted, label, ok := admittedPackage(store, assessmentID, pkg)
 	if !ok {
+		if pkg == nil && ownReleaseUnversioned(store, assessmentID) {
+			return "", report.ReasonOwnReleaseVersionUnknown, "", nil, false
+		}
 		return "", report.ReasonPackageVersionUnresolved, "", nil, false
 	}
 	root := pkg != nil && pkg.Root

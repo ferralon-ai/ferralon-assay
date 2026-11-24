@@ -176,6 +176,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				GuardSufficiency: guardSufficiencyFor(guards, advisoryGuardSufficiency(store, assessmentID)),
 			},
 		}
+		if pkg == nil && ownReleaseUnversioned(store, assessmentID) {
+			f.Evidence.Detail = ownReleaseCandidateDetail
+		}
 		// An advisory with no affected range for the admitted package is admitted at every version,
 		// so the path says nothing about whether this version carries the flaw. The path stays as
 		// evidence; the candidate-only annotations go with the verdict.
@@ -1325,7 +1328,31 @@ func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.P
 // advisory_unknown_to_analyzer. When every did-not-run limit is one an analyzer declares only after
 // its search ran and came back empty (refutationWithheldReasons), the reason is
 // refutation_withheld: the steps ran, and the search did not cover all the code the build may run.
+// When the advisory is on the scanned project itself and the project's own release version was not
+// established (ownReleaseUnversioned), the reason is own_release_version_unknown, whichever of these
+// it would otherwise be.
 func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
+	reason, ok := didNotRunReason(store, assessmentID, pkg)
+	if ok && pkg == nil && ownReleaseUnversioned(store, assessmentID) {
+		return report.ReasonOwnReleaseVersionUnknown, true
+	}
+	return reason, ok
+}
+
+// ownReleaseUnversioned reports that the advisory is on the scanned project itself and the
+// project's own release version was not established. Such an advisory's affected range names
+// releases of this project, so nothing places this checkout inside or outside it, and the
+// reason a row is held is that missing version, whatever steps beside it also did not run.
+func ownReleaseUnversioned(store artifact.Store, assessmentID string) bool {
+	if !pipeline.RootSubject(store, assessmentID) {
+		return false
+	}
+	_, versioned := pipeline.ResolvedVersion(store, assessmentID)
+	return !versioned
+}
+
+// didNotRunReason is analysisDidNotRun without the own-release case.
+func didNotRunReason(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
 	if emptyGraphUncalledComplete(store, assessmentID) {
 		return report.ReasonAnalysisDidNotRun, true
 	}
@@ -1670,7 +1697,10 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 //
 // The positive-grounds reasons (notExploitableGrounds) are scoped to the finding's own package
 // ecosystem: they are about that package's admission and symbols, not the Go toolchain. So is
-// dependency_not_fetched, which is about the package's dependency code.
+// dependency_not_fetched, which is about the package's dependency code. own_release_version_unknown
+// is about the checkout's own release version, which no scan-level limit states; its row names no
+// package, so its note is scoped to no ecosystem, as a package_version_unresolved row's is when it
+// names none.
 func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	switch {
 	case f.Verdict != report.VerdictUndetermined,
@@ -1680,7 +1710,7 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 		return report.PartialityNote{}, false
 	}
 	switch f.UndeterminedReason {
-	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
+	case report.ReasonPackageVersionUnresolved, report.ReasonOwnReleaseVersionUnknown, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
 		report.ReasonAdvisorySymbolsUnvetted, report.ReasonAdvisoryRangeAbsent, report.ReasonDependencyNotFetched:
 		note := report.PartialityNote{Reason: f.UndeterminedReason}
 		if f.Package != nil {

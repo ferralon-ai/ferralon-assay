@@ -212,6 +212,33 @@ func TestRunBaseline_StopAtFirstCarriedLeavesNoCarriedSentence(t *testing.T) {
 	}
 }
 
+// TestRunBaseline_FailedCarriedAdvisoryIsNotCounted: a carried advisory whose assessment failed
+// was not assessed, so the note does not count it.
+func TestRunBaseline_FailedCarriedAdvisoryIsNotCounted(t *testing.T) {
+	store := storedCorpus(cutShortCorpus[:1], cutShortCorpus[1:])
+	opts, analysis, calls := failingStoppingOptions(t, "GO-T-3", stopAndWait, "GO-T-2")
+	rep, err := RunBaseline(context.Background(), store, BaselineRequest{
+		Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		Advisories:    cutShortCorpus,
+		AssessOptions: opts,
+		Analysis:      analysis,
+	})
+	if err != nil {
+		t.Fatalf("RunBaseline: %v", err)
+	}
+	if want := []string{"GO-T-2", "GO-T-3"}; !slices.Equal(calls.order(), want) {
+		t.Fatalf("assessed %v, want %v", calls.order(), want)
+	}
+	if rows := rowsByID(rep)["GO-T-2"]; len(rows) != 1 || rows[0].UndeterminedReason != report.ReasonAnalysisDidNotRun {
+		t.Fatalf("GO-T-2 rows = %+v, want one analysis_did_not_run row", rows)
+	}
+	const want = "2 of 3 advisories were not assessed: test stop"
+	if notes := cutShortNotes(rep); len(notes) != 1 || notes[0].Detail != want {
+		t.Errorf("notes = %+v, want one %q", notes, want)
+	}
+}
+
 func TestCutShortNote_Carried(t *testing.T) {
 	cases := []struct {
 		carried int
@@ -311,11 +338,11 @@ func TestCVEWatch_InventoryCutLeavesCutRows(t *testing.T) {
 func TestCutShortRetry(t *testing.T) {
 	prior := storedCorpus(cutShortCorpus[:1], []assessment.VulnRef{{ID: "GO-T-2", Source: osvSource}, {ID: "GO-T-3", Source: "corpus"}}).state.Report
 	already := []report.AdvisoryFinding{{Advisory: report.Advisory{ID: "GO-T-3", Source: "corpus"}}}
-	got := retriedIDs(cutShortRetry(prior, []string{"GO-T-2"}, already, nil))
+	got := retriedIDs(cutShortRetry(prior, []string{"GO-T-2"}, already))
 	if want := []string{"GO-T-3"}; !slices.Equal(got, want) {
 		t.Errorf("retried %v, want %v (GO-T-2 is a new advisory)", got, want)
 	}
-	if rows := cutShortRetry(prior, nil, nil, nil); len(rows) != 2 {
+	if rows := cutShortRetry(prior, nil, nil); len(rows) != 2 {
 		t.Errorf("retried %d rows, want 2", len(rows))
 	}
 }
@@ -325,22 +352,9 @@ func TestCutShortRetry(t *testing.T) {
 func TestCutShortRetry_SkipsSiblingInstanceRows(t *testing.T) {
 	prior := storedCorpus(cutShortCorpus[:2], []assessment.VulnRef{cutShortCorpus[2]}).state.Report
 	prior.Advisories = append(prior.Advisories, cutShortFinding(cutShortCorpus[0]))
-	got := retriedIDs(cutShortRetry(prior, nil, nil, nil))
+	got := retriedIDs(cutShortRetry(prior, nil, nil))
 	if want := []string{"GO-T-3"}; !slices.Equal(got, want) {
 		t.Errorf("retried %v, want %v", got, want)
-	}
-}
-
-// TestCutShortRetry_WorkSet: a cut row whose advisory left the work set is dropped, not retried;
-// with no work set, every cut row is retried.
-func TestCutShortRetry_WorkSet(t *testing.T) {
-	prior := storedCorpus(nil, cutShortCorpus).state.Report
-	got := retriedIDs(cutShortRetry(prior, nil, nil, cutShortCorpus[1:]))
-	if want := []string{"GO-T-2", "GO-T-3"}; !slices.Equal(got, want) {
-		t.Errorf("retried %v, want %v", got, want)
-	}
-	if got := retriedIDs(cutShortRetry(prior, nil, nil, nil)); len(got) != 3 {
-		t.Errorf("retried %v with no work set, want all three", got)
 	}
 }
 

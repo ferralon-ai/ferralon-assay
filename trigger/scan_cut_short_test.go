@@ -52,6 +52,8 @@ type stoppingPlugin struct {
 	stopAfterSettle context.CancelFunc
 	stopAt          string
 	mode            stopMode
+	// failAt, when set, is an advisory whose Reachability call errors, so its assessment fails.
+	failAt string
 	// calls, when set, records the advisory of each Reachability call in order.
 	calls *callLog
 }
@@ -87,6 +89,9 @@ func (p stoppingPlugin) Reachability(ctx context.Context, req plugin.Reachabilit
 	if p.calls != nil {
 		p.calls.add(req.VulnID)
 	}
+	if p.failAt != "" && req.VulnID == p.failAt {
+		return plugin.ReachabilityResult{}, errors.New("reachability failed")
+	}
 	if req.VulnID != p.stopAt {
 		return p.refutingGoPlugin.Reachability(ctx, req)
 	}
@@ -110,6 +115,13 @@ func stoppingOptions(t *testing.T, stopAt string, mode stopMode) ([]pipeline.Ass
 // recordingStoppingOptions is stoppingOptions with the log of the advisories its plugin assessed.
 func recordingStoppingOptions(t *testing.T, stopAt string, mode stopMode) ([]pipeline.AssessOption, context.Context, *callLog) {
 	t.Helper()
+	return failingStoppingOptions(t, stopAt, mode, "")
+}
+
+// failingStoppingOptions is recordingStoppingOptions whose plugin also fails the assessment of
+// failAt.
+func failingStoppingOptions(t *testing.T, stopAt string, mode stopMode, failAt string) ([]pipeline.AssessOption, context.Context, *callLog) {
+	t.Helper()
 	calls := &callLog{}
 	analysis, cancel := context.WithCancelCause(context.Background())
 	t.Cleanup(func() { cancel(nil) })
@@ -127,6 +139,7 @@ func recordingStoppingOptions(t *testing.T, stopAt string, mode stopMode) ([]pip
 		},
 		stopAt: stopAt,
 		mode:   mode,
+		failAt: failAt,
 		calls:  calls,
 	}
 	return []pipeline.AssessOption{

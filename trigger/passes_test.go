@@ -534,3 +534,56 @@ func gitRepoWithGoMod(t *testing.T, body string) string {
 	}
 	return dir
 }
+
+// TestCVEWatch_RetriedCutRowAssessesSiblingInstances: a cut row cve-watch retries gets the rows a
+// completed baseline gives its advisory, the sibling instance included, so the retry cannot clear
+// the cut disclosure while another major version of the module was never assessed.
+func TestCVEWatch_RetriedCutRowAssessesSiblingInstances(t *testing.T) {
+	assessOpts := func(p plugin.LanguagePlugin) []pipeline.AssessOption {
+		return []pipeline.AssessOption{
+			pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, siblingGoMod), lang: "go"}),
+			pipeline.WithPlugin(p),
+			pipeline.WithAdvisorySource(siblingSource{}),
+		}
+	}
+	complete := refutingGoPlugin{inventory: plugin.Complete()}
+	store := &memStore{}
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	stopFirst := stopOnNthPlugin{refutingGoPlugin: complete, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: 1}
+	if _, err := RunBaseline(context.Background(), store, BaselineRequest{
+		Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "base-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		Advisories:    passAdvisories("GO-S-1"),
+		AssessOptions: assessOpts(stopFirst),
+		Analysis:      analysis,
+	}); err != nil {
+		t.Fatalf("RunBaseline: %v", err)
+	}
+	if got := cutIDs(store.state.Report); !slices.Equal(got, []string{"GO-S-1"}) {
+		t.Fatalf("stored cut rows = %v, want GO-S-1", got)
+	}
+
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: assessOpts(complete),
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if res.Report == nil {
+		t.Fatal("cve-watch ran no earnest pass")
+	}
+	want := rowsByID(runPasses(t, passAdvisories("GO-S-1"), assessOpts(complete), nil))["GO-S-1"]
+	got := rowsByID(res.Report)["GO-S-1"]
+	if len(want) != 2 {
+		t.Fatalf("baseline rows = %+v, want the primary and a sibling", want)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("cve-watch rows for GO-S-1:\n%+v\nbaseline rows:\n%+v", got, want)
+	}
+	if len(cutShortNotes(res.Report)) != 0 {
+		t.Errorf("cut-short notes remain: %+v", cutShortNotes(res.Report))
+	}
+}

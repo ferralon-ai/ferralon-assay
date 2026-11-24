@@ -647,6 +647,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		ref assessment.VulnRef
 		pkg *report.Package
 		key string
+		// cut is a stored scan_cut_short row: its assessment fans out to the sibling instances a
+		// baseline assesses with it.
+		cut bool
 	}
 	var todo []watched
 	keyed := map[string]struct{}{}
@@ -656,7 +659,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		}
 		pkg := a.Package
 		key := a.ID + "\x00" + osvSource
-		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, &pkg, key})
+		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, &pkg, key, false})
 		keyed[key] = struct{}{}
 	}
 	for _, f := range retry {
@@ -664,7 +667,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if _, ok := keyed[key]; ok {
 			continue
 		}
-		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key})
+		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key, f.UndeterminedReason == report.ReasonScanCutShort})
 		keyed[key] = struct{}{}
 	}
 	// Most likely exploited first, so a stop reaches the least likely last. A stable sort: with no
@@ -690,6 +693,11 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	}
 	passes := newAdvisoryPasses(analysis, reqs, assessOpts)
 	defer passes.close()
+	invNotes := inventoryLimits(prior.Partiality)
+	mods := goModulesOf(prior.SBOM, invNotes)
+	// siblings are the rows for the other instances of a retried cut row's advisory; they key
+	// under the parent's key, so they are appended beside the rows the parent replaces.
+	var siblings []report.AdvisoryFinding
 	// assess assesses todo[i] and keys the finding under its key, the row it replaces.
 	assess := func(i int) {
 		ref, pkg, key := todo[i].ref, todo[i].pkg, todo[i].key
@@ -717,7 +725,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			// A stored scan_cut_short row names no package, so resolve it as a baseline does.
 			pkg = tcPkg
 		}
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality), pipeline.AdvisoryPackagePURLs(st, assessmentID))
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
 			// The toolchain is not an SBOM dependency, so the undetermined row takes the
 			// package advisoryFromArtifacts adjudicated (nil for a toolchain subject) rather
@@ -732,6 +740,19 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		packages[advisory.ID] = append(packages[advisory.ID], assessedPackages(st, assessmentID, f.Package)...)
 		if f.Verdict == report.VerdictUndetermined {
 			undetermined[advisory.ID] = true
+		}
+		if todo[i].cut {
+			sibs, sibNotes := siblingInstanceFindings(analysis, areq, st, assessmentID, assessOpts, prior.SBOM.Packages, mods, invNotes)
+			for _, sf := range sibs {
+				if sf.UndeterminedReason == report.ReasonScanCutShort {
+					cut++
+				}
+				if sf.Verdict == report.VerdictUndetermined {
+					undetermined[advisory.ID] = true
+				}
+			}
+			siblings = append(siblings, sibs...)
+			notes = append(notes, sibNotes...)
 		}
 	}
 	for i := range todo {
@@ -767,6 +788,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	for _, re := range reFindings {
 		rows = append(rows, re)
 	}
+	rows = append(rows, siblings...)
 	for _, f := range rows {
 		b.AddFinding(f)
 	}

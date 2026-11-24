@@ -3,7 +3,6 @@ package trigger
 import (
 	"slices"
 
-	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 )
@@ -137,9 +136,9 @@ func retriedIDs(rows []report.AdvisoryFinding) []string {
 // Each row is keyed as notFetchedRetry keys it, and a row an earlier retry or a new OSV advisory
 // already assesses is left to that assessment. A cut row whose key another row holds that is not
 // cut short is a sibling instance, which cve-watch cannot assess, so it is left to the next
-// baseline. When workSet is not empty, a cut row whose advisory is not in it is dropped, as a
-// baseline drops it.
-func cutShortRetry(prior *report.Report, newIDs []string, retry []report.AdvisoryFinding, workSet []assessment.VulnRef) []report.AdvisoryFinding {
+// baseline. cve-watch has no work set to tell a departed advisory from a live one, so it retries a
+// departed advisory's cut row too, and the next baseline drops the row.
+func cutShortRetry(prior *report.Report, newIDs []string, retry []report.AdvisoryFinding) []report.AdvisoryFinding {
 	done := map[string]bool{}
 	for _, f := range retry {
 		done[f.Advisory.ID+"\x00"+f.Advisory.Source] = true
@@ -150,16 +149,9 @@ func cutShortRetry(prior *report.Report, newIDs []string, retry []report.Advisor
 			assessed[f.Advisory.ID+"\x00"+f.Advisory.Source] = true
 		}
 	}
-	inWorkSet := map[string]bool{}
-	for _, v := range workSet {
-		inWorkSet[v.ID+"\x00"+v.Source] = true
-	}
 	for _, f := range prior.Advisories {
 		key := f.Advisory.ID + "\x00" + f.Advisory.Source
 		if f.UndeterminedReason != report.ReasonScanCutShort || done[key] || assessed[key] || (f.Advisory.Source == osvSource && slices.Contains(newIDs, f.Advisory.ID)) {
-			continue
-		}
-		if len(workSet) > 0 && !inWorkSet[key] {
 			continue
 		}
 		done[key] = true

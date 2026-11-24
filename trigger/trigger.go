@@ -571,7 +571,7 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	// A baseline that stopped before its inventory resolved leaves every row cut, and the SBOM
 	// cve-watch would assess them against is not that build's; the next baseline clears them.
 	if !inventoryCutShort(state.Report.Partiality) {
-		retry = cutShortRetry(state.Report, newIDs, retry, req.Advisories)
+		retry = cutShortRetry(state.Report, newIDs, retry)
 	}
 	if restated(state.Report, req.AssessOptions) {
 		retry = restatedRetry(state.Report, newIDs, retry)

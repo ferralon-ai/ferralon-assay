@@ -274,7 +274,8 @@ func signalPriorities(subjects, workSet []assessment.VulnRef, rows []report.Advi
 
 // withCarried returns scheduled with the carried flag set on each advisory that prior holds a
 // scan_cut_short row for, by ID and source. A cut row whose advisory is not in scheduled sets
-// nothing: it is dropped, not retried.
+// nothing: a baseline drops it, never retries it. cve-watch has no work set, so it keeps the row
+// as cut.
 func withCarried(scheduled []ScheduledAdvisory, prior *report.Report) []ScheduledAdvisory {
 	cut := map[string]struct{}{}
 	for _, f := range prior.Advisories {

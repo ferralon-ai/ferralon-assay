@@ -34,12 +34,20 @@ func entrypointLines(r report.Report) []string {
 		for _, k := range kinds {
 			b.WriteString("; " + entrypointKind(k, e.Effective[k]))
 		}
-		if len(e.Unmatched) > 0 {
-			um := make([]string, len(e.Unmatched))
-			for i, s := range e.Unmatched {
-				um[i] = mdCode(s)
+		// Only an unmatched include withholds verdicts; an unmatched "!" exclude removes nothing.
+		var includes, excludes []string
+		for _, s := range e.Unmatched {
+			if strings.HasPrefix(s, "!") {
+				excludes = append(excludes, mdCode(s))
+			} else {
+				includes = append(includes, mdCode(s))
 			}
-			fmt.Fprintf(&b, "; matched nothing, so verdicts resting on it are withheld: %s", strings.Join(um, ", "))
+		}
+		if len(includes) > 0 {
+			fmt.Fprintf(&b, "; matched nothing, so verdicts resting on it are withheld: %s", strings.Join(includes, ", "))
+		}
+		if len(excludes) > 0 {
+			fmt.Fprintf(&b, "; excluded nothing: %s", strings.Join(excludes, ", "))
 		}
 		b.WriteString(".")
 		out = append(out, b.String())

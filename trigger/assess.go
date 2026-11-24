@@ -144,7 +144,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// not proven out of scope: it is refuted under that stated assumption.
 		if len(res.Assumptions) > 0 {
 			f.Verdict = report.VerdictNotExploitable
-			f.Evidence.Detail = versionOutsideAssumingDetail + refuteAttribution(res.Source)
+			f.Evidence.Detail = versionOutsideAssumingDetail + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck)
 			f.Evidence.Assumptions = res.Assumptions
 		}
 	case hasCandidate(store, assessmentID):

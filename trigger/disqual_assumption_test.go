@@ -13,21 +13,24 @@ import (
 
 // A version-axis refute that rests on ordering an installed pseudo-version by an order that does not
 // prove its revision's ancestry is not_exploitable under that stated assumption, never disqualified;
-// one that rests on version order alone stays disqualified with no assumption.
+// one that rests on version order alone stays disqualified with no assumption. Either way a clear
+// the analyzer's database could not cross-check says so.
 func TestFinding_PseudoVersionOrderAssumption(t *testing.T) {
 	const assumption = "the pinned revision 123456abcdef (v0.0.0-20220101000000-123456abcdef) contains revision 0123456789ab (the advisory's bound v0.0.0-20210101000000-0123456789ab): it was committed later on the same base, and commit time does not prove ancestry"
 	for _, tc := range []struct {
 		name        string
 		assumptions []string
+		crossCheck  string
 		want        report.Verdict
 		detail      string
 	}{
-		{"ordered by pseudo-version time", []string{assumption}, report.VerdictNotExploitable, versionOutsideAssumingDetail},
-		{"ordinary version order", nil, report.VerdictDisqualified, disqualDetail(pipeline.ReasonVersionNotInRange)},
+		{"ordered by pseudo-version time", []string{assumption}, "", report.VerdictNotExploitable, versionOutsideAssumingDetail},
+		{"ordered by pseudo-version time, not cross-checked", []string{assumption}, "govulncheck_failed", report.VerdictNotExploitable, versionOutsideAssumingDetail + "; not cross-checked: govulncheck_failed"},
+		{"ordinary version order", nil, "", report.VerdictDisqualified, disqualDetail(pipeline.ReasonVersionNotInRange)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := artifact.NewMemStore()
-			payload, err := json.Marshal(pipeline.DisqualResult{Disqualified: true, Reason: pipeline.ReasonVersionNotInRange, Assumptions: tc.assumptions})
+			payload, err := json.Marshal(pipeline.DisqualResult{Disqualified: true, Reason: pipeline.ReasonVersionNotInRange, Assumptions: tc.assumptions, CrossCheck: tc.crossCheck})
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}

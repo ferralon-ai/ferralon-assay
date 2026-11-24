@@ -57,6 +57,14 @@ func TestRunCachedComputesOnceAcrossCallers(t *testing.T) {
 				})
 			}()
 			time.Sleep(4 * runCacheLockPoll)
+			select {
+			case <-waited:
+				t.Fatal("waiter returned while the holder was computing")
+			default:
+			}
+			if n := runs.Load(); n != 1 {
+				t.Fatalf("computes while the holder runs = %d, want 1", n)
+			}
 			if tt.cancelWait {
 				cancel()
 				<-waited

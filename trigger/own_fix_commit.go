@@ -4,13 +4,15 @@ import (
 	"fmt"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
 // ownFixCommitUnanswered returns the fix commit of an advisory on the scanned project itself, whose
 // own release version was not established, when the advisory's fix commit would have settled it
-// and the checkout's history could not say whether it holds that commit. It returns "" otherwise.
-func ownFixCommitUnanswered(store artifact.Store, assessmentID string) string {
-	if !ownReleaseUnversioned(store, assessmentID) {
+// and the checkout's history could not say whether it holds that commit. It returns "" otherwise,
+// including for a row with a package, which names the version it was placed at.
+func ownFixCommitUnanswered(store artifact.Store, assessmentID string, pkg *report.Package) string {
+	if pkg != nil || !ownReleaseUnversioned(store, assessmentID) {
 		return ""
 	}
 	return disqualRecord(store, assessmentID).FixCommitUnanswered

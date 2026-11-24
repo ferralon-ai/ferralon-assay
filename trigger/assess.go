@@ -196,7 +196,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				MitigatingGuards: guards,
 				AdvisoryBounds:   advisoryBounds(store, assessmentID),
 			}
-		} else if commit := ownFixCommitUnanswered(store, assessmentID); commit != "" {
+		} else if commit := ownFixCommitUnanswered(store, assessmentID, pkg); commit != "" {
 			// The advisory is on the project itself, whose version nothing established, and only the
 			// history the checkout lacks could place the fix commit. The path stays as evidence.
 			f.Verdict = report.VerdictUndetermined

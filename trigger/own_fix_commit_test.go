@@ -30,6 +30,8 @@ func TestFinding_OwnFixCommitUnanswered(t *testing.T) {
 		{"full history without the fix", map[string]any{"root": true}, "", nil, report.VerdictReachableCandidate},
 		{"a versioned project", map[string]any{"root": true, "resolved_version": "1.9.0"}, fix,
 			&report.Package{Ecosystem: "Go", Name: "github.com/kubeedge/kubeedge", Version: "1.9.0", Root: true}, report.VerdictReachableCandidate},
+		{"an unversioned project, row with a package", map[string]any{"root": true}, fix,
+			&report.Package{Ecosystem: "Go", Name: "github.com/kubeedge/kubeedge", Version: "v0.0.0-20240101000000-b1a36daf1737", Root: true}, report.VerdictReachableCandidate},
 		{"a dependency's advisory", map[string]any{}, fix, nil, report.VerdictReachableCandidate},
 	}
 	for _, tc := range cases {

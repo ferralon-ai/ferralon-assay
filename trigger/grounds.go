@@ -121,7 +121,9 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 // candidate never reached that gate, so a toolchain axis left undetermined or a did-not-run limit in
 // the footprint holds its scoped verdict back as it would hold a library one. It then takes the same
 // positive grounds as arm B of notExploitableGrounds: the admitted package's version resolved, the
-// advisory names no other package, and the refutation is of the admitted package. A path the row
+// advisory names no other package, and the refutation is of the admitted package. The view refutes
+// each module the advisory was matched to: the one of them the row was admitted on grounds it, and
+// the rest count as refuted beside it (standingBeside), here and nowhere else. A path the row
 // records that enters at a binary holds the verdict back for every binary (entersBinary).
 func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) []report.ScopedVerdict {
 	if reason, undetermined := undeterminedReason(store, assessmentID, pkg); undetermined && reason != report.ReasonRefutationWithheld {
@@ -133,8 +135,20 @@ func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Packa
 		return nil
 	}
 	admitted, label, ok := admittedPackage(store, assessmentID, pkg)
-	if !ok || namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted, mods, refutedBeside(store, assessmentID, reach)) ||
-		!inAdmitted(view.Refutation.Package, admitted, pkg != nil && pkg.Root) || entersBinary(store, assessmentID, view) {
+	if !ok {
+		return nil
+	}
+	refuted := append([]plugin.Refutation{view.Refutation}, view.Refutations...)
+	own := slices.IndexFunc(refuted, func(r plugin.Refutation) bool {
+		return r.Package != "" && inAdmitted(r.Package, admitted, pkg != nil && pkg.Root)
+	})
+	if own < 0 || refuted[own].Basis != plugin.RefutationAnalyzerSymbolNotReached {
+		return nil
+	}
+	// The view's refutations of the advisory's other modules stand beside this row's scoped verdict
+	// alone, held back as the library view's are (standingBeside); the row's own verdict never reads them.
+	beside := append(refutedBeside(store, assessmentID, reach), standingBeside(store, assessmentID, slices.Delete(slices.Clone(refuted), own, own+1))...)
+	if namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted, mods, beside) || entersBinary(store, assessmentID, view) {
 		return nil
 	}
 	return []report.ScopedVerdict{{
@@ -142,7 +156,7 @@ func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Packa
 		Scope:   report.Scope{Kind: report.ScopeBinaries, Targets: slices.Clone(view.Binaries), Module: view.Module},
 		Evidence: report.EvidenceSummary{
 			Basis:  verdict.BasisSymbolUnreachable,
-			Detail: fmt.Sprintf("%s: %s (%s)", label, view.Refutation.Detail, view.Refutation.Basis),
+			Detail: fmt.Sprintf("%s: %s (%s)", label, refuted[own].Detail, refuted[own].Basis),
 		},
 	}}
 }

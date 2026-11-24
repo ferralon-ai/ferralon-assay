@@ -349,36 +349,89 @@ func netNotReached() groundsFixture {
 }
 
 // TestFinding_ScopedVerdictTwoModules: for an advisory naming golang.org/x/text beside golang.org/x/net,
-// whose library refutation of x/net is withheld, the program view's refutation of x/net grounds a
-// not_exploitable scoped to the binary only when x/text is ruled out too; the row keeps the library
-// view's verdict either way.
+// whose library refutation is withheld, the program view grounds a not_exploitable scoped to the binary
+// only when it or the library view rules x/text out too. A row admitted on either module is grounded
+// by the view's refutation of that module, whose detail it states; a row admitted on a module the view
+// does not refute, or beside a view refutation a did-not-run limit holds back, gets none. The row keeps
+// the library view's verdict either way, and the view's refutations never ground it.
 func TestFinding_ScopedVerdictTwoModules(t *testing.T) {
+	const (
+		net  = "pkg:golang/golang.org/x/net"
+		text = "pkg:golang/golang.org/x/text"
+	)
+	refute := func(pkg, detail string) plugin.Refutation {
+		return plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: pkg, Detail: detail}
+	}
+	textPkg := &report.Package{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.3.0", PURL: "pkg:golang/golang.org/x/text@v0.3.0"}
 	for _, tc := range []struct {
 		name        string
-		textRefuted bool
-		want        bool
+		pkg         *report.Package // nil = x/net
+		library     *plugin.Refutation
+		textRefuted bool // the library view refutes x/text
+		viewText    bool // the program view refutes x/text
+		scoped      []artifact.ScopedPartialityFlag
+		row         report.Verdict
+		reason      string
+		want        string // the scoped verdict's detail; "" = none
 	}{
-		{"the other module not ruled out", false, false},
-		{"both modules ruled out", true, true},
+		{name: "the other module not ruled out", row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld},
+		{name: "the library view rules the other module out", textRefuted: true, row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld, want: "net view"},
+		{name: "the program view rules both out", viewText: true, row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld, want: "net view"},
+		{name: "a row admitted on the view's other module", pkg: textPkg, viewText: true, row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld, want: "text view"},
+		{name: "a row admitted on a module the view does not refute", pkg: textPkg, row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld},
+		{
+			name: "the view's other module beside a did-not-run limit for it", viewText: true,
+			scoped: []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonExcludedFiles, Package: "pkg:golang/example.com/m", Targets: []string{text}}},
+			row:    report.VerdictUndetermined, reason: report.ReasonRefutationWithheld,
+		},
 	} {
 		fx := netNotReached()
+		if tc.pkg != nil {
+			fx.pkg, fx.advisoryPURL = tc.pkg, text
+		}
 		fx.reach.Refutation = nil
 		fx.footprint = []string{plugin.PartialReasonLibraryEscape}
-		fx.affected = []string{"pkg:golang/golang.org/x/net", "pkg:golang/golang.org/x/text"}
-		fx.reach.ProgramView = &plugin.ProgramView{Module: "example.com/m", Binaries: []string{"cmd/tool"}, Refutation: plugin.Refutation{
-			Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/golang.org/x/net", Detail: "started from the main and init of cmd/tool only: no call path",
-		}}
+		fx.scoped = tc.scoped
+		fx.affected = []string{net, text}
+		fx.reach.ProgramView = &plugin.ProgramView{Module: "example.com/m", Binaries: []string{"cmd/tool"}, Refutation: refute(net, "net view")}
+		if tc.viewText {
+			fx.reach.ProgramView.Refutations = []plugin.Refutation{refute(text, "text view")}
+		}
 		if tc.textRefuted {
-			fx.reach.Refutations = []plugin.Refutation{{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/golang.org/x/text", Detail: "no call path"}}
+			fx.reach.Refutations = []plugin.Refutation{refute(text, "no call path")}
 		}
 		f := fx.finding(t)
-		if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonRefutationWithheld {
-			t.Errorf("%s: library view = %s/%q, want undetermined/%q", tc.name, f.Verdict, f.UndeterminedReason, report.ReasonRefutationWithheld)
+		if f.Verdict != tc.row || f.UndeterminedReason != tc.reason {
+			t.Errorf("%s: library view = %s/%q, want %s/%q", tc.name, f.Verdict, f.UndeterminedReason, tc.row, tc.reason)
 		}
-		if got := len(f.ScopedVerdicts) == 1 && f.ScopedVerdicts[0].Verdict == report.VerdictNotExploitable &&
-			f.ScopedVerdicts[0].Evidence.Basis == verdict.BasisSymbolUnreachable; got != tc.want || len(f.ScopedVerdicts) > 1 {
-			t.Errorf("%s: scoped verdicts = %+v, want one unreachable not_exploitable: %v", tc.name, f.ScopedVerdicts, tc.want)
+		if tc.want == "" {
+			if len(f.ScopedVerdicts) > 0 {
+				t.Errorf("%s: scoped verdicts = %+v, want none", tc.name, f.ScopedVerdicts)
+			}
+			continue
 		}
+		if len(f.ScopedVerdicts) != 1 || f.ScopedVerdicts[0].Verdict != report.VerdictNotExploitable ||
+			f.ScopedVerdicts[0].Evidence.Basis != verdict.BasisSymbolUnreachable || !strings.Contains(f.ScopedVerdicts[0].Evidence.Detail, ": "+tc.want+" (") {
+			t.Errorf("%s: scoped verdicts = %+v, want one unreachable not_exploitable stating %q", tc.name, f.ScopedVerdicts, tc.want)
+		}
+	}
+}
+
+// TestFinding_ProgramViewRefutationsNeverGroundTheRow: the program view's refutation of another
+// module the advisory names stands beside the scoped verdict alone. A library refutation of x/net
+// beside an x/text the library view does not rule out stays short of not_exploitable, whatever the
+// view holds.
+func TestFinding_ProgramViewRefutationsNeverGroundTheRow(t *testing.T) {
+	fx := netNotReached()
+	fx.affected = []string{"pkg:golang/golang.org/x/net", "pkg:golang/golang.org/x/text"}
+	without := fx.finding(t)
+	fx.reach.ProgramView = &plugin.ProgramView{Module: "example.com/m", Binaries: []string{"cmd/tool"},
+		Refutation:  plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/golang.org/x/net", Detail: "net view"},
+		Refutations: []plugin.Refutation{{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/golang.org/x/text", Detail: "text view"}},
+	}
+	with := fx.finding(t)
+	if without.Verdict == report.VerdictNotExploitable || with.Verdict != without.Verdict || with.UndeterminedReason != without.UndeterminedReason {
+		t.Errorf("row = %s/%q with the view, %s/%q without, want the same and not not_exploitable", with.Verdict, with.UndeterminedReason, without.Verdict, without.UndeterminedReason)
 	}
 }
 

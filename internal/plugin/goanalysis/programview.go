@@ -95,19 +95,6 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 	if ruled.Refutation == nil {
 		return nil
 	}
-	// The run found no call into any module, but the refutation names the first alone; every other
-	// module the advisory was matched to is ruled out by the same checks, or the view is empty. A
-	// module ruled out only for the scanned platform adds its scope to the view's detail.
-	var scopes []string
-	for _, m := range findingModules(slices.Concat(scanned.findings, prog.findings)) {
-		if other := "pkg:golang/" + m; other != library.Package {
-			scope, ok := programRulesOut(ctx, ruled, run, other, scanned, loaded, g, buildDir, env)
-			if !ok {
-				return nil
-			}
-			scopes = append(scopes, scope)
-		}
-	}
 	module := mains[0].Module.Path
 	binaries := make([]string, len(mains))
 	for i, m := range mains {
@@ -116,10 +103,31 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 			binaries[i] = rel
 		}
 	}
+	started := "started from the main and init of " + strings.Join(binaries, ", ") + " only: "
+	// The run found no call into any module, but the refutation names the first alone; every other
+	// module the advisory was matched to is ruled out by the same checks, or the view is empty. Each
+	// gets its own refutation, and a module ruled out only for the scanned platform adds its scope to
+	// its own detail and to the view's.
+	var scopes []string
+	var others []plugin.Refutation
+	for _, m := range findingModules(slices.Concat(scanned.findings, prog.findings)) {
+		if other := "pkg:golang/" + m; other != library.Package {
+			scope, ok := programRulesOut(ctx, ruled, run, other, scanned, loaded, g, buildDir, env)
+			if !ok {
+				return nil
+			}
+			scopes = append(scopes, scope)
+			others = append(others, plugin.Refutation{
+				Basis:   ruled.Refutation.Basis,
+				Package: other,
+				Detail:  started + "govulncheck found no call path to the advisory's vulnerable functions in " + m + scope,
+			})
+		}
+	}
 	refutation := *ruled.Refutation
-	refutation.Detail = "started from the main and init of " + strings.Join(binaries, ", ") + " only: " + refutation.Detail + strings.Join(scopes, "")
+	refutation.Detail = started + refutation.Detail + strings.Join(scopes, "")
 	refutation.Assumptions = nil
-	return &plugin.ProgramView{Module: module, Binaries: binaries, Refutation: refutation}
+	return &plugin.ProgramView{Module: module, Binaries: binaries, Refutation: refutation, Refutations: others}
 }
 
 // programRulesOut reports whether the program view's checks hold for module, another module the

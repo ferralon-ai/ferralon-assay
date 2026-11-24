@@ -293,7 +293,8 @@ func TestProgramView_OtherPlatformScope(t *testing.T) {
 // TestProgramView_SecondModuleOwnScope: with the first module's refutation scoped to another
 // platform, a second module the advisory was matched to is still checked for left-out files and
 // reflection of its own. A left-out file that keeps it only for the scanned platform adds its scope
-// to the view's detail; reflection, or a left-out file the check cannot trace, leaves no view.
+// to the view's detail and to the second module's own refutation, which states no scope of the
+// first's; reflection, or a left-out file the check cannot trace, leaves no view.
 func TestProgramView_SecondModuleOwnScope(t *testing.T) {
 	base := map[string]string{
 		"go.mod":                 "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/vulnmod v0.0.0\n\texample.com/xmod v0.0.0\n)\n\nreplace example.com/vulnmod => ./_vulnmod\n\nreplace example.com/xmod => ./_xmod\n",
@@ -370,6 +371,17 @@ func TestProgramView_SecondModuleOwnScope(t *testing.T) {
 			}
 			if got := strings.Contains(v.Refutation.Detail, "may call into example.com/xmod"); got != tc.wantScope {
 				t.Errorf("program view detail %q states the second module's platform scope: %v, want %v", v.Refutation.Detail, got, tc.wantScope)
+			}
+			if len(v.Refutations) != 1 {
+				t.Fatalf("program view refutations = %+v, want the second module's alone", v.Refutations)
+			}
+			r := v.Refutations[0]
+			if r.Package != "pkg:golang/example.com/xmod" || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || len(r.Assumptions) > 0 ||
+				!strings.HasPrefix(r.Detail, "started from the main and init of cmd/tool only: ") || strings.Contains(r.Detail, "may call into example.com/vulnmod") {
+				t.Errorf("second module's refutation = %+v", r)
+			}
+			if got := strings.Contains(r.Detail, "may call into example.com/xmod"); got != tc.wantScope {
+				t.Errorf("second module's detail %q states its platform scope: %v, want %v", r.Detail, got, tc.wantScope)
 			}
 		})
 	}

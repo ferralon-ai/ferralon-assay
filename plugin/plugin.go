@@ -774,6 +774,11 @@ type ProgramView struct {
 	// Refutation is the view's refutation. Its Package is the module the advisory was matched to,
 	// as for the library view's, and it carries no assumptions: the scope is the whole of its claim.
 	Refutation Refutation `json:"refutation"`
+	// Refutations are the view's refutations of the other modules the advisory was matched to, one
+	// per module in path order, each held by the same run and the same checks as Refutation. A row
+	// admitted on one of them is grounded by it, and the rest stand beside it for that row's scoped
+	// verdict alone.
+	Refutations []Refutation `json:"refutations,omitempty"`
 }
 
 // Refutation grounds a not_exploitable verdict without a searched sink. Package is a PURL (version

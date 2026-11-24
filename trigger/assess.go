@@ -1057,15 +1057,16 @@ func disqualBasis(reason string) verdict.NonExploitableBasis {
 	}
 }
 
+// versionOutsideAssumingDetail is the detail of a version-axis refute that holds only under the
+// row's stated assumptions about a pseudo-version's ancestry.
+const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumption about a pseudo-version's ancestry"
+
 // disqualDetail renders the customer-visible grounds for a disqualification. Each reason code
 // gets its own arm: the version and symbol axes record an adjudicated comparison that cleared
 // the subject, while the intake codes (pipeline stages.go) record that no such comparison was
 // ever run — the advisory is not adjudicable against this subject at all. Collapsing the two
 // kinds onto one string is the conflation README.md "What it reports" promises the tool does
 // not perform, so the default arm claims nothing about a comparison it cannot name.
-// versionOutsideAssumingDetail is the detail of a version-axis refute that holds only under the
-// row's stated assumptions about a pseudo-version's ancestry.
-const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumption about a pseudo-version's ancestry"
 
 func disqualDetail(reason string) string {
 	switch reason {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -145,16 +146,23 @@ func (s disqualificationDiscovery) rangeDispute(ctx context.Context, c *assessme
 	if d, ok := aliasRangeDispute(src, extractAliases(store, c.ID), targets); ok {
 		return d, ""
 	}
-	if s.plugin == nil || s.plugin.Language() != "go" || module == "" || toolchainSubject(admittedPackagePURL(store, c.ID), rngs) {
+	if s.plugin == nil || s.plugin.Language() != "go" {
+		return "", ""
+	}
+	// The analyzer matches the toolchain against the one it scanned with, so a toolchain row asks
+	// it only about the other modules the version axis judged.
+	toolchain := toolchainSubject(admittedPackagePURL(store, c.ID), rngs)
+	if toolchain && !slices.ContainsFunc(others, func(o presentRanges) bool { return o.Module != "" }) || !toolchain && module == "" {
 		return "", ""
 	}
 	return analyzerRangeDispute(ctx, s.plugin, plugin.ReachabilityRequest{
-		BuildDir:         buildDir,
-		GoWork:           goWork,
-		VulnID:           govulnMatchID(store, c.ID, c.Request.Vulnerability.ID),
-		GoToolchain:      requestedToolchain(s.subjectToolchain, store, c.ID),
-		GoToolchainFloor: inventoryGoFloor(store, c.ID),
-		Package:          admittedPackagePURL(store, c.ID),
+		MatchOutsideToolchain: toolchain,
+		BuildDir:              buildDir,
+		GoWork:                goWork,
+		VulnID:                govulnMatchID(store, c.ID, c.Request.Vulnerability.ID),
+		GoToolchain:           requestedToolchain(s.subjectToolchain, store, c.ID),
+		GoToolchainFloor:      inventoryGoFloor(store, c.ID),
+		Package:               admittedPackagePURL(store, c.ID),
 	})
 }
 

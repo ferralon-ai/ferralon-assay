@@ -220,6 +220,48 @@ func TestRangeDispute_AnalyzerConsultedOnlyOnARangeClear(t *testing.T) {
 	}
 }
 
+// A toolchain row asks the analyzer only when the version axis also judged another module, and then
+// only about matches outside the toolchain, which the analyzer matches against its own.
+func TestRangeDispute_AnalyzerOnAToolchainRow(t *testing.T) {
+	const caseID = "case-dispute-toolchain"
+	minimum := ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}
+	xnet := presentRanges{presentPackage: presentPackage{Module: "golang.org/x/net", Versions: []string{"v0.30.0"}, Complete: true}}
+	stdlib := presentRanges{presentPackage: presentPackage{Coordinate: "stdlib", Versions: []string{"1.21.0"}, Complete: true}}
+	for _, tc := range []struct {
+		name     string
+		others   []presentRanges
+		matched  bool
+		asked    bool
+		disputed bool
+	}{
+		{"no other module", nil, true, false, false},
+		{"only the toolchain beside it", []presentRanges{stdlib}, true, false, false},
+		{"another module, matched", []presentRanges{xnet}, true, true, true},
+		{"another module, not matched", []presentRanges{xnet}, false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{"language": "go", "toolchain": minimum})
+			putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{"coordinate": "stdlib", "purl": "pkg:golang/stdlib"})
+			var reqs []plugin.ReachabilityRequest
+			p := matchPlugin{realResolverPlugin: realResolverPlugin{lang: "go"}, matched: tc.matched, reqs: &reqs}
+			c := &assessment.Assessment{ID: caseID, Request: assessment.Request{Vulnerability: assessment.VulnRef{ID: "GO-2099-0001"}}}
+			s := disqualificationDiscovery{src: disputeSource{}, plugin: p}
+			rngs := []affectedRange{{Scheme: "go-toolchain"}}
+			dispute, _ := s.rangeDispute(context.Background(), c, store, "", "", versionAxis{Versions: []string{"1.21.0"}, Complete: true}, rngs, tc.others)
+			if asked := len(reqs) == 1; asked != tc.asked {
+				t.Fatalf("Reachability requests = %+v, want asked=%v", reqs, tc.asked)
+			}
+			if tc.asked && (!reqs[0].MatchOnly || !reqs[0].MatchOutsideToolchain) {
+				t.Fatalf("request = %+v, want MatchOnly and MatchOutsideToolchain", reqs[0])
+			}
+			if (dispute != "") != tc.disputed {
+				t.Fatalf("dispute = %q, want disputed=%v", dispute, tc.disputed)
+			}
+		})
+	}
+}
+
 // An alias record's ranges pass through the projection the row's own did before they are compared,
 // and are asked about every package the version axis judged, not only the adjudicated one.
 func TestRangeDispute_AliasProjection(t *testing.T) {

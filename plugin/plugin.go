@@ -556,6 +556,10 @@ type ReachabilityRequest struct {
 	// build, answered in ReachabilityResult.AnalyzerMatched; the lane derives no paths, refutations or
 	// searched sinks. A lane with no database of its own answers false, which changes nothing.
 	MatchOnly bool `json:"match_only,omitempty"`
+	// MatchOutsideToolchain, beside MatchOnly, counts only a match against a module other than the
+	// Go toolchain's standard library: the lane matches the toolchain against the one it scanned
+	// with, not the build's.
+	MatchOutsideToolchain bool `json:"match_outside_toolchain,omitempty"`
 }
 
 // --- result payloads ---

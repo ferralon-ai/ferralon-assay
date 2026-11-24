@@ -14,20 +14,27 @@ func TestMatchOnlyResult(t *testing.T) {
 		moduleOnly = `{"finding":{"osv":"GO-2099-0001","trace":[{"module":"example.com/vuln","version":"v1.0.0"}]}}`
 		symbol     = `{"finding":{"osv":"GO-2099-0001","trace":[{"module":"example.com/vuln","package":"example.com/vuln","function":"Sink"}]}}`
 		other      = `{"finding":{"osv":"GO-2099-0002","trace":[{"module":"example.com/vuln","version":"v1.0.0"}]}}`
+		stdlib     = `{"finding":{"osv":"GO-2099-0001","trace":[{"module":"stdlib","package":"net/http","function":"Get"}]}}`
+		toolchain  = `{"finding":{"osv":"GO-2099-0001","trace":[{"module":"toolchain","version":"v1.21.0"}]}}`
 	)
 	for _, tc := range []struct {
 		name    string
 		stream  []string
 		vulnID  string
 		partial bool
+		outside bool
 		want    bool
 	}{
-		{"osv entry only", []string{osv}, "GO-2099-0001", false, false},
-		{"module-level finding", []string{osv, moduleOnly}, "GO-2099-0001", false, true},
-		{"symbol finding", []string{osv, symbol}, "GO-2099-0001", false, true},
-		{"another advisory's finding", []string{osv, other}, "GO-2099-0001", false, false},
-		{"partial run with a finding", []string{osv, symbol}, "GO-2099-0001", true, true},
-		{"partial run without one", []string{osv}, "GO-2099-0001", true, false},
+		{"osv entry only", []string{osv}, "GO-2099-0001", false, false, false},
+		{"module-level finding", []string{osv, moduleOnly}, "GO-2099-0001", false, false, true},
+		{"symbol finding", []string{osv, symbol}, "GO-2099-0001", false, false, true},
+		{"another advisory's finding", []string{osv, other}, "GO-2099-0001", false, false, false},
+		{"partial run with a finding", []string{osv, symbol}, "GO-2099-0001", true, false, true},
+		{"partial run without one", []string{osv}, "GO-2099-0001", true, false, false},
+		{"stdlib finding", []string{osv, stdlib}, "GO-2099-0001", false, false, true},
+		{"stdlib finding outside the toolchain", []string{osv, stdlib}, "GO-2099-0001", false, true, false},
+		{"toolchain finding outside the toolchain", []string{osv, toolchain}, "GO-2099-0001", false, true, false},
+		{"module finding beside a stdlib one outside the toolchain", []string{osv, stdlib, symbol}, "GO-2099-0001", false, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			scanned, err := parseFindings([]byte(strings.Join(tc.stream, "\n")), tc.vulnID)
@@ -37,7 +44,7 @@ func TestMatchOnlyResult(t *testing.T) {
 			if tc.partial {
 				scanned.partial = &partialRun{}
 			}
-			res := matchOnlyResult(scanned, "go1.24.0")
+			res := matchOnlyResult(scanned, "go1.24.0", tc.outside)
 			if res.AnalyzerMatched != tc.want {
 				t.Fatalf("AnalyzerMatched = %v, want %v", res.AnalyzerMatched, tc.want)
 			}

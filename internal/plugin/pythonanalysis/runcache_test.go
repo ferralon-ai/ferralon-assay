@@ -237,7 +237,7 @@ func TestRunCacheKeysCoverEveryRequestField(t *testing.T) {
 		keyed, unread []string
 	}{
 		{"reachability", plugin.ReachabilityRequest{}, []string{"BuildDir", "Symbols"},
-			[]string{"DependencyCache", "GoToolchain", "GoToolchainFloor", "GoWork", "LibraryEntrypoints", "Package", "TargetEnv", "VulnID"}},
+			[]string{"DependencyCache", "EntryOverride", "GoToolchain", "GoToolchainFloor", "GoWork", "LibraryEntrypoints", "MatchOnly", "MatchOutsideToolchain", "Package", "TargetEnv", "VulnID"}},
 		{"resolve symbols", plugin.ResolveSymbolsRequest{}, []string{"AdvisorySymbols", "BuildDir", "PURL"},
 			[]string{"DependencyCache", "GoWork", "Package", "PackageVersions", "TargetEnv", "VulnID"}},
 		{"call graph", plugin.CallGraphRequest{}, []string{"BuildDir"}, []string{"Algorithm", "DependencyCache", "GoWork"}},

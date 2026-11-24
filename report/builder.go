@@ -493,7 +493,7 @@ func entrypointRecords(sets []plugin.ResolvedLibraryEntrypoints) []plugin.EntryR
 // bare form matches adds what it inferred and what the caller denied. A record of another set (an
 // inherited one beside a fresh library set) is dropped rather than allowed to drift from
 // library_entrypoints. A lane with a record in roots and no library set states the first of them as
-// it is: the lane records its entry points on assessments that judged no refutation, and
+// it is, or the first that lists what the lane inferred, under the same statement, when the first lists none: the lane records its entry points on assessments that judged no refutation, and
 // library_entrypoints holds only the sets a refutation rested on.
 func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plugin.EntryRootRecord) []plugin.EntryRootRecord {
 	records := entrypointRecords(sets)
@@ -511,14 +511,47 @@ func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plu
 	for _, rec := range records {
 		haveSet[rec.Lane] = true
 	}
+	stated := map[string]int{}
 	for _, r := range roots {
-		if !haveSet[r.Lane] {
-			haveSet[r.Lane] = true
+		if haveSet[r.Lane] {
+			continue
+		}
+		i, ok := stated[r.Lane]
+		switch {
+		case !ok:
+			stated[r.Lane] = len(records)
 			records = append(records, r)
+		case len(records[i].Inferred) == 0 && len(r.Inferred) > 0 && sameStatement(r.Lane, records[i].Input, r.Input):
+			// A record of a lane that read no closure reports no guess; one that did, under the same
+			// statement, says more. Another statement's record would put its Input on this report.
+			records[i] = r
 		}
 	}
 	sortRecordsByLane(records)
 	return records
+}
+
+// sameStatement reports whether two Inputs state one lane's entry-point override alike, however the
+// clauses are spelled or ordered. An Input that does not parse counts only as the same string.
+func sameStatement(lane, a, b string) bool {
+	if a == b {
+		return true
+	}
+	pa, errA := plugin.ParseEntryOverrides(a)
+	pb, errB := plugin.ParseEntryOverrides(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	oa, okA := pa[lane]
+	ob, okB := pb[lane]
+	return plugin.SameEntryOverride(statementOf(oa, okA), statementOf(ob, okB))
+}
+
+func statementOf(o plugin.EntryOverride, ok bool) *plugin.EntryOverride {
+	if !ok {
+		return nil
+	}
+	return &o
 }
 
 // sameJSON reports whether a and b serialize alike: an empty list and an absent one are one value.

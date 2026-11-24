@@ -89,7 +89,8 @@ func siblingInstanceFindings(analysis context.Context, areq assessment.Request, 
 // finding maps one advisory's S1–S6 artifacts into a single report.AdvisoryFinding,
 // applying the deterministic verdict rule (inv. 5):
 //
-//   - disqualification_discovery disqualified  → VerdictDisqualified.
+//   - disqualification_discovery disqualified  → VerdictDisqualified, or VerdictNotExploitable
+//     on the same basis carrying the stage's Assumptions when the disqualification rests on one.
 //   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate, or
 //     VerdictUndetermined/advisory_range_absent with the path kept when the advisory
 //     carries no affected range the version axis can bound for the admitted package, or
@@ -136,8 +137,15 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			Verdict:  report.VerdictDisqualified,
 			Evidence: report.EvidenceSummary{
 				Basis:  disqualBasis(res.Reason),
-				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source),
+				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck),
 			},
+		}
+		// A version placed outside only under an assumption about a pseudo-version's ancestry is
+		// not proven out of scope: it is refuted under that stated assumption.
+		if len(res.Assumptions) > 0 {
+			f.Verdict = report.VerdictNotExploitable
+			f.Evidence.Detail = versionOutsideAssumingDetail + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck)
+			f.Evidence.Assumptions = res.Assumptions
 		}
 	case hasCandidate(store, assessmentID):
 		shown, shownFromTaint, shownOK := evidencePath(store, assessmentID)
@@ -1026,6 +1034,15 @@ func refuteAttribution(src *pipeline.RefuteSource) string {
 	return " (per " + strings.Join(parts, ", ") + ")"
 }
 
+// crossCheckNote discloses on a version-axis disqualification that the analyzer's own vulnerability
+// database could not be consulted, so the clear rests on the corpus range alone.
+func crossCheckNote(note string) string {
+	if note == "" {
+		return ""
+	}
+	return "; not cross-checked: " + note
+}
+
 // maxFeedName bounds the record-declared feed name carried into customer-visible detail.
 const maxFeedName = 64
 
@@ -1068,6 +1085,10 @@ func disqualBasis(reason string) verdict.NonExploitableBasis {
 		return verdict.BasisNone
 	}
 }
+
+// versionOutsideAssumingDetail is the detail of a version-axis refute that holds only under the
+// row's stated assumptions about a pseudo-version's ancestry.
+const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumption about a pseudo-version's ancestry"
 
 // disqualDetail renders the customer-visible grounds for a disqualification. Each reason code
 // gets its own arm: the version and symbol axes record an adjudicated comparison that cleared
@@ -1433,7 +1454,7 @@ var scopeStatedLimits = map[string]bool{
 // footprint. They drop only while the assessment holds an analyzer refutation on the admitted
 // package, and every other limit stays.
 func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg *report.Package, reasons []string) []string {
-	if !slices.ContainsFunc(reasons, func(r string) bool { return scopeStatedLimits[r] }) {
+	if !slices.ContainsFunc(reasons, func(r string) bool { return scopeStatedLimits[r] || r == plugin.PartialReasonPluginLoad }) {
 		return reasons
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
@@ -1448,12 +1469,23 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	case plugin.RefutationAnalyzerPackageNotImported:
 		// "No build file imports the package" is a claim about every platform, so it does not stand
 		// beside a file another platform builds that may call into the module. It reads the files cgo
-		// off drops too, so the cgo-off limits still clear.
+		// off drops too, so the cgo-off limits still clear. A plugin the program loads with cgo on is
+		// a separate build, which cannot make this one import the package, so plugin_load clears
+		// too once the refutation carries that as its assumption. A refutation the ground rests on
+		// beside it must carry it too: a call-path refutation of another module is the claim a
+		// loaded plugin can contradict.
 		drops = map[string]bool{plugin.PartialReasonPluginLoadCgoOff: true, plugin.PartialReasonCgoFilesDropped: true}
+		if assumesPluginsSeparate(*r) && !slices.ContainsFunc(refutedBeside(store, assessmentID, reach), func(b plugin.Refutation) bool { return !assumesPluginsSeparate(b) }) {
+			drops[plugin.PartialReasonPluginLoad] = true
+		}
 	default:
 		return reasons
 	}
 	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return drops[r] })
+}
+
+func assumesPluginsSeparate(r plugin.Refutation) bool {
+	return slices.Contains(r.Assumptions, plugin.AssumptionPluginsNotAssessed)
 }
 
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a

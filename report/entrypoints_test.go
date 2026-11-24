@@ -1,11 +1,15 @@
 package report
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jsanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -243,5 +247,157 @@ func TestEntryRootsCarryInferredAndDenied(t *testing.T) {
 	}
 	if got, err := Upgrade(read); err != nil || !reflect.DeepEqual(got.Entrypoints, recorded.Entrypoints) {
 		t.Errorf("Upgrade dropped the record: %+v (%v)", got.Entrypoints, err)
+	}
+}
+
+// TestJSEntryRootsDoNotDrift: the js lane's record has no library_entrypoints twin to derive it
+// from, so it is kept as recorded: through the builder, a stored report's round trip, an inheriting
+// builder and beside the go lane's record, in lane order.
+func TestJSEntryRootsDoNotDrift(t *testing.T) {
+	js := plugin.EntryRootRecord{
+		Lane: plugin.EntryLaneJS, Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!js:bin=bin:storybook",
+		Effective: map[string][]string{plugin.EntryKindBin: {}, plugin.EntryKindScript: {"npm:tool/index.js"}},
+		Inferred:  map[string][]string{plugin.EntryKindBin: {"bin:storybook"}, plugin.EntryKindScript: {"npm:tool/index.js"}},
+		Denied:    []string{"!bin:storybook"},
+	}
+	lib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{"example.com/m/api"}}
+	goRec, _ := plugin.EntryRootRecordOf(lib)
+
+	recorded := NewBuilder(Subject{ResolvedCommit: "c"}).WithEntryRoots(js).Build()
+	both := NewBuilder(Subject{ResolvedCommit: "c"}).WithLibraryEntrypoints(lib).WithEntryRoots(js).Build()
+	for name, tc := range map[string]struct {
+		r    Report
+		want []plugin.EntryRootRecord
+	}{
+		"js alone":       {recorded, []plugin.EntryRootRecord{js}},
+		"beside the go":  {both, []plugin.EntryRootRecord{goRec, js}},
+		"recorded twice": {NewBuilder(Subject{ResolvedCommit: "c"}).WithEntryRoots(js).WithEntryRoots(js).Build(), []plugin.EntryRootRecord{js}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !reflect.DeepEqual(tc.r.Entrypoints, tc.want) {
+				t.Errorf("Entrypoints = %+v, want %+v", tc.r.Entrypoints, tc.want)
+			}
+		})
+	}
+
+	raw, err := json.Marshal(both)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read Report
+	if err := json.Unmarshal(raw, &read); err != nil {
+		t.Fatal(err)
+	}
+	next := NewBuilder(Subject{ResolvedCommit: "d"}).WithLibraryEntrypoints(read.LibraryEntrypoints...).WithEntryRoots(read.Entrypoints...).Build()
+	if !reflect.DeepEqual(next.Entrypoints, both.Entrypoints) {
+		t.Errorf("inherited entrypoints %+v, want %+v", next.Entrypoints, both.Entrypoints)
+	}
+	if got, err := Upgrade(read); err != nil || !reflect.DeepEqual(got.Entrypoints, both.Entrypoints) {
+		t.Errorf("Upgrade changed the records: %+v (%v)", got.Entrypoints, err)
+	}
+}
+
+// laneUnlistedRecord is the js record a run that read no closure emits, as the lane builds it and a
+// stored report returns it: a removing override and no dependency cache.
+func laneUnlistedRecord(t *testing.T, input string) plugin.EntryRootRecord {
+	t.Helper()
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"index.js":     "console.log('x');\n",
+		"package.json": `{"name":"app","version":"1.0.0","scripts":{"start":"tool --serve"}}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var o *plugin.EntryOverride
+	if input != "" {
+		m, err := plugin.ParseEntryOverrides(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		js := m[plugin.EntryLaneJS]
+		o = &js
+	}
+	res, err := jsanalysis.Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{"npm:idle@1.0.0#bad"}, EntryOverride: o})
+	if err != nil || res.EntryRoots == nil {
+		t.Fatalf("Reachability: record %+v, err %v", res.EntryRoots, err)
+	}
+	b, err := json.Marshal(res.EntryRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec plugin.EntryRootRecord
+	if err := json.Unmarshal(b, &rec); err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+// TestEntrypointRecords_FullJSRecordBeatsUnlisted: of two js records offered under one statement, the
+// one that reports what the lane inferred stands over one from a run that read no closure, in either
+// order, and a record of another statement never displaces it: its Input would be on this report.
+// A record whose Input does not parse never displaces one that does. Of two full records the first stands, and the same clauses in another order are one statement.
+func TestEntrypointRecords_FullJSRecordBeatsUnlisted(t *testing.T) {
+	const in = "!js:bin=bin:storybook"
+	unlisted := laneUnlistedRecord(t, in)
+	if len(unlisted.Inferred) != 0 {
+		t.Fatalf("the lane's unlisted record reports a guess: %+v", unlisted.Inferred)
+	}
+	full := unlisted
+	full.Effective = map[string][]string{plugin.EntryKindBin: {}, plugin.EntryKindScript: {}}
+	full.Inferred = map[string][]string{plugin.EntryKindBin: {"bin:storybook"}, plugin.EntryKindScript: {}}
+	full.Denied = []string{"!bin:storybook"}
+	other := full
+	other.Input = "!js:bin=bin:other"
+	other.Denied = []string{"!bin:other"}
+
+	fullLater := full
+	fullLater.Inferred = map[string][]string{plugin.EntryKindBin: {"bin:storybook", "bin:later"}, plugin.EntryKindScript: {}}
+	ab := laneUnlistedRecord(t, "!js:bin=bin:a,!js:bin=bin:b")
+	abFull := ab
+	abFull.Input = "!js:bin=bin:b,!js:bin=bin:a"
+	abFull.Inferred = map[string][]string{plugin.EntryKindBin: {"bin:a", "bin:b"}, plugin.EntryKindScript: {}}
+
+	unparsable := full
+	unparsable.Input = "::bad"
+
+	for name, tc := range map[string]struct {
+		roots []plugin.EntryRootRecord
+		want  plugin.EntryRootRecord
+	}{
+		"an unparsable statement does not displace": {[]plugin.EntryRootRecord{unlisted, unparsable}, unlisted},
+		"two full records, the first stands":        {[]plugin.EntryRootRecord{full, fullLater}, full},
+		"reordered clauses are one statement":       {[]plugin.EntryRootRecord{ab, abFull}, abFull},
+		"unlisted first":                            {[]plugin.EntryRootRecord{unlisted, full}, full},
+		"full first":                                {[]plugin.EntryRootRecord{full, unlisted}, full},
+		"another statement does not displace":       {[]plugin.EntryRootRecord{unlisted, other}, unlisted},
+		"another statement, other order":            {[]plugin.EntryRootRecord{other, unlisted}, other},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := NewBuilder(Subject{ResolvedCommit: "c"}).WithEntryRoots(tc.roots...).Build()
+			if len(r.Entrypoints) != 1 || !reflect.DeepEqual(r.Entrypoints[0], tc.want) {
+				t.Errorf("Entrypoints = %+v, want [%+v]", r.Entrypoints, tc.want)
+			}
+		})
+	}
+}
+
+// TestEntrypointRecords_WithdrawnRemovalThenFailedRead: the removal that the stored report was
+// resolved from is withdrawn, and the run's dependency read then fails. The lane still records the
+// default statement, so the stored removal is not the one the report states.
+func TestEntrypointRecords_WithdrawnRemovalThenFailedRead(t *testing.T) {
+	stored := laneUnlistedRecord(t, "!js:bin=bin:storybook")
+	stored.Effective = map[string][]string{plugin.EntryKindBin: {}, plugin.EntryKindScript: {}}
+	stored.Inferred = map[string][]string{plugin.EntryKindBin: {"bin:storybook"}, plugin.EntryKindScript: {}}
+	stored.Denied = []string{"!bin:storybook"}
+	head := laneUnlistedRecord(t, "")
+	if head.Input != plugin.LibraryEntrypointsAuto || len(head.Inferred)+len(head.Denied)+len(head.Unmatched) != 0 {
+		t.Fatalf("the lane's default record = %+v, want auto with nothing inferred, denied or unmatched", head)
+	}
+	// The head's records are offered before the baseline's (trigger/state.go).
+	r := NewBuilder(Subject{ResolvedCommit: "c"}).WithEntryRoots(head, stored).Build()
+	if len(r.Entrypoints) != 1 || r.Entrypoints[0].Input != plugin.LibraryEntrypointsAuto {
+		t.Errorf("Entrypoints = %+v, want the run's own default statement", r.Entrypoints)
 	}
 }

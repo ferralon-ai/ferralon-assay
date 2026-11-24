@@ -552,6 +552,20 @@ type ReachabilityRequest struct {
 	// importer may contradict resolves its entry points from it and reports them in
 	// ReachabilityResult.LibraryEntrypoints.
 	LibraryEntrypoints *LibraryEntrypoints `json:"library_entrypoints,omitempty"`
+	// EntryOverride is the caller's override of the entry points the lane infers, for a lane that
+	// roots its analysis at inferred entry points other than library packages (JavaScript's script
+	// binaries). Nil is auto with nothing declared. A lane that reads it reports the set it
+	// analysed in ReachabilityResult.EntryRoots. It is additive on the wire: a lane that does not
+	// read it ignores it, and ProtocolVersion is unchanged.
+	EntryOverride *EntryOverride `json:"entry_override,omitempty"`
+	// MatchOnly asks only whether the lane's own vulnerability database places VulnID against the
+	// build, answered in ReachabilityResult.AnalyzerMatched; the lane derives no paths, refutations or
+	// searched sinks. A lane with no database of its own answers false, which changes nothing.
+	MatchOnly bool `json:"match_only,omitempty"`
+	// MatchOutsideToolchain, beside MatchOnly, counts only a match against a module other than the
+	// Go toolchain's standard library: the lane matches the toolchain against the one it scanned
+	// with, not the build's.
+	MatchOutsideToolchain bool `json:"match_outside_toolchain,omitempty"`
 }
 
 // --- result payloads ---
@@ -736,6 +750,10 @@ type ReachabilityResult struct {
 	// advisory's vulnerable code, though the module used as a library may. The lane never sets it
 	// beside a library-view Refutation, and it never replaces or weakens that view.
 	ProgramView *ProgramView `json:"program_view,omitempty"`
+	// AnalyzerMatched, answering a MatchOnly request, reports that the lane's own vulnerability
+	// database matched VulnID against a module version the build uses. A run that covered only part
+	// of the build still reports a match, and says it was partial in Partiality.
+	AnalyzerMatched bool `json:"analyzer_matched,omitempty"`
 }
 
 // ProgramView is the program view's ruling on one advisory: its refutation, and the shipped binaries
@@ -776,6 +794,13 @@ const (
 	// runtime-loaded module imports it.
 	RefutationPackageNotLoaded = "package_not_loaded"
 )
+
+// AssumptionPluginsNotAssessed is the assumption the Go lane attaches to an
+// analyzer_package_not_imported refutation when the program reaches plugin.Open with cgo on
+// (plugin_load). A plugin is a separate build: it may hold the vulnerable package, but it cannot
+// make this build contain a package the build does not import. A refutation resting on call paths
+// does not get it, since a loaded plugin can call back into this build's exported code.
+const AssumptionPluginsNotAssessed = "Go plugins loaded at run time are separate builds and were not assessed"
 
 // --- whole-graph dependency inventory (§4.1) ---
 

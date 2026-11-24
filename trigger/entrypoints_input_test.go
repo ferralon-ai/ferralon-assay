@@ -381,3 +381,44 @@ func TestRestated_BaselineEntrypointsRecord(t *testing.T) {
 		})
 	}
 }
+
+// TestRestated_JSStatement: the js lane's statement is compared per lane. A run that states the same
+// removal as the stored js record inherits, a changed or newly stated one re-assesses, and the go
+// lane's comparison stands beside it unchanged.
+func TestRestated_JSStatement(t *testing.T) {
+	record := func(input string) *report.Report {
+		return &report.Report{Entrypoints: []plugin.EntryRootRecord{{Lane: plugin.EntryLaneJS, Source: plugin.LibraryEntrypointsSourceDeclared, Input: input}}}
+	}
+	run := func(t *testing.T, lang, in string) []pipeline.AssessOption {
+		m, err := plugin.ParseEntryOverrides(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []pipeline.AssessOption{pipeline.WithPlugin(fakeInventoryPlugin{lang: lang}), pipeline.WithEntrypoints(m)}
+	}
+	cases := []struct {
+		name   string
+		stored *report.Report
+		lang   string
+		in     string
+		want   bool
+	}{
+		{"same removal", record("!js:bin=bin:a"), "js", "!js:bin=bin:a", false},
+		{"same removal, order of denies", record("!js:bin=bin:a !js:bin=bin:b"), "js", "!js:bin=bin:b !js:bin=bin:a", false},
+		{"changed removal", record("!js:bin=bin:a"), "js", "!js:bin=bin:b", true},
+		{"removal added", &report.Report{}, "js", "!js:bin=bin:a", true},
+		{"removal withdrawn", record("!js:bin=bin:a"), "js", "js:auto", true},
+		{"nothing stated either side", &report.Report{}, "js", "js:auto", false},
+		{"recorded auto, none stated", record("auto"), "js", "js:auto", false},
+		{"unparsable record", record("!!"), "js", "!js:bin=bin:a", true},
+		{"scan of another language states nothing for js", record("!js:bin=bin:a"), "go", "!js:bin=bin:a", true},
+		{"a go scan ignores a js clause", &report.Report{}, "go", "!js:bin=bin:a", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := restated(tc.stored, run(t, tc.lang, tc.in)); got != tc.want {
+				t.Errorf("restated = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

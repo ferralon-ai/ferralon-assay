@@ -191,6 +191,15 @@ inputs:
       undetermined, because that absence describes the scanner's toolchain, not yours.
     required: false
     default: "true"
+  subject-go-version:
+    description: >-
+      The exact Go release your repository builds with, for example go1.22.5. With it, a stdlib
+      advisory is judged against your Go rather than left undetermined with go_toolchain_unresolved
+      or go_toolchain_not_scanned, and subject-toolchain-reachability can run the analysis under
+      that release. Empty uses an ASSAY_SUBJECT_GO_VERSION set in the step's env, else your
+      go.mod directives. A value below your go.mod's minimum gives way to that minimum.
+    required: false
+    default: ""
   subject-gowork:
     description: >-
       The GOWORK your Go build runs under: 'off', 'auto', or the path of its go.work relative to
@@ -846,6 +855,7 @@ runs:
         IN_TARGET: ${{ inputs.target }}
         IN_OUT: ${{ inputs.out }}
         IN_SUBJECT_REPO: ${{ inputs.subject-repo }}
+        IN_SUBJECT_GO_VERSION: ${{ inputs.subject-go-version }}
         IN_REVISION: ${{ inputs.revision }}
         IN_COMMIT: ${{ inputs.commit }}
         IN_STATE_REPO: ${{ inputs.state-repo }}
@@ -928,6 +938,13 @@ runs:
         # step inherits the job's env, and the scanner never reads GOWORK itself. Data only.
         if [ -z "${ASSAY_SUBJECT_GOWORK:-}" ]; then
           export ASSAY_SUBJECT_GOWORK="${GOWORK:-}"
+        fi
+
+        # subject-go-version, when set, becomes the scanner's ASSAY_SUBJECT_GO_VERSION (run.go reads it
+        # under -subject-go-version). Empty leaves any ASSAY_SUBJECT_GO_VERSION the job set untouched.
+        # Data only.
+        if [ -n "${IN_SUBJECT_GO_VERSION:-}" ]; then
+          export ASSAY_SUBJECT_GO_VERSION="$IN_SUBJECT_GO_VERSION"
         fi
 
         mkdir -p "$IN_OUT"

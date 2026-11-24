@@ -15,14 +15,15 @@ import (
 // prove its revision's ancestry is not_exploitable under that stated assumption, never disqualified;
 // one that rests on version order alone stays disqualified with no assumption.
 func TestFinding_PseudoVersionOrderAssumption(t *testing.T) {
-	const assumption = "the pinned revision 123456abcdef (v0.0.0-20220101000000-123456abcdef) contains revision 0123456789ab (the advisory's bound v0.0.0-20210101000000-0123456789ab): its pseudo-version orders later, and a pseudo-version's order does not prove ancestry"
+	const assumption = "the pinned revision 123456abcdef (v0.0.0-20220101000000-123456abcdef) contains revision 0123456789ab (the advisory's bound v0.0.0-20210101000000-0123456789ab): it was committed later on the same base, and commit time does not prove ancestry"
 	for _, tc := range []struct {
 		name        string
 		assumptions []string
 		want        report.Verdict
+		detail      string
 	}{
-		{"ordered by pseudo-version time", []string{assumption}, report.VerdictNotExploitable},
-		{"ordinary version order", nil, report.VerdictDisqualified},
+		{"ordered by pseudo-version time", []string{assumption}, report.VerdictNotExploitable, versionOutsideAssumingDetail},
+		{"ordinary version order", nil, report.VerdictDisqualified, disqualDetail(pipeline.ReasonVersionNotInRange)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := artifact.NewMemStore()
@@ -37,6 +38,9 @@ func TestFinding_PseudoVersionOrderAssumption(t *testing.T) {
 			if f.Verdict != tc.want || f.Evidence.Basis != verdict.BasisVersionNotAffected || !slices.Equal(f.Evidence.Assumptions, tc.assumptions) {
 				t.Fatalf("got %s basis %q assumptions %q, want %s basis %q assumptions %q",
 					f.Verdict, f.Evidence.Basis, f.Evidence.Assumptions, tc.want, verdict.BasisVersionNotAffected, tc.assumptions)
+			}
+			if f.Evidence.Detail != tc.detail {
+				t.Fatalf("detail %q, want %q", f.Evidence.Detail, tc.detail)
 			}
 			if err := report.NewBuilder(report.Subject{ResolvedCommit: "c"}).AddFinding(f).Build().Validate(); err != nil {
 				t.Fatalf("Validate: %v", err)

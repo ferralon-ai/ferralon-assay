@@ -141,6 +141,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// not proven out of scope: it is refuted under that stated assumption.
 		if len(res.Assumptions) > 0 {
 			f.Verdict = report.VerdictNotExploitable
+			f.Evidence.Detail = versionOutsideAssumingDetail + refuteAttribution(res.Source)
 			f.Evidence.Assumptions = res.Assumptions
 		}
 	case hasCandidate(store, assessmentID):
@@ -1062,6 +1063,10 @@ func disqualBasis(reason string) verdict.NonExploitableBasis {
 // ever run — the advisory is not adjudicable against this subject at all. Collapsing the two
 // kinds onto one string is the conflation README.md "What it reports" promises the tool does
 // not perform, so the default arm claims nothing about a comparison it cannot name.
+// versionOutsideAssumingDetail is the detail of a version-axis refute that holds only under the
+// row's stated assumptions about a pseudo-version's ancestry.
+const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumption about a pseudo-version's ancestry"
+
 func disqualDetail(reason string) string {
 	switch reason {
 	case pipeline.ReasonVersionNotInRange:

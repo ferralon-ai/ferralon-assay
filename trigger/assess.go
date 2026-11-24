@@ -92,7 +92,10 @@ func siblingInstanceFindings(analysis context.Context, areq assessment.Request, 
 //   - disqualification_discovery disqualified  → VerdictDisqualified.
 //   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate, or
 //     VerdictUndetermined/advisory_range_absent with the path kept when the advisory
-//     carries no affected range the version axis can bound for the admitted package.
+//     carries no affected range the version axis can bound for the admitted package, or
+//     VerdictUndetermined/own_release_version_unknown with the path kept when the advisory is
+//     on the unversioned project itself and only its fix commit, which the checkout's
+//     history could not place, would decide it (ownFixCommitUnanswered).
 //   - neither, and the empty path set is not evidence about the subject (see
 //     undeterminedReason) or has no positive grounds (see
 //     notExploitableGrounds)                    → VerdictUndetermined, no basis.
@@ -189,6 +192,18 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				CallPath:         frames,
 				MitigatingGuards: guards,
 				AdvisoryBounds:   advisoryBounds(store, assessmentID),
+			}
+		} else if commit := ownFixCommitUnanswered(store, assessmentID); commit != "" {
+			// The advisory is on the project itself, whose version nothing established, and only the
+			// history the checkout lacks could place the fix commit. The path stays as evidence.
+			f.Verdict = report.VerdictUndetermined
+			f.UndeterminedReason = report.ReasonOwnReleaseVersionUnknown
+			f.Evidence = report.EvidenceSummary{
+				Detail:           ownFixCommitUnansweredDetail(commit),
+				ReachablePath:    path,
+				EntryPoint:       entry,
+				CallPath:         frames,
+				MitigatingGuards: guards,
 			}
 		}
 	default:

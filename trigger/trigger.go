@@ -126,12 +126,8 @@ type DependencyFetchRun struct {
 // A baseline stopped before its dependency inventory resolved keeps the stored SBOM: replacing it
 // with an empty one would leave CVE-watch nothing to query until the next baseline finishes.
 func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineRequest) (*report.Report, error) {
-	rep, assessed, err := baselineReport(ctx, req, func() (report.SBOM, error) {
-		prior, err := readForUpdate(ctx, store)
-		if err != nil {
-			return report.SBOM{}, err
-		}
-		return prior.SBOM, nil
+	rep, assessed, err := baselineReport(ctx, req, func() (*statestore.State, error) {
+		return readForUpdate(ctx, store)
 	})
 	if err != nil {
 		return nil, err
@@ -171,10 +167,11 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 	return rep, err
 }
 
-// baselineReport is buildBaselineReport with priorSBOM, which reads the stored SBOM a baseline
-// stopped before its inventory resolved carries forward. Nil carries nothing forward. It also
-// returns the advisories whose assessment completed, sorted by ID.
-func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (report.SBOM, error)) (*report.Report, []report.Advisory, error) {
+// baselineReport is buildBaselineReport with readPrior, which reads the stored state. The stored
+// SBOM is what a baseline stopped before its inventory resolved carries forward, and the stored
+// scan_cut_short rows name the advisories the scan assesses first. Nil carries nothing forward. It
+// also returns the advisories whose assessment completed, sorted by ID.
+func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (*statestore.State, error)) (*report.Report, []report.Advisory, error) {
 	analyzer := req.AnalyzerVersion
 	if analyzer == "" {
 		analyzer = AnalyzerVersion
@@ -193,7 +190,18 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	// The same gate orders the loop by the run's EPSS/KEV signals (KEV-listed, then EPSS
 	// descending, then the rest in input order), so a scan that stops early has assessed the
 	// likeliest-exploited advisories first; with no signals the order is the input's.
-	admitted := admitAdvisories(withSignalPriority(scheduleFor(req.Advisories, req.Bands), req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...)))
+	var prior *statestore.State
+	if readPrior != nil {
+		var err error
+		if prior, err = readPrior(); err != nil {
+			return nil, nil, fmt.Errorf("trigger: read the stored state: %w", err)
+		}
+	}
+	scheduled := scheduleFor(req.Advisories, req.Bands)
+	if prior != nil && prior.Report != nil {
+		scheduled = withCarried(scheduled, prior.Report)
+	}
+	admitted := admitAdvisories(withSignalPriority(scheduled, req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...)))
 
 	// Declared BEFORE any finding, so a pass whose work set could not be fully determined
 	// discloses that even if it goes on to produce zero findings — the case the note exists for.
@@ -213,14 +221,10 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 		return nil, nil, fmt.Errorf("trigger: resolve codebase inventory: %w", err)
 	}
 	sbom, invNotes := sbomFromInventory(inv, ecosystemFor(invLanguage))
-	if inventoryCutShort(invNotes) && priorSBOM != nil {
-		prior, err := priorSBOM()
-		if err != nil {
-			return nil, nil, fmt.Errorf("trigger: read the stored SBOM: %w", err)
-		}
-		if len(prior.Packages) > 0 {
+	if inventoryCutShort(invNotes) && prior != nil {
+		if len(prior.SBOM.Packages) > 0 {
 			// The stored build list is another commit's, so it is never this build's whole module list.
-			sbom = prior
+			sbom = prior.SBOM
 			sbom.GoBuildList, sbom.GoMainModule, sbom.GoWorkspaceModules = "", "", nil
 			b.AddPartiality(priorSBOMNote)
 		}
@@ -280,7 +284,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 		b.AddPartiality(sibNotes...)
 	}
 	if cut > 0 {
-		b.AddPartiality(cutShortNote(cut, rows, stopCause(analysis)))
+		b.AddPartiality(cutShortNote(cut, rows, stopCause(analysis), admitted.Carried))
 	}
 
 	b.WithProvenance(withSignals(report.Provenance{
@@ -560,6 +564,11 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	var retry []report.AdvisoryFinding
 	if req.DependencyFetch != nil {
 		retry = notFetchedRetry(state.Report, state.DepFetch, newIDs)
+	}
+	// A baseline that stopped before its inventory resolved leaves every row cut, and the SBOM
+	// cve-watch would assess them against is not that build's; the next baseline clears them.
+	if !inventoryCutShort(state.Report.Partiality) {
+		retry = cutShortRetry(state.Report, newIDs, retry)
 	}
 	if restated(state.Report, req.AssessOptions) {
 		retry = restatedRetry(state.Report, newIDs, retry)

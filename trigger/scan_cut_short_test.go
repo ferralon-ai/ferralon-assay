@@ -52,6 +52,26 @@ type stoppingPlugin struct {
 	stopAfterSettle context.CancelFunc
 	stopAt          string
 	mode            stopMode
+	// calls, when set, records the advisory of each Reachability call in order.
+	calls *callLog
+}
+
+// callLog is the advisory IDs a stoppingPlugin was asked about, in call order.
+type callLog struct {
+	mu  sync.Mutex
+	ids []string
+}
+
+func (l *callLog) add(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.ids = append(l.ids, id)
+}
+
+func (l *callLog) order() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.ids)
 }
 
 func (p stoppingPlugin) ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
@@ -64,6 +84,9 @@ func (p stoppingPlugin) ResolveInventory(ctx context.Context, req plugin.Resolve
 }
 
 func (p stoppingPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	if p.calls != nil {
+		p.calls.add(req.VulnID)
+	}
 	if req.VulnID != p.stopAt {
 		return p.refutingGoPlugin.Reachability(ctx, req)
 	}
@@ -80,6 +103,14 @@ var errTestStop = errors.New("test stop")
 // stoppingOptions returns the assess options and the analysis context their plugin stops.
 func stoppingOptions(t *testing.T, stopAt string, mode stopMode) ([]pipeline.AssessOption, context.Context) {
 	t.Helper()
+	opts, analysis, _ := recordingStoppingOptions(t, stopAt, mode)
+	return opts, analysis
+}
+
+// recordingStoppingOptions is stoppingOptions with the log of the advisories its plugin assessed.
+func recordingStoppingOptions(t *testing.T, stopAt string, mode stopMode) ([]pipeline.AssessOption, context.Context, *callLog) {
+	t.Helper()
+	calls := &callLog{}
 	analysis, cancel := context.WithCancelCause(context.Background())
 	t.Cleanup(func() { cancel(nil) })
 	settled := make(chan struct{})
@@ -96,12 +127,13 @@ func stoppingOptions(t *testing.T, stopAt string, mode stopMode) ([]pipeline.Ass
 		},
 		stopAt: stopAt,
 		mode:   mode,
+		calls:  calls,
 	}
 	return []pipeline.AssessOption{
 		pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
 		pipeline.WithPlugin(p),
 		pipeline.WithAdvisorySource(clonedSource{}),
-	}, analysis
+	}, analysis, calls
 }
 
 func rowsByID(rep *report.Report) map[string][]report.AdvisoryFinding {
@@ -257,7 +289,7 @@ func storedCorpus(assessed, cut []assessment.VulnRef) *memStore {
 		b.AddFinding(cutShortFinding(adv))
 	}
 	if len(cut) > 0 {
-		b.AddPartiality(cutShortNote(len(cut), len(assessed)+len(cut), errTestStop.Error()))
+		b.AddPartiality(cutShortNote(len(cut), len(assessed)+len(cut), errTestStop.Error(), 0))
 	}
 	baseline := b.WithProvenance(report.Provenance{CommitSHA: "base-sha"}).Build()
 	return &memStore{state: &statestore.State{Report: &baseline, SBOM: baseline.SBOM}}

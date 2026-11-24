@@ -129,3 +129,24 @@ func retriedIDs(rows []report.AdvisoryFinding) []string {
 	slices.Sort(out)
 	return slices.Compact(out)
 }
+
+// cutShortRetry is the stored rows a cve-watch run assesses again because a scan stopped before
+// assessing their advisories, whatever source assessed them and whichever lane stored them: every
+// scan_cut_short row. It is how a scheduled cve-watch clears the tail of a baseline that stopped.
+// Each row is keyed as notFetchedRetry keys it, and a row an earlier retry or a new OSV advisory
+// already assesses is left to that assessment.
+func cutShortRetry(prior *report.Report, newIDs []string, retry []report.AdvisoryFinding) []report.AdvisoryFinding {
+	done := map[string]bool{}
+	for _, f := range retry {
+		done[f.Advisory.ID+"\x00"+f.Advisory.Source] = true
+	}
+	for _, f := range prior.Advisories {
+		key := f.Advisory.ID + "\x00" + f.Advisory.Source
+		if f.UndeterminedReason != report.ReasonScanCutShort || done[key] || (f.Advisory.Source == osvSource && slices.Contains(newIDs, f.Advisory.ID)) {
+			continue
+		}
+		done[key] = true
+		retry = append(retry, f)
+	}
+	return retry
+}

@@ -606,6 +606,22 @@ func canonicalKey(ecosystem, name string) string {
 	return ecosystem + "\x00" + name
 }
 
+// cutOnlyKeys is the keys, advisory ID and source, under which prior holds a scan_cut_short row and
+// no other row. A key that also holds a completed row is a sibling instance's, which a completed
+// parent already fanned out.
+func cutOnlyKeys(prior *report.Report) map[string]bool {
+	out := map[string]bool{}
+	for _, f := range prior.Advisories {
+		key := f.Advisory.ID + "\x00" + f.Advisory.Source
+		if f.UndeterminedReason != report.ReasonScanCutShort {
+			out[key] = false
+		} else if _, ok := out[key]; !ok {
+			out[key] = true
+		}
+	}
+	return out
+}
+
 // osvSource is the advisory source a cve-watch run assesses OSV's newly-relevant advisories under.
 const osvSource = "osv"
 
@@ -652,6 +668,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		cut bool
 	}
 	var todo []watched
+	cutKeys := cutOnlyKeys(prior)
 	keyed := map[string]struct{}{}
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
@@ -659,7 +676,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		}
 		pkg := a.Package
 		key := a.ID + "\x00" + osvSource
-		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, &pkg, key, false})
+		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, &pkg, key, cutKeys[key]})
 		keyed[key] = struct{}{}
 	}
 	for _, f := range retry {
@@ -667,7 +684,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if _, ok := keyed[key]; ok {
 			continue
 		}
-		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key, f.UndeterminedReason == report.ReasonScanCutShort})
+		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key, cutKeys[key]})
 		keyed[key] = struct{}{}
 	}
 	// Most likely exploited first, so a stop reaches the least likely last. A stable sort: with no
@@ -771,6 +788,13 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.SetRelationships(prior.SBOM.Relationships)
 	b.SetGoBuildList(prior.SBOM)
 
+	// A retried cut row's key holds only cut rows, and its fresh rows replace them all: the parent's
+	// and its siblings'.
+	fanned := map[string]bool{}
+	for _, w := range todo {
+		fanned[w.key] = w.cut
+	}
+	replaced := map[string]bool{}
 	var rows []report.AdvisoryFinding
 	for i := range prior.Advisories {
 		f := prior.Advisories[i]
@@ -781,6 +805,10 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if re, ok := reFindings[key]; ok {
 			rows = append(rows, re)
 			delete(reFindings, key)
+			replaced[key] = true
+			continue
+		}
+		if replaced[key] && fanned[key] {
 			continue
 		}
 		rows = append(rows, f)

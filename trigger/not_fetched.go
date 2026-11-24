@@ -135,9 +135,11 @@ func retriedIDs(rows []report.AdvisoryFinding) []string {
 // scan_cut_short row. It is how a scheduled cve-watch clears the tail of a baseline that stopped.
 // Each row is keyed as notFetchedRetry keys it, and a row an earlier retry or a new OSV advisory
 // already assesses is left to that assessment. A cut row whose key another row holds that is not
-// cut short is a sibling instance, which cve-watch cannot assess, so it is left to the next
-// baseline. cve-watch has no work set to tell a departed advisory from a live one, so it retries a
-// departed advisory's cut row too, and the next baseline drops the row.
+// cut short is a sibling instance of an advisory whose own row completed, which cve-watch
+// cannot assess alone, so it is left to the next baseline. A cut row it does retry runs the
+// baseline's sibling pass with it, and replaces every cut row under its key. cve-watch has no work
+// set to tell a departed advisory from a live one, so it retries a departed advisory's cut row too,
+// and the next baseline drops the row.
 func cutShortRetry(prior *report.Report, newIDs []string, retry []report.AdvisoryFinding) []report.AdvisoryFinding {
 	done := map[string]bool{}
 	for _, f := range retry {

@@ -587,3 +587,180 @@ func TestCVEWatch_RetriedCutRowAssessesSiblingInstances(t *testing.T) {
 		t.Errorf("cut-short notes remain: %+v", cutShortNotes(res.Report))
 	}
 }
+
+// siblingNotesSource is siblingSource whose second major version lists a vulnerable symbol and
+// whose first does not, so the two instances' rows carry different notes.
+type siblingNotesSource struct{}
+
+func (siblingNotesSource) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
+	facts, _ := siblingSource{}.Lookup(id)
+	base, _ := fixtureSource().Lookup(wiringAdvisory.ID)
+	facts.AffectedPackages[1].Symbols = base.Symbols
+	return facts, true
+}
+
+func siblingAssessOpts(t *testing.T, p plugin.LanguagePlugin, src pipeline.AdvisorySource) []pipeline.AssessOption {
+	t.Helper()
+	return []pipeline.AssessOption{
+		pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, siblingGoMod), lang: "go"}),
+		pipeline.WithPlugin(p),
+		pipeline.WithAdvisorySource(src),
+	}
+}
+
+// cutSiblingBaseline stores a baseline over the sibling advisory that the scan stopped at its first
+// reachability call, so its one row is cut, under source.
+func cutSiblingBaseline(t *testing.T, src pipeline.AdvisorySource, source string) *memStore {
+	t.Helper()
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	p := stopOnNthPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: 1}
+	store := &memStore{}
+	if _, err := RunBaseline(context.Background(), store, BaselineRequest{
+		Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "base-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		Advisories:    []assessment.VulnRef{{ID: "GO-S-1", Source: source}},
+		AssessOptions: siblingAssessOpts(t, p, src),
+		Analysis:      analysis,
+	}); err != nil {
+		t.Fatalf("RunBaseline: %v", err)
+	}
+	if got := cutIDs(store.state.Report); !slices.Equal(got, []string{"GO-S-1"}) {
+		t.Fatalf("stored cut rows = %v, want GO-S-1", got)
+	}
+	return store
+}
+
+// TestCVEWatch_RetriedOSVCutRowAssessesSiblingInstances: a cut row stored under source osv, whose
+// ID OSV reports again, is assessed as a new advisory and gets the rows and notes a completed
+// baseline gives it, the sibling instance's included.
+func TestCVEWatch_RetriedOSVCutRowAssessesSiblingInstances(t *testing.T) {
+	src := siblingNotesSource{}
+	complete := refutingGoPlugin{inventory: plugin.Complete()}
+	store := cutSiblingBaseline(t, src, osvSource)
+	full := runPasses(t, []assessment.VulnRef{{ID: "GO-S-1", Source: osvSource}}, siblingAssessOpts(t, complete, src), nil)
+	want := rowsByID(full)["GO-S-1"]
+	if len(want) != 2 {
+		t.Fatalf("baseline rows = %+v, want the primary and a sibling", want)
+	}
+	var pkg report.Package
+	for _, f := range want {
+		if f.Package != nil && f.Package.Name == "example.com/lib" {
+			pkg = *f.Package
+		}
+	}
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: "GO-S-1", Package: pkg}}}}, CVEWatchRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: siblingAssessOpts(t, complete, src),
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if !slices.Equal(res.NewAdvisories, []string{"GO-S-1"}) {
+		t.Fatalf("new advisories = %v, want GO-S-1 assessed by the new-advisory lane", res.NewAdvisories)
+	}
+	if got := rowsByID(res.Report)["GO-S-1"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("cve-watch rows for GO-S-1:\n%+v\nbaseline rows:\n%+v", got, want)
+	}
+	if len(cutShortNotes(res.Report)) != 0 {
+		t.Errorf("cut-short notes remain: %+v", cutShortNotes(res.Report))
+	}
+	for _, n := range full.Partiality {
+		if !hasNoteReason(res.Report.Partiality, n.Reason) {
+			t.Errorf("baseline note %q missing from the cve-watch report: %+v", n.Reason, res.Report.Partiality)
+		}
+	}
+}
+
+// TestCVEWatch_SiblingStopsAgainStaysDisclosed: a retried cut row whose sibling instance the scan
+// stops before assessing again keeps the sibling's cut row, discloses it as 1 of 2, and holds the
+// cursor so the next run assesses it.
+func TestCVEWatch_SiblingStopsAgainStaysDisclosed(t *testing.T) {
+	store := cutSiblingBaseline(t, siblingSource{}, "corpus")
+	store.state.Cursor = "held"
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	p := stopOnNthPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: 2}
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: siblingAssessOpts(t, p, siblingSource{}),
+		Analysis:      analysis,
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if res.Report == nil {
+		t.Fatal("cve-watch ran no earnest pass")
+	}
+	if rows := rowsByID(res.Report)["GO-S-1"]; len(rows) != 2 || len(cutIDs(res.Report)) != 1 {
+		t.Errorf("rows for GO-S-1 = %+v, want the primary and one cut sibling", rows)
+	}
+	const want = "1 of 2 advisories were not assessed: test stop"
+	if notes := cutShortNotes(res.Report); len(notes) != 1 || notes[0].Detail != want {
+		t.Errorf("scan_cut_short notes = %+v, want one %q", notes, want)
+	}
+	if res.Cursor != "held" || !res.Truncated {
+		t.Errorf("cursor = %q, truncated = %v; want the held cursor and a truncated report", res.Cursor, res.Truncated)
+	}
+}
+
+// TestCVEWatch_RetriedCutRowReplacesEveryCutRowUnderItsKey: a key holding two cut rows is cleared by
+// one retry, which leaves the rows a completed baseline gives, not a stale cut row beside them.
+func TestCVEWatch_RetriedCutRowReplacesEveryCutRowUnderItsKey(t *testing.T) {
+	src := siblingSource{}
+	complete := refutingGoPlugin{inventory: plugin.Complete()}
+	store := cutSiblingBaseline(t, src, "corpus")
+	store.state.Report.Advisories = append(store.state.Report.Advisories, cutShortFinding(assessment.VulnRef{ID: "GO-S-1", Source: "corpus"}))
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: siblingAssessOpts(t, complete, src),
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	want := rowsByID(runPasses(t, passAdvisories("GO-S-1"), siblingAssessOpts(t, complete, src), nil))["GO-S-1"]
+	if got := rowsByID(res.Report)["GO-S-1"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("cve-watch rows for GO-S-1:\n%+v\nbaseline rows:\n%+v", got, want)
+	}
+	if len(cutIDs(res.Report)) != 0 || len(cutShortNotes(res.Report)) != 0 {
+		t.Errorf("cut rows %v, notes %+v remain", cutIDs(res.Report), cutShortNotes(res.Report))
+	}
+}
+
+// TestCVEWatch_NotFetchedRetryLeavesSiblingRows: a retry of a completed parent that is not a cut row
+// replaces the parent and keeps the stored sibling row; it does not assess the siblings again.
+func TestCVEWatch_NotFetchedRetryLeavesSiblingRows(t *testing.T) {
+	src := siblingSource{}
+	complete := refutingGoPlugin{inventory: plugin.Complete()}
+	store := &memStore{}
+	if _, err := RunBaseline(context.Background(), store, BaselineRequest{
+		Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "base-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		Advisories:    passAdvisories("GO-S-1"),
+		AssessOptions: siblingAssessOpts(t, complete, src),
+	}); err != nil {
+		t.Fatalf("RunBaseline: %v", err)
+	}
+	if rows := rowsByID(store.state.Report)["GO-S-1"]; len(rows) != 2 {
+		t.Fatalf("stored rows = %+v, want the primary and a sibling", rows)
+	}
+	store.state.DepFetch = &statestore.DepFetch{Reassess: []string{"GO-S-1"}}
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+		Subject:         Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:        assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions:   siblingAssessOpts(t, complete, src),
+		DependencyFetch: func(prior *statestore.DepFetch, _ DependencyFetchRun) *statestore.DepFetch { return prior },
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if !slices.Equal(res.Reassessed, []string{"GO-S-1"}) {
+		t.Fatalf("reassessed = %v, want GO-S-1", res.Reassessed)
+	}
+	if rows := rowsByID(res.Report)["GO-S-1"]; len(rows) != 2 {
+		t.Errorf("rows for GO-S-1 = %+v, want the primary and the one stored sibling", rows)
+	}
+}

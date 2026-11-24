@@ -6,8 +6,10 @@
 package pipeline
 
 import (
+	"fmt"
 	"strings"
 
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -23,18 +25,30 @@ import (
 // bound the range carries, or when one bound alone already places it outside: a version below an
 // orderable LowerInclusive is outside whatever the upper bound says.
 func versionOutsideRange(ver string, rng affectedRange) (outside bool, ok bool) {
-	if !rangeTypeOrderable(rng.Type) {
+	outside, assumption, ok := versionOutsideRangeAssuming(ver, rng)
+	if outside && assumption != "" {
 		return false, false
 	}
-	below, lowerOK := versionBelowIntroduced(ver, rng)
+	return outside, ok
+}
+
+// versionOutsideRangeAssuming is versionOutsideRange that also orders an installed pseudo-version
+// where the order rests on an assumption about its revision's ancestry (compareGoModVersionsAssuming).
+// assumption is that one line when the comparison that placed ver outside rested on one, and empty
+// otherwise; a caller that cannot disclose it must read the range as unplaced.
+func versionOutsideRangeAssuming(ver string, rng affectedRange) (outside bool, assumption string, ok bool) {
+	if !rangeTypeOrderable(rng.Type) {
+		return false, "", false
+	}
+	below, lowerAssumption, lowerOK := versionBelowIntroduced(ver, rng)
 	if lowerOK && below {
-		return true, true
+		return true, lowerAssumption, true
 	}
-	above, upperOK := versionAboveRangeTop(ver, rng)
+	above, upperAssumption, upperOK := versionAboveRangeTop(ver, rng)
 	if upperOK && above {
-		return true, true
+		return true, upperAssumption, true
 	}
-	return false, lowerOK && upperOK
+	return false, "", lowerOK && upperOK
 }
 
 // rangeTypeOrderable reports whether an OSV range type orders its bounds as versions. An absent type
@@ -50,15 +64,15 @@ func rangeTypeOrderable(rangeType string) bool {
 
 // versionBelowIntroduced reports whether ver orders strictly below rng's inclusive lower bound. An
 // absent LowerInclusive, or OSV's "0", is unbounded below.
-func versionBelowIntroduced(ver string, rng affectedRange) (below bool, ok bool) {
+func versionBelowIntroduced(ver string, rng affectedRange) (below bool, assumption string, ok bool) {
 	if rng.LowerInclusive == "" || rng.LowerInclusive == "0" {
-		return false, true
+		return false, "", true
 	}
-	cmp, ok := compareVersions(ver, rng.LowerInclusive, rng.Scheme)
+	cmp, assumption, ok := compareVersionsAssuming(ver, rng.LowerInclusive, rng.Scheme)
 	if !ok {
-		return false, false
+		return false, "", false
 	}
-	return cmp < 0, true
+	return cmp < 0, assumption, true
 }
 
 // versionAboveRangeTop reports whether ver orders past rng's upper end. Only UpperExclusive is an
@@ -67,14 +81,14 @@ func versionBelowIntroduced(ver string, rng affectedRange) (below bool, ok bool)
 // release past X may still be affected. versionOutsideRanges first caps such a range when a later
 // range in the same set bounds it (capOpenLastAffected). A range with no bound at all keeps the upper-exclusive
 // reading of an empty bound.
-func versionAboveRangeTop(ver string, rng affectedRange) (above bool, ok bool) {
+func versionAboveRangeTop(ver string, rng affectedRange) (above bool, assumption string, ok bool) {
 	switch {
 	case rng.UpperExclusive != "":
-		return versionOutsideUpper(ver, rng)
+		return versionOutsideUpperAssuming(ver, rng)
 	case rng.LastAffected != "" || rng.LowerInclusive != "":
-		return false, true
+		return false, "", true
 	default:
-		return versionOutsideUpper(ver, rng)
+		return versionOutsideUpperAssuming(ver, rng)
 	}
 }
 
@@ -166,9 +180,27 @@ func rangesForToolchainFloor(store artifact.Store, caseID string, rngs []affecte
 }
 
 // compareVersions orders a against b under scheme's comparator, returning -1/0/+1. ok is false when
-// the scheme has no comparator or either version falls outside its grammar. The default Go path
-// rejects prereleases, pseudo-versions included, as versionOutsideUpper does.
+// the scheme has no comparator or either version falls outside its grammar, and when the order
+// would rest on an assumption about a pseudo-version's ancestry (compareVersionsAssuming).
 func compareVersions(a, b, scheme string) (int, bool) {
+	cmp, assumption, ok := compareVersionsAssuming(a, b, scheme)
+	if !ok || assumption != "" {
+		return 0, false
+	}
+	return cmp, true
+}
+
+// compareVersionsAssuming is compareVersions that also returns an order resting on an assumption,
+// with that assumption as one line. Only the Go-module comparator makes one.
+func compareVersionsAssuming(a, b, scheme string) (int, string, bool) {
+	if scheme == "" || scheme == "gomod" {
+		return compareGoModVersionsAssuming(a, b)
+	}
+	cmp, ok := compareOtherVersions(a, b, scheme)
+	return cmp, "", ok
+}
+
+func compareOtherVersions(a, b, scheme string) (int, bool) {
 	switch scheme {
 	case "maven":
 		return compareMaven(a, b)
@@ -200,8 +232,6 @@ func compareVersions(a, b, scheme string) (int, bool) {
 			return 0, false
 		}
 		return compareGoToolchain(x, y), true
-	case "", "gomod":
-		return compareGoModVersions(a, b)
 	default:
 		return 0, false
 	}
@@ -238,16 +268,83 @@ func canonicalGoModVersion(v string) (string, bool) {
 	return v, semver.IsValid(v)
 }
 
-// compareGoModVersions orders module version a against bound b. b is canonicalized and may be a
-// pre-release or pseudo-version, ordered by semver.Compare as govulncheck does. a is the installed
-// version as go.mod writes it, so it must already be "v"-prefixed semver, and a pre-release a stays
-// unordered: an installed pseudo-version against a bound fails open.
+// compareGoModVersions orders module version a against bound b, failing open (ok false) wherever
+// compareGoModVersionsAssuming's order would rest on an assumption.
 func compareGoModVersions(a, b string) (int, bool) {
-	cb, bok := canonicalGoModVersion(b)
-	if !semver.IsValid(a) || !bok || semver.Prerelease(a) != "" {
+	cmp, assumption, ok := compareGoModVersionsAssuming(a, b)
+	if !ok || assumption != "" {
 		return 0, false
 	}
-	return semver.Compare(a, cb), true
+	return cmp, true
+}
+
+// compareGoModVersionsAssuming orders installed module version a against bound b by semver.Compare,
+// as govulncheck does. a is the version as go.mod writes it, so it must already be "v"-prefixed
+// semver; b is canonicalized. Either may be a pre-release or a pseudo-version.
+//
+// A pseudo-version names a commit, and its place in version order says nothing certain about which
+// commits that commit contains. Where the order of an installed pseudo-version a decides a verdict
+// only under an assumption about its revision's ancestry, assumption names it in one line:
+//   - against another pseudo-version, that a contains b's revision when it orders later, and does not
+//     when it orders earlier;
+//   - against a release b above a's base, that a does not contain the changes released in b.
+//
+// An a ordered above a release at or below its own base descends from that base, which is ordinary
+// version order and assumes nothing. Two pseudo-versions with the same commit time and different
+// revisions, and an a ordered above a release that is above its base, stay unordered. A release a
+// against a pseudo-version bound orders by semver.Compare, as before.
+func compareGoModVersionsAssuming(a, b string) (int, string, bool) {
+	cb, bok := canonicalGoModVersion(b)
+	if !semver.IsValid(a) || !bok {
+		return 0, "", false
+	}
+	cmp := semver.Compare(a, cb)
+	if !module.IsPseudoVersion(a) {
+		return cmp, "", true
+	}
+	revA, errA := module.PseudoVersionRev(a)
+	if errA != nil {
+		return 0, "", false
+	}
+	if module.IsPseudoVersion(cb) {
+		revB, err := module.PseudoVersionRev(cb)
+		if err != nil {
+			return 0, "", false
+		}
+		if revA == revB {
+			if cmp != 0 {
+				return 0, "", false
+			}
+			return 0, "", true
+		}
+		timeA, errA := module.PseudoVersionTime(a)
+		timeB, errB := module.PseudoVersionTime(cb)
+		if errA != nil || errB != nil || timeA.Equal(timeB) || cmp == 0 {
+			return 0, "", false
+		}
+		relation, order := "contains", "later"
+		if cmp < 0 {
+			relation, order = "does not contain", "earlier"
+		}
+		return cmp, fmt.Sprintf("the pinned revision %s (%s) %s revision %s (the advisory's bound %s): its pseudo-version orders %s, and a pseudo-version's order does not prove ancestry",
+			revA, a, relation, revB, cb, order), true
+	}
+	base, err := module.PseudoVersionBase(a)
+	if err != nil {
+		return 0, "", false
+	}
+	if base != "" && semver.Compare(base, cb) >= 0 {
+		return cmp, "", true
+	}
+	if cmp > 0 {
+		return 0, "", false
+	}
+	from := "no tagged release"
+	if base != "" {
+		from = "release " + base
+	}
+	return cmp, fmt.Sprintf("the pinned revision %s (%s) does not contain the changes released in %s: it descends from %s, which does not prove which later commits it carries",
+		revA, a, cb, from), true
 }
 
 // withDisagreeingLegacyRanges adds the advisory-level legacy ranges to the element they describe when

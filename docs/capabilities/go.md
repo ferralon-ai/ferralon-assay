@@ -31,7 +31,8 @@ Advisory ranges are placed against the resolved module version with the semver c
 | Feature | Status | Caveats |
 |---|---|---|
 | Semver introduced/fixed bounds (both sides) | Complete |  |
-| Pseudo-version / prerelease upper bounds | Partial | [GO-PSEUDOVERSION](#go-pseudoversion) |
+| Prerelease versions, ordered as `golang.org/x/mod/semver` orders them | Complete |  |
+| Pseudo-version resolved versions | Partial | [GO-PSEUDOVERSION](#go-pseudoversion) |
 | Stdlib/toolchain ranges (`go1.X.Y`), multi-range backport | Complete |  |
 | Toolchain fact from `go` / `toolchain` directive | Partial | [GO-TOOLCHAIN-PRE121](#go-toolchain-pre121) |
 | Module found at multiple versions in the build | Complete |  |
@@ -157,9 +158,9 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 ### GO-PSEUDOVERSION
 
-**Trigger.** Resolved module version is a pseudo-version or prerelease.
+**Trigger.** Resolved module version is a pseudo-version.
 
-**Effect.** The upper-bound test is not applied, so the advisory stays admitted (fail-open to admission, precision only).
+**Effect.** A pseudo-version at or above a tagged bound at or below its own base is placed by ordinary version order. Any other placement rests on the pseudo-version's base or commit time, which does not prove which revisions it contains: a row cleared that way is `not_exploitable` on `version_not_in_affected_range`, and its Assumptions name the pinned revision and the bound it was ordered against. Two pseudo-versions with the same commit time, or a pseudo-version above a tagged bound past its base, are not placed, and the advisory stays admitted.
 
 ### GO-TOOLCHAIN-PRE121
 

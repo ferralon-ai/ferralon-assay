@@ -136,6 +136,12 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source),
 			},
 		}
+		// A version placed outside only under an assumption about a pseudo-version's ancestry is
+		// not proven out of scope: it is refuted under that stated assumption.
+		if len(res.Assumptions) > 0 {
+			f.Verdict = report.VerdictNotExploitable
+			f.Evidence.Assumptions = res.Assumptions
+		}
 	case hasCandidate(store, assessmentID):
 		shown, shownFromTaint, shownOK := evidencePath(store, assessmentID)
 		path := reachableLabel(store, assessmentID, shown, shownOK)

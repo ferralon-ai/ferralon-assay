@@ -496,8 +496,10 @@ type EvidenceSummary struct {
 	// HTTP handler reaches the advisory symbol"). Neutral phrasing only — never
 	// asserts exploitability.
 	Detail string `json:"detail,omitempty"`
-	// Assumptions are the caller's declarations a not_exploitable verdict holds only under, each one
-	// checkable line (a library-entrypoints declaration that took a package out of the entry points).
+	// Assumptions are the assumptions a not_exploitable verdict holds only under, each one checkable
+	// line: a caller's declaration (a library-entrypoints declaration that took a package out of the
+	// entry points), or one the scanner itself made (an installed pseudo-version ordered against a
+	// bound by a version order that does not prove its revision's ancestry, naming both revisions).
 	// Empty means the verdict rests on the scan's evidence alone. Set only on a not_exploitable.
 	Assumptions []string `json:"assumptions,omitempty"`
 	// ReachablePath, for a reachable_candidate, names the entrypoint→symbol path that

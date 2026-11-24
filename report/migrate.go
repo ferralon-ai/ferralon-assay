@@ -114,7 +114,7 @@ func upgradeV1(r Report) Report {
 // check once it is stated.
 const (
 	goToolchainUnresolvedRemedy = "; state the exact Go release this codebase builds with (for example go1.22.5) in the Action input subject-go-version (CLI -subject-go-version), or, if one is stated, check that it is a valid Go release"
-	goToolchainNotScannedRemedy = "; to get a verdict, state the exact Go release this codebase builds with (for example go1.22.5), at or above its go.mod minimum, in the Action input subject-go-version (CLI -subject-go-version) and leave subject-toolchain-reachability on; with both in place, the analysis could not run under that release"
+	goToolchainNotScannedRemedy = "; to get a verdict, state the exact Go release this codebase builds with (for example go1.22.5), at or above its go.mod minimum, in the Action input subject-go-version (CLI -subject-go-version) and leave subject-toolchain-reachability on; if both are already in place, the analysis could not run under that release (for example, the toolchain could not be fetched or could not load the module)"
 )
 
 // UndeterminedDetail is the neutral one-line grounds-free explanation for an undetermined

@@ -337,7 +337,8 @@ func reportHTMLLimitLabel(reason string) string {
 		return "Advisories affecting the Go toolchain were not assessed against this codebase's own " +
 			"toolchain version, so no verdict is reported for them. To get a verdict, declare the exact Go release it builds " +
 			"with, at or above its go.mod minimum, in the Action input subject-go-version (CLI -subject-go-version) and " +
-			"leave subject-toolchain-reachability on; with both in place, the analysis could not run under that release."
+			"leave subject-toolchain-reachability on; if both are already in place, the analysis could not run under that release " +
+			"(for example, the toolchain could not be fetched or could not load the module)."
 	case report.ReasonAnalysisDidNotRun:
 		return "The analysis steps that would locate this advisory's code in what this repository " +
 			"builds did not run, so no verdict is reported for it."

@@ -2780,7 +2780,7 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	disqualified, reason := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown)
 	res := DisqualResult{Disqualified: disqualified, Reason: reason}
 	if disqualified && reason == ReasonVersionNotInRange {
-		dispute, note := s.rangeDispute(ctx, c, store, buildDir, goWork.File, axis, rngs)
+		dispute, note := s.rangeDispute(ctx, c, store, buildDir, goWork.File, axis, rngs, others)
 		if dispute != "" {
 			disqualified = false
 			res = DisqualResult{Reason: ReasonInsufficient, RangeDisputed: dispute}
@@ -2788,7 +2788,9 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 			res.CrossCheck = note
 		}
 	}
-	if !disqualified && res.RangeDisputed == "" {
+	// A disputed row cannot be re-cleared here: a version-axis disqualification needs a resolved
+	// version, and fixCommitClears refuses any.
+	if !disqualified {
 		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) &&
 			fixCommitClears(rngs, rangeKnown, axis.Versions, others,
 				func() bool { return headContainsCommit(ctx, buildDir, commit) },

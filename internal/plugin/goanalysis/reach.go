@@ -206,14 +206,13 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 }
 
 // matchOnlyResult answers a MatchOnly request from one govulncheck run: AnalyzerMatched when the run
-// covered the whole build and reported the advisory at any level, since govulncheck reports an
-// advisory only against a module version its database calls affected. A partial run matches nothing
-// and says why in Partiality.
+// reported the advisory at any level, since govulncheck reports an advisory only against a module
+// version its database calls affected. A partial run still reports what it matched, and says it was
+// partial in Partiality, so a caller never reads its silence as an absence.
 func matchOnlyResult(scanned vulnScan, scanToolchain string) plugin.ReachabilityResult {
 	res := plugin.ReachabilityResult{Partiality: plugin.Complete(), ScanToolchain: scanToolchain}
 	if scanned.partial != nil {
 		res.Partiality = plugin.Partial(plugin.PartialReasonToolFailure + ":govulncheck_partial_run")
-		return res
 	}
 	res.AnalyzerMatched = len(scanned.findings) > 0
 	return res

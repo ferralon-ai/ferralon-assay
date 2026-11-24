@@ -6,8 +6,8 @@ import (
 )
 
 // TestMatchOnlyResult: a MatchOnly answer is AnalyzerMatched when govulncheck reported the advisory
-// at any level over the whole build. An osv entry alone is only an advisory govulncheck considered,
-// and a partial run matches nothing and says so.
+// at any level. An osv entry alone is only an advisory govulncheck considered. A partial run still
+// reports its match, and says it was partial.
 func TestMatchOnlyResult(t *testing.T) {
 	const (
 		osv        = `{"osv":{"id":"GO-2099-0001","aliases":["GHSA-xxxx-yyyy-zzzz"]}}`
@@ -26,7 +26,8 @@ func TestMatchOnlyResult(t *testing.T) {
 		{"module-level finding", []string{osv, moduleOnly}, "GO-2099-0001", false, true},
 		{"symbol finding", []string{osv, symbol}, "GO-2099-0001", false, true},
 		{"another advisory's finding", []string{osv, other}, "GO-2099-0001", false, false},
-		{"partial run", []string{osv, symbol}, "GO-2099-0001", true, false},
+		{"partial run with a finding", []string{osv, symbol}, "GO-2099-0001", true, true},
+		{"partial run without one", []string{osv}, "GO-2099-0001", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			scanned, err := parseFindings([]byte(strings.Join(tc.stream, "\n")), tc.vulnID)

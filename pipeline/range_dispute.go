@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -17,10 +18,19 @@ import (
 // consulted after the version axis disqualifies, and only ever withdraws that disqualification:
 // a dispute sends the row on to analysis and asserts nothing about it.
 
-// aliasRangeDispute returns the first alias record that names the adjudicated package with a usable
-// range set placing one of the axis versions inside it. A record that does not name the package, or
+// disputeTarget is one package the version axis judged outside: its identity, the versions the
+// build resolved for it, and the projection the row applied to its own ranges, which an alias
+// record's ranges for the package must pass through too before they are compared.
+type disputeTarget struct {
+	module, coordinate string
+	versions           []string
+	project            func(purl string, rngs []affectedRange) []affectedRange
+}
+
+// aliasRangeDispute returns the first alias record that names a judged package with a usable range
+// set placing one of that package's versions inside it. A record that does not name the package, or
 // whose ranges are absent or unusable, says nothing about the version and disputes nothing.
-func aliasRangeDispute(src AdvisorySource, aliases []string, module, coordinate string, axis versionAxis) (string, bool) {
+func aliasRangeDispute(src AdvisorySource, aliases []string, targets []disputeTarget) (string, bool) {
 	if src == nil {
 		return "", false
 	}
@@ -29,13 +39,18 @@ func aliasRangeDispute(src AdvisorySource, aliases []string, module, coordinate 
 		if !ok {
 			continue
 		}
-		rngs, ok := factsRangesFor(facts, module, coordinate)
-		if !ok {
-			continue
-		}
-		for _, v := range axis.Versions {
-			if outside, known := versionOutsideRanges(v, rngs); !known || !outside {
-				return fmt.Sprintf("advisory %s does not place %s outside its affected range", id, v), true
+		for _, t := range targets {
+			purl, rngs, ok := factsRangesFor(facts, t.module, t.coordinate)
+			if !ok {
+				continue
+			}
+			if t.project != nil {
+				rngs = t.project(purl, rngs)
+			}
+			for _, v := range t.versions {
+				if outside, known := versionOutsideRanges(v, rngs); !known || !outside {
+					return fmt.Sprintf("advisory %s does not place %s outside its affected range", id, v), true
+				}
 			}
 		}
 	}
@@ -44,18 +59,19 @@ func aliasRangeDispute(src AdvisorySource, aliases []string, module, coordinate 
 
 // factsRangesFor projects a record's ranges for one package exactly as advisory_intake projects the
 // row's own: the matching affected_packages elements, unioned, else the scalar block when the record
-// carries none and names the package. ok is false when the record does not name the package or its
-// range set is not wholly usable.
-func factsRangesFor(facts AdvisoryFacts, module, coordinate string) ([]affectedRange, bool) {
+// carries none and names the package. purl is the matched package's. ok is false when the record does
+// not name the package or its range set is not wholly usable.
+func factsRangesFor(facts AdvisoryFacts, module, coordinate string) (string, []affectedRange, bool) {
 	scheme := facts.VersionScheme
 	if scheme == "" {
 		scheme = schemeFromPURL(facts.PURL)
 	}
 	if len(facts.AffectedPackages) == 0 {
 		if !namesPackage(facts.Module, facts.Coordinate, module, coordinate) {
-			return nil, false
+			return "", nil, false
 		}
-		return validAffectedRanges(buildAffectedRanges(facts.AffectedRanges, facts.UpperExclusive, scheme))
+		rngs, ok := validAffectedRanges(buildAffectedRanges(facts.AffectedRanges, facts.UpperExclusive, scheme))
+		return facts.PURL, rngs, ok
 	}
 	pkgs := make([]advisoryAffectedPackage, 0, len(facts.AffectedPackages))
 	for _, p := range facts.AffectedPackages {
@@ -66,14 +82,16 @@ func factsRangesFor(facts AdvisoryFacts, module, coordinate string) ([]affectedR
 		pkgs = append(pkgs, advisoryAffectedPackage{
 			Module:         goModulePath(p.Module, p.Coordinate, pkgScheme),
 			Coordinate:     p.Coordinate,
+			PURL:           p.PURL,
 			AffectedRanges: withDisagreeingLegacyRanges(buildAffectedRanges(p.AffectedRanges, p.UpperExclusive, pkgScheme), p, facts, scheme),
 		})
 	}
 	sel, ok := affectedPackageNamed(pkgs, module, coordinate)
 	if !ok {
-		return nil, false
+		return "", nil, false
 	}
-	return validAffectedRanges(sel.AffectedRanges)
+	rngs, ok := validAffectedRanges(sel.AffectedRanges)
+	return sel.PURL, rngs, ok
 }
 
 func namesPackage(recModule, recCoordinate, module, coordinate string) bool {
@@ -81,43 +99,50 @@ func namesPackage(recModule, recCoordinate, module, coordinate string) bool {
 }
 
 // analyzerRangeDispute asks the language plugin whether its own vulnerability database matches the
-// advisory against the build. A match disputes the range. A plugin that could not answer over the
-// whole build disputes nothing, and the returned note says why, for the row to disclose.
+// advisory against the build. A match disputes the range, over a partial run too: a run that left
+// part of the build out proves no absence, but a match it reports is still the database placing a
+// build module version in range, and the dispute discloses the partial run. A plugin that could not
+// answer, or answered no match over part of the build, disputes nothing, and the returned note says
+// why in a fixed vocabulary, for the row to disclose; a run's own error text, which names the
+// build's directory, goes to the log only.
 func analyzerRangeDispute(ctx context.Context, p plugin.LanguagePlugin, req plugin.ReachabilityRequest) (dispute, note string) {
 	req.MatchOnly = true
 	res, err := p.Reachability(ctx, req)
 	switch {
 	case err != nil:
-		return "", "govulncheck's database could not be consulted: " + firstLine(err.Error())
-	case !res.Partiality.Complete:
-		return "", "govulncheck's database could not be consulted over the whole build: " + strings.Join(res.Partiality.Reasons, ", ")
+		log.Printf("pipeline: disqualification_discovery: %s: govulncheck database cross-check: %v", req.VulnID, err)
+		return "", "govulncheck's database could not be consulted: govulncheck_failed"
+	case res.AnalyzerMatched && !res.Partiality.Complete:
+		return fmt.Sprintf("govulncheck's database matches %s against the build, over a partial run: %s", req.VulnID, strings.Join(res.Partiality.Reasons, ", ")), ""
 	case res.AnalyzerMatched:
 		return fmt.Sprintf("govulncheck's database matches %s against the build", req.VulnID), ""
+	case !res.Partiality.Complete:
+		return "", "govulncheck's database could not be consulted over the whole build: " + strings.Join(res.Partiality.Reasons, ", ")
 	}
 	return "", ""
-}
-
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	const max = 200
-	if r := []rune(s); len(r) > max {
-		return string(r[:max]) + "…"
-	}
-	return s
 }
 
 // rangeDispute withdraws a version-axis disqualification that another source contradicts: an alias
 // record of the same advisory, then the Go analyzer's own database. It returns the contradicting
 // source, or, when the analyzer could not be consulted, a note the cleared row discloses.
-func (s disqualificationDiscovery) rangeDispute(ctx context.Context, c *assessment.Assessment, store artifact.Store, buildDir, goWork string, axis versionAxis, rngs []affectedRange) (dispute, note string) {
+func (s disqualificationDiscovery) rangeDispute(ctx context.Context, c *assessment.Assessment, store artifact.Store, buildDir, goWork string, axis versionAxis, rngs []affectedRange, others []presentRanges) (dispute, note string) {
 	module, coordinate := disputedPackage(store, c.ID)
 	src := s.src
 	if src == nil {
 		src = defaultAdvisorySource()
 	}
-	if d, ok := aliasRangeDispute(src, extractAliases(store, c.ID), module, coordinate, axis); ok {
+	targets := []disputeTarget{{module: module, coordinate: coordinate, versions: axis.Versions,
+		project: func(_ string, r []affectedRange) []affectedRange { return rangesForFloorVersion(store, c.ID, r) }}}
+	for _, o := range others {
+		targets = append(targets, disputeTarget{module: o.Module, coordinate: o.Coordinate, versions: o.Versions,
+			project: func(purl string, r []affectedRange) []affectedRange {
+				if toolchainSubject(purl, r) {
+					return rangesForToolchainFloor(store, c.ID, r)
+				}
+				return r
+			}})
+	}
+	if d, ok := aliasRangeDispute(src, extractAliases(store, c.ID), targets); ok {
 		return d, ""
 	}
 	if s.plugin == nil || s.plugin.Language() != "go" || module == "" || toolchainSubject(admittedPackagePURL(store, c.ID), rngs) {

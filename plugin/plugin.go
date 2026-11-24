@@ -737,8 +737,8 @@ type ReachabilityResult struct {
 	// beside a library-view Refutation, and it never replaces or weakens that view.
 	ProgramView *ProgramView `json:"program_view,omitempty"`
 	// AnalyzerMatched, answering a MatchOnly request, reports that the lane's own vulnerability
-	// database matched VulnID against a module version the build uses, over a run that covered the
-	// whole build. A run that covered only part of it leaves it false and says so in Partiality.
+	// database matched VulnID against a module version the build uses. A run that covered only part
+	// of the build still reports a match, and says it was partial in Partiality.
 	AnalyzerMatched bool `json:"analyzer_matched,omitempty"`
 }
 

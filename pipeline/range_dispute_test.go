@@ -65,7 +65,7 @@ func (p matchPlugin) Reachability(_ context.Context, req plugin.ReachabilityRequ
 	}
 	res := plugin.ReachabilityResult{Partiality: plugin.Complete(), AnalyzerMatched: p.matched}
 	if p.partial {
-		res = plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonToolFailure + ":govulncheck_partial_run")}
+		res.Partiality = plugin.Partial(plugin.PartialReasonToolFailure + ":govulncheck_partial_run")
 	}
 	return res, nil
 }
@@ -147,20 +147,25 @@ func TestRangeDispute_AliasRecord(t *testing.T) {
 	}
 }
 
-// govulncheck's database matching the advisory against the build withdraws the disqualification. A
-// failed or partial run withdraws nothing: the clear stands and says it was not cross-checked.
+// govulncheck's database matching the advisory against the build withdraws the disqualification, over
+// a partial run too, and the dispute says the run was partial. A failed run, or a partial run with no
+// match, withdraws nothing: the clear stands and says it was not cross-checked, in words that do not
+// carry the run's error text.
 func TestRangeDispute_AnalyzerDatabase(t *testing.T) {
 	src := disputeSource{"GHSA-w67g-5rqw-f597": ghsaExcludes, "GO-2026-6278": goExcludes}
 	for _, tc := range []struct {
 		name      string
 		p         matchPlugin
 		disputed  bool
+		wantText  string
 		wantCheck string
 	}{
-		{"matched", matchPlugin{matched: true}, true, ""},
-		{"not matched", matchPlugin{}, false, ""},
-		{"run failed", matchPlugin{matched: true, err: errors.New("govulncheck: build failed\nmore")}, false, "could not be consulted: govulncheck: build failed"},
-		{"partial run", matchPlugin{matched: true, partial: true}, false, "over the whole build"},
+		{"matched", matchPlugin{matched: true}, true, "govulncheck's database matches GO-2026-6278 against the build", ""},
+		{"not matched", matchPlugin{}, false, "", ""},
+		{"run failed", matchPlugin{matched: true, err: errors.New(`govulncheck failed ("/tmp/ferralon-assay-checkout-83412"): exit 1`)}, false, "",
+			"govulncheck's database could not be consulted: govulncheck_failed"},
+		{"partial run, matched", matchPlugin{matched: true, partial: true}, true, "over a partial run: tool_failure:govulncheck_partial_run", ""},
+		{"partial run, not matched", matchPlugin{partial: true}, false, "", "over the whole build: tool_failure:govulncheck_partial_run"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var reqs []plugin.ReachabilityRequest
@@ -171,13 +176,19 @@ func TestRangeDispute_AnalyzerDatabase(t *testing.T) {
 				t.Fatalf("Reachability requests = %+v, want one MatchOnly request for GO-2026-6278", reqs)
 			}
 			if tc.disputed {
-				if res.Disqualified || res.Reason != ReasonInsufficient || !strings.Contains(res.RangeDisputed, "govulncheck") {
-					t.Fatalf("got %+v, want a proceeding row naming govulncheck", res)
+				if res.Disqualified || res.Reason != ReasonInsufficient || !strings.Contains(res.RangeDisputed, tc.wantText) {
+					t.Fatalf("got %+v, want a proceeding row whose dispute contains %q", res, tc.wantText)
+				}
+				if !tc.p.partial && strings.Contains(res.RangeDisputed, "partial") {
+					t.Fatalf("RangeDisputed = %q names a partial run over a complete one", res.RangeDisputed)
 				}
 				return
 			}
 			if !res.Disqualified || res.Reason != ReasonVersionNotInRange || res.RangeDisputed != "" {
 				t.Fatalf("got %+v, want %s standing", res, ReasonVersionNotInRange)
+			}
+			if strings.Contains(res.CrossCheck, "/tmp/") {
+				t.Fatalf("CrossCheck = %q carries the run's error text", res.CrossCheck)
 			}
 			if (tc.wantCheck == "") != (res.CrossCheck == "") || !strings.Contains(res.CrossCheck, tc.wantCheck) {
 				t.Fatalf("CrossCheck = %q, want it to contain %q", res.CrossCheck, tc.wantCheck)
@@ -204,6 +215,77 @@ func TestRangeDispute_AnalyzerConsultedOnlyOnARangeClear(t *testing.T) {
 			runDisputeDisqual(t, "GHSA-w67g-5rqw-f597", src, p, tc.version)
 			if len(reqs) != 0 {
 				t.Fatalf("Reachability requests = %+v, want none", reqs)
+			}
+		})
+	}
+}
+
+// An alias record's ranges pass through the projection the row's own did before they are compared,
+// and are asked about every package the version axis judged, not only the adjudicated one.
+func TestRangeDispute_AliasProjection(t *testing.T) {
+	const caseID = "case-dispute-projection"
+	minimum := ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}
+	exact := ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared}
+	stdlibAlias := func(rngs ...Range) AdvisoryFacts {
+		return AdvisoryFacts{Coordinate: "stdlib", PURL: "pkg:golang/stdlib", VersionScheme: "go-toolchain", AffectedRanges: rngs}
+	}
+	xnetAlias := func(fixed string) AdvisoryFacts {
+		return AdvisoryFacts{Aliases: []string{"GO-2099-0001"}, AffectedPackages: []AffectedPackage{
+			{Module: disputeModule, PURL: "pkg:golang/" + disputeModule, VersionScheme: "gomod", AffectedRanges: []Range{{Fixed: "v1.5.3"}}},
+			{Module: "golang.org/x/net", PURL: "pkg:golang/golang.org/x/net", VersionScheme: "gomod", AffectedRanges: []Range{{Fixed: fixed}}},
+		}}
+	}
+	for _, tc := range []struct {
+		name     string
+		inv      map[string]any
+		adv      map[string]any
+		alias    AdvisoryFacts
+		axis     []string
+		others   []presentRanges
+		disputed bool
+	}{
+		{name: "stdlib floor inside the alias range once its lower bound drops",
+			inv:   map[string]any{"language": "go", "toolchain": minimum},
+			adv:   map[string]any{"coordinate": "stdlib", "purl": "pkg:golang/stdlib", "aliases": []string{"CVE-2099-0001"}},
+			alias: stdlibAlias(Range{Introduced: "1.21.5", Fixed: "1.21.8"}), axis: []string{"1.21.0"}, disputed: true},
+		{name: "stdlib exact version below the alias range",
+			inv:   map[string]any{"language": "go", "toolchain": exact},
+			adv:   map[string]any{"coordinate": "stdlib", "purl": "pkg:golang/stdlib", "aliases": []string{"CVE-2099-0001"}},
+			alias: stdlibAlias(Range{Introduced: "1.21.5", Fixed: "1.21.8"}), axis: []string{"1.21.0"}},
+		{name: "stdlib floor past the alias fix",
+			inv:   map[string]any{"language": "go", "toolchain": minimum},
+			adv:   map[string]any{"coordinate": "stdlib", "purl": "pkg:golang/stdlib", "aliases": []string{"CVE-2099-0001"}},
+			alias: stdlibAlias(Range{Introduced: "1.20.0", Fixed: "1.20.9"}), axis: []string{"1.21.0"}},
+		{name: "another present package inside the alias range",
+			inv:   map[string]any{"language": "go"},
+			adv:   map[string]any{"module": disputeModule, "purl": "pkg:golang/" + disputeModule, "aliases": []string{"CVE-2099-0001"}},
+			alias: xnetAlias("v0.38.0"), axis: []string{"v1.5.3"},
+			others: []presentRanges{{presentPackage: presentPackage{Module: "golang.org/x/net", Versions: []string{"v0.30.0"}, Complete: true}}}, disputed: true},
+		{name: "another present package outside the alias range",
+			inv:   map[string]any{"language": "go"},
+			adv:   map[string]any{"module": disputeModule, "purl": "pkg:golang/" + disputeModule, "aliases": []string{"CVE-2099-0001"}},
+			alias: xnetAlias("v0.20.0"), axis: []string{"v1.5.3"},
+			others: []presentRanges{{presentPackage: presentPackage{Module: "golang.org/x/net", Versions: []string{"v0.30.0"}, Complete: true}}}},
+		{name: "stdlib present beside the adjudicated package, floor inside once its lower bound drops",
+			inv: map[string]any{"language": "go", "toolchain": minimum},
+			adv: map[string]any{"module": disputeModule, "purl": "pkg:golang/" + disputeModule, "aliases": []string{"CVE-2099-0001"}},
+			alias: AdvisoryFacts{AffectedPackages: []AffectedPackage{
+				{Coordinate: "stdlib", PURL: "pkg:golang/stdlib", VersionScheme: "go-toolchain", AffectedRanges: []Range{{Introduced: "1.21.5", Fixed: "1.21.8"}}},
+			}}, axis: []string{"v1.5.3"},
+			others: []presentRanges{{presentPackage: presentPackage{Coordinate: "stdlib", Versions: []string{"1.21.0"}, Complete: true}}}, disputed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			putJSON(t, store, caseID, artifact.TypeInventory, tc.inv)
+			putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, tc.adv)
+			c := &assessment.Assessment{ID: caseID}
+			s := disqualificationDiscovery{src: disputeSource{"CVE-2099-0001": tc.alias}}
+			dispute, note := s.rangeDispute(context.Background(), c, store, "", "", versionAxis{Versions: tc.axis, Complete: true}, nil, tc.others)
+			if note != "" {
+				t.Fatalf("note = %q, want none with no analyzer", note)
+			}
+			if (dispute != "") != tc.disputed {
+				t.Fatalf("dispute = %q, want disputed=%v", dispute, tc.disputed)
 			}
 		})
 	}

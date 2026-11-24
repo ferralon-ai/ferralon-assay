@@ -332,12 +332,12 @@ func reportHTMLLimitLabel(reason string) string {
 	case report.ReasonGoToolchainUnresolved:
 		return "The Go toolchain this codebase builds with could not be determined, so advisories that " +
 			"affect the toolchain itself were not assessed. Declare the exact Go release it builds with in the " +
-			"Action input subject-go-version (CLI -subject-go-version), if it is not yet declared."
+			"Action input subject-go-version (CLI -subject-go-version), or, if one is declared, check that it is a valid Go release."
 	case report.ReasonGoToolchainNotScanned:
 		return "Advisories affecting the Go toolchain were not assessed against this codebase's own " +
-			"toolchain version, so no verdict is reported for them. If the exact Go release it builds with is not yet " +
-			"declared, declare it in the Action input subject-go-version (CLI -subject-go-version) and leave " +
-			"subject-toolchain-reachability on; if it is, the analysis could not run under that release."
+			"toolchain version, so no verdict is reported for them. To get a verdict, declare the exact Go release it builds " +
+			"with, at or above its go.mod minimum, in the Action input subject-go-version (CLI -subject-go-version) and " +
+			"leave subject-toolchain-reachability on; with both in place, the analysis could not run under that release."
 	case report.ReasonAnalysisDidNotRun:
 		return "The analysis steps that would locate this advisory's code in what this repository " +
 			"builds did not run, so no verdict is reported for it."

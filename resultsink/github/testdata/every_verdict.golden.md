@@ -22,7 +22,7 @@
 | Scan didn't complete | 2 | Fix the scan (a tool failed, ran out of time or could not read dependencies), then run it again. | `scan_cut_short` ×2 |
 | Missing build context | 1 | Provide the missing build context (a build graph, a lockfile or pinned versions), then run the scan again. | `package_version_unresolved` ×1 |
 | Engine can't decide yet | 1 | Keep for review: the analysis ran but cannot rule this advisory in or out yet. | `refutation_withheld` ×1 |
-| Depends on toolchain or configuration | 1 | Unless it is already declared, declare the exact Go release your repository builds with (Action input subject-go-version, CLI -subject-go-version), then run the scan again. | `go_toolchain_not_scanned` ×1 |
+| Depends on toolchain or configuration | 1 | Check that the exact Go release your repository builds with is declared (Action input subject-go-version, CLI -subject-go-version) and that subject-toolchain-reachability is on, then run the scan again. | `go_toolchain_not_scanned` ×1 |
 | Other (needs review) | 1 | Needs review: this reason code is not grouped yet. | `some_new_reason` ×1 |
 
 ### Call path found

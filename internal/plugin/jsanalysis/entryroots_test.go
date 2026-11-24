@@ -251,3 +251,21 @@ func TestReachability_EntryOverrideUnevaluatedIsNotUnmatched(t *testing.T) {
 		t.Errorf("unmatched %q denied %q for selectors that were never evaluated", rec.Unmatched, rec.Denied)
 	}
 }
+
+// TestReachability_DefaultRunWithoutClosureRecordsItsStatement: a run with no override and no
+// dependency code read still states the default, with nothing inferred, denied or unmatched, so a
+// stored record of another statement is never carried over it.
+func TestReachability_DefaultRunWithoutClosureRecordsItsStatement(t *testing.T) {
+	f, _ := entryFixture(t)
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: f.dir, Symbols: []string{"npm:idle@1.0.0#bad"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := res.EntryRoots
+	if rec == nil || rec.Input != plugin.LibraryEntrypointsAuto || rec.Source != plugin.LibraryEntrypointsSourceAuto {
+		t.Fatalf("record = %+v, want the default statement recorded as auto", rec)
+	}
+	if len(rec.Inferred)+len(rec.Denied)+len(rec.Unmatched) != 0 {
+		t.Errorf("inferred %v denied %v unmatched %v for a run that read no closure", rec.Inferred, rec.Denied, rec.Unmatched)
+	}
+}

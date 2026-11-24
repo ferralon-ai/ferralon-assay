@@ -42,8 +42,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	switch {
 	case closure != nil && closure.Entry != nil:
 		entryRoots = closure.Entry
-	case override != nil:
-		// No closure was read to apply the statement to; it is recorded all the same.
+	default:
+		// No closure was read to apply the statement to; it is recorded all the same, default or
+		// not, so a stored record of another statement is never carried over it.
 		entryRoots = unlistedRecord(override)
 	}
 	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: req.BuildDir})

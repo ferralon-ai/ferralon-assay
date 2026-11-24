@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -58,10 +57,10 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 			return nil, laneRefusal(lane, why, o.Input)
 		}
 		if lane == plugin.EntryLaneJS {
-			if statesDefault(o) {
+			if plugin.StatesDefault(o) {
 				continue
 			}
-			if ko, ok := o.Kinds[plugin.EntryKindModule]; ok && !statesDefault(plugin.EntryOverride{KindOverride: ko}) {
+			if ko, ok := o.Kinds[plugin.EntryKindModule]; ok && !plugin.StatesDefault(plugin.EntryOverride{KindOverride: ko}) {
 				return nil, fmt.Errorf("entrypoints: js:module cannot be overridden: first-party modules always stay entry points, and only bin and script roots can be removed (%q)", o.Input)
 			}
 			if why := plugin.RemovalOnlyRefusal(o, plugin.JSRemovableKinds, plugin.JSRemovableSelectors...); why != "" {
@@ -70,7 +69,7 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 			continue
 		}
 		if lane != plugin.EntryLaneGo {
-			if statesDefault(o) {
+			if plugin.StatesDefault(o) {
 				continue
 			}
 			return nil, laneRefusal(lane, "", o.Input)
@@ -89,46 +88,10 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 // lane cannot honour.
 func JSEntryOverride(overrides map[string]plugin.EntryOverride) *plugin.EntryOverride {
 	o, ok := overrides[plugin.EntryLaneJS]
-	if !ok || o.Input == plugin.LibraryEntrypointsAuto || statesDefault(o) {
+	if !ok || o.Input == plugin.LibraryEntrypointsAuto || plugin.StatesDefault(o) {
 		return nil
 	}
 	return &o
-}
-
-// SameEntryOverride reports whether two statements of one lane's override say the same thing: the
-// same scopes, kinds and selectors. Input is the caller's spelling and does not count, so the same
-// denies in another order are one statement; a nil override and one that states the default are one.
-func SameEntryOverride(a, b *plugin.EntryOverride) bool {
-	norm := func(o *plugin.EntryOverride) string {
-		if o == nil || statesDefault(*o) {
-			return ""
-		}
-		c := *o
-		c.Input = ""
-		out, err := json.Marshal(c)
-		if err != nil {
-			return "\x00" + c.Lane
-		}
-		return string(out)
-	}
-	return norm(a) == norm(b)
-}
-
-// statesDefault reports whether an override asks for nothing: auto at the lane scope and at every
-// kind scope, with no path selected or denied.
-func statesDefault(o plugin.EntryOverride) bool {
-	plain := func(k plugin.KindOverride) bool {
-		return (k.Mode == "" || k.Mode == plugin.LibraryEntrypointsAuto) && len(k.Include) == 0 && len(k.Exclude) == 0
-	}
-	if !plain(o.KindOverride) {
-		return false
-	}
-	for _, k := range o.Kinds {
-		if !plain(k) {
-			return false
-		}
-	}
-	return true
 }
 
 func laneRefusal(lane, why, input string) error {
@@ -154,7 +117,7 @@ func libraryStatement(o plugin.EntryOverride) (le *plugin.LibraryEntrypoints, wh
 		return nil, onlyLibrary
 	}
 	for kind, ko := range o.Kinds {
-		if kind != plugin.EntryKindLibrary && !statesDefault(plugin.EntryOverride{KindOverride: ko}) {
+		if kind != plugin.EntryKindLibrary && !plugin.StatesDefault(plugin.EntryOverride{KindOverride: ko}) {
 			return nil, onlyLibrary
 		}
 	}

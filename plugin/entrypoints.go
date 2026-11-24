@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"path"
 	"slices"
@@ -650,4 +651,40 @@ func EntryRootRecordOf(r ResolvedLibraryEntrypoints) (EntryRootRecord, bool) {
 		Effective: map[string][]string{EntryKindLibrary: append([]string{}, r.Packages...)},
 		Unmatched: slices.Clone(r.Unmatched),
 	}, true
+}
+
+// SameEntryOverride reports whether two statements of one lane's override say the same thing: the
+// same scopes, kinds and selectors. Input is the caller's spelling and does not count, so the same
+// denies in another order are one statement; a nil override and one that states the default are one.
+func SameEntryOverride(a, b *EntryOverride) bool {
+	norm := func(o *EntryOverride) string {
+		if o == nil || StatesDefault(*o) {
+			return ""
+		}
+		c := *o
+		c.Input = ""
+		out, err := json.Marshal(c)
+		if err != nil {
+			return "\x00" + c.Lane
+		}
+		return string(out)
+	}
+	return norm(a) == norm(b)
+}
+
+// StatesDefault reports whether an override asks for nothing: auto at the lane scope and at every
+// kind scope, with no path selected or denied.
+func StatesDefault(o EntryOverride) bool {
+	plain := func(k KindOverride) bool {
+		return (k.Mode == "" || k.Mode == LibraryEntrypointsAuto) && len(k.Include) == 0 && len(k.Exclude) == 0
+	}
+	if !plain(o.KindOverride) {
+		return false
+	}
+	for _, k := range o.Kinds {
+		if !plain(k) {
+			return false
+		}
+	}
+	return true
 }

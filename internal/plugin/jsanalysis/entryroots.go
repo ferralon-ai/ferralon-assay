@@ -149,11 +149,12 @@ func kindOverrides(o plugin.EntryOverride) []plugin.KindOverride {
 	return out
 }
 
-// unlistedRecord is the record of a run that states an override and has no closure to apply it to
-// (no dependency code was read, or the read ran out): nothing was inferred, and no "!" selector was
-// evaluated. They are left out of Unmatched, which says a selector matched nothing the lane holds,
-// and out of Denied: a record that said so would tell the customer a selector was wrong when it was
-// never tried, and Inferred stays absent: the lane reported no guess. The statement is recorded all the same, so a later run reads it.
+// unlistedRecord is the record of a run with no closure to apply its statement to (no dependency
+// code was read, or the read ran out); a nil override is the default statement. Nothing was
+// inferred and no "!" selector was evaluated, so the record leaves out Unmatched, which says a
+// selector matched nothing the lane holds, and Denied, which would tell the customer a selector was
+// wrong when it was never tried. Inferred stays absent: the lane reported no guess. The statement
+// is recorded all the same, so a later run reads it.
 func unlistedRecord(o *plugin.EntryOverride) *plugin.EntryRootRecord {
 	rec := newEntryTrack(o).record()
 	rec.Unmatched, rec.Denied, rec.Inferred = nil, nil, nil

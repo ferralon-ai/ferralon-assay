@@ -606,7 +606,7 @@ func jsRestated(stored *report.Report, opts []pipeline.AssessOption) bool {
 			was = &o
 		}
 	}
-	return !pipeline.SameEntryOverride(was, pipeline.JSStatementOf(opts...))
+	return !plugin.SameEntryOverride(was, pipeline.JSStatementOf(opts...))
 }
 
 // restatedRetry is the stored rows a cve-watch run assesses again because the entry-point statement

@@ -77,19 +77,19 @@ const cutShortCountSep = " advisories were not assessed: "
 
 // carriedSentence matches the sentence a cut-short note appends when advisories were carried from
 // the previous run, so the stop's cause can be read back without it.
-var carriedSentence = regexp.MustCompile(`\. \d+ advisor(?:y|ies) carried from the previous run and assessed first\.$`)
+var carriedSentence = regexp.MustCompile(`\. \d+ advisor(?:y|ies) carried from the previous run (?:was|were) assessed first\.$`)
 
 // cutShortNote is the one scan-level disclosure for a Report holding cut rows of its total
 // unassessed. Its detail carries the stop's cause, which names how to give the scan more time,
-// and, when carried is positive, how many advisories the scan took from the previous run's cut
-// rows and assessed first.
+// and, when carried is positive, how many advisories from the previous run's cut rows the scan
+// assessed first.
 func cutShortNote(cut, total int, cause string, carried int) report.PartialityNote {
 	detail := fmt.Sprintf("%d of %d%s%s", cut, total, cutShortCountSep, cause)
 	switch {
 	case carried == 1:
-		detail += ". 1 advisory carried from the previous run and assessed first."
+		detail += ". 1 advisory carried from the previous run was assessed first."
 	case carried > 1:
-		detail += fmt.Sprintf(". %d advisories carried from the previous run and assessed first.", carried)
+		detail += fmt.Sprintf(". %d advisories carried from the previous run were assessed first.", carried)
 	}
 	return report.PartialityNote{Reason: report.ReasonScanCutShort, Detail: detail}
 }

@@ -116,8 +116,8 @@ type AdmissionResult struct {
 	Admitted []assessment.VulnRef
 	Deferred []string
 	Skipped  []string
-	// Carried counts the admitted advisories that were carried from the previous run.
-	Carried int
+	// Carried is parallel to Admitted: true for an advisory carried from the previous run.
+	Carried []bool
 }
 
 // admit is the admission gate: it maps a band to a scheduling decision. It is the whole
@@ -181,11 +181,10 @@ func admitAdvisories(scheduled []ScheduledAdvisory) AdmissionResult {
 		return admit0[a].idx < admit0[b].idx
 	})
 	res.Admitted = make([]assessment.VulnRef, 0, len(admit0))
+	res.Carried = make([]bool, 0, len(admit0))
 	for _, r := range admit0 {
 		res.Admitted = append(res.Admitted, r.vuln)
-		if r.carried {
-			res.Carried++
-		}
+		res.Carried = append(res.Carried, r.carried)
 	}
 	return res
 }

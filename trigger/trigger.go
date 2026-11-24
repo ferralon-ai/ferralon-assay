@@ -237,7 +237,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 
 	// cut and rows count the rows the scan stopped before assessing and all rows, sibling
 	// instances included, so the note's count is the number of scan_cut_short rows.
-	cut, rows := 0, len(admitted.Admitted)
+	cut, rows, carriedAssessed := 0, len(admitted.Admitted), 0
 	var assessed []report.Advisory
 	passes := newAdvisoryPasses(analysis, requestsFor(admitted.Admitted, req.Codebase), assessOpts)
 	defer passes.close()
@@ -256,6 +256,9 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 			b.AddFinding(assessFailureFinding(adv, err))
 			b.AddPartiality(assessFailureNote(adv, err))
 			continue
+		}
+		if admitted.Carried[i] {
+			carriedAssessed++
 		}
 		// Coordinate-specific advisory resolution, RETAINED unchanged (§4.1 / C5): advisoryFromArtifacts
 		// still resolves the advisory's own package for the finding, but it no longer DEFINES the SBOM —
@@ -284,7 +287,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 		b.AddPartiality(sibNotes...)
 	}
 	if cut > 0 {
-		b.AddPartiality(cutShortNote(cut, rows, stopCause(analysis), admitted.Carried))
+		b.AddPartiality(cutShortNote(cut, rows, stopCause(analysis), carriedAssessed))
 	}
 
 	b.WithProvenance(withSignals(report.Provenance{
@@ -568,7 +571,7 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	// A baseline that stopped before its inventory resolved leaves every row cut, and the SBOM
 	// cve-watch would assess them against is not that build's; the next baseline clears them.
 	if !inventoryCutShort(state.Report.Partiality) {
-		retry = cutShortRetry(state.Report, newIDs, retry)
+		retry = cutShortRetry(state.Report, newIDs, retry, req.Advisories)
 	}
 	if restated(state.Report, req.AssessOptions) {
 		retry = restatedRetry(state.Report, newIDs, retry)

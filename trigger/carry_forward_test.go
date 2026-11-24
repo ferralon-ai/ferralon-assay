@@ -178,7 +178,7 @@ func TestRunBaseline_CarriedNote(t *testing.T) {
 	if want := []string{"GO-T-2", "GO-T-3"}; !slices.Equal(got, want) {
 		t.Fatalf("assessed %v, want %v", got, want)
 	}
-	const want = "2 of 3 advisories were not assessed: test stop. 2 advisories carried from the previous run and assessed first."
+	const want = "2 of 3 advisories were not assessed: test stop. 1 advisory carried from the previous run was assessed first."
 	notes := cutShortNotes(rep)
 	if len(notes) != 1 || notes[0].Detail != want {
 		t.Fatalf("notes = %+v, want one %q", notes, want)
@@ -197,14 +197,29 @@ func TestRunBaseline_CarriedNote(t *testing.T) {
 	}
 }
 
+// TestRunBaseline_StopAtFirstCarriedLeavesNoCarriedSentence: no carried advisory completed, so the
+// note does not claim any was assessed.
+func TestRunBaseline_StopAtFirstCarriedLeavesNoCarriedSentence(t *testing.T) {
+	store := storedCorpus(cutShortCorpus[:1], cutShortCorpus[1:])
+	got, rep := carryRun(t, store, cutShortCorpus, nil, nil, "GO-T-2")
+	if want := []string{"GO-T-2"}; !slices.Equal(got, want) {
+		t.Fatalf("assessed %v, want %v", got, want)
+	}
+	const want = "3 of 3 advisories were not assessed: test stop"
+	notes := cutShortNotes(rep)
+	if len(notes) != 1 || notes[0].Detail != want {
+		t.Fatalf("notes = %+v, want one %q", notes, want)
+	}
+}
+
 func TestCutShortNote_Carried(t *testing.T) {
 	cases := []struct {
 		carried int
 		want    string
 	}{
 		{0, "1 of 4 advisories were not assessed: why"},
-		{1, "1 of 4 advisories were not assessed: why. 1 advisory carried from the previous run and assessed first."},
-		{3, "1 of 4 advisories were not assessed: why. 3 advisories carried from the previous run and assessed first."},
+		{1, "1 of 4 advisories were not assessed: why. 1 advisory carried from the previous run was assessed first."},
+		{3, "1 of 4 advisories were not assessed: why. 3 advisories carried from the previous run were assessed first."},
 	}
 	for _, tc := range cases {
 		n := cutShortNote(1, 4, "why", tc.carried)
@@ -248,6 +263,47 @@ func TestCVEWatch_RetriesStoredCutShortRows(t *testing.T) {
 	if len(cutIDs(res.Report)) != 0 || len(cutShortNotes(res.Report)) != 0 {
 		t.Errorf("cut rows %v, notes %+v remain after the retry", cutIDs(res.Report), cutShortNotes(res.Report))
 	}
+	// A retried row is the row a completed baseline gives, verdict and package included.
+	_, full := carryRun(t, &memStore{}, cutShortCorpus, nil, nil, "never")
+	want := rowsByID(full)
+	for _, id := range []string{"GO-T-2", "GO-T-3"} {
+		got := rowsByID(res.Report)[id]
+		if len(got) != 1 || len(want[id]) != 1 || !reflect.DeepEqual(got[0], want[id][0]) {
+			t.Errorf("%s: cve-watch row %+v, baseline row %+v", id, got, want[id])
+		}
+	}
+}
+
+// TestCVEWatch_InventoryCutLeavesCutRows: a stored Report whose inventory the scan stopped before
+// resolving keeps its cut rows for the next baseline; cve-watch assesses none of them.
+func TestCVEWatch_InventoryCutLeavesCutRows(t *testing.T) {
+	store := storedCorpus(cutShortCorpus[:1], cutShortCorpus[1:])
+	store.state.Cursor = "GO-T-1"
+	rep := *store.state.Report
+	rep.Partiality = append(slices.Clone(rep.Partiality), report.PartialityNote{
+		Reason: report.ReasonScanCutShort,
+		Detail: inventoryLimitDetail + ": the scan stopped before the dependency inventory was resolved",
+	})
+	store.state.Report = &rep
+	opts, analysis, calls := recordingStoppingOptions(t, "never", stopAndWait)
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: opts,
+		Analysis:      analysis,
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if !res.Heartbeat {
+		t.Errorf("heartbeat = false; want one, the cut rows wait for a baseline")
+	}
+	if got := calls.order(); len(got) != 0 {
+		t.Errorf("assessed %v, want none", got)
+	}
+	if got := cutIDs(store.state.Report); len(got) != 2 {
+		t.Errorf("stored cut rows = %v, want both kept", got)
+	}
 }
 
 // TestCutShortRetry: each stored cut row once, none for a row a new OSV advisory or an earlier
@@ -255,12 +311,36 @@ func TestCVEWatch_RetriesStoredCutShortRows(t *testing.T) {
 func TestCutShortRetry(t *testing.T) {
 	prior := storedCorpus(cutShortCorpus[:1], []assessment.VulnRef{{ID: "GO-T-2", Source: osvSource}, {ID: "GO-T-3", Source: "corpus"}}).state.Report
 	already := []report.AdvisoryFinding{{Advisory: report.Advisory{ID: "GO-T-3", Source: "corpus"}}}
-	got := retriedIDs(cutShortRetry(prior, []string{"GO-T-2"}, already))
+	got := retriedIDs(cutShortRetry(prior, []string{"GO-T-2"}, already, nil))
 	if want := []string{"GO-T-3"}; !slices.Equal(got, want) {
 		t.Errorf("retried %v, want %v (GO-T-2 is a new advisory)", got, want)
 	}
-	if rows := cutShortRetry(prior, nil, nil); len(rows) != 2 {
+	if rows := cutShortRetry(prior, nil, nil, nil); len(rows) != 2 {
 		t.Errorf("retried %d rows, want 2", len(rows))
+	}
+}
+
+// TestCutShortRetry_SkipsSiblingInstanceRows: a cut row whose key a completed row also holds is a
+// sibling instance of that advisory; cve-watch cannot assess it, so it retries none.
+func TestCutShortRetry_SkipsSiblingInstanceRows(t *testing.T) {
+	prior := storedCorpus(cutShortCorpus[:2], []assessment.VulnRef{cutShortCorpus[2]}).state.Report
+	prior.Advisories = append(prior.Advisories, cutShortFinding(cutShortCorpus[0]))
+	got := retriedIDs(cutShortRetry(prior, nil, nil, nil))
+	if want := []string{"GO-T-3"}; !slices.Equal(got, want) {
+		t.Errorf("retried %v, want %v", got, want)
+	}
+}
+
+// TestCutShortRetry_WorkSet: a cut row whose advisory left the work set is dropped, not retried;
+// with no work set, every cut row is retried.
+func TestCutShortRetry_WorkSet(t *testing.T) {
+	prior := storedCorpus(nil, cutShortCorpus).state.Report
+	got := retriedIDs(cutShortRetry(prior, nil, nil, cutShortCorpus[1:]))
+	if want := []string{"GO-T-2", "GO-T-3"}; !slices.Equal(got, want) {
+		t.Errorf("retried %v, want %v", got, want)
+	}
+	if got := retriedIDs(cutShortRetry(prior, nil, nil, nil)); len(got) != 3 {
+		t.Errorf("retried %v with no work set, want all three", got)
 	}
 }
 
@@ -269,8 +349,8 @@ func TestCutShortRetry(t *testing.T) {
 func TestCarryIsSchedulerOnly(t *testing.T) {
 	scheduled := withCarried(scheduleFor(cutShortCorpus, nil), storedCorpus(nil, cutShortCorpus[2:]).state.Report)
 	res := admitAdvisories(scheduled)
-	if res.Carried != 1 || res.Admitted[0] != cutShortCorpus[2] {
-		t.Fatalf("admitted %+v, carried %d", res.Admitted, res.Carried)
+	if !slices.Equal(res.Carried, []bool{true, false, false}) || res.Admitted[0] != cutShortCorpus[2] {
+		t.Fatalf("admitted %+v, carried %v", res.Admitted, res.Carried)
 	}
 
 	plainStore := &memStore{}

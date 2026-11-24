@@ -620,7 +620,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		depUncredCache: fs.String("dependency-uncredentialed-cache", "", "a directory apart from -dependency-cache that only ever holds tarballs from a registry with no auth entry in the npm configuration, fetched without presenting a credential; each is linked into -dependency-cache, which the scan reads. A tarball from a registry with an auth entry is never written here, and one found here is removed. Set it to persist dependency tarballs where a credentialed one must not go. Overrides "+envDependencyUncredCache+" (default: unset, one directory)"),
 		depNPMRCEnv:    fs.String("dependency-npmrc-env", "", "comma-separated environment variables a .npmrc ${VAR} reference may read, beyond NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY, NODE_AUTH_TOKEN and NPM_TOKEN; any other reference reads as unset. Overrides "+envDependencyNPMRCEnv),
 		depTimeout:     fs.String("dependency-timeout", "", "how long dependency acquisition may run before the packages still pending are recorded unread. Overrides "+envDependencyTimeout+" (default: 15m)"),
-		scanTimeoutRaw: fs.String("scan-timeout", "", "how long the whole scan may run, counted from start. Analysis stops early enough to publish the report, and every advisory not yet assessed is reported as not assessed. Overrides "+envScanTimeout+" (default: no limit)"),
+		scanTimeoutRaw: fs.String("scan-timeout", "", "how long the whole scan may run, counted from start. Analysis stops early enough to publish the report, and every advisory not yet assessed is reported as not assessed. 0 sets no limit. Overrides "+envScanTimeout+" (default: no limit)"),
 	}
 }
 

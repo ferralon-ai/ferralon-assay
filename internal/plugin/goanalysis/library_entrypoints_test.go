@@ -35,6 +35,12 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 		imports:  map[string][]string{"stdlib": {"encoding/xml"}},
 	}
 	const module = "which reach example.com/vulnmod"
+	// app is a build that ships a program: a main under cmd/ that imports pkg/x.
+	app := map[string]string{
+		"cmd/app/main.go": "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+		"pkg/x/x.go":      reaches("x"),
+	}
+	const appAssumption = `library-entrypoints "auto": treated as an application: 1 main package; no code outside the build imports example.com/m/pkg/x, which reach example.com/vulnmod; library mode: go:library=.`
 	cases := []struct {
 		name       string
 		input      string
@@ -87,7 +93,43 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 		{"auto, a library under cmd reaches the module", "auto", map[string]string{
 			"cmd/tool/flags/flags.go": reaches("flags"),
 			"cmd/tool/main.go":        "package main\n\nimport \"example.com/m/cmd/tool/flags\"\n\nfunc main() { _ = flags.Get() }\n",
-		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceAuto, []string{}, nil},
+		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, an application whose library package reaches the module", "auto", app,
+			moduleFinding, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"nothing stated, an application whose library package reaches the module", "", app,
+			moduleFinding, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, an application with two mains", "auto", merge(app, map[string]string{
+			"cmd/gen/main.go": "package main\n\nfunc main() {}\n",
+		}), moduleFinding, false, `treated as an application: 2 main packages; no code outside the build imports example.com/m/pkg/x, ` + module,
+			plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, an application whose library packages do not reach the module", "auto", map[string]string{
+			"cmd/app/main.go": "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":      clean("x"),
+		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, a main only under examples", "auto", map[string]string{
+			"examples/demo/main.go": "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+			"pkg/x/x.go":            reaches("x"),
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}, nil},
+		{"the whole tree as library, an application", ".", app,
+			moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"a path list naming the reaching package, an application", "pkg/x", app,
+			moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"auto plus a path, an application", "auto,pkg/x", app,
+			moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"auto plus a path to another package, an application", "auto,pkg/y", merge(app, map[string]string{
+			"pkg/y/y.go": clean("y"),
+		}), moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x", "example.com/m/pkg/y"}, nil},
+		{"an exclusion of another package, an application", "!pkg/y", merge(app, map[string]string{
+			"pkg/y/y.go": clean("y"),
+		}), moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"none, an application", "none", app,
+			moduleFinding, false, `library-entrypoints "none": no code outside the build imports example.com/m/pkg/x, ` + module,
+			plugin.LibraryEntrypointsSourceDeclared, []string{}, nil},
+		{"auto, an application whose load does not type-check", "auto", map[string]string{
+			"cmd/app/main.go": "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":      reaches("x"),
+			"pkg/y/y.go":      "package y\n\nvar N int = \"x\"\n",
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x", "example.com/m/pkg/y"}, nil},
 		{"auto, an example reaches the module", "auto", map[string]string{
 			"examples/basic/basic.go": reaches("basic"),
 		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceAuto, []string{}, nil},

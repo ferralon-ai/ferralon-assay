@@ -14,7 +14,8 @@ import (
 const entrypointsShown = 5
 
 // entrypointLines renders one line per lane that reported its entry points (report.Entrypoints):
-// whether the set was inferred or declared, the roots it analysed by kind, and any declared
+// whether the set was inferred, inferred as an application's (with the statement that reads the build
+// as a library instead), or declared, the roots it analysed by kind, and any declared
 // selector that matched nothing. Under an override it also shows what the lane inferred before the
 // override (only the kinds the override changed) and the "!" selectors that removed something.
 // Returns nil when no lane reported a set. Every name comes from the scanned repository or the
@@ -28,6 +29,8 @@ func entrypointLines(r report.Report) []string {
 		switch {
 		case e.Source == plugin.LibraryEntrypointsSourceDeclared:
 			fmt.Fprintf(&b, "declared, resolved as %s", mdCode(e.Input))
+		case e.Source == plugin.LibraryEntrypointsSourceMains:
+			b.WriteString("treated as an application, nothing declared: its main packages are the entry points")
 		case unlisted:
 			b.WriteString("nothing declared")
 		default:
@@ -76,6 +79,9 @@ func entrypointLines(r report.Report) []string {
 		}
 		if len(excludes) > 0 {
 			fmt.Fprintf(&b, "; excluded nothing: %s", strings.Join(excludes, ", "))
+		}
+		if e.Source == plugin.LibraryEntrypointsSourceMains {
+			b.WriteString("; library mode: " + mdCode("go:library=."))
 		}
 		b.WriteString(".")
 		out = append(out, b.String())

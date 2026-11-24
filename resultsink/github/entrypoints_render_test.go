@@ -44,6 +44,8 @@ func TestBothSurfaces_Entrypoints(t *testing.T) {
 			want: []string{"; matched nothing, so verdicts resting on it are withheld: `example.com/m/gone`; excluded nothing: `!example.com/m/old`."}},
 		{name: "metacharacters stay literal", sets: []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "[x](https://example.invalid) a`b", Packages: []string{"<img src=x>"}}},
 			want: []string{"``[x](https://example.invalid) a`b``", "`<img src=x>`"}},
+		{name: "an application read from its mains", sets: []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceMains, Input: "auto", Packages: []string{}}},
+			want: []string{"go: treated as an application, nothing declared: its main packages are the entry points; library packages callable from outside the build: none; library mode: `go:library=.`."}},
 		{name: "no lane reported a set", none: true},
 	}
 	for _, tc := range tests {
@@ -117,6 +119,13 @@ func TestBothSurfaces_EntrypointsOverride(t *testing.T) {
 			Denied:    []string{"!js:bin=bin:storybook"},
 		}, want: "js: declared, resolved as `!js:bin=bin:storybook`; bin (1): `bin:build`; script (1): `script:test`; " +
 			"inferred before the override: bin (2): `bin:build`, `bin:storybook`; removed by: `!js:bin=bin:storybook`."},
+		{name: "an application read from its mains", rec: plugin.EntryRootRecord{
+			Lane: "go", Source: plugin.LibraryEntrypointsSourceMains, Input: "auto",
+			Effective: map[string][]string{goLib: {}},
+			Inferred: map[string][]string{goLib: {"example.com/m/lib"},
+				plugin.EntryKindMain: {"example.com/m/cmd/app"}},
+		}, want: "go: treated as an application, nothing declared: its main packages are the entry points; " +
+			"library packages callable from outside the build: none; library mode: `go:library=.`."},
 		{name: "unlisted record, nothing declared", rec: plugin.EntryRootRecord{
 			Lane: "js", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto",
 			Effective: map[string][]string{"bin": {}, "script": {}},

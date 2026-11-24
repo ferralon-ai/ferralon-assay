@@ -25,6 +25,11 @@ const (
 	LibraryEntrypointsSourceAuto = "auto"
 	// LibraryEntrypointsSourceDeclared is a set that rests on the caller's declaration.
 	LibraryEntrypointsSourceDeclared = "declared"
+	// LibraryEntrypointsSourceMains is a set the lane inferred with nothing declared for a build it
+	// reads as an application: the build ships main packages, they are the entry points, and no
+	// library package is one. The statement that reads the build as a library instead is "." under
+	// paths (go:library=.).
+	LibraryEntrypointsSourceMains = "mains"
 )
 
 // LibraryEntrypoints is the caller's statement of which of the build's packages code outside the
@@ -145,7 +150,8 @@ type ResolvedLibraryEntrypoints struct {
 	// Ecosystem is the PURL type of the packages the lane resolved ("golang", "maven", "nuget"); a
 	// report holds one record per ecosystem.
 	Ecosystem string `json:"ecosystem"`
-	// Source is LibraryEntrypointsSourceAuto or LibraryEntrypointsSourceDeclared.
+	// Source is LibraryEntrypointsSourceAuto, LibraryEntrypointsSourceMains or
+	// LibraryEntrypointsSourceDeclared.
 	Source string `json:"source"`
 	// Input is the library-entrypoints statement the set was resolved from, in the input's syntax.
 	Input string `json:"input"`

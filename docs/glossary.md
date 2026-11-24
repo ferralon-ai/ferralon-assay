@@ -549,9 +549,10 @@ declares partiality instead of hiding it. *Source:* `README.md:482`, `README.md:
 
 <a id="library-entrypoints"></a>**library entry points / library escape** — In Go, the packages code
 outside the build may import (`entrypoints` clause `go:library=`; `library-entrypoints` is its alias and
-takes `auto`, `none`, or a list with `!path` exclusions). When one of them reaches the advisory's
-vulnerable package, the refutation is withheld (`library_escape`) and the row is `undetermined` with
-`refutation_withheld`. *Source:* `docs/operator-guide.md:25`, `docs/capabilities/go.md:200`. *See also:*
+takes `auto`, `none`, or a list with `!path` exclusions). A bare `auto` on a fully loaded build that
+ships a `main` package reads it as an application and takes none; `go:library=.` reads it as a library.
+When one of them reaches the advisory's vulnerable package, the refutation is withheld
+(`library_escape`) and the row is `undetermined` with `refutation_withheld`. *Source:* `docs/operator-guide.md:25`, `docs/capabilities/go.md:200`. *See also:*
 [entrypoints](#entrypoints), [withhold](#withhold).
 
 <a id="link-to-console"></a>**`link-to-console` (Ferralon console)** — The only switch that decides

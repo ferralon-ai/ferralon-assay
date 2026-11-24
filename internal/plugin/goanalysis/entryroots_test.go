@@ -14,7 +14,9 @@ import (
 
 // TestReconciledResult_EntryRootsOnEveryAssessment: a Go advisory the call graph reaches holds no
 // refutation candidate, and its result still records the resolved set and the inferred and denied
-// entry points, as an advisory with a refutation does. library_entrypoints keeps its shape.
+// entry points, as an advisory with a refutation does. library_entrypoints keeps its shape. The build
+// ships cmd/tool, so auto reads it as an application: its library packages are inferred but not entry
+// points.
 func TestReconciledResult_EntryRootsOnEveryAssessment(t *testing.T) {
 	files := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
@@ -45,8 +47,7 @@ func TestReconciledResult_EntryRootsOnEveryAssessment(t *testing.T) {
 		denied    []string
 		unmatched []string
 	}{
-		{"a reachable path, auto", "auto", reached, false, plugin.LibraryEntrypointsSourceAuto,
-			[]string{"example.com/m/pkg/api", "example.com/m/pkg/lib"}, nil, nil},
+		{"a reachable path, auto", "auto", reached, false, plugin.LibraryEntrypointsSourceMains, []string{}, nil, nil},
 		{"a reachable path, a declared deny", "!pkg/lib", reached, false, plugin.LibraryEntrypointsSourceDeclared,
 			[]string{"example.com/m/pkg/api"}, []string{"!pkg/lib"}, nil},
 		{"a reachable path, a deny that removes nothing inferred", "!test", reached, false, plugin.LibraryEntrypointsSourceDeclared,
@@ -54,8 +55,7 @@ func TestReconciledResult_EntryRootsOnEveryAssessment(t *testing.T) {
 		{"a reachable path, a deny of a path the build does not hold", "!nope", reached, false, plugin.LibraryEntrypointsSourceDeclared,
 			[]string{"example.com/m/pkg/api", "example.com/m/pkg/lib"}, nil, []string{"!nope"}},
 		{"a reachable path, none", "none", reached, false, plugin.LibraryEntrypointsSourceDeclared, []string{}, nil, nil},
-		{"a refutation candidate, auto", "auto", module, true, plugin.LibraryEntrypointsSourceAuto,
-			[]string{"example.com/m/pkg/api", "example.com/m/pkg/lib"}, nil, nil},
+		{"a refutation candidate, auto", "auto", module, true, plugin.LibraryEntrypointsSourceMains, []string{}, nil, nil},
 		{"a refutation candidate, a declared deny", "!pkg/lib", module, true, plugin.LibraryEntrypointsSourceDeclared,
 			[]string{"example.com/m/pkg/api"}, []string{"!pkg/lib"}, nil},
 	}

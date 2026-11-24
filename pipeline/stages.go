@@ -2283,8 +2283,8 @@ func everyVersionOutsideAssuming(vers []string, complete bool, rngs []affectedRa
 // affects<upper, under the given comparator scheme ("" / "gomod" | "maven" | "npm").
 // It is the exported seam external callers use to
 // share the disqualification axis's exact version semantics: ok=false means the
-// version or bound is invalid, a prerelease the scheme cannot order, or unparseable,
-// and the predicate must fail OPEN (inv.5), never fabricate a not-affected.
+// version or bound is invalid, a prerelease the scheme cannot order, unparseable, or a
+// Go pseudo-version placed only under an assumption, and the predicate must fail OPEN (inv.5), never fabricate a not-affected.
 // Single-sources versionOutsideRange.
 func VersionOutsideRange(ver, upperExclusive, scheme string) (outside bool, ok bool) {
 	return versionOutsideRange(ver, affectedRange{UpperExclusive: upperExclusive, Scheme: scheme})
@@ -2297,7 +2297,8 @@ func VersionOutsideRange(ver, upperExclusive, scheme string) (outside bool, ok b
 // ambiguous/unparseable/uncertain the whole set fails OPEN (ok=false) — a disjoint set never
 // fabricates a not-affected. A version provably INSIDE any one range is definitively still affected
 // (ok=true, outside=false), regardless of the other ranges. An empty set is not a proof of anything
-// (ok=false).
+// (ok=false). A placement outside that rests on an assumption is not a proof here either (ok=false);
+// only versionOutsideRangesAssuming returns it.
 func versionOutsideRanges(ver string, rngs []affectedRange) (outside bool, ok bool) {
 	outside, assumptions, ok := versionOutsideRangesAssuming(ver, rngs)
 	if outside && len(assumptions) > 0 {

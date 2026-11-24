@@ -283,16 +283,15 @@ func compareGoModVersions(a, b string) (int, bool) {
 // semver; b is canonicalized. Either may be a pre-release or a pseudo-version.
 //
 // A pseudo-version names a commit, and its place in version order says nothing certain about which
-// commits that commit contains. Where the order of an installed pseudo-version a decides a verdict
-// only under an assumption about its revision's ancestry, assumption names it in one line:
-//   - against another pseudo-version, that a contains b's revision when it orders later, and does not
-//     when it orders earlier;
-//   - against a release b above a's base, that a does not contain the changes released in b.
+// commits that commit contains. An installed pseudo-version a is ordered in two cases only:
+//   - above a release at or below its own base: a descends from that base, which is ordinary version
+//     order and assumes nothing;
+//   - against a pseudo-version bound on the same base with another revision and another commit time:
+//     the order is commit time, and assumption names both revisions and the ancestry that order
+//     assumes (a contains b's revision when it was committed later, and does not when earlier).
 //
-// An a ordered above a release at or below its own base descends from that base, which is ordinary
-// version order and assumes nothing. Two pseudo-versions with the same commit time and different
-// revisions, and an a ordered above a release that is above its base, stay unordered. A release a
-// against a pseudo-version bound orders by semver.Compare, as before.
+// Every other installed pseudo-version stays unordered: one against a release above its base,
+// against a pseudo-version on another base, or against the same revision at another time.
 func compareGoModVersionsAssuming(a, b string) (int, string, bool) {
 	cb, bok := canonicalGoModVersion(b)
 	if !semver.IsValid(a) || !bok {
@@ -302,49 +301,39 @@ func compareGoModVersionsAssuming(a, b string) (int, string, bool) {
 	if !module.IsPseudoVersion(a) {
 		return cmp, "", true
 	}
-	revA, errA := module.PseudoVersionRev(a)
-	if errA != nil {
-		return 0, "", false
-	}
-	if module.IsPseudoVersion(cb) {
-		revB, err := module.PseudoVersionRev(cb)
-		if err != nil {
-			return 0, "", false
-		}
-		if revA == revB {
-			if cmp != 0 {
-				return 0, "", false
-			}
-			return 0, "", true
-		}
-		timeA, errA := module.PseudoVersionTime(a)
-		timeB, errB := module.PseudoVersionTime(cb)
-		if errA != nil || errB != nil || timeA.Equal(timeB) || cmp == 0 {
-			return 0, "", false
-		}
-		relation, order := "contains", "later"
-		if cmp < 0 {
-			relation, order = "does not contain", "earlier"
-		}
-		return cmp, fmt.Sprintf("the pinned revision %s (%s) %s revision %s (the advisory's bound %s): its pseudo-version orders %s, and a pseudo-version's order does not prove ancestry",
-			revA, a, relation, revB, cb, order), true
-	}
-	base, err := module.PseudoVersionBase(a)
+	baseA, err := module.PseudoVersionBase(a)
 	if err != nil {
 		return 0, "", false
 	}
-	if base != "" && semver.Compare(base, cb) >= 0 {
-		return cmp, "", true
-	}
-	if cmp > 0 {
+	if !module.IsPseudoVersion(cb) {
+		if baseA != "" && semver.Compare(baseA, cb) >= 0 {
+			return cmp, "", true
+		}
 		return 0, "", false
 	}
-	from := "no tagged release"
-	if base != "" {
-		from = "release " + base
+	revA, errA := module.PseudoVersionRev(a)
+	revB, errB := module.PseudoVersionRev(cb)
+	baseB, errBase := module.PseudoVersionBase(cb)
+	if errA != nil || errB != nil || errBase != nil || baseA != baseB {
+		return 0, "", false
 	}
-	return cmp, fmt.Sprintf("the pinned revision %s (%s) does not contain the changes released in %s: it descends from %s, which does not prove which later commits it carries",
-		revA, a, cb, from), true
+	if revA == revB {
+		if cmp != 0 {
+			return 0, "", false
+		}
+		return 0, "", true
+	}
+	timeA, errA := module.PseudoVersionTime(a)
+	timeB, errB := module.PseudoVersionTime(cb)
+	if errA != nil || errB != nil || timeA.Equal(timeB) {
+		return 0, "", false
+	}
+	relation, order := "contains", "later"
+	if cmp < 0 {
+		relation, order = "does not contain", "earlier"
+	}
+	return cmp, fmt.Sprintf("the pinned revision %s (%s) %s revision %s (the advisory's bound %s): it was committed %s on the same base, and commit time does not prove ancestry",
+		revA, a, relation, revB, cb, order), true
 }
 
 // withDisagreeingLegacyRanges adds the advisory-level legacy ranges to the element they describe when

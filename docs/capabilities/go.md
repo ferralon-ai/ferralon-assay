@@ -160,7 +160,7 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Trigger.** Resolved module version is a pseudo-version.
 
-**Effect.** A pseudo-version at or above a tagged bound at or below its own base is placed by ordinary version order. Any other placement rests on the pseudo-version's base or commit time, which does not prove which revisions it contains: a row cleared that way is `not_exploitable` on `version_not_in_affected_range`, and its Assumptions name the pinned revision and the bound it was ordered against. Two pseudo-versions with the same commit time, or a pseudo-version above a tagged bound past its base, are not placed, and the advisory stays admitted.
+**Effect.** A pseudo-version is placed against a tagged bound at or below its own base by ordinary version order. Against a pseudo-version bound on the same base it is placed by commit time, which does not prove ancestry: a row cleared that way is `not_exploitable` on `version_not_in_affected_range`, and its Assumptions name both revisions. Every other placement is left unmade and the advisory stays admitted: a tagged bound above the pseudo-version's base, a pseudo-version bound on another base, two commits with the same time, and the same revision at another time.
 
 ### GO-TOOLCHAIN-PRE121
 

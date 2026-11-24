@@ -542,8 +542,8 @@ func assumptionLines(r report.Report) []string {
 
 // declaredAssumptionLines renders the declarations a not_exploitable verdict holds only under
 // (Evidence.Assumptions), one line per distinct declaration in first-seen order, naming every
-// advisory that rests on it. The declaration text carries paths the caller supplied, so it renders
-// inside a code span, as does each advisory ID.
+// advisory that rests on it. The declarations come from the caller or from the version axis, and
+// may carry paths the caller supplied, so each renders inside a code span, as does each advisory ID.
 func declaredAssumptionLines(r report.Report) []string {
 	var order []string
 	ids := map[string][]string{}

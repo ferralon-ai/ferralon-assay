@@ -89,7 +89,8 @@ func siblingInstanceFindings(analysis context.Context, areq assessment.Request, 
 // finding maps one advisory's S1–S6 artifacts into a single report.AdvisoryFinding,
 // applying the deterministic verdict rule (inv. 5):
 //
-//   - disqualification_discovery disqualified  → VerdictDisqualified.
+//   - disqualification_discovery disqualified  → VerdictDisqualified, or VerdictNotExploitable
+//     on the same basis carrying the stage's Assumptions when the disqualification rests on one.
 //   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate, or
 //     VerdictUndetermined/advisory_range_absent with the path kept when the advisory
 //     carries no affected range the version axis can bound for the admitted package.

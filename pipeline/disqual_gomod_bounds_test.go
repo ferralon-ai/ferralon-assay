@@ -20,7 +20,7 @@ func TestVersionOutsideRange_GoModPublishedBoundShapes(t *testing.T) {
 		{"unprefixed fixed, installed below", "v1.7.20", affectedRange{LowerInclusive: "0", UpperExclusive: "1.7.29"}, false, true},
 		{"inside rc introduced range", "v27.1.1+incompatible", affectedRange{LowerInclusive: "26.0.0-rc1", UpperExclusive: "28.0.0"}, false, true},
 		{"own module past beta fixed", "v3.3.2", affectedRange{LowerInclusive: "0", UpperExclusive: "3.0.0-beta5"}, true, true},
-		{"installed pseudo-version below a release fix is inside", "v0.0.0-20210101000000-abcdef123456", affectedRange{LowerInclusive: "0", UpperExclusive: "1.5.0"}, false, true},
+		{"installed pseudo-version fails open", "v0.0.0-20210101000000-abcdef123456", affectedRange{LowerInclusive: "0", UpperExclusive: "1.5.0"}, false, false},
 		{"unprefixed installed fails open", "2.4.0", affectedRange{LowerInclusive: "0", UpperExclusive: "2.3.2"}, false, false},
 		{"garbage bound fails open", "v1.0.0", affectedRange{LowerInclusive: "0", UpperExclusive: "not-a-version"}, false, false},
 	}

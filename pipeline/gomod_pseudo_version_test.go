@@ -13,8 +13,8 @@ const (
 )
 
 // The installed version is ordered by semver.Compare, as govulncheck orders it. The order of an
-// installed pseudo-version carries an assumption wherever it does not follow from the pseudo-version's
-// base: against another pseudo-version, and below a release above its base.
+// installed pseudo-version follows from its base above a release at or below that base, carries an
+// assumption against a pseudo-version on the same base, and is unordered otherwise.
 func TestCompareGoModVersionsAssuming(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -36,19 +36,21 @@ func TestCompareGoModVersionsAssuming(t *testing.T) {
 		{name: "pseudo on a pre-release base, bound at that pre-release", a: afterRC, b: "1.3.0-rc.1", want: 1, wantOK: true},
 		{name: "incompatible pseudo past its base", a: "v2.0.1-0.20220101000000-abcdef123456+incompatible", b: "2.0.0", want: 1, wantOK: true},
 
-		{name: "pseudo, bound the next patch", a: after123, b: "1.2.4", want: -1, wantOK: true, assumes: true},
-		{name: "pseudo, bound a later minor", a: after123, b: "1.3.0", want: -1, wantOK: true, assumes: true},
-		{name: "pseudo on a pre-release base, bound the release", a: afterRC, b: "1.3.0", want: -1, wantOK: true, assumes: true},
-		{name: "untagged against a release", a: untagged2022, b: "1.5.0", want: -1, wantOK: true, assumes: true},
-		{name: "untagged against a pre-release", a: untagged2022, b: "0.0.0-alpha.1", want: -1, wantOK: true, assumes: true},
-		{name: "untagged against the zero release", a: untagged2022, b: "0.0.0", want: -1, wantOK: true, assumes: true},
+		{name: "pseudo, bound the next patch", a: after123, b: "1.2.4", wantOK: false},
+		{name: "pseudo, bound a later minor", a: after123, b: "1.3.0", wantOK: false},
+		{name: "pseudo on a pre-release base, bound the release", a: afterRC, b: "1.3.0", wantOK: false},
+		{name: "untagged against a release", a: untagged2022, b: "1.5.0", wantOK: false},
+		{name: "untagged against a pre-release", a: untagged2022, b: "0.0.0-alpha.1", wantOK: false},
+		{name: "untagged against the zero release", a: untagged2022, b: "0.0.0", wantOK: false},
 		{name: "pseudo above a pre-release above its base is unordered", a: after123, b: "1.2.4-0", wantOK: false},
 
 		{name: "untagged after an untagged bound", a: untagged2022, b: "0.0.0-20210101000000-abcdef123456", want: 1, wantOK: true, assumes: true},
 		{name: "untagged before an untagged bound", a: untagged2021, b: "0.0.0-20220101000000-123456abcdef", want: -1, wantOK: true, assumes: true},
 		{name: "same base, later bound", a: after123, b: "1.2.4-0.20230101000000-0123456789ab", want: -1, wantOK: true, assumes: true},
 		{name: "same base, earlier bound", a: after123, b: "1.2.4-0.20210101000000-0123456789ab", want: 1, wantOK: true, assumes: true},
-		{name: "another base", a: after123, b: "1.2.5-0.20210101000000-0123456789ab", want: -1, wantOK: true, assumes: true},
+		{name: "another base", a: after123, b: "1.2.5-0.20210101000000-0123456789ab", wantOK: false},
+		{name: "another base, committed earlier", a: "v1.2.5-0.20210101000000-aaaaaaaaaaaa", b: "1.2.4-0.20220101000000-bbbbbbbbbbbb", wantOK: false},
+		{name: "untagged against a tagged base", a: untagged2022, b: "1.2.4-0.20210101000000-0123456789ab", wantOK: false},
 		{name: "same commit", a: untagged2021, b: "0.0.0-20210101000000-abcdef123456", want: 0, wantOK: true},
 		{name: "same revision, another time", a: untagged2021, b: "0.0.0-20220101000000-abcdef123456", wantOK: false},
 		{name: "same time, another revision", a: untagged2021, b: "0.0.0-20210101000000-ffffff123456", wantOK: false},
@@ -70,24 +72,18 @@ func TestCompareGoModVersionsAssuming(t *testing.T) {
 	}
 }
 
-// An assumption names the installed revision and what it is assumed to contain: the bound's revision
-// for a pseudo-version bound, the release otherwise.
+// An assumption names both revisions, the commit-time order it rests on, and what the pin is assumed
+// to contain.
 func TestCompareGoModVersionsAssuming_NamesBothRevisions(t *testing.T) {
 	_, later, _ := compareGoModVersionsAssuming(after123, "1.2.4-0.20210101000000-0123456789ab")
-	for _, want := range []string{"abcdef123456", after123, "0123456789ab", " contains ", "orders later", "does not prove ancestry"} {
+	for _, want := range []string{"abcdef123456", after123, "0123456789ab", " contains ", "committed later on the same base", "does not prove ancestry"} {
 		if !strings.Contains(later, want) {
 			t.Errorf("assumption %q does not contain %q", later, want)
 		}
 	}
 	_, earlier, _ := compareGoModVersionsAssuming(after123, "1.2.4-0.20230101000000-0123456789ab")
-	if !strings.Contains(earlier, "does not contain revision 0123456789ab") || !strings.Contains(earlier, "orders earlier") {
+	if !strings.Contains(earlier, "does not contain revision 0123456789ab") || !strings.Contains(earlier, "committed earlier") {
 		t.Errorf("assumption %q does not say the pin lacks the bound's revision", earlier)
-	}
-	_, release, _ := compareGoModVersionsAssuming(after123, "1.3.0")
-	for _, want := range []string{"abcdef123456", "released in v1.3.0", "release v1.2.3"} {
-		if !strings.Contains(release, want) {
-			t.Errorf("assumption %q does not contain %q", release, want)
-		}
 	}
 }
 
@@ -114,10 +110,10 @@ func TestVersionOutsideRangeAssuming_PseudoAndPreRelease(t *testing.T) {
 		{"pre-release below introduced of a last_affected range", "v1.3.0-rc.1", affectedRange{LowerInclusive: "1.3.0", LastAffected: "1.4.0"}, true, true, false},
 
 		{"pseudo past the fixed tag", "v1.5.1-0.20220101000000-abcdef123456", affectedRange{LowerInclusive: "0", UpperExclusive: "1.5.0"}, true, true, false},
-		{"pseudo between the tags around the fix", "v1.4.10-0.20220101000000-abcdef123456", affectedRange{LowerInclusive: "0", UpperExclusive: "1.5.0"}, false, true, false},
-		{"pseudo based at introduced", "v1.3.1-0.20220101000000-abcdef123456", affectedRange{LowerInclusive: "1.3.0", UpperExclusive: "1.5.0"}, false, true, false},
-		{"pseudo before a release introduced", after123, affectedRange{LowerInclusive: "1.3.0", UpperExclusive: "1.5.0"}, true, true, true},
-		{"pseudo before a release introduced of a last_affected range", after123, affectedRange{LowerInclusive: "1.3.0", LastAffected: "1.4.0"}, true, true, true},
+		{"pseudo between the tags around the fix is unplaced", "v1.4.10-0.20220101000000-abcdef123456", affectedRange{LowerInclusive: "0", UpperExclusive: "1.5.0"}, false, false, false},
+		{"pseudo based at introduced is unplaced below fixed", "v1.3.1-0.20220101000000-abcdef123456", affectedRange{LowerInclusive: "1.3.0", UpperExclusive: "1.5.0"}, false, false, false},
+		{"pseudo before a release introduced is unplaced", after123, affectedRange{LowerInclusive: "1.3.0", UpperExclusive: "1.5.0"}, false, false, false},
+		{"pseudo before a release introduced of a last_affected range is unplaced", after123, affectedRange{LowerInclusive: "1.3.0", LastAffected: "1.4.0"}, false, false, false},
 		{"pseudo past last_affected stays inside", "v1.4.1-0.20220101000000-abcdef123456", affectedRange{LowerInclusive: "1.3.0", LastAffected: "1.4.0"}, false, true, false},
 
 		{"untagged past the pseudo fix", "v0.0.0-20260727151759-521cb33b33dd", affectedRange{LowerInclusive: "0", UpperExclusive: "0.0.0-20260531000007-52dbd5ece63f"}, true, true, true},
@@ -125,7 +121,8 @@ func TestVersionOutsideRangeAssuming_PseudoAndPreRelease(t *testing.T) {
 		{"untagged at the pseudo fix", "v0.0.0-20260531000007-52dbd5ece63f", affectedRange{LowerInclusive: "0", UpperExclusive: "0.0.0-20260531000007-52dbd5ece63f"}, true, true, false},
 		{"untagged before a pseudo introduced", untagged2021, affectedRange{LowerInclusive: "0.0.0-20220101000000-0123456789ab", UpperExclusive: "0.0.0-20230101000000-fedcba987654"}, true, true, true},
 		{"untagged at a pseudo introduced", "v0.0.0-20220101000000-0123456789ab", affectedRange{LowerInclusive: "0.0.0-20220101000000-0123456789ab", UpperExclusive: "0.0.0-20230101000000-fedcba987654"}, false, true, false},
-		{"untagged, release fix", "v0.0.0-20260727151759-521cb33b33dd", affectedRange{LowerInclusive: "0", UpperExclusive: "1.5.0"}, false, true, false},
+		{"untagged, release fix is unplaced", "v0.0.0-20260727151759-521cb33b33dd", affectedRange{LowerInclusive: "0", UpperExclusive: "1.5.0"}, false, false, false},
+		{"untagged before a pseudo last_affected stays inside", untagged2021, affectedRange{LowerInclusive: "0", LastAffected: "0.0.0-20220101000000-0123456789ab"}, false, true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -201,8 +198,8 @@ func TestPseudoVersionAssumption_StrictReadersFailOpen(t *testing.T) {
 		t.Fatal("everyVersionOutside placed an assumption-laden version outside")
 	}
 	capped := capOpenLastAffected([]affectedRange{
-		{LowerInclusive: "0.0.0-20200101000000-aaaaaaaaaaaa", LastAffected: "0.0.0-20210101000000-bbbbbbbbbbbb"},
-		{LowerInclusive: "0.0.0-20220101000000-cccccccccccc", UpperExclusive: "0.0.0-20230101000000-dddddddddddd"},
+		{LowerInclusive: "v0.0.0-20200101000000-aaaaaaaaaaaa", LastAffected: "v0.0.0-20210101000000-bbbbbbbbbbbb"},
+		{LowerInclusive: "v0.0.0-20220101000000-cccccccccccc", UpperExclusive: "v0.0.0-20230101000000-dddddddddddd"},
 	})
 	if capped[0].UpperExclusive != "" {
 		t.Fatalf("capOpenLastAffected capped at %q on a pseudo-version order", capped[0].UpperExclusive)

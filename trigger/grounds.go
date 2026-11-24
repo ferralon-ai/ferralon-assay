@@ -574,6 +574,16 @@ func libraryEntrypoints(store artifact.Store, assessmentID string) []plugin.Reso
 	return []plugin.ResolvedLibraryEntrypoints{*reach.LibraryEntrypoints}
 }
 
+// entryRoots reads the entrypoints[] record the lane resolved for the assessment, none when it
+// resolved none.
+func entryRoots(store artifact.Store, assessmentID string) []plugin.EntryRootRecord {
+	reach, _ := reachabilityResult(store, assessmentID)
+	if reach.EntryRoots == nil {
+		return nil
+	}
+	return []plugin.EntryRootRecord{*reach.EntryRoots}
+}
+
 // reachabilityResult reads the reachability stage's result off its artifact.
 func reachabilityResult(store artifact.Store, assessmentID string) (plugin.ReachabilityResult, bool) {
 	rec, ok, err := pipeline.Reachability(store, assessmentID)

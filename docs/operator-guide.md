@@ -39,7 +39,10 @@ analyses anything, naming both. A value you pass is handed to Assay and read as 
 fetches one and looks for no configuration file. When one of the packages reaches the advisory's
 vulnerable package, the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that
 holds only because of what you declared carries that declaration on the report as an assumption, and
-the Report lists the sets under `library_entrypoints`.
+the Report lists the sets under `library_entrypoints`. On every Go report that assessed an advisory,
+`entrypoints[]` also records, beside the packages analysed (`effective`), what Assay inferred with
+nothing declared (`inferred`: the importable library packages and the build's `main` packages) and
+the `!` selectors that took one out (`denied`), so you can read the guess before you override it.
 
 `entrypoints` takes clauses of the form `<lane>:<selector>` or `<lane>:<kind>=<selector>`, over the
 lanes `go`, `java`, `kotlin`, `js`, `python` and `dotnet`. A bare `auto` changes nothing, and neither

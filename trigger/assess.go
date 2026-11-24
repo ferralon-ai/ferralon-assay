@@ -256,6 +256,8 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			}
 			if pipeline.OwnAdvisoryHeldForPartialRun(store, assessmentID) {
 				f.Evidence.Detail = ownAdvisoryPartialRunDetail
+			} else if r, replaced := moduleReplacement(store, assessmentID, pkg); replaced && reason == report.ReasonPackageVersionUnresolved {
+				f.Evidence.Detail = replacedHeldDetail(store, assessmentID, mods, r)
 			}
 			break
 		}
@@ -1376,6 +1378,11 @@ func didNotRunReason(store artifact.Store, assessmentID string, pkg *report.Pack
 	// different path or a directory has none), so the limit that held it is the specific
 	// statement, whatever other axes declared.
 	if versionHeld && pkg == nil {
+		// A module the build compiles from a fork or a local directory has no version to resolve,
+		// and with no other step held, notExploitableGrounds judges it on that compiled code.
+		if _, replaced := moduleReplacement(store, assessmentID, pkg); replaced && len(reasons) == 0 {
+			return "", false
+		}
 		return report.ReasonPackageVersionUnresolved, true
 	}
 	switch {

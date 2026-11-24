@@ -48,6 +48,11 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 		if pkg == nil && ownReleaseUnversioned(store, assessmentID) {
 			return "", report.ReasonOwnReleaseVersionUnknown, "", nil, false
 		}
+		if r, replaced := moduleReplacement(store, assessmentID, pkg); replaced {
+			if detail, basis, assumptions, ok := replacedGrounds(store, assessmentID, mods, r); ok {
+				return detail, "", basis, assumptions, true
+			}
+		}
 		return "", report.ReasonPackageVersionUnresolved, "", nil, false
 	}
 	root := pkg != nil && pkg.Root

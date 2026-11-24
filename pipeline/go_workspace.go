@@ -216,6 +216,54 @@ func moduleVersionFromBuild(ctx context.Context, buildDir string, ws GoWorkspace
 	return "", true, true
 }
 
+// moduleReplacementInBuild returns where a replace directive sends module in the build of buildDir
+// under ws when that build compiles it from code no release of it describes: a fork, or a local
+// directory. It returns nil when no such replacement governs module, including for a module the
+// workspace uses, which is the build's own code, and when the manifests or the build list cannot be
+// read.
+func moduleReplacementInBuild(ctx context.Context, buildDir string, ws GoWorkspace, module string) *ModuleReplacement {
+	var t gomod.Target
+	if ws.File == "" {
+		data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
+		if err != nil {
+			return nil
+		}
+		mf, err := modfile.Parse("go.mod", data, nil)
+		if err != nil {
+			return nil
+		}
+		found := false
+		for _, r := range mf.Require {
+			if r.Mod.Path == module {
+				t, found = gomod.Replacement(mf, module, r.Mod.Version)
+				break
+			}
+		}
+		if !found {
+			return nil
+		}
+	} else {
+		mods, err := workspaceBuildList(ctx, buildDir, ws)
+		if err != nil {
+			return nil
+		}
+		found := false
+		for _, m := range mods {
+			if m.Path == module && !m.Main && m.Replace != nil {
+				t, found = gomod.NewTarget(m.Replace.Path, m.Replace.Version), true
+				break
+			}
+		}
+		if !found {
+			return nil
+		}
+	}
+	if _, pinned := t.Pinned(module); pinned || t.Path == "" {
+		return nil
+	}
+	return &ModuleReplacement{Path: t.Path, Version: t.Version, Directory: t.Filesystem}
+}
+
 // workspaceUnpinned returns the modules the workspace ws uses, whose build compiles source no
 // required version describes, and the modules it replaces, in its go.work or in a go.mod of a module
 // it uses. Whether a replacement pins its module is the build list's to say (listedModule.pin). ok is

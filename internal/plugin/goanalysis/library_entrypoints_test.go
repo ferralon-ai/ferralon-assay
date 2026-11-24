@@ -110,6 +110,21 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 			"cmd/app/main.go": "package main\n\nfunc main() {}\n",
 			"pkg/x/x.go":      clean("x"),
 		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, a main at the module root", "auto", map[string]string{
+			"main.go":    "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+			"pkg/x/x.go": reaches("x"),
+		}, moduleFinding, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		// grpc's shape: a library whose only mains are benchmark and interop programs. They ship
+		// beside the library, not as the product, so the build stays a library.
+		{"auto, mains only under benchmark and interop", "auto", map[string]string{
+			"benchmark/worker/main.go": "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+			"interop/client/main.go":   "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":               reaches("x"),
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}, nil},
+		{"auto, a main only under internal", "auto", map[string]string{
+			"internal/gen/main.go": "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":           reaches("x"),
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}, nil},
 		{"auto, a main only under examples", "auto", map[string]string{
 			"examples/demo/main.go": "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
 			"pkg/x/x.go":            reaches("x"),
@@ -363,6 +378,54 @@ func TestWithholdForLibraryEscape_IncompleteLoad(t *testing.T) {
 			}
 			if failed := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure); failed != tc.failed {
 				t.Errorf("tool_failure declared = %v, want %v (partiality %+v)", failed, tc.failed, res.Partiality)
+			}
+		})
+	}
+}
+
+// TestApplicationMains: only a shipped main at its module's root or under cmd reads a build as an
+// application, and only in a build of one main module: a go.work library module beside a tool
+// module stays a library even though the tool's main sits under cmd. LoadProgram's roots come from
+// one module today, so the workspace case is built by hand.
+func TestApplicationMains(t *testing.T) {
+	pkg := func(path, module string, main bool) *packages.Package {
+		p := &packages.Package{PkgPath: path, Name: "lib", GoFiles: []string{"f.go"}, Module: &packages.Module{Path: module, Main: true}}
+		if main {
+			p.Name = "main"
+		}
+		return p
+	}
+	const m = "example.com/m"
+	for _, tc := range []struct {
+		name string
+		pkgs []*packages.Package
+		want []string
+	}{
+		{"root and cmd mains", []*packages.Package{
+			pkg(m, m, true), pkg(m+"/cmd", m, true), pkg(m+"/cmd/app", m, true), pkg(m+"/pkg/x", m, false),
+		}, []string{m, m + "/cmd", m + "/cmd/app"}},
+		{"grpc's shape: benchmark and interop mains", []*packages.Package{
+			pkg(m+"/benchmark/worker", m, true), pkg(m+"/interop/client", m, true), pkg(m+"/pkg/x", m, false),
+		}, nil},
+		{"generators and tools", []*packages.Package{
+			pkg(m+"/internal/gen", m, true), pkg(m+"/hack/tool", m, true), pkg(m+"/tools/lint", m, true),
+			pkg(m+"/profiling/p", m, true), pkg(m+"/cmdline", m, true),
+		}, nil},
+		{"a cmd main under examples", []*packages.Package{pkg(m+"/examples/cmd/demo", m, true)}, nil},
+		{"a library module beside a tool module", []*packages.Package{
+			pkg(m+"/x", m, false), pkg(m+"/tools/cmd/t", m+"/tools", true),
+		}, nil},
+		{"a dependency beside the main module", []*packages.Package{
+			pkg(m+"/cmd/app", m, true), {PkgPath: "example.com/dep", Name: "dep", GoFiles: []string{"f.go"}, Module: &packages.Module{Path: "example.com/dep"}},
+		}, []string{m + "/cmd/app"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, p := range applicationMains(tc.pkgs) {
+				got = append(got, p.PkgPath)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("applicationMains = %q, want %q", got, tc.want)
 			}
 		})
 	}

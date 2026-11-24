@@ -31,11 +31,13 @@ In Go, a refutation also has to hold for code outside the build that imports you
 clause `go:library=...`: `auto` (the default) takes every importable package outside a `cmd`,
 `example`, `examples`, `test`, `tests` or `testdata` path element, `go:library=none` says the build
 ships programs only, and a list of paths relative to the repository root names them, with
-`!go:library=path` taking a path out. A bare `auto` reads a build that ships a `main` package (one in
-the main module, outside `example(s)`, `test(s)` and `testdata`) as an application when its packages
-all loaded and type-checked: it then takes no library package, and a refutation that holds because of
-that carries the assumption "treated as an application", naming how many main packages the build
-ships. `go:library=.` reads the build as a library instead, taking every importable package, `cmd`,
+`!go:library=path` taking a path out. A bare `auto` reads a build as an application when its packages
+all loaded and type-checked, it has one main module, and it ships a `main` package at that module's
+root or under its `cmd` directory (outside `example(s)`, `test(s)` and `testdata`): it then takes no
+library package, and a refutation that holds because of that carries the assumption "treated as an
+application", naming how many of those main packages the build ships; the PR comment names them. A
+`main` anywhere else (a benchmark, an interop client, a generator under `internal`, `hack` or `tools`)
+leaves the library reading in place. `go:library=.` reads the build as a library instead, taking every importable package, `cmd`,
 example and test paths included, so it is wider than `auto`'s library reading of a build with no `main`. `library-entrypoints` (`-library-entrypoints`,
 `ASSAY_LIBRARY_ENTRYPOINTS`) is the alias for those clauses and takes the same statement without the
 prefix: `library-entrypoints: none` is `entrypoints: go:library=none`. Give both only when they say the

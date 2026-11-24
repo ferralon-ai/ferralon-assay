@@ -121,10 +121,10 @@ func TestBothSurfaces_EntrypointsOverride(t *testing.T) {
 			"inferred before the override: bin (2): `bin:build`, `bin:storybook`; removed by: `!js:bin=bin:storybook`."},
 		{name: "an application read from its mains", rec: plugin.EntryRootRecord{
 			Lane: "go", Source: plugin.LibraryEntrypointsSourceMains, Input: "auto",
-			Effective: map[string][]string{goLib: {}},
+			Effective: map[string][]string{goLib: {}, plugin.EntryKindMain: {"example.com/m/cmd/app"}},
 			Inferred: map[string][]string{goLib: {"example.com/m/lib"},
-				plugin.EntryKindMain: {"example.com/m/cmd/app"}},
-		}, want: "go: treated as an application, nothing declared: its main packages are the entry points; " +
+				plugin.EntryKindMain: {"example.com/m/cmd/app", "example.com/m/internal/gen"}},
+		}, want: "go: treated as an application, nothing declared: its main packages are the entry points (1): `example.com/m/cmd/app`; " +
 			"library packages callable from outside the build: none; library mode: `go:library=.`."},
 		{name: "unlisted record, nothing declared", rec: plugin.EntryRootRecord{
 			Lane: "js", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto",

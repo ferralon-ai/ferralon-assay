@@ -26,8 +26,8 @@ const (
 	// LibraryEntrypointsSourceDeclared is a set that rests on the caller's declaration.
 	LibraryEntrypointsSourceDeclared = "declared"
 	// LibraryEntrypointsSourceMains is a set the lane inferred with nothing declared for a build it
-	// reads as an application: the build ships main packages, they are the entry points, and no
-	// library package is one. The statement that reads the build as a library instead is "." under
+	// reads as an application: the build ships main packages at its module root or under cmd, they
+	// are the entry points, and no library package is one. The statement that reads the build as a library instead is "." under
 	// paths (go:library=.).
 	LibraryEntrypointsSourceMains = "mains"
 )

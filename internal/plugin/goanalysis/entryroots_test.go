@@ -92,8 +92,14 @@ func TestReconciledResult_EntryRootsOnEveryAssessment(t *testing.T) {
 			if rec.Lane != plugin.EntryLaneGo || rec.Source != tc.source || rec.Input != entry.String() {
 				t.Errorf("record lane, source, input = %q, %q, %q", rec.Lane, rec.Source, rec.Input)
 			}
-			if !reflect.DeepEqual(rec.Effective, map[string][]string{plugin.EntryKindLibrary: tc.effective}) {
-				t.Errorf("effective = %v, want library %q", rec.Effective, tc.effective)
+			// Read as an application, the record also names the mains it rests on: cmd/tool, not
+			// the example main.
+			want := map[string][]string{plugin.EntryKindLibrary: tc.effective}
+			if tc.source == plugin.LibraryEntrypointsSourceMains {
+				want[plugin.EntryKindMain] = []string{"example.com/m/cmd/tool"}
+			}
+			if !reflect.DeepEqual(rec.Effective, want) {
+				t.Errorf("effective = %v, want %v", rec.Effective, want)
 			}
 			if !reflect.DeepEqual(rec.Inferred, inferred) {
 				t.Errorf("inferred = %v, want %v", rec.Inferred, inferred)

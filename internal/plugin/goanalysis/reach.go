@@ -537,9 +537,9 @@ type entrypoints struct {
 	tightened []*packages.Package
 	// matched holds each declared path, "!" kept on an exclusion, that matched a package.
 	matched map[string]bool
-	// mains are the build's shipped mains (shippedMains) when they alone are the entry points: auto
-	// with nothing declared, on a complete load of a build that ships one. Every package auto would
-	// otherwise take is then in auto.
+	// mains are the build's application mains (applicationMains) when they alone are the entry
+	// points: auto with nothing declared, on a complete load of a build that ships one. Every package
+	// auto would otherwise take is then in auto.
 	mains []*packages.Package
 }
 
@@ -549,8 +549,8 @@ var autoExcludedElements = []string{"cmd", "example", "examples", "test", "tests
 
 // resolveEntrypoints resolves the caller's statement against the build's packages. Auto's entry
 // points are the importable packages (importable) outside autoExcludedElements; with nothing declared,
-// a complete load of a build that ships a main package (shippedMains) is read as an application
-// instead, and auto takes no package: the mains are the entry points. A declared path is
+// a complete load of a build that ships an application main (applicationMains) is read as an
+// application instead, and auto takes no package: the mains are the entry points. A declared path is
 // matched against the package's directory relative to decl.Base, or buildDir when that is empty,
 // and counts as matched only when it covers an importable package. A package whose directory cannot
 // be placed there keeps auto's answer, and is an entry point under a path list.
@@ -594,12 +594,48 @@ func resolveEntrypoints(pkgs []*packages.Package, decl plugin.LibraryEntrypoints
 	// The known packages of a partial run are not excused here: the reading holds for the whole run,
 	// so it must not turn on which advisory's search went partial.
 	if !decl.Declared() && !incompleteLoad(pkgs, nil) {
-		if mains := shippedMains(pkgs); len(mains) > 0 {
+		if mains := applicationMains(pkgs); len(mains) > 0 {
 			e.mains = mains
 			e.auto, e.pkgs = append(e.auto, e.pkgs...), nil
 		}
 	}
 	return e
+}
+
+// applicationMains returns the shipped mains (shippedMains) that read a build as an application: a
+// main at its module's root or under its cmd directory, in a build of one main module. A main
+// elsewhere (a benchmark, an interop client, a profiling tool, a generator under internal, hack or
+// tools) ships beside a library as often as beside a program, so it leaves the library reading in
+// place. So does a workspace of several main modules, where a library module may sit beside a tool's.
+// Unlike shippedMains, which the program view can afford to widen, every main counted here makes a
+// refutation easier to keep.
+func applicationMains(pkgs []*packages.Package) []*packages.Package {
+	if !oneMainModule(pkgs) {
+		return nil
+	}
+	var mains []*packages.Package
+	for _, p := range shippedMains(pkgs) {
+		rel := strings.TrimPrefix(strings.TrimPrefix(p.PkgPath, p.Module.Path), "/")
+		if rel == "" || rel == "cmd" || strings.HasPrefix(rel, "cmd/") {
+			mains = append(mains, p)
+		}
+	}
+	return mains
+}
+
+// oneMainModule reports whether every package of pkgs in a main module is in the same one.
+func oneMainModule(pkgs []*packages.Package) bool {
+	main := ""
+	for _, p := range pkgs {
+		switch {
+		case p.Module == nil || !p.Module.Main:
+		case main == "":
+			main = p.Module.Path
+		case p.Module.Path != main:
+			return false
+		}
+	}
+	return true
 }
 
 // isEntrypoint reports whether an importable package in dir is an entry point. auto is auto's answer.

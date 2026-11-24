@@ -28,9 +28,10 @@ A shipped `main` package is a `main` package with compiled files, in a main modu
 no `example`, `examples`, `test`, `tests` or `testdata` element below the module path. A `main` under
 `cmd/` counts, and so does a generator or release tool the build compiles (traefik has four besides
 `cmd/traefik`): the scan cannot tell which mains are shipped, and for the program view including one
-only makes the claim harder to earn. The same set decides whether a bare `auto` reads the build as an
-application, and there an extra main works the other way: one in-tree tool or benchmark main is enough
-to drop the library-escape withhold, which is why that reading is carried as a named assumption. The scope is **all** the shipped mains together: govulncheck reports one path per
+only makes the claim harder to earn. Whether a bare `auto` reads the build as an application is decided
+by a narrower set, since there an extra main works the other way and would drop the library-escape
+withhold: only a shipped main at the module root or under `cmd/`, in a build of one main module, counts
+(see [operator-guide.md](operator-guide.md)). The scope is **all** the shipped mains together: govulncheck reports one path per
 symbol, so which of several binaries reach an advisory cannot be told from one run, and the claim is
 made only when none of them does.
 

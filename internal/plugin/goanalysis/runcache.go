@@ -40,8 +40,9 @@ func RunCacheDir(ctx context.Context) string {
 // One process at a time computes a key: the scan's two advisory passes run plugin processes side by
 // side, and two cold computes of a whole-tree result (a govulncheck run, a symbol index) hold twice
 // the memory to produce one entry. Only results kept in the run cache are covered: the reconcile call
-// graph is built outside it, so a first-pass request that loads the program would pair two loads. A process that finds the key being computed waits for it and reads
-// the entry; when the computing process fails or dies, the waiter computes it itself.
+// graph is built outside it, so a first-pass request that loads the program would pair two loads.
+// A process that finds the key being computed waits for it and reads the entry; when the computing
+// process fails or dies, the waiter computes it itself.
 func runCached(ctx context.Context, kind string, key []string, compute func() ([]byte, error)) ([]byte, error) {
 	dir := RunCacheDir(ctx)
 	if dir == "" {

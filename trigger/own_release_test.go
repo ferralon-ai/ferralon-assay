@@ -90,6 +90,10 @@ func TestFinding_OwnReleaseCandidateSaysVersionUnresolved(t *testing.T) {
 		{"own advisory, no version", map[string]any{"root": true}, nil, ownReleaseCandidateDetail},
 		{"own advisory, version known", map[string]any{"root": true, "resolved_version": "1.9.0"},
 			&report.Package{Ecosystem: "Go", Name: "github.com/kubeedge/kubeedge", Version: "1.9.0", Root: true}, ""},
+		// A row with a package names the version it was placed at, so it carries no own-release
+		// sentence, as on the hold path.
+		{"own advisory, no project version, row with a package", map[string]any{"root": true},
+			&report.Package{Ecosystem: "Go", Name: "github.com/kubeedge/kubeedge", Version: "v0.0.0-20240101000000-b1a36daf1737", Root: true}, ""},
 		{"a dependency's advisory", map[string]any{}, nil, ""},
 	}
 	for _, tc := range cases {

@@ -2842,12 +2842,17 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	disqualified, reason, assumptions := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown)
 	res := DisqualResult{Disqualified: disqualified, Reason: reason, Assumptions: assumptions}
 	if disqualified && reason == ReasonVersionNotInRange {
-		dispute, note := s.rangeDispute(ctx, c, store, buildDir, goWork.File, axis, rngs, others)
+		dispute, note, aliasAssumptions := s.rangeDispute(ctx, c, store, buildDir, goWork.File, axis, rngs, others)
 		if dispute != "" {
 			disqualified = false
 			res = DisqualResult{Reason: ReasonInsufficient, RangeDisputed: dispute}
 		} else {
 			res.CrossCheck = note
+			for _, a := range aliasAssumptions {
+				if !slices.Contains(res.Assumptions, a) {
+					res.Assumptions = append(res.Assumptions, a)
+				}
+			}
 		}
 	}
 	// A disputed row cannot be re-cleared here: a version-axis disqualification needs a resolved

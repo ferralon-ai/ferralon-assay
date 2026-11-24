@@ -136,7 +136,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			Verdict:  report.VerdictDisqualified,
 			Evidence: report.EvidenceSummary{
 				Basis:  disqualBasis(res.Reason),
-				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source),
+				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck),
 			},
 		}
 	case hasCandidate(store, assessmentID):
@@ -1022,6 +1022,15 @@ func refuteAttribution(src *pipeline.RefuteSource) string {
 		parts = append(parts, "built into the scanner")
 	}
 	return " (per " + strings.Join(parts, ", ") + ")"
+}
+
+// crossCheckNote discloses on a version-axis disqualification that the analyzer's own vulnerability
+// database could not be consulted, so the clear rests on the corpus range alone.
+func crossCheckNote(note string) string {
+	if note == "" {
+		return ""
+	}
+	return "; not cross-checked: " + note
 }
 
 // maxFeedName bounds the record-declared feed name carried into customer-visible detail.

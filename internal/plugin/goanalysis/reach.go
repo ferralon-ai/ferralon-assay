@@ -184,6 +184,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
+	if req.MatchOnly {
+		return matchOnlyResult(scanned, scanToolchain, req.MatchOutsideToolchain), nil
+	}
 
 	// The scanned tree is loaded at most once per run: the call graph comes from the run cache when
 	// an earlier advisory built it, and otherwise from this load, which a refutation then reuses.
@@ -200,6 +203,23 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	}
 	res.ScanToolchain = scanToolchain
 	return unversionedOnPartialRun(res, scanned, req.Package), nil
+}
+
+// matchOnlyResult answers a MatchOnly request from one govulncheck run: AnalyzerMatched when the run
+// reported the advisory at any level, since govulncheck reports an advisory only against a module
+// version its database calls affected. A partial run still reports what it matched, and says it was
+// partial in Partiality, so a caller never reads its silence as an absence. outsideToolchain counts
+// only a finding whose vulnerable frame is in a module other than the standard library or the
+// toolchain; a finding with no frame still counts.
+func matchOnlyResult(scanned vulnScan, scanToolchain string, outsideToolchain bool) plugin.ReachabilityResult {
+	res := plugin.ReachabilityResult{Partiality: plugin.Complete(), ScanToolchain: scanToolchain}
+	if scanned.partial != nil {
+		res.Partiality = plugin.Partial(plugin.PartialReasonToolFailure + ":govulncheck_partial_run")
+	}
+	res.AnalyzerMatched = slices.ContainsFunc(scanned.findings, func(f vulnFinding) bool {
+		return !outsideToolchain || len(f.Trace) == 0 || f.Trace[0].Module != "stdlib" && f.Trace[0].Module != "toolchain"
+	})
+	return res
 }
 
 // reconciledResult turns one govulncheck run into the reachability result: it reconciles the

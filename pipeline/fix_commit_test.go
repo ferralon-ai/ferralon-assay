@@ -416,6 +416,7 @@ func TestFixCommitClears(t *testing.T) {
 		{"ranges the advisory does not state", []affectedRange{fixed}, false, nil, nil, yes, entered(), false, false},
 		{"no ranges", nil, true, nil, nil, yes, entered(), false, false},
 		{"the project has a version the axis did not clear", []affectedRange{fixed}, true, []string{"1.1.0"}, nil, yes, entered(), false, false},
+		{"the project has a version outside every range", []affectedRange{{UpperExclusive: "v1.2.0", Scheme: "gomod"}}, true, []string{"v1.3.0"}, nil, yes, entered(), false, false},
 		{"another affected package outside its ranges", []affectedRange{fixed}, true, nil, []presentRanges{outside}, yes, entered(), true, false},
 		{"another affected package inside its ranges", []affectedRange{fixed}, true, nil, []presentRanges{outside, inside}, yes, entered(), false, false},
 	}

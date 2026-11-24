@@ -213,7 +213,10 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 			"//go:linkname pulled example.com/v/vuln.Safe\nfunc pulled()\n\nfunc init() { pulled() }\n"), badFunc, true, lofLinkname, false},
 		{"a left-out bodyless function's body is pushed by linkname from a function that does not reach the symbol", merge(x(vulnOnly, "func pushed()\n\nfunc init() { pushed(); vuln.Safe() }\n"), map[string]string{
 			"lib/push.go": "package lib\n\nimport _ \"unsafe\"\n\n//go:linkname push example.com/m.pushed\nfunc push() {}\n",
-		}), badFunc, true, lofLinkname, false},
+		}), badFunc, false, "", false},
+		{"a left-out bodyless function's body is pushed by linkname from a function that calls the symbol", merge(x(vulnOnly, "func pushed()\n\nfunc init() { pushed(); vuln.Safe() }\n"), map[string]string{
+			"lib/push.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname push example.com/m.pushed\nfunc push() { vuln.Bad() }\n",
+		}), badFunc, true, "", false},
 		{"a left-out function pulls by linkname a symbol nothing declares", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
 			"//go:linkname pulled example.com/v/vuln.Nowhere\nfunc pulled()\n\nfunc init() { pulled() }\n"), nil, true, lofLinkname, false},
 		// The linker takes the dynamic import only when no Go code or assembly defines the symbol.
@@ -287,14 +290,14 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"a left-out function pulls the symbol's pointer method by linkname", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
 			"//go:linkname pulled example.com/v/vuln.(*P).Bad\nfunc pulled(*struct{})\n\nfunc init() { pulled(nil) }\n"), nil, true, lofLinkname, false},
 		{"a left-out function pulls by linkname a method of an unloaded package that calls the symbol", merge(x("\t_ \"unsafe\"\n\t_ \"example.com/v/um\"",
-			"//go:linkname pulled example.com/v/um.(*T).Run\nfunc pulled(*struct{})\n\nfunc init() { pulled(nil) }\n"), um), badFunc, true, lofLinkname, false},
+			"//go:linkname pulled example.com/v/um.(*T).Run\nfunc pulled(*struct{})\n\nfunc init() { pulled(nil) }\n"), um), badFunc, true, "", false},
 		{"a left-out file holds a malformed linkname directive", x("\t_ \"unsafe\"\n"+vulnOnly,
 			"//go:linkname local remote extra\nvar local byte\n\nfunc init() { vuln.Safe() }\n"), badFunc, true, lofLinkname, false},
 		// a loaded method whose receiver can carry a func in, and a result whose methods return one
 		{"a left-out function pulls by linkname a loaded method whose receiver takes a func", merge(x("\t_ \"unsafe\"\n"+vulnOnly,
 			"//go:linkname pulled example.com/m/lib.H.Do\nfunc pulled()\n\nfunc init() { pulled(); vuln.Safe() }\n"), map[string]string{
 			"lib/h.go": "package lib\n\ntype H func(func())\n\nfunc (h H) Do() {}\n",
-		}), nil, true, lofLinkname, false},
+		}), nil, true, "", false},
 		{"a left-out init calls a loaded function whose interface result returns a func that takes one", merge(x(libOnly+"\n"+vulnOnly,
 			"func init() { _ = lib.Make2(); vuln.Safe() }\n"), map[string]string{
 			"lib/i2.go": "package lib\n\ntype I2 interface{ Get() func(func()) }\n\nfunc Make2() I2 { return nil }\n",
@@ -1145,8 +1148,11 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 		{"the toolchain is unknown and a left-out file links the vulnerable package without naming a symbol", merge(stringsMain, map[string]string{
 			"x.go": "//go:build lofalt\n\npackage main\n\nimport _ \"container/list\"\n",
 		}), list, true, "", true, lofUnknownToolchain, ""},
-		{"a left-out file links the vulnerable package and pulls a declared symbol by linkname", merge(stringsMain, map[string]string{
+		{"a left-out file links the vulnerable package and pulls by linkname a declared symbol of another package", merge(stringsMain, map[string]string{
 			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t_ \"container/list\"\n\t_ \"unsafe\"\n)\n\n//go:linkname pulled strings.ToUpper\nfunc pulled(string) string\n\nfunc init() { pulled(\"x\") }\n",
+		}), list, false, "", false, "", ""},
+		{"a left-out file links the vulnerable package and pulls one of its symbols by linkname", merge(stringsMain, map[string]string{
+			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t_ \"container/list\"\n\t_ \"unsafe\"\n)\n\n//go:linkname pulled container/list.New\nfunc pulled() *struct{}\n\nfunc init() { pulled() }\n",
 		}), list, false, "", true, "", ""},
 		{"a left-out file links the vulnerable package and names only declared symbols", merge(stringsMain, map[string]string{
 			"x.go": "//go:build lofalt\n\npackage main\n\nimport (\n\t_ \"container/list\"\n\t\"strings\"\n)\n\nfunc init() { _ = strings.ToUpper(\"x\") }\n",
@@ -1210,10 +1216,11 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 	}
 }
 
-// lofFileWith returns a left-out file whose closure, or link walk, fails closed on item.
+// lofFileWith returns a left-out file whose closure, or link walk, fails closed on item. A
+// //go:linkname fails closed on its target, which the reasons check holds to a counting package.
 func lofFileWith(r lofResult, item string) string {
 	for path, f := range r.facts {
-		if slices.Contains(f.FC, item) || slices.Contains(f.FCStd, item) || slices.Contains(f.LinkFC, item) {
+		if slices.Contains(f.FC, item) || slices.Contains(f.FCStd, item) || slices.Contains(f.LinkFC, item) || item == lofLinkname && len(f.LinkTo) > 0 {
 			return path
 		}
 	}

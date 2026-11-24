@@ -1199,11 +1199,37 @@ func failurePackageErrors(err error) []packages.Error {
 	return nil
 }
 
+// goVulnDBEnv names the vulnerability database govulncheck reads, passed as its -db: a URL such as
+// file:///path/to/db. Unset or empty, govulncheck reads its default, https://vuln.go.dev. It is read
+// from the run's env, which is also the run cache key, so runs against different databases never
+// share a stream.
+const goVulnDBEnv = "ASSAY_GO_VULN_DB"
+
+// govulncheckArgs is govulncheck's command line over patterns in buildDir under env.
+func govulncheckArgs(buildDir string, env, patterns []string) []string {
+	args := []string{"-C", buildDir, "-json", "-mode=source", "-scan=symbol"}
+	if db := envValue(env, goVulnDBEnv); db != "" {
+		args = append(args, "-db", db)
+	}
+	return append(args, patterns...)
+}
+
+// envValue is the value env gives key, the last setting winning as it does for a process; "" when
+// env does not set it.
+func envValue(env []string, key string) string {
+	for i := len(env) - 1; i >= 0; i-- {
+		if k, v, ok := strings.Cut(env[i], "="); ok && k == key {
+			return v
+		}
+	}
+	return ""
+}
+
 // govulncheckStream runs govulncheck over patterns in buildDir under env and returns its -json
 // stream.
 func govulncheckStream(ctx context.Context, buildDir string, env, patterns []string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
-	cmd := scan.Command(ctx, append([]string{"-C", buildDir, "-json", "-mode=source", "-scan=symbol"}, patterns...)...)
+	cmd := scan.Command(ctx, govulncheckArgs(buildDir, env, patterns)...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.Env = govulncheckEnv(ctx, buildDir, env)

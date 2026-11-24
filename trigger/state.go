@@ -788,13 +788,23 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.SetRelationships(prior.SBOM.Relationships)
 	b.SetGoBuildList(prior.SBOM)
 
-	// A fresh row replaces the prior rows of its own instance: under a retried cut row's key, which
-	// holds only cut rows, all of them (the parent's and its siblings', which siblings re-assesses);
-	// under any other key, the completed row naming the same package, or the key's only completed
-	// row when that names none: a parent that failed or stopped has no sibling rows, so a package-less
-	// row beside other completed rows is a failed sibling's. A cut row under such a key is a sibling
-	// the run did not reach, and stays. The merge reads no row's position in the stored order; the
-	// package a retry seeds the fresh row with does (the retry lanes take the first stored row).
+	// A fresh row replaces the prior rows of its own instance. Under a retried cut row's key, which
+	// holds only cut rows, that is all of them (the parent's and its siblings', which siblings
+	// re-assesses). Under any other key the retry names the instance by its package, from the row it
+	// seeds with or the fresh row, and a prior row is the instance's when:
+	//   - it is the key's only row;
+	//   - it names that package;
+	//   - it names none, the retry named a package that no stored row names, and the key's
+	//     package-less rows all record the same thing (a failure is a failure whoever's it is), in
+	//     which case the first is taken. A parent whose retry stopped or failed leaves a package-less
+	//     row, and a failed or cut sibling is one too, so package-less rows that differ cannot say
+	//     whose is whose;
+	//   - the retry stopped with no package, and the key's one packaged row sits among cut rows.
+	// Every other row stays, a sibling's the run did not reach or one the stored rows cannot tell
+	// from the instance's. A retry that names no package beside a row that does keeps that row, bar
+	// the last rule: a failed sibling stored above its parent looks the same as a failed parent
+	// stored above its sibling. The merge reads no row's position in the stored order; the package a
+	// retry seeds the fresh row with does (the retry lanes take the first stored row).
 	fanned := map[string]bool{}
 	instance := map[string]string{}
 	for _, w := range todo {
@@ -806,11 +816,62 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			instance[key] = packageInstance(re.Package)
 		}
 	}
-	completed := map[string]int{}
+	type shape struct {
+		rows, packaged, cuts int
+		// named: a stored row names the key's instance; anyNamed: a stored row names a package.
+		named, anyNamed bool
+		// alike: every package-less row records the same reason, reason; taken: one of them was
+		// taken as the instance's.
+		alike, taken bool
+		reason       string
+		unnamed      int
+	}
+	shapes := map[string]*shape{}
+	freshCut := map[string]bool{}
+	for key, re := range reFindings {
+		freshCut[key] = re.UndeterminedReason == report.ReasonScanCutShort
+	}
 	for _, f := range prior.Advisories {
-		if f.UndeterminedReason != report.ReasonScanCutShort {
-			completed[f.Advisory.ID+"\x00"+f.Advisory.Source]++
+		key := f.Advisory.ID + "\x00" + f.Advisory.Source
+		sh := shapes[key]
+		if sh == nil {
+			sh = &shape{}
+			shapes[key] = sh
 		}
+		sh.rows++
+		if f.UndeterminedReason == report.ReasonScanCutShort {
+			sh.cuts++
+		}
+		switch {
+		case f.Package != nil:
+			sh.packaged++
+			sh.anyNamed = true
+			sh.named = sh.named || (instance[key] != "" && packageInstance(f.Package) == instance[key])
+		case sh.unnamed == 0:
+			sh.alike, sh.reason = true, f.UndeterminedReason
+			sh.unnamed++
+		default:
+			sh.alike = sh.alike && f.UndeterminedReason == sh.reason
+			sh.unnamed++
+		}
+	}
+	theirs := func(f report.AdvisoryFinding, key string) bool {
+		sh, known := shapes[key], instance[key] != ""
+		switch {
+		case sh.rows == 1:
+			return true
+		case f.Package != nil && known:
+			return packageInstance(f.Package) == instance[key]
+		case f.Package != nil:
+			// A retry that stopped with no package, beside one row naming a package and otherwise
+			// cut rows: the packaged row is taken as the parent's. Were it a sibling's, the key
+			// returns to cut-only and the next run reassesses it.
+			return freshCut[key] && sh.packaged == 1 && sh.cuts == sh.rows-1
+		case !sh.alike || sh.taken || (known && sh.named) || (!known && sh.anyNamed):
+			return false
+		}
+		sh.taken = true
+		return true
 	}
 	var rows []report.AdvisoryFinding
 	for _, f := range prior.Advisories {
@@ -818,13 +879,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 			continue
 		}
 		key := f.Advisory.ID + "\x00" + f.Advisory.Source
-		if _, ok := reFindings[key]; ok {
-			if fanned[key] {
-				continue
-			}
-			if f.UndeterminedReason != report.ReasonScanCutShort && ((f.Package != nil && packageInstance(f.Package) == instance[key]) || completed[key] == 1) {
-				continue
-			}
+		if _, ok := reFindings[key]; ok && (fanned[key] || theirs(f, key)) {
+			continue
 		}
 		rows = append(rows, f)
 	}

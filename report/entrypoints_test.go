@@ -186,3 +186,62 @@ func TestEntrypointRecordsSortedByLane(t *testing.T) {
 		t.Errorf("lanes = %v, want %v", lanes, want)
 	}
 }
+
+// TestEntryRootsCarryInferredAndDenied: a lane's own record, with what it inferred and what the
+// caller denied, stands in entrypoints[] while it states the set library_entrypoints does, through
+// every route a set reaches a report; library_entrypoints keeps its shape; a record of another set
+// is dropped rather than drift.
+func TestEntryRootsCarryInferredAndDenied(t *testing.T) {
+	lib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!pkg/lib", Packages: []string{"example.com/m/pkg/api"}}
+	rec, _ := plugin.EntryRootRecordOf(lib)
+	rec.Inferred = map[string][]string{
+		plugin.EntryKindLibrary: {"example.com/m/pkg/api", "example.com/m/pkg/lib"},
+		plugin.EntryKindMain:    {"example.com/m/cmd/tool"},
+	}
+	rec.Denied = []string{"!pkg/lib"}
+	derived, _ := plugin.EntryRootRecordOf(lib)
+	other := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{"example.com/m/other"}}
+
+	plain := NewBuilder(Subject{ResolvedCommit: "c"}).WithLibraryEntrypoints(lib).Build()
+	recorded := NewBuilder(Subject{ResolvedCommit: "c"}).WithLibraryEntrypoints(lib).WithEntryRoots(rec).Build()
+	for name, tc := range map[string]struct {
+		r    Report
+		want plugin.EntryRootRecord
+	}{
+		"no record: derived from the library set": {plain, derived},
+		"recorded": {recorded, rec},
+		"merged, the first record stands": {NewBuilder(Subject{ResolvedCommit: "c"}).WithLibraryEntrypoints(lib).
+			WithEntryRoots(rec).WithEntryRoots(derived).Build(), rec},
+		"a record of another set is dropped": {NewBuilder(Subject{ResolvedCommit: "c"}).WithLibraryEntrypoints(other).WithEntryRoots(rec).Build(),
+			func() plugin.EntryRootRecord { r, _ := plugin.EntryRootRecordOf(other); return r }()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if len(tc.r.Entrypoints) != 1 || !reflect.DeepEqual(tc.r.Entrypoints[0], tc.want) {
+				t.Errorf("Entrypoints = %+v, want [%+v]", tc.r.Entrypoints, tc.want)
+			}
+		})
+	}
+	// library_entrypoints is the same bytes with or without the record.
+	a, _ := json.Marshal(plain.LibraryEntrypoints)
+	b, _ := json.Marshal(recorded.LibraryEntrypoints)
+	if string(a) != string(b) || string(a) != `[{"ecosystem":"golang","source":"declared","input":"!pkg/lib","packages":["example.com/m/pkg/api"]}]` {
+		t.Errorf("library_entrypoints = %s / %s", a, b)
+	}
+
+	// The stored report round trips with the record, and a re-read report feeds the next one with no drift.
+	raw, err := json.Marshal(recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read Report
+	if err := json.Unmarshal(raw, &read); err != nil {
+		t.Fatal(err)
+	}
+	next := NewBuilder(Subject{ResolvedCommit: "d"}).WithLibraryEntrypoints(read.LibraryEntrypoints...).WithEntryRoots(read.Entrypoints...).Build()
+	if !reflect.DeepEqual(next.Entrypoints, recorded.Entrypoints) {
+		t.Errorf("inherited entrypoints %+v, want %+v", next.Entrypoints, recorded.Entrypoints)
+	}
+	if got, err := Upgrade(read); err != nil || !reflect.DeepEqual(got.Entrypoints, recorded.Entrypoints) {
+		t.Errorf("Upgrade dropped the record: %+v (%v)", got.Entrypoints, err)
+	}
+}

@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
@@ -36,7 +38,8 @@ func TestScanTimeout_FlagOverEnv(t *testing.T) {
 		{name: "env", env: "45m", want: 45 * time.Minute},
 		{name: "flag over env", args: []string{"-scan-timeout=20m"}, env: "45m", want: 20 * time.Minute},
 		{name: "blank flag falls back to env", args: []string{"-scan-timeout= "}, env: "45m", want: 45 * time.Minute},
-		{name: "zero rejected", env: "0s", wantErr: true},
+		{name: "zero is no limit", env: "0", want: 0},
+		{name: "zero flag over env", args: []string{"-scan-timeout=0s"}, env: "45m", want: 0},
 		{name: "negative rejected", args: []string{"-scan-timeout=-5m"}, wantErr: true},
 		{name: "malformed rejected", env: "thirty minutes", wantErr: true},
 	}
@@ -515,5 +518,41 @@ func TestRunCVEWatch_HeartbeatScanTruncated(t *testing.T) {
 				t.Fatalf("step output = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// The Action bounds a scan at 15m unless the scan-timeout input says otherwise, and reaches the
+// scanner only through ASSAY_SCAN_TIMEOUT; the default must parse to that limit.
+func TestActionScanTimeoutDefault(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var action struct {
+		Inputs map[string]struct {
+			Default string `yaml:"default"`
+		} `yaml:"inputs"`
+	}
+	if err := yaml.Unmarshal(body, &action); err != nil {
+		t.Fatal(err)
+	}
+	in, ok := action.Inputs["scan-timeout"]
+	if !ok {
+		t.Fatal("action.yml has no scan-timeout input")
+	}
+	if in.Default != "15m" {
+		t.Fatalf("scan-timeout default = %q, want 15m", in.Default)
+	}
+	if want := envScanTimeout + ": ${{ inputs.scan-timeout || '15m' }}"; !strings.Contains(string(body), want) {
+		t.Fatalf("action.yml does not forward the input as %q", want)
+	}
+	t.Setenv(envScanTimeout, in.Default)
+	fs := flag.NewFlagSet("baseline", flag.ContinueOnError)
+	f := registerRunFlags(fs)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := f.scanTimeout(); err != nil || got != 15*time.Minute {
+		t.Fatalf("scanTimeout() on the Action default = %v, %v; want 15m", got, err)
 	}
 }

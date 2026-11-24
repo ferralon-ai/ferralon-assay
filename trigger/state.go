@@ -237,6 +237,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	b.AddPartiality(req.WorkSetLimits...)
 	// The inherited refutations' assumptions rest on the baseline's entry points.
 	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
+	b.WithEntryRoots(baseline.Entrypoints...)
 	b.WithProvenance(withSignals(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
 		AnalyzerVersion: analyzerOr(req.AnalyzerVersion),
@@ -375,6 +376,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	freshIDs := make(map[string]struct{})
 	var notes []report.PartialityNote
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
+	var entryRecords []plugin.EntryRootRecord
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	// The baseline's rows were reached under its entry-point statement; under another they are
@@ -405,6 +407,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		// commonest limit (no manifest) is itself why pkg comes back nil.
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
+		entryRecords = append(entryRecords, entryRoots(st, assessmentID)...)
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		// An undetermined toolchain advisory is keyed in like any other fresh finding, so it
@@ -471,7 +474,9 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// The head's entry points for each ecosystem this pass resolved them on, else the baseline's,
 	// which the inherited refutations rest on.
 	b.WithLibraryEntrypoints(entrypoints...)
+	b.WithEntryRoots(entryRecords...)
 	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
+	b.WithEntryRoots(baseline.Entrypoints...)
 	b.AddPartiality(req.WorkSetLimits...)
 	if note, ok := recountCutShort(rows, baseline.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
@@ -557,7 +562,9 @@ func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *repo
 
 // restated reports whether the run states a go library entry-point statement other than the one the
 // stored Report's refutations rest on, so the rows it holds were reached under another one. A Report
-// that records no golang set is read as auto: the lane records its set whenever a refutation exists.
+// that records no golang set is read as auto: the lane records library_entrypoints only on an
+// assessment that judged a refutation, so a baseline of path-only or cgo-unresolved rows holds none
+// (its entrypoints[] record is not read: those rows do not rest on the statement).
 // A recorded statement that does not parse counts as another.
 func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
 	was := plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}
@@ -633,6 +640,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// both claim, and so do the prior rows it inherits.
 	workSet := append([]assessment.VulnRef(nil), req.Advisories...)
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
+	var entryRecords []plugin.EntryRootRecord
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
@@ -693,6 +701,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
+		entryRecords = append(entryRecords, entryRoots(st, assessmentID)...)
 		advisory, tcPkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality), pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
@@ -755,7 +764,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.AddPartiality(withoutCutShortCount(prior.Partiality)...)
 	b.AddPartiality(notes...)
 	b.WithLibraryEntrypoints(entrypoints...)
+	b.WithEntryRoots(entryRecords...)
 	b.WithLibraryEntrypoints(prior.LibraryEntrypoints...)
+	b.WithEntryRoots(prior.Entrypoints...)
 	if note, ok := recountCutShort(rows, prior.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
 	}

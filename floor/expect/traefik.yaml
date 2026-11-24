@@ -5068,23 +5068,9 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: reachable_candidate
-    path_review:
-      path:
-        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
-        - github.com/docker/docker/client.errConnectionFailed.Error
-      hops: 2
-      path_sha: aba5f458bd805a5b
-      status: unreviewed
-      bound_to:
-        target: traefik@020ab5f34703ea523895ab004825dbfa6f7de060
-        component: github.com/docker/docker@v27.1.1+incompatible
-        symbol: github.com/docker/docker/client.errConnectionFailed.Error
-        analysis:
-          assay_version: ferralon-assay/main-0be8b407dd78
-          assay_commit: 0be8b407dd7808c27834c519489057768137264a
-          corpus_release: corpus-92d72057330c
-          go_version: go1.23.12
+      verdict: not_exploitable
+      reason: vulnerable_symbol_absent
+    gap: 'unfiled: not_exploitable/vulnerable_symbol_absent'
   - advisory:
       - CVE-2026-34040
       - GHSA-x744-4wpc-v9h2
@@ -5097,23 +5083,9 @@ rows:
     adjudicated:
       status: unknown
     engine_expected:
-      verdict: reachable_candidate
-    path_review:
-      path:
-        - github.com/traefik/traefik/v3/pkg/config/runtime.MiddlewareInfo.AddError
-        - github.com/docker/docker/client.errConnectionFailed.Error
-      hops: 2
-      path_sha: aba5f458bd805a5b
-      status: unreviewed
-      bound_to:
-        target: traefik@020ab5f34703ea523895ab004825dbfa6f7de060
-        component: github.com/docker/docker@v27.1.1+incompatible
-        symbol: github.com/docker/docker/client.errConnectionFailed.Error
-        analysis:
-          assay_version: ferralon-assay/main-0be8b407dd78
-          assay_commit: 0be8b407dd7808c27834c519489057768137264a
-          corpus_release: corpus-92d72057330c
-          go_version: go1.23.12
+      verdict: not_exploitable
+      reason: vulnerable_symbol_absent
+    gap: 'unfiled: not_exploitable/vulnerable_symbol_absent'
   - advisory:
       - CVE-2026-34986
       - GHSA-78h2-9frx-2jm8

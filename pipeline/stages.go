@@ -1724,6 +1724,10 @@ type DisqualResult struct {
 	// pseudo-version placed outside a range only under an assumption about its revision's ancestry
 	// (compareGoModVersionsAssuming). Empty when the refute rests on version order alone.
 	Assumptions []string `json:"assumptions,omitempty"`
+	// FixCommitUnanswered is the fix commit of an advisory on the scanned project's own package
+	// that everything but the scanned history would clear, when that history could not say whether
+	// it holds the commit (a shallow checkout). Set only when Disqualified is false.
+	FixCommitUnanswered string `json:"fix_commit_unanswered,omitempty"`
 }
 
 // RefuteSource names the record a refute relied on. Advisory is always set. Corpus and Record are
@@ -2826,14 +2830,19 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	disqualified, reason, assumptions := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown)
 	res := DisqualResult{Disqualified: disqualified, Reason: reason, Assumptions: assumptions}
 	if !disqualified {
-		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) &&
-			fixCommitClears(rngs, rangeKnown, axis.Versions, others,
-				func() bool { return headContainsCommit(ctx, buildDir, commit) },
+		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) {
+			cleared, unanswered := fixCommitClears(rngs, rangeKnown, axis.Versions, others,
+				func() historyAnswer { return headContainsCommit(ctx, buildDir, commit) },
 				func(lower string) bool {
 					return rangeEnteredBeforeFix(ctx, buildDir, rootGoModule(store, c.ID, buildDir), commit, lower)
-				}) {
-			disqualified = true
-			res = DisqualResult{Disqualified: true, Reason: ReasonFixCommitInHistory, FixCommit: commit}
+				})
+			switch {
+			case cleared:
+				disqualified = true
+				res = DisqualResult{Disqualified: true, Reason: ReasonFixCommitInHistory, FixCommit: commit}
+			case unanswered:
+				res.FixCommitUnanswered = commit
+			}
 		}
 	}
 	if disqualified {

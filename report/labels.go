@@ -79,11 +79,11 @@ func (c UndeterminedCause) NextAction() string {
 	case CauseScanIncomplete:
 		return "Fix the scan (a tool failed, ran out of time or could not read dependencies), then run it again."
 	case CauseMissingContext:
-		return "Provide the missing build context (a build graph, a lockfile or pinned versions), then run the scan again."
+		return "Provide the missing build context (a build graph, a lockfile, pinned versions, or a release tag on the scanned commit for an advisory on the repository's own code), then run the scan again."
 	case CauseEngineUndecided:
 		return "Keep for review: the analysis ran but cannot rule this advisory in or out yet."
 	case CauseToolchainConfig:
-		return "Set or declare the toolchain or configuration the scan needs, then run it again."
+		return "Check that the exact Go release your repository builds with is declared (Action input subject-go-version, CLI -subject-go-version), not below your go.mod's minimum, and that subject-toolchain-reachability is on, then run the scan again."
 	}
 	return "Needs review: this reason code is not grouped yet."
 }
@@ -94,7 +94,7 @@ func CauseOfReason(reason string) UndeterminedCause {
 	switch reason {
 	case ReasonScanCutShort, ReasonDependencyNotFetched:
 		return CauseScanIncomplete
-	case ReasonPackageVersionUnresolved, ReasonAnalysisDidNotRun, ReasonBuildContextNotCompared:
+	case ReasonPackageVersionUnresolved, ReasonOwnReleaseVersionUnknown, ReasonAnalysisDidNotRun, ReasonBuildContextNotCompared:
 		return CauseMissingContext
 	case ReasonAdvisoryUnknownToAnalyzer, ReasonRefutationWithheld, ReasonAdvisorySymbolAbsent,
 		ReasonVulnerableSymbolUnresolved, ReasonAdvisorySymbolsUnvetted, ReasonAdvisoryRangeAbsent:

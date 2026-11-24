@@ -563,10 +563,20 @@ type EntryRootRecord struct {
 	// Unmatched are the declared selectors, "!" kept on a deny, that matched nothing the lane
 	// holds. An unmatched allow leaves the set unknown, and the lane withholds what rests on it.
 	Unmatched []string `json:"unmatched,omitempty"`
+	// Inferred is what the lane would nominate with nothing declared, by kind, sorted: the guess the
+	// customer reads before overriding it. A Go record lists the build's importable library
+	// packages under EntryKindLibrary and the packages the build compiles as main under
+	// EntryKindMain. A lane that does not report the guess leaves it absent.
+	Inferred map[string][]string `json:"inferred,omitempty"`
+	// Denied are the declared "!" selectors that took something out of Inferred, "!" kept, sorted.
+	// A "!" selector that removed nothing inferred is in Unmatched or in neither.
+	Denied []string `json:"denied,omitempty"`
 }
 
 // EntryRootRecordOf renders the library set a lane resolved as that lane's record. It reports false
-// for an ecosystem whose lane does not report an entry-point set.
+// for an ecosystem whose lane does not report an entry-point set. The record carries no Inferred or
+// Denied: a ResolvedLibraryEntrypoints holds neither, since library_entrypoints is a fixed wire
+// shape. A lane that knows them sends the whole record (ReachabilityResult.EntryRoots).
 func EntryRootRecordOf(r ResolvedLibraryEntrypoints) (EntryRootRecord, bool) {
 	if r.Ecosystem != "golang" {
 		return EntryRootRecord{}, false

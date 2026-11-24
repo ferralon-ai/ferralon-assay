@@ -184,6 +184,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
+	if req.MatchOnly {
+		return matchOnlyResult(scanned, scanToolchain), nil
+	}
 
 	// The scanned tree is loaded at most once per run: the call graph comes from the run cache when
 	// an earlier advisory built it, and otherwise from this load, which a refutation then reuses.
@@ -200,6 +203,20 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	}
 	res.ScanToolchain = scanToolchain
 	return unversionedOnPartialRun(res, scanned, req.Package), nil
+}
+
+// matchOnlyResult answers a MatchOnly request from one govulncheck run: AnalyzerMatched when the run
+// covered the whole build and reported the advisory at any level, since govulncheck reports an
+// advisory only against a module version its database calls affected. A partial run matches nothing
+// and says why in Partiality.
+func matchOnlyResult(scanned vulnScan, scanToolchain string) plugin.ReachabilityResult {
+	res := plugin.ReachabilityResult{Partiality: plugin.Complete(), ScanToolchain: scanToolchain}
+	if scanned.partial != nil {
+		res.Partiality = plugin.Partial(plugin.PartialReasonToolFailure + ":govulncheck_partial_run")
+		return res
+	}
+	res.AnalyzerMatched = len(scanned.findings) > 0
+	return res
 }
 
 // reconciledResult turns one govulncheck run into the reachability result: it reconciles the

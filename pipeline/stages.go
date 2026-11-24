@@ -213,7 +213,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 		advisoryIntake{src: cfg.Source},
 		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
 		maliciousPresence{},
-		disqualificationDiscovery{},
+		disqualificationDiscovery{src: cfg.Source, plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability},
 	}
 	if cfg.DependencyAcquisition != nil {
 		stages = append(stages, dependencyAcquisition{acq: cfg.DependencyAcquisition, plugin: cfg.Plugin})
@@ -323,8 +323,8 @@ type AdvisoryFacts struct {
 	// Aliases are the advisory's alternate identifiers (CVE / GHSA ids), exactly as OSV
 	// records them. They are the keys the offline EPSS/KEV prioritization snapshot
 	// (package intel) is looked up by — EPSS and KEV are CVE-keyed, so a GO-/GHSA-keyed
-	// advisory only carries a likelihood signal through its CVE alias. Advisory-only
-	// context; aliases NEVER decide a verdict (inv. 5).
+	// advisory only carries a likelihood signal through its CVE alias. Aliases NEVER decide a
+	// verdict (inv. 5): the one other use, rangeDispute, may only withdraw a disqualification.
 	Aliases []string
 	// UpperExclusive is the single clean "affects < X" semver bound, or "" when the advisory
 	// has no single upper-exclusive range the disqualification predicate can use soundly.
@@ -1703,7 +1703,13 @@ func extractMaliciousAffectedVersions(store artifact.Store, caseID string) (vers
 
 // --- Stage 3: disqualification_discovery --------------------------------------
 
-type disqualificationDiscovery struct{}
+type disqualificationDiscovery struct {
+	// src and plugin, when set, are the other sources a version-axis disqualification must not
+	// contradict: the advisory's alias records and the Go analyzer's own database (rangeDispute).
+	src              AdvisorySource
+	plugin           plugin.LanguagePlugin
+	subjectToolchain bool
+}
 
 func (disqualificationDiscovery) Name() string              { return "disqualification_discovery" }
 func (disqualificationDiscovery) Status() assessment.Status { return assessment.StatusInventory }
@@ -1720,6 +1726,12 @@ type DisqualResult struct {
 	Source *RefuteSource `json:"source,omitempty"`
 	// FixCommit is the commit a ReasonFixCommitInHistory refute found in the scanned history.
 	FixCommit string `json:"fix_commit,omitempty"`
+	// RangeDisputed, on a row that proceeds, names the source that contradicted a version-axis
+	// disqualification: an alias record of the advisory, or the analyzer's own database.
+	RangeDisputed string `json:"range_disputed,omitempty"`
+	// CrossCheck, on a version-axis disqualification, discloses that the analyzer's own database
+	// could not be consulted, and why; the disqualification stands on the corpus range alone.
+	CrossCheck string `json:"cross_check,omitempty"`
 }
 
 // RefuteSource names the record a refute relied on. Advisory is always set. Corpus and Record are
@@ -2767,7 +2779,16 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	others := extractAlsoPresent(store, c.ID)
 	disqualified, reason := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown)
 	res := DisqualResult{Disqualified: disqualified, Reason: reason}
-	if !disqualified {
+	if disqualified && reason == ReasonVersionNotInRange {
+		dispute, note := s.rangeDispute(ctx, c, store, buildDir, goWork.File, axis, rngs)
+		if dispute != "" {
+			disqualified = false
+			res = DisqualResult{Reason: ReasonInsufficient, RangeDisputed: dispute}
+		} else {
+			res.CrossCheck = note
+		}
+	}
+	if !disqualified && res.RangeDisputed == "" {
 		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) &&
 			fixCommitClears(rngs, rangeKnown, axis.Versions, others,
 				func() bool { return headContainsCommit(ctx, buildDir, commit) },
@@ -3003,7 +3024,11 @@ func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, 
 //     establish the build's Go release from the analyzer's, and the lane would exclude release-tagged
 //     files on that say-so.
 func (s reachabilityIngress) requestedToolchain(store artifact.Store, caseID string) string {
-	if !s.subjectToolchain {
+	return requestedToolchain(s.subjectToolchain, store, caseID)
+}
+
+func requestedToolchain(subjectToolchain bool, store artifact.Store, caseID string) string {
+	if !subjectToolchain {
 		return ""
 	}
 	fact, ok := Toolchain(store, caseID)
@@ -3017,6 +3042,10 @@ func (s reachabilityIngress) requestedToolchain(store artifact.Store, caseID str
 // it, or "" when it recorded none. It only ever narrows the files the analyzer reads as compiled, so
 // unlike requestedToolchain it needs neither the flag nor an exact fact.
 func (s reachabilityIngress) toolchainFloor(store artifact.Store, caseID string) string {
+	return inventoryGoFloor(store, caseID)
+}
+
+func inventoryGoFloor(store artifact.Store, caseID string) string {
 	arts, err := store.Query(caseID, artifact.TypeInventory)
 	if err != nil || len(arts) == 0 {
 		return ""

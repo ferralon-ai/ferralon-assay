@@ -51,6 +51,9 @@ func sinkGroup(v string)       { sunk = append(sunk, v) }
 func sinkWith(v string)        { sunk = append(sunk, v) }
 func sinkMount(v string)       { sunk = append(sunk, v) }
 func sinkMountSub(v string)    { sunk = append(sunk, v) }
+func sinkMountNested(v string) { sunk = append(sunk, v) }
+func sinkMountInline(v string) { sunk = append(sunk, v) }
+func sinkMountDyn(v string)    { sunk = append(sunk, v) }
 func sinkV1(v string)          { sunk = append(sunk, v) }
 func sinkNestedRoute(v string) { sunk = append(sunk, v) }
 func sinkMethodRoute(v string) { sunk = append(sunk, v) }
@@ -86,6 +89,13 @@ func (s *server) routeForm(w http.ResponseWriter, r *http.Request) {
 }
 func (s *server) withForm(w http.ResponseWriter, r *http.Request)     { sinkWith(r.URL.Path) }
 func (s *server) mountSubForm(w http.ResponseWriter, r *http.Request) { sinkMountSub(r.URL.Path) }
+func (s *server) mountNestedForm(w http.ResponseWriter, r *http.Request) {
+	sinkMountNested(r.URL.Path)
+}
+func (s *server) mountInlineForm(w http.ResponseWriter, r *http.Request) {
+	sinkMountInline(r.URL.Path)
+}
+func (s *server) mountDynForm(w http.ResponseWriter, r *http.Request) { sinkMountDyn(r.URL.Path) }
 func (s *server) v1Form(w http.ResponseWriter, r *http.Request)       { sinkV1(r.URL.Path) }
 func (s *server) nestedRouteForm(w http.ResponseWriter, r *http.Request) {
 	sinkNestedRoute(r.URL.Path)
@@ -157,6 +167,16 @@ func subRouter(s *server) http.Handler {
 	return sr
 }
 
+// nestedMountRouter builds a router that mounts a second one under /b, itself mounted
+// under /a by main: the route on the inner router composes both mounts.
+func nestedMountRouter(s *server) chi.Router {
+	outer := chi.NewRouter()
+	inner := chi.NewRouter()
+	inner.Get("/{id}", s.mountNestedForm)
+	outer.Mount("/b", inner)
+	return outer
+}
+
 func main() {
 	s := &server{}
 
@@ -185,6 +205,15 @@ func main() {
 	r.With(middleware).Get("/with", s.withForm)
 	r.Mount("/mount", &mountedHandler{})
 	r.Mount("/sub", subRouter(s))
+	r.Mount("/a", nestedMountRouter(s))
+	// A router mounted from a local variable, and one mounted under a pattern that is
+	// no constant: the first composes, the second keeps its local pattern.
+	inline := chi.NewRouter()
+	inline.Get("/{id}", s.mountInlineForm)
+	r.Mount("/inline", inline)
+	dyn := chi.NewRouter()
+	dyn.Get("/{id}", s.mountDynForm)
+	r.Mount(prefixFromConfig(), dyn)
 	// A bare chi router mounted directly: chi's own ServeHTTP is no ingress.
 	r.Mount("/bare", chi.NewRouter())
 	(&fwdRouter{r: r}).Get("/fwd", s.neverRegistered)

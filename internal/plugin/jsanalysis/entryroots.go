@@ -14,8 +14,8 @@ import (
 // an entry point.
 var jsOverridable = []string{plugin.EntryKindBin, plugin.EntryKindScript}
 
-// jsLaneSelectors are the selector forms that name a js root across kinds. A lane-wide path selector
-// matches none of them.
+// jsLaneSelectors are the selector forms that name a js root. A path selector, lane-wide or of a
+// kind, matches none of them.
 var jsLaneSelectors = []string{"npm:", "bin:"}
 
 // entryOverrideOf is the override the closure is built under, nil for none. It refuses what the lane
@@ -158,10 +158,14 @@ func kindOverrides(o plugin.EntryOverride) []plugin.KindOverride {
 }
 
 // unlistedRecord is the record of a run that states an override and has no closure to apply it to
-// (no dependency code was read, or the read ran out): nothing was inferred, so every "!" selector
-// matched nothing the lane holds. The statement is recorded all the same, so a later run reads it.
+// (no dependency code was read, or the read ran out): nothing was inferred, and no "!" selector was
+// evaluated. They are left out of Unmatched, which says a selector matched nothing the lane holds,
+// and out of Denied: a record that said so would tell the customer a selector was wrong when it was
+// never tried. The statement is recorded all the same, so a later run reads it.
 func unlistedRecord(o *plugin.EntryOverride) *plugin.EntryRootRecord {
-	return newEntryTrack(o).record()
+	rec := newEntryTrack(o).record()
+	rec.Unmatched, rec.Denied = nil, nil
+	return rec
 }
 
 // removedNames are the names of the roots the override removed, sorted.

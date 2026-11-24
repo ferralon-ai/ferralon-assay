@@ -292,3 +292,27 @@ func TestJSEntryRootsDoNotDrift(t *testing.T) {
 		t.Errorf("Upgrade changed the records: %+v (%v)", got.Entrypoints, err)
 	}
 }
+
+// TestEntrypointRecords_FullJSRecordBeatsUnlisted: of two js records offered, the one that lists
+// what the lane inferred stands over one from a run that read no closure, in either order.
+func TestEntrypointRecords_FullJSRecordBeatsUnlisted(t *testing.T) {
+	unlisted := plugin.EntryRootRecord{
+		Lane: plugin.EntryLaneJS, Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!js:bin=bin:storybook",
+		Effective: map[string][]string{},
+	}
+	full := unlisted
+	full.Effective = map[string][]string{plugin.EntryKindBin: {}}
+	full.Inferred = map[string][]string{plugin.EntryKindBin: {"bin:storybook"}}
+	full.Denied = []string{"!bin:storybook"}
+	for name, roots := range map[string][]plugin.EntryRootRecord{
+		"unlisted first": {unlisted, full},
+		"full first":     {full, unlisted},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := NewBuilder(Subject{ResolvedCommit: "c"}).WithEntryRoots(roots...).Build()
+			if len(r.Entrypoints) != 1 || !reflect.DeepEqual(r.Entrypoints[0], full) {
+				t.Errorf("Entrypoints = %+v, want [%+v]", r.Entrypoints, full)
+			}
+		})
+	}
+}

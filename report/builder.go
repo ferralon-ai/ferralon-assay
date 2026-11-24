@@ -493,7 +493,7 @@ func entrypointRecords(sets []plugin.ResolvedLibraryEntrypoints) []plugin.EntryR
 // bare form matches adds what it inferred and what the caller denied. A record of another set (an
 // inherited one beside a fresh library set) is dropped rather than allowed to drift from
 // library_entrypoints. A lane with a record in roots and no library set states the first of them as
-// it is: the lane records its entry points on assessments that judged no refutation, and
+// it is, or the first that lists what the lane inferred when the first lists none: the lane records its entry points on assessments that judged no refutation, and
 // library_entrypoints holds only the sets a refutation rested on.
 func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plugin.EntryRootRecord) []plugin.EntryRootRecord {
 	records := entrypointRecords(sets)
@@ -511,10 +511,19 @@ func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plu
 	for _, rec := range records {
 		haveSet[rec.Lane] = true
 	}
+	stated := map[string]int{}
 	for _, r := range roots {
-		if !haveSet[r.Lane] {
-			haveSet[r.Lane] = true
+		if haveSet[r.Lane] {
+			continue
+		}
+		i, ok := stated[r.Lane]
+		switch {
+		case !ok:
+			stated[r.Lane] = len(records)
 			records = append(records, r)
+		case len(records[i].Inferred) == 0 && len(r.Inferred) > 0:
+			// A record of a lane that read no closure lists nothing; one that did says more.
+			records[i] = r
 		}
 	}
 	sortRecordsByLane(records)

@@ -124,7 +124,7 @@ func TestReachability_NoOverrideUnchanged(t *testing.T) {
 
 // TestReachability_EntryOverrideRefused: the lane refuses what it cannot honour instead of ignoring it.
 func TestReachability_EntryOverrideRefused(t *testing.T) {
-	for _, in := range []string{"js:bin=bin:x", "!js:module=src/a.js", "js:none", "!js:src/cli.js"} {
+	for _, in := range []string{"js:bin=bin:x", "!js:module=src/a.js", "js:none", "!js:src/cli.js", "!js:bin=src/cli.js", "!js:script=src/x.js"} {
 		f, cache := entryFixture(t)
 		_, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: f.dir, Symbols: []string{"npm:idle@1.0.0#bad"}, DependencyCache: cache, EntryOverride: jsOverride(t, in)})
 		if err == nil {
@@ -230,5 +230,24 @@ func TestReachability_EntryOverrideDropsTheUnparsedFileVeto(t *testing.T) {
 		if tc.override != "" && !slices.Equal(res.EntryRoots.Denied, []string{"!bin:tool"}) {
 			t.Errorf("denied = %q", res.EntryRoots.Denied)
 		}
+	}
+}
+
+// TestReachability_EntryOverrideUnevaluatedIsNotUnmatched: with no dependency code to read the
+// override is recorded as stated, and its selectors are not reported as matching nothing: none was
+// tried.
+func TestReachability_EntryOverrideUnevaluatedIsNotUnmatched(t *testing.T) {
+	f, _ := entryFixture(t)
+	const in = "!js:bin=bin:tool"
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: f.dir, Symbols: []string{"npm:idle@1.0.0#bad"}, EntryOverride: jsOverride(t, in)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := res.EntryRoots
+	if rec == nil || rec.Input != in || rec.Source != plugin.LibraryEntrypointsSourceDeclared {
+		t.Fatalf("record = %+v, want the statement %q recorded as declared", rec, in)
+	}
+	if len(rec.Unmatched) > 0 || len(rec.Denied) > 0 {
+		t.Errorf("unmatched %q denied %q for selectors that were never evaluated", rec.Unmatched, rec.Denied)
 	}
 }

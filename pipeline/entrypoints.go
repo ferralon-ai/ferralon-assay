@@ -87,8 +87,9 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 // jsOverridable are the kinds of the js lane a caller can remove.
 var jsOverridable = []string{plugin.EntryKindBin, plugin.EntryKindScript}
 
-// jsLaneSelectors are the selector forms that name a js root across kinds: every removable root has
-// an npm:<package>/<file> selector or a bin:<name> word, so a lane-wide path selector never matches.
+// jsLaneSelectors are the selector forms that name a removable js root: every one has an
+// npm:<package>/<file> selector or a bin:<name> word, so a path selector never matches, lane-wide or
+// of a kind.
 var jsLaneSelectors = []string{"npm:", "bin:"}
 
 // JSEntryOverride is the js lane's override of overrides, the one reachability_ingress hands the lane,

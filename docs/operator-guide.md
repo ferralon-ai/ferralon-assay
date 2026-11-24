@@ -51,10 +51,16 @@ names.
 
 `entrypoints` takes clauses of the form `<lane>:<selector>` or `<lane>:<kind>=<selector>`, over the
 lanes `go`, `java`, `kotlin`, `js`, `python` and `dotnet`. A bare `auto` changes nothing, and neither
-does `<lane>:auto` or `<lane>:<kind>=auto` on its own, for any lane and any kind. Today only the Go
-library entry points read a clause. Any other clause that asks for something, for another lane, for
-the Go lane as a whole or for its mains and handlers, stops the run before it analyses anything: `lane java does not
-accept entry-point overrides yet`. A bare `none` names every lane, so it binds the lane the scan runs
+does `<lane>:auto` or `<lane>:<kind>=auto` on its own, for any lane and any kind. The Go library entry
+points read every clause. The JavaScript lane reads `!` clauses that remove an entry point it inferred
+from `package.json` scripts: `!js:bin=bin:<name>` takes out a binary a script runs, and
+`!js:bin=npm:<package>/<file>` or `!js:script=npm:<package>/<file>` takes out the file a binary or a
+script starts. A `package_not_loaded` clear that holds only because of a removal carries it on the
+report as an assumption, and on a JavaScript report `entrypoints[]` records what the lane inferred,
+what stands and the `!` selectors that removed something. A first-party module is always an entry
+point, so `js:module` clauses, and `js:` clauses that add or say `none`, stop the run. Any other clause
+that asks for something, for another lane, for the Go lane as a whole or for its mains and handlers,
+stops the run before it analyses anything: `lane java does not accept entry-point overrides yet`. A bare `none` names every lane, so it binds the lane the scan runs
 and must be one that can drop all of its roots; on a Go scan it stops the run and asks for
 `go:library=none`, and on a scan of a language the lanes above do not cover it changes nothing, and a `go:library` clause
 on a scan of another language is read by no lane. The check of the value runs before the repository is

@@ -727,6 +727,10 @@ type ReachabilityResult struct {
 	// LibraryEntrypoints is the entry-point set the lane resolved from
 	// ReachabilityRequest.LibraryEntrypoints, when it resolved one.
 	LibraryEntrypoints *ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
+	// EntryRoots is the same set as the report's entrypoints[] states it, with the entry points the
+	// lane inferred and the declared "!" selectors that removed one. Set with or without
+	// LibraryEntrypoints, on every assessment whose lane loaded the build.
+	EntryRoots *EntryRootRecord `json:"entry_roots,omitempty"`
 	// ProgramView is a refutation the lane's program view holds when the library view holds none:
 	// the build's shipped programs, started from their own main and init alone, cannot reach the
 	// advisory's vulnerable code, though the module used as a library may. The lane never sets it

@@ -233,3 +233,59 @@ func TestProgramView(t *testing.T) {
 		t.Error("a module-level finding was traced from a main")
 	}
 }
+
+// TestProgramView_OtherPlatformScope: a file built only for another platform that calls into the
+// first module keeps the view's refutation with that platform scope, and the scope it adds is not a
+// step the program run left undone for a second module the advisory was matched to.
+func TestProgramView_OtherPlatformScope(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":                 "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"_vulnmod/go.mod":        "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go":    "package vulnmod\n\nfunc Bad() {}\n",
+		"pkg/lib/lib.go":         "package lib\n\nimport \"example.com/vulnmod\"\n\nfunc Get() func() { return vulnmod.Bad }\n",
+		"cmd/tool/main.go":       "package main\n\nfunc main() {}\n",
+		"cmd/tool/main_plan9.go": "package main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n",
+	})
+	ctx := context.Background()
+	load, err := LoadProgram(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded := func() (*LoadResult, error) { return load, nil }
+	env := append(os.Environ(), "GOWORK=off")
+	g, err := reconcileCallGraph(ctx, dir, nil, loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}
+	second := vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/xmod", Version: "v0.0.0", Package: "example.com/xmod"}}}
+	firstOut := `{"finding":{"osv":"GO-1","trace":[{"module":"example.com/vulnmod","version":"v0.0.0","package":"example.com/vulnmod"}]}}`
+	secondOut := `{"finding":{"osv":"GO-1","trace":[{"module":"example.com/xmod","version":"v0.0.0","package":"example.com/xmod"}]}}`
+	defer func(prev func(context.Context, string, []string, []string) ([]byte, error)) { programStream = prev }(programStream)
+	for _, tc := range []struct {
+		name     string
+		findings []vulnFinding
+		out      string
+		partial  plugin.Partiality
+		want     bool
+	}{
+		{"one module", []vulnFinding{first}, firstOut, plugin.Partiality{Complete: true}, true},
+		{"two modules", []vulnFinding{first, second}, firstOut + "\n" + secondOut, plugin.Partiality{Complete: true}, true},
+		{"two modules, the run declares a limit bounded to the second", []vulnFinding{first, second}, firstOut + "\n" + secondOut,
+			plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonCgo, Package: "pkg:golang/example.com/xmod", Targets: []string{"pkg:golang/example.com/xmod"}}}}, false},
+	} {
+		programStream = func(context.Context, string, []string, []string) ([]byte, error) { return []byte(tc.out), nil }
+		scanned := vulnScan{findings: tc.findings, vulnID: "GO-1"}
+		in := g
+		in.CallGraph.Partiality = tc.partial
+		evidence := evidenceResult(scanned.findings, in.CallGraph, env)
+		v := programView(ctx, plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonLibraryEscape)}, evidence, scanned, in, dir, env, loaded)
+		if (v != nil) != tc.want {
+			t.Errorf("%s: program view = %+v, want present %v", tc.name, v, tc.want)
+			continue
+		}
+		if v != nil && !strings.Contains(v.Refutation.Detail, "scope: decided for GOOS=") {
+			t.Errorf("%s: program view detail %q does not state the platform scope", tc.name, v.Refutation.Detail)
+		}
+	}
+}

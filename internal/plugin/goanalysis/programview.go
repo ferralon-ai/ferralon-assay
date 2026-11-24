@@ -89,6 +89,7 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 		programRunPartial(ruled.Partiality, ruled.Refutation.Package) {
 		return nil
 	}
+	run := ruled.Partiality
 	ruled = withholdForLeftOutFiles(ctx, ruled, scanned, loaded.Packages, loaded.buildRelease(), buildDir, env)
 	ruled = withholdForReflectReach(ruled, scanned, g.ReflectReach)
 	if ruled.Refutation == nil {
@@ -97,7 +98,7 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 	// The run found no call into any module, but the refutation names the first alone; every other
 	// module the advisory was matched to is ruled out by the same checks, or the view is empty.
 	for _, m := range findingModules(slices.Concat(scanned.findings, prog.findings)) {
-		if other := "pkg:golang/" + m; other != library.Package && !programRulesOut(ctx, ruled, other, scanned, loaded, g, buildDir, env) {
+		if other := "pkg:golang/" + m; other != library.Package && !programRulesOut(ctx, ruled, run, other, scanned, loaded, g, buildDir, env) {
 			return nil
 		}
 	}
@@ -119,9 +120,11 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 // advisory was matched to than the one ruled refutes: the run declares no limit that says a step did
 // not run for it, and neither a file the build left out nor a call reflection makes may reach it. A
 // check that keeps the refutation only with a scope of its own does not rule it out, since the
-// view's detail states the refuted module's scope alone.
-func programRulesOut(ctx context.Context, ruled plugin.ReachabilityResult, module string, scanned vulnScan, loaded *LoadResult, g reconcileGraph, buildDir string, env []string) bool {
-	if programRunPartial(ruled.Partiality, module) {
+// view's detail states the refuted module's scope alone. run is the program run's partiality before
+// those checks ran for the refuted module: a scope they kept the refutation with is that module's,
+// not a step the run left undone for this one.
+func programRulesOut(ctx context.Context, ruled plugin.ReachabilityResult, run plugin.Partiality, module string, scanned vulnScan, loaded *LoadResult, g reconcileGraph, buildDir string, env []string) bool {
+	if programRunPartial(run, module) {
 		return false
 	}
 	r := *ruled.Refutation

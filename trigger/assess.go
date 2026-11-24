@@ -1067,7 +1067,6 @@ const versionOutsideAssumingDetail = "resolved dependency version is outside the
 // ever run — the advisory is not adjudicable against this subject at all. Collapsing the two
 // kinds onto one string is the conflation README.md "What it reports" promises the tool does
 // not perform, so the default arm claims nothing about a comparison it cannot name.
-
 func disqualDetail(reason string) string {
 	switch reason {
 	case pipeline.ReasonVersionNotInRange:

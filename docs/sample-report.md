@@ -9,7 +9,7 @@ verdict values (`disqualified`, `not_exploitable`, `reachable_candidate`, `undet
 inside are invented for illustration and correspond to no real advisory or codebase.
 
 **Labels in the readable report.** The job summary, PR comment and HTML report show each verdict
-as a plain-words label with the raw name beside it; the JSON below keeps the raw names. The mapping:
+as a plain-words label; the JSON below keeps the raw names. The mapping:
 
 | Raw verdict | Label shown |
 |---|---|

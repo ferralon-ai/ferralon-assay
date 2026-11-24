@@ -18,7 +18,7 @@ language: the run fails and publishes nothing, so the previous results stay in p
 
 ## Verdicts
 
-Every advisory lands as one of five values. The job summary, PR comment and HTML report show a plain-words label with the raw name beside it; the JSON, SARIF and exit codes keep the raw names.
+Every advisory lands as one of five values. The job summary, PR comment and HTML report show these plain-words labels; the JSON, SARIF and exit codes keep the raw names.
 
 | Verdict (as the report shows it) | Meaning |
 |---|---|

@@ -1131,9 +1131,6 @@ func TestPartialRunLimitsNameTheCause(t *testing.T) {
 // scan's env rather than the host's: the build here reads its dependency from a module cache only
 // that env names.
 func TestPartialGovulncheckShortensUnderTheScanModCache(t *testing.T) {
-	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("no go command")
-	}
 	proxy, modCache := t.TempDir(), t.TempDir()
 	writeModuleZip(t, filepath.Join(proxy, "example.com", "dep", "@v"), "example.com/dep", "v1.0.0", map[string]string{
 		"go.mod": "module example.com/dep\n\ngo 1.22\n",
@@ -1145,7 +1142,7 @@ func TestPartialGovulncheckShortensUnderTheScanModCache(t *testing.T) {
 		"cmd/other/main.go": "package main\n\nfunc main() {}\n",
 	})
 	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod -modcacherw", "GOTOOLCHAIN=local", "GOSUMDB=off",
-		"GOMODCACHE="+modCache, "GOPROXY=file://"+filepath.ToSlash(proxy))
+		"GOMODCACHE="+modCache, "GOPROXY=file://"+filepath.ToSlash(proxy), "GOPRIVATE=", "GONOPROXY=", "GONOSUMDB=")
 	download := exec.Command("go", "mod", "download", "example.com/dep")
 	download.Dir, download.Env = dir, env
 	if out, err := download.CombinedOutput(); err != nil {

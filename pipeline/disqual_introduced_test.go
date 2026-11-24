@@ -77,8 +77,9 @@ func TestVersionOutsideRange_Introduced(t *testing.T) {
 	}
 }
 
-// A Go pseudo-version is a prerelease to the default Go comparator, so it is never placed against
-// an introduced bound: a range's verdict on it is the one the upper bound alone gave.
+// The strict reader never places a Go pseudo-version against an introduced bound: a release above
+// its base is unordered, and a pseudo-version introduced is ordered only under an assumption, which
+// the strict reader fails open on. A range's verdict on it is the one the upper bound alone gave.
 func TestVersionOutsideRange_GoPseudoVersionUnchanged(t *testing.T) {
 	const pseudo = "v0.0.0-20210101000000-abcdef123456"
 	tests := []struct {

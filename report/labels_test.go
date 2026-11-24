@@ -8,6 +8,7 @@ func TestCauseOfReason(t *testing.T) {
 		ReasonDependencyNotFetched:       CauseScanIncomplete,
 		"tool_failure:inventory_failed":  CauseScanIncomplete,
 		ReasonPackageVersionUnresolved:   CauseMissingContext,
+		ReasonOwnReleaseVersionUnknown:   CauseMissingContext,
 		ReasonAnalysisDidNotRun:          CauseMissingContext,
 		ReasonBuildContextNotCompared:    CauseMissingContext,
 		ReasonAdvisoryUnknownToAnalyzer:  CauseEngineUndecided,

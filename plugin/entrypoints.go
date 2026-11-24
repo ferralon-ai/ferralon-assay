@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"path"
 	"slices"
@@ -35,6 +36,15 @@ const (
 // EntryOriginDeclared is the Origin of a root added by an override's lane scope; a root added by a
 // kind scope has the Origin "entrypoints:<kind>", which keeps the kind the caller declared it for.
 const EntryOriginDeclared = "entrypoints"
+
+// JSRemovableKinds are the kinds of the js lane a caller can remove. A first-party module is always
+// an entry point.
+var JSRemovableKinds = []string{EntryKindBin, EntryKindScript}
+
+// JSRemovableSelectors are the selector forms that name a removable js root: every one has an
+// npm:<package>/<file> selector or a bin:<name> word, so a path selector never matches, lane-wide or
+// of a kind.
+var JSRemovableSelectors = []string{"npm:", "bin:"}
 
 // entryLaneKinds lists the kinds each lane infers, and so the kinds an override clause may qualify.
 var entryLaneKinds = map[string][]string{
@@ -255,6 +265,59 @@ func EntryOverrideForLibraryEntrypoints(le LibraryEntrypoints) EntryOverride {
 		Kinds:        map[string]KindOverride{EntryKindLibrary: ko},
 		Input:        strings.Join(clauses, ","),
 	}
+}
+
+// RemovalOnlyRefusal reports why a lane that accepts removal of entry points only cannot honour o,
+// or "" when it can. overridable are the kinds the lane lets the caller remove; a clause of another
+// kind that asks for anything is refused, and one that states the default (plain auto) is not. An
+// allow, a "none" and a nominated list are refused at every scope: the lane would have to resolve
+// what the caller adds, and it does not yet. A removal, lane-wide or of a kind, must start
+// with one of laneSelectors, the selector forms that name a root of the lane; any other selector
+// can never match one and is refused with a pointer to them. The reason is for the caller, not for
+// the lane.
+func RemovalOnlyRefusal(o EntryOverride, overridable []string, laneSelectors ...string) string {
+	plain := func(k KindOverride) bool {
+		return (k.Mode == "" || k.Mode == LibraryEntrypointsAuto) && len(k.Include) == 0 && len(k.Exclude) == 0
+	}
+	removalOnly := func(k KindOverride) bool {
+		return (k.Mode == "" || k.Mode == LibraryEntrypointsAuto) && len(k.Include) == 0
+	}
+	for _, kind := range sortedKeys(o.Kinds) {
+		if ko := o.Kinds[kind]; !slices.Contains(overridable, kind) && !plain(ko) {
+			return fmt.Sprintf("%s:%s cannot be overridden: only %s entry points can be removed", o.Lane, kind, strings.Join(overridable, " and "))
+		}
+	}
+	for _, kind := range sortedKeys(o.Kinds) {
+		if !removalOnly(o.Kinds[kind]) {
+			return notAcceptedYet(o.Lane)
+		}
+	}
+	if !removalOnly(o.KindOverride) {
+		return notAcceptedYet(o.Lane)
+	}
+	if len(laneSelectors) > 0 {
+		matchable := func(sel string) bool {
+			return slices.ContainsFunc(laneSelectors, func(p string) bool { return strings.HasPrefix(sel, p) })
+		}
+		forms := strings.Join(laneSelectors, " or ")
+		for _, sel := range o.Exclude {
+			if !matchable(sel) {
+				return fmt.Sprintf("!%s:%s can never match: a removable %s entry point is named by %s", o.Lane, sel, o.Lane, forms)
+			}
+		}
+		for _, kind := range sortedKeys(o.Kinds) {
+			for _, sel := range o.Kinds[kind].Exclude {
+				if !matchable(sel) {
+					return fmt.Sprintf("!%s:%s=%s can never match: a %s %s entry point is named by %s", o.Lane, kind, sel, o.Lane, kind, forms)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func notAcceptedYet(lane string) string {
+	return fmt.Sprintf("allow and none clauses are not accepted yet for %s, which accepts removal only: write !<selector>, for example !%s:bin=bin:<name>", lane, lane)
 }
 
 // entryScope accumulates the tokens of one scope while parsing.
@@ -563,10 +626,20 @@ type EntryRootRecord struct {
 	// Unmatched are the declared selectors, "!" kept on a deny, that matched nothing the lane
 	// holds. An unmatched allow leaves the set unknown, and the lane withholds what rests on it.
 	Unmatched []string `json:"unmatched,omitempty"`
+	// Inferred is what the lane would nominate with nothing declared, by kind, sorted: the guess the
+	// customer reads before overriding it. A Go record lists the build's importable library
+	// packages under EntryKindLibrary and the packages the build compiles as main under
+	// EntryKindMain. A lane that does not report the guess leaves it absent.
+	Inferred map[string][]string `json:"inferred,omitempty"`
+	// Denied are the declared "!" selectors that took something out of Inferred, "!" kept, sorted.
+	// A "!" selector that removed nothing inferred is in Unmatched or in neither.
+	Denied []string `json:"denied,omitempty"`
 }
 
 // EntryRootRecordOf renders the library set a lane resolved as that lane's record. It reports false
-// for an ecosystem whose lane does not report an entry-point set.
+// for an ecosystem whose lane does not report an entry-point set. The record carries no Inferred or
+// Denied: a ResolvedLibraryEntrypoints holds neither, since library_entrypoints is a fixed wire
+// shape. A lane that knows them sends the whole record (ReachabilityResult.EntryRoots).
 func EntryRootRecordOf(r ResolvedLibraryEntrypoints) (EntryRootRecord, bool) {
 	if r.Ecosystem != "golang" {
 		return EntryRootRecord{}, false
@@ -578,4 +651,40 @@ func EntryRootRecordOf(r ResolvedLibraryEntrypoints) (EntryRootRecord, bool) {
 		Effective: map[string][]string{EntryKindLibrary: append([]string{}, r.Packages...)},
 		Unmatched: slices.Clone(r.Unmatched),
 	}, true
+}
+
+// SameEntryOverride reports whether two statements of one lane's override say the same thing: the
+// same scopes, kinds and selectors. Input is the caller's spelling and does not count, so the same
+// denies in another order are one statement; a nil override and one that states the default are one.
+func SameEntryOverride(a, b *EntryOverride) bool {
+	norm := func(o *EntryOverride) string {
+		if o == nil || StatesDefault(*o) {
+			return ""
+		}
+		c := *o
+		c.Input = ""
+		out, err := json.Marshal(c)
+		if err != nil {
+			return "\x00" + c.Lane
+		}
+		return string(out)
+	}
+	return norm(a) == norm(b)
+}
+
+// StatesDefault reports whether an override asks for nothing: auto at the lane scope and at every
+// kind scope, with no path selected or denied.
+func StatesDefault(o EntryOverride) bool {
+	plain := func(k KindOverride) bool {
+		return (k.Mode == "" || k.Mode == LibraryEntrypointsAuto) && len(k.Include) == 0 && len(k.Exclude) == 0
+	}
+	if !plain(o.KindOverride) {
+		return false
+	}
+	for _, k := range o.Kinds {
+		if !plain(k) {
+			return false
+		}
+	}
+	return true
 }

@@ -85,39 +85,39 @@ func TestFixCommitID(t *testing.T) {
 	}
 }
 
-// TestHeadContainsCommit: the answer is yes only for HEAD and its ancestors in a complete history
-// the checkout holds. Everything else, whether the commit is absent from the history or the
-// question cannot be answered, is no.
+// TestHeadContainsCommit: only a complete history answers. It contains HEAD and its ancestors and
+// lacks every other commit, held or not. A shallow history, a commit id that is not one, and a
+// question git cannot answer leave it unanswered.
 func TestHeadContainsCommit(t *testing.T) {
 	cases := []struct {
 		name  string
 		build func(t *testing.T) (dir, commit string)
-		want  bool
+		want  historyAnswer
 	}{
 		{"the fix is HEAD", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, nil)
 			return h.at(t, h.fix).dir, h.fix
-		}, true},
+		}, historyContains},
 		{"the fix is an ancestor of HEAD", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, nil)
 			return h.dir, h.fix
-		}, true},
+		}, historyContains},
 		{"asked from a subdirectory", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, map[string]string{"sub/x.txt": "x\n"})
 			return filepath.Join(h.dir, "sub"), h.fix
-		}, true},
+		}, historyContains},
 		{"HEAD is the parent of the fix", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, nil)
 			return h.at(t, h.base).dir, h.fix
-		}, false},
+		}, historyLacks},
 		{"the fix is on another branch", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, nil)
 			return h.dir, h.side
-		}, false},
+		}, historyLacks},
 		{"the object store does not hold the fix", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, nil)
 			return h.dir, strings.Repeat("0123456789", 4)
-		}, false},
+		}, historyLacks},
 		{"a shallow clone whose HEAD is the fix", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, nil)
 			h.at(t, h.fix)
@@ -127,7 +127,7 @@ func TestHeadContainsCommit(t *testing.T) {
 				t.Fatalf("shallow clone HEAD = %s, want the fix %s", got, h.fix)
 			}
 			return clone, h.fix
-		}, false},
+		}, historyUnanswered},
 		{"a replacement object grafts the fix under HEAD", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, nil)
 			fixtureGit(t, h.dir, "replace", "--graft", h.later, h.side)
@@ -135,7 +135,7 @@ func TestHeadContainsCommit(t *testing.T) {
 				t.Fatalf("the replacement did not take effect:\n%s", out)
 			}
 			return h.dir, h.side
-		}, false},
+		}, historyLacks},
 		{"the grafts file puts the fix under HEAD", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, nil)
 			grafts := filepath.Join(h.dir, ".git", "info", "grafts")
@@ -149,21 +149,46 @@ func TestHeadContainsCommit(t *testing.T) {
 				t.Fatalf("the grafts file did not take effect:\n%s", out)
 			}
 			return h.dir, h.side
-		}, false},
+		}, historyLacks},
 		{"an abbreviated id", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, nil)
 			return h.dir, h.fix[:12]
-		}, false},
+		}, historyUnanswered},
 		{"a ref name where the id belongs", func(t *testing.T) (string, string) {
 			h := newFixHistory(t, nil)
 			return h.dir, "main"
-		}, false},
+		}, historyUnanswered},
 		{"not a repository", func(t *testing.T) (string, string) {
 			return t.TempDir(), strings.Repeat("0123456789", 4)
-		}, false},
+		}, historyUnanswered},
+		{"HEAD names no commit", func(t *testing.T) (string, string) {
+			h := newFixHistory(t, nil)
+			fixtureGit(t, h.dir, "symbolic-ref", "HEAD", "refs/heads/unborn")
+			return h.dir, h.fix
+		}, historyUnanswered},
+		{"HEAD names no commit, asked about a commit the store does not hold", func(t *testing.T) (string, string) {
+			h := newFixHistory(t, nil)
+			fixtureGit(t, h.dir, "symbolic-ref", "HEAD", "refs/heads/unborn")
+			return h.dir, strings.Repeat("0123456789", 4)
+		}, historyUnanswered},
+		{"a full clone whose borrowed object store is gone", func(t *testing.T) (string, string) {
+			h := newFixHistory(t, nil)
+			clone := t.TempDir()
+			fixtureGit(t, clone, "clone", "-q", "--shared", h.dir, ".")
+			fixtureGit(t, clone, "commit", "-q", "--allow-empty", "-m", "local")
+			if err := os.Rename(h.dir, h.dir+".gone"); err != nil {
+				t.Fatal(err)
+			}
+			// git may first complain about the missing alternate; the answer is the last line.
+			out := fixtureGit(t, clone, "rev-parse", "--is-shallow-repository")
+			if got := out[strings.LastIndex(out, "\n")+1:]; got != "false" {
+				t.Fatalf("clone is shallow: %s", out)
+			}
+			return clone, h.fix
+		}, historyUnanswered},
 		{"no directory", func(t *testing.T) (string, string) {
 			return "", strings.Repeat("0123456789", 4)
-		}, false},
+		}, historyUnanswered},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -179,23 +204,23 @@ func TestHeadContainsCommit(t *testing.T) {
 }
 
 // TestHeadContainsCommit_NeverFetches: a partial clone can ask its remote for an object it lacks.
-// The ancestry question is answered from what the checkout holds, so a fix only the remote has
-// stays unanswered and the remote's objects are never copied in.
+// The ancestry question is answered from what the checkout holds, so a fix only the remote has is
+// one the clone's complete history lacks, and the remote's objects are never copied in.
 func TestHeadContainsCommit_NeverFetches(t *testing.T) {
 	h := newFixHistory(t, nil)
 	fixtureGit(t, h.dir, "config", "uploadpack.allowFilter", "true")
 	fixtureGit(t, h.dir, "config", "uploadpack.allowAnySHA1InWant", "true")
 	clone := t.TempDir()
 	fixtureGit(t, clone, "clone", "-q", "--filter=blob:none", "--single-branch", "--branch", "main", "file://"+h.dir, ".")
-	if headContainsCommit(context.Background(), clone, h.side) {
-		t.Fatal("a commit only the remote holds was found in the clone's history")
+	if got := headContainsCommit(context.Background(), clone, h.side); got != historyLacks {
+		t.Fatalf("a commit only the remote holds: got %v, want the clone's history to lack it", got)
 	}
 	cmd := gittest.Command("-C", clone, "cat-file", "-e", h.side)
 	cmd.Env = append(cmd.Env, "GIT_NO_LAZY_FETCH=1")
 	if cmd.Run() == nil {
 		t.Fatal("the ancestry question fetched the commit from the remote")
 	}
-	if !headContainsCommit(context.Background(), clone, h.fix) {
+	if headContainsCommit(context.Background(), clone, h.fix) != historyContains {
 		t.Fatal("a full-history partial clone did not answer for a commit it holds")
 	}
 }
@@ -353,7 +378,9 @@ func TestRangeEnteredBeforeFix(t *testing.T) {
 
 func TestFixCommitClears(t *testing.T) {
 	fixed := affectedRange{UpperExclusive: "1.2.0"}
-	yes := func() bool { return true }
+	yes := func() historyAnswer { return historyContains }
+	no := func() historyAnswer { return historyLacks }
+	unknown := func() historyAnswer { return historyUnanswered }
 	later := affectedRange{LowerInclusive: "1.3.0", UpperExclusive: "1.3.4"}
 	entered := func(lowers ...string) func(string) bool {
 		return func(lower string) bool { return slices.Contains(lowers, lower) }
@@ -366,44 +393,54 @@ func TestFixCommitClears(t *testing.T) {
 		rangeKnown bool
 		versions   []string
 		others     []presentRanges
-		inHistory  func() bool
+		inHistory  func() historyAnswer
 		entered    func(string) bool
 		want       bool
+		unanswered bool
 	}{
-		{"every range fixed and the fix in history", []affectedRange{fixed}, true, nil, nil, yes, entered(), true},
-		{"a later range entered after the fix", []affectedRange{fixed, later}, true, nil, nil, yes, entered(), false},
-		{"a later range entered before the fix", []affectedRange{fixed, later}, true, nil, nil, yes, entered("1.3.0"), true},
-		{"one of two later ranges entered after the fix", []affectedRange{fixed, later, {LowerInclusive: "1.5.0", UpperExclusive: "1.5.2"}}, true, nil, nil, yes, entered("1.3.0"), false},
-		{"several ranges that all start at zero", []affectedRange{fixed, {LowerInclusive: "0", UpperExclusive: "2.1.0"}}, true, nil, nil, yes, entered(), true},
-		{"a single range that starts above zero", []affectedRange{later}, true, nil, nil, yes, entered(), true},
-		{"the fix is not in history", []affectedRange{fixed}, true, nil, nil, func() bool { return false }, entered(), false},
-		{"an open-ended last_affected", []affectedRange{{LastAffected: "1.1000.0"}}, true, nil, nil, yes, entered(), false},
-		{"an open-ended last_affected beside a fixed range", []affectedRange{fixed, {LowerInclusive: "1.3.0", LastAffected: "1.1000.0"}}, true, nil, nil, yes, entered(), false},
-		{"a range with no upper end", []affectedRange{{LowerInclusive: "1.0.0"}}, true, nil, nil, yes, entered(), false},
-		{"ranges the advisory does not state", []affectedRange{fixed}, false, nil, nil, yes, entered(), false},
-		{"no ranges", nil, true, nil, nil, yes, entered(), false},
-		{"the project has a version the axis did not clear", []affectedRange{fixed}, true, []string{"1.1.0"}, nil, yes, entered(), false},
-		{"another affected package outside its ranges", []affectedRange{fixed}, true, nil, []presentRanges{outside}, yes, entered(), true},
-		{"another affected package inside its ranges", []affectedRange{fixed}, true, nil, []presentRanges{outside, inside}, yes, entered(), false},
+		{"every range fixed and the fix in history", []affectedRange{fixed}, true, nil, nil, yes, entered(), true, false},
+		{"a later range entered after the fix", []affectedRange{fixed, later}, true, nil, nil, yes, entered(), false, false},
+		{"a later range entered before the fix", []affectedRange{fixed, later}, true, nil, nil, yes, entered("1.3.0"), true, false},
+		{"one of two later ranges entered after the fix", []affectedRange{fixed, later, {LowerInclusive: "1.5.0", UpperExclusive: "1.5.2"}}, true, nil, nil, yes, entered("1.3.0"), false, false},
+		{"several ranges that all start at zero", []affectedRange{fixed, {LowerInclusive: "0", UpperExclusive: "2.1.0"}}, true, nil, nil, yes, entered(), true, false},
+		{"a single range that starts above zero", []affectedRange{later}, true, nil, nil, yes, entered(), true, false},
+		{"the fix is not in history", []affectedRange{fixed}, true, nil, nil, no, entered(), false, false},
+		{"the history cannot say", []affectedRange{fixed}, true, nil, nil, unknown, entered(), false, true},
+		{"the history cannot say, and a later range", []affectedRange{fixed, later}, true, nil, nil, unknown, entered("1.3.0"), false, true},
+		{"the history cannot say, but the ranges refuse", []affectedRange{{LastAffected: "1.1000.0"}}, true, nil, nil, unknown, entered(), false, false},
+		{"the history cannot say, but the project has a version", []affectedRange{fixed}, true, []string{"1.1.0"}, nil, unknown, entered(), false, false},
+		{"the history cannot say, but another package is inside its ranges", []affectedRange{fixed}, true, nil, []presentRanges{inside}, unknown, entered(), false, false},
+		{"an open-ended last_affected", []affectedRange{{LastAffected: "1.1000.0"}}, true, nil, nil, yes, entered(), false, false},
+		{"an open-ended last_affected beside a fixed range", []affectedRange{fixed, {LowerInclusive: "1.3.0", LastAffected: "1.1000.0"}}, true, nil, nil, yes, entered(), false, false},
+		{"a range with no upper end", []affectedRange{{LowerInclusive: "1.0.0"}}, true, nil, nil, yes, entered(), false, false},
+		{"ranges the advisory does not state", []affectedRange{fixed}, false, nil, nil, yes, entered(), false, false},
+		{"no ranges", nil, true, nil, nil, yes, entered(), false, false},
+		{"the project has a version the axis did not clear", []affectedRange{fixed}, true, []string{"1.1.0"}, nil, yes, entered(), false, false},
+		{"the project has a version outside every range", []affectedRange{{UpperExclusive: "v1.2.0", Scheme: "gomod"}}, true, []string{"v1.3.0"}, nil, yes, entered(), false, false},
+		{"another affected package outside its ranges", []affectedRange{fixed}, true, nil, []presentRanges{outside}, yes, entered(), true, false},
+		{"another affected package inside its ranges", []affectedRange{fixed}, true, nil, []presentRanges{outside, inside}, yes, entered(), false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := fixCommitClears(tc.rngs, tc.rangeKnown, tc.versions, tc.others, tc.inHistory, tc.entered); got != tc.want {
-				t.Fatalf("fixCommitClears = %v, want %v", got, tc.want)
+			got, unanswered := fixCommitClears(tc.rngs, tc.rangeKnown, tc.versions, tc.others, tc.inHistory, tc.entered)
+			if got != tc.want || unanswered != tc.unanswered {
+				t.Fatalf("fixCommitClears = %v, unanswered %v; want %v, %v", got, unanswered, tc.want, tc.unanswered)
 			}
 		})
 	}
 	t.Run("history is not asked when the ranges already refuse", func(t *testing.T) {
-		fixCommitClears([]affectedRange{{LastAffected: "1.1000.0"}}, true, nil, nil, func() bool {
+		fixCommitClears([]affectedRange{{LastAffected: "1.1000.0"}}, true, nil, nil, func() historyAnswer {
 			t.Fatal("asked for history")
-			return true
+			return historyContains
 		}, entered())
 	})
 	t.Run("range entry is not asked when the fix is not in history", func(t *testing.T) {
-		fixCommitClears([]affectedRange{fixed, later}, true, nil, nil, func() bool { return false }, func(string) bool {
-			t.Fatal("asked for range entry")
-			return true
-		})
+		for _, answer := range []func() historyAnswer{no, unknown} {
+			fixCommitClears([]affectedRange{fixed, later}, true, nil, nil, answer, func(string) bool {
+				t.Fatal("asked for range entry")
+				return true
+			})
+		}
 	})
 }
 
@@ -489,6 +526,56 @@ func TestDisqualification_FixCommitInHistory(t *testing.T) {
 			}
 		})
 	}
+
+	// The same project and advisory, checked out shallow and in full: only the full history answers,
+	// and the shallow one records the fix commit it could not place.
+	checkouts := []struct {
+		name           string
+		depth          string
+		commit         func(h fixHistory) string
+		want           bool
+		wantUnanswered bool
+	}{
+		{name: "a full clone holding the fix", commit: func(h fixHistory) string { return h.fix }, want: true},
+		{name: "a full clone without the fix", commit: func(h fixHistory) string { return h.side }},
+		{name: "a shallow clone", depth: "1", commit: func(h fixHistory) string { return h.fix }, wantUnanswered: true},
+		{name: "a shallow clone whose depth reaches the fix", depth: "2", commit: func(h fixHistory) string { return h.fix }, wantUnanswered: true},
+	}
+	for _, tc := range checkouts {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFixHistory(t, own)
+			clone := t.TempDir()
+			args := []string{"clone", "-q", "--single-branch", "--branch", "main"}
+			if tc.depth != "" {
+				args = append(args, "--depth", tc.depth)
+			}
+			fixtureGit(t, clone, append(args, "file://"+h.dir, ".")...)
+			f := facts("example.com/app", fixedRange)
+			commit := tc.commit(h)
+			f.Fix = FixHint{UpstreamCommit: commit}
+			res := runRootDisqual(t, clone, f)
+			if res.Disqualified != tc.want || (tc.want && res.Reason != ReasonFixCommitInHistory) {
+				t.Fatalf("got %+v, want disqualified %v on %s", res, tc.want, ReasonFixCommitInHistory)
+			}
+			wantCommit := ""
+			if tc.wantUnanswered {
+				wantCommit = commit
+			}
+			if res.FixCommitUnanswered != wantCommit {
+				t.Fatalf("fix_commit_unanswered = %q, want %q", res.FixCommitUnanswered, wantCommit)
+			}
+		})
+	}
+	t.Run("a shallow clone of a dependency's advisory", func(t *testing.T) {
+		h := newFixHistory(t, map[string]string{"go.mod": gomod + "\nrequire example.com/dep v1.0.0\n", "main.go": "package main\n"})
+		clone := t.TempDir()
+		fixtureGit(t, clone, "clone", "-q", "--depth", "1", "file://"+h.dir, ".")
+		f := facts("example.com/dep", fixedRange)
+		f.Fix = FixHint{UpstreamCommit: h.fix}
+		if res := runRootDisqual(t, clone, f); res.FixCommitUnanswered != "" {
+			t.Fatalf("a dependency's advisory was held on the project's history: %+v", res)
+		}
+	})
 
 	npm := func(name string) AdvisoryFacts {
 		return AdvisoryFacts{Coordinate: name, PURL: "pkg:npm/" + name, AffectedRanges: fixedRange}

@@ -132,6 +132,8 @@ func UndeterminedDetail(reason string) string {
 		return "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
 	case ReasonPackageVersionUnresolved:
 		return "the installed version of the affected package could not be resolved, so no verdict was established"
+	case ReasonOwnReleaseVersionUnknown:
+		return "this advisory is on this repository's own code, and the release version of this checkout could not be established, so nothing places it inside or outside the advisory's affected versions and no verdict was established. A Go module's release version is read from a full semver tag on the checked-out commit itself (prefixed with the module's directory for a nested module), so an untagged commit has none; other ecosystems read it from a version the manifest states outright. Other steps of the analysis may also have been limited; the scan's limits list them"
 	case ReasonAdvisorySymbolAbsent:
 		return "the advisory names no vulnerable function to search for, so no verdict was established"
 	case ReasonVulnerableSymbolUnresolved:

@@ -2828,6 +2828,17 @@ func settledByDisqualification(store artifact.Store, assessmentID string) (bool,
 	return res.Disqualified, nil
 }
 
+// rangeDisputed reports whether disqualification discovery withdrew a version-axis clear on a
+// contradicting source.
+func rangeDisputed(store artifact.Store, assessmentID string) bool {
+	arts, err := store.Query(assessmentID, artifact.TypeDiscovery)
+	if err != nil || len(arts) == 0 {
+		return false
+	}
+	var res DisqualResult
+	return json.Unmarshal(arts[0].Payload, &res) == nil && res.RangeDisputed != ""
+}
+
 // SettledByDisqualification reports whether disqualification_discovery recorded the assessment as
 // disqualified, so that its verdict reads nothing the later stages write.
 func SettledByDisqualification(store artifact.Store, assessmentID string) bool {
@@ -3097,6 +3108,9 @@ type reachAttribution struct {
 	selected []string
 	others   []presentRanges
 	project  string
+	// rangeDisputed is set when disqualification discovery withdrew a version-axis clear because
+	// another source contradicted the advisory's ranges. Those ranges then cannot drop a path.
+	rangeDisputed bool
 }
 
 // readReachAttribution reads the reachAttribution for a Go assessment. The selected package is the
@@ -3122,7 +3136,7 @@ func readReachAttribution(store artifact.Store, caseID string) (reachAttribution
 		}
 		sel = advisoryAffectedPackage{Module: module}
 	}
-	a := reachAttribution{project: inv.Module, others: extractAlsoPresent(store, caseID)}
+	a := reachAttribution{project: inv.Module, others: extractAlsoPresent(store, caseID), rangeDisputed: rangeDisputed(store, caseID)}
 	for _, n := range []string{sel.Module, sel.Coordinate} {
 		if n != "" {
 			a.selected = append(a.selected, n)
@@ -3137,7 +3151,9 @@ func readReachAttribution(store artifact.Store, caseID string) (reachAttribution
 // has no dot, and the selected package wins a tie. A sink with no import path, one inside the
 // scanned project, or one no affected package owns is unattributed and counts as the selected
 // package's. A path is dropped only when its owner is another affected package whose every version
-// in the build is provably outside that package's ranges (everyVersionOutside). The kept paths are
+// in the build is provably outside that package's ranges (everyVersionOutside), and never on a row
+// whose ranges were disputed: the dispute does not say which package it placed inside, so a path into
+// any of them may be the one it found. The kept paths are
 // ordered the selected package's own, then unattributed, then other packages', each group in its
 // input order.
 func countedReachPaths(paths []plugin.ReachPath, a reachAttribution) []plugin.ReachPath {
@@ -3152,7 +3168,7 @@ func countedReachPaths(paths []plugin.ReachPath, a reachAttribution) []plugin.Re
 		case a.isSibling(o.Module):
 			// Another major version of the selected module is its own package instance, with its own
 			// finding: its code is never this one's path.
-		case everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown):
+		case !a.rangeDisputed && everyVersionOutside(o.Versions, o.Complete, o.Ranges, o.RangeKnown):
 		default:
 			other = append(other, p)
 		}

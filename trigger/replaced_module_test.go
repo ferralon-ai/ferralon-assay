@@ -219,6 +219,14 @@ func TestFinding_ReplacedModule(t *testing.T) {
 			"The analysis does not locate the advisory's symbols inside the build's code of k8s.io/kubernetes, so whether that code defines " + rmSymA + ", " + rmSymB + " was not determined."},
 		{"a defined symbol not searched", func(fx *replacedFixture) { fx.searched = fx.searched[:1] }, "", report.ReasonPackageVersionUnresolved,
 			"The analysis did not search every definition of " + rmSymA + ", " + rmSymB + " from the entry points."},
+		// A symbol outside the build is not named as one the analysis did not search for, and does
+		// not take the "does not define" statement.
+		{"a defined symbol not searched, beside one outside the build", func(fx *replacedFixture) {
+			fx.symbols = append(fx.symbols, rmSymV2)
+			fx.res.OutsideBuild = []string{rmSymV2}
+			fx.searched = fx.searched[:1]
+		}, "", report.ReasonPackageVersionUnresolved,
+			"The analysis did not search every definition of " + rmSymA + ", " + rmSymB + " from the entry points."},
 		{"an unvetted symbol set", func(fx *replacedFixture) { fx.provenance = "diff-lexed" }, "", report.ReasonPackageVersionUnresolved,
 			"The advisory's vulnerable symbols are not a vetted set, so their absence from every path is not evidence."},
 		{"no advisory symbols", func(fx *replacedFixture) { fx.symbols = nil }, "", report.ReasonPackageVersionUnresolved,

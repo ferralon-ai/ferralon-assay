@@ -108,7 +108,7 @@ func replacedHeldDetail(store artifact.Store, assessmentID string, mods goModule
 			why = "Steps an analysis of that code rests on did not run: " + steps + ", so it was not judged."
 		}
 	default:
-		why = fmt.Sprintf("The analysis did not search every definition of %s from the entry points.", strings.Join(symbols, ", "))
+		why = fmt.Sprintf("The analysis did not search every definition of %s from the entry points.", strings.Join(inBuild(symbols, res), ", "))
 	}
 	return head + why + fmt.Sprintf(" It is settled by building %s from a release the advisory's ranges place, or by finding the advisory's vulnerable functions in the replacement's code with no path reaching them.", module)
 }

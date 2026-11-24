@@ -24,6 +24,7 @@ func TestReplacedResolution(t *testing.T) {
 
 	cases := []struct {
 		name          string
+		pkg           string // the advisory's package; "" = example.com/vuln
 		files         map[string]string
 		symbols       []string
 		wantOK        bool
@@ -121,6 +122,34 @@ func TestReplacedResolution(t *testing.T) {
 			wantUnresolve: true,
 		},
 		{
+			name: "a package under a major-version directory of the fork's tree stays required",
+			files: map[string]string{
+				"go.mod":              "module example.com/app\n\ngo 1.22\n\nrequire example.com/vuln v0.0.0\n\nreplace example.com/vuln => ./_fork\n",
+				"main.go":             "package main\n\nimport (\n\t\"example.com/vuln\"\n\t\"example.com/vuln/v2/parse\"\n)\n\nfunc main() { _ = vuln.MapClaims{}; parse.Parse() }\n",
+				"_fork/go.mod":        forkMod,
+				"_fork/vuln.go":       fork,
+				"_fork/v2/parse/p.go": "package parse\n\nfunc Parse() {}\n",
+			},
+			symbols:       []string{v3, "example.com/vuln/v2/parser.Parse"},
+			wantOK:        true,
+			wantMatched:   []string{v3},
+			wantUnresolve: true,
+		},
+		{
+			name: "a major-version suffix of a module path carrying one stays required",
+			pkg:  "example.com/vuln/v2",
+			files: map[string]string{
+				"go.mod":        "module example.com/app\n\ngo 1.22\n\nrequire example.com/vuln/v2 v2.0.0\n\nreplace example.com/vuln/v2 => ./_fork\n",
+				"main.go":       "package main\n\nimport \"example.com/vuln/v2\"\n\nfunc main() { _ = vuln.MapClaims{} }\n",
+				"_fork/go.mod":  forkMod,
+				"_fork/vuln.go": fork,
+			},
+			symbols:       []string{"example.com/vuln/v2.MapClaims.VerifyAudience", "example.com/vuln/v2/v3.Do"},
+			wantOK:        true,
+			wantMatched:   []string{"example.com/vuln/v2.MapClaims.VerifyAudience"},
+			wantUnresolve: true,
+		},
+		{
 			name: "a partial load does not narrow",
 			files: map[string]string{
 				"go.mod":        "module example.com/app\n\ngo 1.22\n\nrequire example.com/vuln v0.0.0\n\nreplace example.com/vuln => ./_fork\n",
@@ -198,7 +227,11 @@ func TestReplacedResolution(t *testing.T) {
 			if err != nil && tc.wantOK {
 				t.Fatalf("listModules: %v", err)
 			}
-			res, ok := replacedResolution(context.Background(), dir, "example.com/vuln", tc.symbols)
+			pkg := tc.pkg
+			if pkg == "" {
+				pkg = "example.com/vuln"
+			}
+			res, ok := replacedResolution(context.Background(), dir, pkg, tc.symbols)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v (modules %+v)", ok, tc.wantOK, mods)
 			}
@@ -208,7 +241,7 @@ func TestReplacedResolution(t *testing.T) {
 			var matched []string
 			for sym, scips := range res.Matched {
 				for _, s := range scips {
-					if res.Origins[s] != "pkg:golang/example.com/vuln" {
+					if res.Origins[s] != "pkg:golang/"+pkg {
 						t.Errorf("origin of %s = %q", s, res.Origins[s])
 					}
 				}

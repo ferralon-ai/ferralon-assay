@@ -199,7 +199,7 @@ func outsideBuild(sym string, compiled map[string]*packages.Package, held func(s
 
 // replaceSources returns whether an import path is the source side of a replace directive of the
 // build: a replaced module of the build list whose path is the import path, or holds it as one of its
-// own package paths, or holds it under a major-version suffix that is a package directory of the
+// own package paths, or holds it under a major-version suffix that is a directory of the
 // replacement's tree; or a replace directive of the build's go.mod or go.work, on a
 // module the build list does not hold, whose source path holds it. A replacement whose tree cannot be
 // read holds every import path below its module path.
@@ -261,9 +261,13 @@ func replaceSources(buildDir, goWork string, mods []listedModule) (func(string) 
 			}
 			// A package path of the replaced module itself that the replacement lacks is code the fork
 			// renamed or removed, not code outside the build. Only a major-version suffix (m.Path/vN)
-			// names another module, which a replacement's tree may still hold as a directory. The
+			// of a module path carrying none names another module, and only when the replacement's
+			// tree has no vN directory, which would make every path below it the module's own. The
 			// element is read up to its first dot as well, since qualifiers also reads "vN.T" as a
 			// path element.
+			if _, major, _ := module.SplitPathVersion(m.Path); major != "" {
+				return true
+			}
 			first, _, _ := strings.Cut(rel, "/")
 			first, _, _ = strings.Cut(first, ".")
 			if _, major, ok := module.SplitPathVersion(m.Path + "/" + first); !ok || major == "" {
@@ -276,7 +280,7 @@ func replaceSources(buildDir, goWork string, mods []listedModule) (func(string) 
 			if dir == "" {
 				return true
 			}
-			if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(filepath.Join(dir, first)); !errors.Is(err, os.ErrNotExist) {
 				return true
 			}
 		}

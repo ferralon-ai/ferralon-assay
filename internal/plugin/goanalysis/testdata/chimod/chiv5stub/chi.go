@@ -34,6 +34,9 @@ type Router interface {
 	Post(pattern string, h http.HandlerFunc)
 	Put(pattern string, h http.HandlerFunc)
 	Trace(pattern string, h http.HandlerFunc)
+
+	NotFound(h http.HandlerFunc)
+	MethodNotAllowed(h http.HandlerFunc)
 }
 
 // Mux stands in for the chi router.
@@ -80,6 +83,9 @@ func (mx *Mux) Patch(pattern string, h http.HandlerFunc)   {}
 func (mx *Mux) Post(pattern string, h http.HandlerFunc)    {}
 func (mx *Mux) Put(pattern string, h http.HandlerFunc)     {}
 func (mx *Mux) Trace(pattern string, h http.HandlerFunc)   {}
+
+func (mx *Mux) NotFound(h http.HandlerFunc)         {}
+func (mx *Mux) MethodNotAllowed(h http.HandlerFunc) {}
 
 // URLParam mirrors chi.URLParam: the URL parameter key of the routed request.
 func URLParam(r *http.Request, key string) string { return "" }

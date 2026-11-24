@@ -230,6 +230,8 @@ func main() {
 	e.Any("/echo/*", echo.WrapHandler(echo.New()))
 	(&fwdRouter{e: e}).Get("/fwd", s.neverRegistered)
 
+	registerCatchAll(e, api, s)
+
 	fake := lookalike.New()
 	fake.GET("/fake", s.lookalikeGet)
 	fake.POST("/fake", s.lookalikePost)

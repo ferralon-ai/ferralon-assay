@@ -199,6 +199,8 @@ func main() {
 	old := chiv1.NewRouter()
 	old.Get("/v1/{id}", s.v1Form)
 
+	registerCatchAll(s, r)
+
 	fake := lookalike.NewRouter()
 	fake.Get("/fake", s.lookalikeGet)
 	fake.Post("/fake", s.lookalikePost)

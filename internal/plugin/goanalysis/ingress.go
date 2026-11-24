@@ -231,6 +231,10 @@ func (s *ssaProgram) discoverRoutes() []route {
 	for fn := range ssautil.AllFunctions(s.prog) {
 		for _, b := range fn.Blocks {
 			for _, instr := range b.Instrs {
+				if st, ok := instr.(*ssa.Store); ok {
+					routes = append(routes, s.catchAllStoreRoutes(fn, st)...)
+					continue
+				}
 				call, ok := instr.(ssa.CallInstruction)
 				if !ok {
 					continue
@@ -295,6 +299,14 @@ func (s *ssaProgram) pathRoutes(prefixes *prefixResolver, r *pathRouter, name st
 	switch {
 	case r.catchAll[name]:
 		selectors = []string{catchAllSelector}
+		// A catch-all that scopes itself to a path (echo's RouteNotFound) still answers
+		// whatever that path leaves unmatched: the path is no selector.
+		if len(args) > 0 && isStringType(args[0].Type()) {
+			args = args[1:]
+		}
+		if r.oneHandler && len(args) > 1 {
+			args = args[:1]
+		}
 	default:
 		if r.methodFirst[name] && len(args) > 0 {
 			args = args[1:]
@@ -418,6 +430,11 @@ var chiRegistrarMethods = map[string]bool{
 // method, ahead of the route pattern.
 var chiMethodRegistrars = map[string]bool{"Method": true, "MethodFunc": true}
 
+// chiCatchAllRegistrars are the chi router methods that install the handler for a
+// request no route matches (NotFound) or no route matches by method (MethodNotAllowed).
+// They take one handler and no pattern, and register under catchAllSelector.
+var chiCatchAllRegistrars = map[string]bool{"NotFound": true, "MethodNotAllowed": true}
+
 // joinChi composes a Route prefix and a pattern as chi mounts a sub-router: the
 // prefix's trailing slash is dropped and the pattern appended.
 func joinChi(prefix, pattern string) string { return strings.TrimSuffix(prefix, "/") + pattern }
@@ -497,6 +514,21 @@ var echoRegistrarMethods = map[string]bool{
 // HTTP method (Add) or methods (Match), ahead of the path.
 var echoMethodRegistrars = map[string]bool{"Add": true, "Match": true}
 
+// echoCatchAllRegistrars is echo's RouteNotFound, declared on both *echo.Echo and
+// *echo.Group: it takes (path, HandlerFunc, ...MiddlewareFunc) and answers every
+// request under path that no route matches. It is a catch-all, so the handler
+// registers under catchAllSelector whatever the path.
+var echoCatchAllRegistrars = map[string]bool{"RouteNotFound": true}
+
+// echoCatchAllVars are echo's package-level NotFoundHandler and
+// MethodNotAllowedHandler: the HandlerFuncs echo runs for a request no route matches,
+// or none matches by method. Assigning one installs the application's handler.
+var echoCatchAllVars = map[string]bool{"NotFoundHandler": true, "MethodNotAllowedHandler": true}
+
+// echoCatchAllFields is the Echo.HTTPErrorHandler field: the func echo runs for every
+// error a handler returns, a not-found and a method-not-allowed among them.
+var echoCatchAllFields = map[string]bool{"HTTPErrorHandler": true}
+
 // echoWrappers are echo's adapters from a net/http handler to an echo.HandlerFunc: a
 // registered WrapHandler(h) ingresses as h's ServeHTTP (or the first-party func an
 // http.HandlerFunc conversion wraps). WrapMiddleware adapts middleware, which is no
@@ -516,8 +548,12 @@ func joinEcho(prefix, pattern string) string { return prefix + pattern }
 //     interface;
 //   - the registrars in methodFirst take the HTTP method(s) ahead of the route
 //     pattern, and that argument is skipped so the selector is the pattern;
-//   - the catch-all registrars (catchAll) take no pattern and register under
-//     catchAllSelector;
+//   - the catch-all registrars (catchAll: gin's NoRoute and NoMethod, chi's NotFound
+//     and MethodNotAllowed, echo's RouteNotFound) take no pattern of their own (echo's
+//     path is skipped) and register under catchAllSelector, as does a first-party func
+//     assigned to a catch-all package var or struct field (catchAllVars and
+//     catchAllFields: echo's NotFoundHandler, MethodNotAllowedHandler and
+//     HTTPErrorHandler; catchAllStoreRoutes);
 //   - a router whose registrars take exactly one handler after the pattern
 //     (oneHandler, echo) treats the arguments after it as route middleware, never a
 //     handler; otherwise every handler in the chain is one (gin, macaron);
@@ -542,20 +578,25 @@ type pathRouter struct {
 	oneHandler                                         bool
 	roots, groups, scopes, passes                      map[string]bool
 	join                                               func(prefix, pattern string) string
+	// catchAllVars and catchAllFields name the package-level vars and the router
+	// struct fields a first-party func is stored into as a catch-all handler
+	// (catchAllStoreRoutes).
+	catchAllVars, catchAllFields map[string]bool
 }
 
 var (
 	chiRouter = &pathRouter{paths: chiPkgPaths, registrars: chiRegistrarMethods, methodFirst: chiMethodRegistrars,
 		roots:  map[string]bool{"NewRouter": true, "NewMux": true},
 		groups: map[string]bool{"Route": true}, scopes: map[string]bool{"Route": true, "Group": true},
-		passes: map[string]bool{"With": true, "Group": true}, join: joinChi}
+		passes: map[string]bool{"With": true, "Group": true}, join: joinChi, catchAll: chiCatchAllRegistrars}
 	ginRouter = &pathRouter{paths: ginPkgPaths, registrars: ginRegistrarMethods,
 		methodFirst: ginMethodRegistrars, catchAll: ginCatchAllRegistrars, wrappers: ginWrappers,
 		roots: map[string]bool{"New": true, "Default": true}, groups: map[string]bool{"Group": true},
 		passes: map[string]bool{"Use": true}, join: joinGin}
 	echoRouter = &pathRouter{paths: echoPkgPaths, registrars: echoRegistrarMethods,
-		methodFirst: echoMethodRegistrars, wrappers: echoWrappers, oneHandler: true,
-		roots: map[string]bool{"New": true}, groups: map[string]bool{"Group": true}, join: joinEcho}
+		methodFirst: echoMethodRegistrars, catchAll: echoCatchAllRegistrars, wrappers: echoWrappers, oneHandler: true,
+		roots: map[string]bool{"New": true}, groups: map[string]bool{"Group": true}, join: joinEcho,
+		catchAllVars: echoCatchAllVars, catchAllFields: echoCatchAllFields}
 	pathRouters = []*pathRouter{chiRouter, ginRouter, echoRouter}
 )
 

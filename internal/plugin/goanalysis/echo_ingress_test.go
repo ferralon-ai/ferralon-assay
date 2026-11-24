@@ -59,6 +59,12 @@ var echoForms = []struct {
 	{"non-constant Group prefix", "server#dynamicForm().", "/dynamic/:id", "sinkDynamic"},
 	{"WrapHandler", "wrappedHandler#ServeHTTP().", "/wraph", "sinkWrapH"},
 	{"WrapHandler(http.HandlerFunc)", "server#netForm().", "/wrapf", "sinkWrapF"},
+	{"RouteNotFound", "server#routeNotFoundForm().", "*", "sinkRouteNotFound"},
+	{"Group RouteNotFound", "server#groupRouteNotFoundForm().", "*", "sinkGroupRouteNotFound"},
+	{"NotFoundHandler", "server#notFoundHandlerForm().", "*", "sinkNotFoundHandler"},
+	{"MethodNotAllowedHandler", "server#methodNotAllowedForm().", "*", "sinkMethodNotAllowed"},
+	{"HTTPErrorHandler", "server#httpErrorForm().", "*", "sinkHTTPError"},
+	{"HTTPErrorHandler in a literal", "server#httpErrorLiteralForm().", "*", "sinkHTTPErrorLiteral"},
 }
 
 // echoAccessors lists each modeled echo.Context accessor; accessorsForm hands its
@@ -189,6 +195,9 @@ func TestEcho_LookalikeRouterIsNoIngress(t *testing.T) {
 		"server#lookalikeAdd().",
 		"server#lookalikeGroup().",
 		"server#lookalikeNet().",
+		"server#lookalikeNotFound().",
+		"server#lookalikeNotFoundVar().",
+		"server#lookalikeErrorForm().",
 	)
 }
 

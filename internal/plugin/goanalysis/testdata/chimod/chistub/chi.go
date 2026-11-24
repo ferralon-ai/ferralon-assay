@@ -18,3 +18,9 @@ func (mx *Mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {}
 
 // Get registers handlerFn for GET on pattern.
 func (mx *Mux) Get(pattern string, handlerFn http.HandlerFunc) {}
+
+// NotFound installs the handler for a request no route matches.
+func (mx *Mux) NotFound(handlerFn http.HandlerFunc) {}
+
+// MethodNotAllowed installs the handler for a request no route matches by method.
+func (mx *Mux) MethodNotAllowed(handlerFn http.HandlerFunc) {}

@@ -8,6 +8,17 @@ verdict values (`disqualified`, `not_exploitable`, `reachable_candidate`, `undet
 `malicious_package_present`) are taken directly from the types; the identifiers, paths, and scores
 inside are invented for illustration and correspond to no real advisory or codebase.
 
+**Labels in the readable report.** The job summary, PR comment and HTML report show each verdict
+as a plain-words label with the raw name beside it; the JSON below keeps the raw names. The mapping:
+
+| Raw verdict | Label shown |
+|---|---|
+| `reachable_candidate` | Call path found |
+| `not_exploitable` | Exposure ruled out for this scan scope |
+| `disqualified` | Outside the affected range |
+| `undetermined` | Exposure assessment incomplete |
+| `malicious_package_present` | Malicious package present |
+
 ```json
 {
   "schema_version": "tegron.report.v3",

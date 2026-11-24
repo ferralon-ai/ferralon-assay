@@ -16,8 +16,9 @@ const entrypointsShown = 5
 // entrypointLines renders one line per lane that reported its entry points (report.Entrypoints):
 // whether the set was inferred or declared, the roots it analysed by kind, and any declared
 // selector that matched nothing. Under an override it also shows what the lane inferred before the
-// override (only the kinds the override changed) and the "!" selectors that removed something. Returns nil when no lane reported a set. Every name comes from the
-// scanned repository or the caller, so each renders inside a code span.
+// override (only the kinds the override changed) and the "!" selectors that removed something.
+// Returns nil when no lane reported a set. Every name comes from the scanned repository or the
+// caller, so each renders inside a code span.
 func entrypointLines(r report.Report) []string {
 	out := make([]string, 0, len(r.Entrypoints))
 	for _, e := range r.Entrypoints {
@@ -46,8 +47,10 @@ func entrypointLines(r report.Report) []string {
 			b.WriteString("; " + entrypointKind(k, e.Effective[k]))
 		}
 		if entryOverridden(e) {
+			// A kind the record does not report as analysed is outside the override's reach (the go
+			// lane infers its mains but reports only the library set), so it is not "changed".
 			for _, k := range slices.Sorted(maps.Keys(e.Inferred)) {
-				if !slices.Equal(e.Inferred[k], e.Effective[k]) {
+				if eff, ok := e.Effective[k]; ok && !slices.Equal(e.Inferred[k], eff) {
 					b.WriteString("; inferred before the override: " + entrypointKind(k, e.Inferred[k]))
 				}
 			}
@@ -91,7 +94,7 @@ func entryOverridden(e plugin.EntryRootRecord) bool {
 
 // entryUnlisted reports a js record the lane emitted without reading dependency code: it reports no
 // inferred set and every kind in Effective is empty, which says nothing was listed, not that there
-// are none. The go lane's records carry no Inferred either, and an empty set there is a real answer.
+// are none. Only js records are checked: an empty go set (a declared none) is a real answer.
 func entryUnlisted(e plugin.EntryRootRecord) bool {
 	if e.Lane != plugin.EntryLaneJS || e.Inferred != nil {
 		return false

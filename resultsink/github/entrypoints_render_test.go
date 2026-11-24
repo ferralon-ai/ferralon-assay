@@ -104,8 +104,9 @@ func TestBothSurfaces_EntrypointsOverride(t *testing.T) {
 		{name: "go library override removes a path", rec: plugin.EntryRootRecord{
 			Lane: "go", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "go:library=!example.com/m/lib/internal",
 			Effective: map[string][]string{goLib: {"example.com/m/lib"}},
-			Inferred:  map[string][]string{goLib: {"example.com/m/lib", "example.com/m/lib/internal"}},
-			Denied:    []string{"!example.com/m/lib/internal"},
+			Inferred: map[string][]string{goLib: {"example.com/m/lib", "example.com/m/lib/internal"},
+				plugin.EntryKindMain: {"example.com/m/cmd/app"}},
+			Denied: []string{"!example.com/m/lib/internal"},
 		}, want: "go: declared, resolved as `go:library=!example.com/m/lib/internal`; library packages callable from outside the build (1): `example.com/m/lib`; " +
 			"inferred before the override: library packages callable from outside the build (2): `example.com/m/lib`, `example.com/m/lib/internal`; " +
 			"removed by: `!example.com/m/lib/internal`."},
@@ -133,7 +134,7 @@ func TestBothSurfaces_EntrypointsOverride(t *testing.T) {
 		{name: "more than five inferred roots are capped", rec: plugin.EntryRootRecord{
 			Lane: "go", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "none",
 			Effective: map[string][]string{goLib: {}},
-			Inferred:  map[string][]string{goLib: {"m/a", "m/b", "m/c", "m/d", "m/e", "m/f", "m/g"}},
+			Inferred:  map[string][]string{goLib: {"m/a", "m/b", "m/c", "m/d", "m/e", "m/f", "m/g"}, plugin.EntryKindMain: {"m/cmd/app"}},
 		}, want: "go: declared, resolved as `none`; library packages callable from outside the build: none; " +
 			"inferred before the override: library packages callable from outside the build (7): `m/a`, `m/b`, `m/c`, `m/d`, `m/e` and 2 more."},
 		{name: "repository names stay in code spans", rec: plugin.EntryRootRecord{

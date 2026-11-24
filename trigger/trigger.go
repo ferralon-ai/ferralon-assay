@@ -190,7 +190,10 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	// defers, or skips it BEFORE any Assessment is constructed. Band is read here and only
 	// here; the admitted slice is plain VulnRefs with band stripped, so band never crosses
 	// the S1 seam into a pipeline/verdict struct (inv.5). Fail-open: an absent band admits.
-	admitted := admitAdvisories(scheduleFor(req.Advisories, req.Bands))
+	// The same gate orders the loop by the run's EPSS/KEV signals (KEV-listed, then EPSS
+	// descending, then the rest in input order), so a scan that stops early has assessed the
+	// likeliest-exploited advisories first; with no signals the order is the input's.
+	admitted := admitAdvisories(withSignalPriority(scheduleFor(req.Advisories, req.Bands), req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...)))
 
 	// Declared BEFORE any finding, so a pass whose work set could not be fully determined
 	// discloses that even if it goes on to produce zero findings — the case the note exists for.
@@ -400,7 +403,7 @@ func RunPRInherit(ctx context.Context, store statestore.StateStore, req PRInheri
 		// nothing and is replaced by a fresh row. An advisory new to the work set has no row to
 		// inherit either, and the Report's cursor covers it all the same.
 		unrowed := unrowedAdvisories(baseline, req.Advisories)
-		fresh, notes, cause := assessUnrowed(ctx, req, unrowed)
+		fresh, notes, cause := assessUnrowed(ctx, req, baseline, unrowed)
 		rep, err := inheritBaseline(baseline, req, state, fresh, notes, cause)
 		if err != nil {
 			return nil, err

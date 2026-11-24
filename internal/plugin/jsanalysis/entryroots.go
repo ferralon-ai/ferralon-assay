@@ -10,14 +10,6 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// jsOverridable are the kinds of inferred root a caller can remove. A first-party module is always
-// an entry point.
-var jsOverridable = []string{plugin.EntryKindBin, plugin.EntryKindScript}
-
-// jsLaneSelectors are the selector forms that name a js root. A path selector, lane-wide or of a
-// kind, matches none of them.
-var jsLaneSelectors = []string{"npm:", "bin:"}
-
 // entryOverrideOf is the override the closure is built under, nil for none. It refuses what the lane
 // cannot honour, as the host's routing does: the request crosses a process boundary, and a lane that
 // ignored a statement it cannot read would analyse another set of entry points than the caller
@@ -29,7 +21,7 @@ func entryOverrideOf(o *plugin.EntryOverride) (*plugin.EntryOverride, error) {
 	if o.Lane != "" && o.Lane != plugin.EntryLaneJS {
 		return nil, fmt.Errorf("jsanalysis: entry override addresses lane %q, not js", o.Lane)
 	}
-	if why := plugin.RemovalOnlyRefusal(*o, jsOverridable, jsLaneSelectors...); why != "" {
+	if why := plugin.RemovalOnlyRefusal(*o, plugin.JSRemovableKinds, plugin.JSRemovableSelectors...); why != "" {
 		return nil, fmt.Errorf("jsanalysis: entry override: %s", why)
 	}
 	removes := len(o.Exclude) > 0
@@ -90,7 +82,7 @@ func rootName(r plugin.EntryRoot) string {
 // byKind lists the names of roots under each overridable kind, sorted, every kind present.
 func byKind(roots []plugin.EntryRoot) map[string][]string {
 	out := map[string][]string{}
-	for _, k := range jsOverridable {
+	for _, k := range plugin.JSRemovableKinds {
 		out[k] = []string{}
 	}
 	for _, r := range roots {
@@ -161,10 +153,10 @@ func kindOverrides(o plugin.EntryOverride) []plugin.KindOverride {
 // (no dependency code was read, or the read ran out): nothing was inferred, and no "!" selector was
 // evaluated. They are left out of Unmatched, which says a selector matched nothing the lane holds,
 // and out of Denied: a record that said so would tell the customer a selector was wrong when it was
-// never tried. The statement is recorded all the same, so a later run reads it.
+// never tried, and Inferred stays absent: the lane reported no guess. The statement is recorded all the same, so a later run reads it.
 func unlistedRecord(o *plugin.EntryOverride) *plugin.EntryRootRecord {
 	rec := newEntryTrack(o).record()
-	rec.Unmatched, rec.Denied = nil, nil
+	rec.Unmatched, rec.Denied, rec.Inferred = nil, nil, nil
 	return rec
 }
 

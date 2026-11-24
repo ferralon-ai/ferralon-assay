@@ -69,13 +69,13 @@ func TestRouteEntrypoints(t *testing.T) {
 		{name: "js script allow", in: "js:script=npm:x/y.js", scanLane: "js", wantErr: "not accepted yet for js"},
 		{name: "python", in: "python:none", scanLane: "python", wantErr: "lane python " + refusal},
 		{name: "dotnet", in: "dotnet:main=none", scanLane: "dotnet", wantErr: "lane dotnet " + refusal},
-		{name: "a clause for a lane the scan does not run", in: "js:none", scanLane: "go", wantErr: "lane js " + refusal},
+		{name: "a clause for a lane the scan does not run", in: "js:none", scanLane: "go", wantErr: "lane js cannot honour this clause"},
 		{name: "python lane auto states the default", in: "python:auto", scanLane: "python"},
 		{name: "js lane auto", in: "js:auto", scanLane: "js"},
 		{name: "js lane auto, scan elsewhere", in: "js:auto", scanLane: "go"},
 		{name: "java kind auto", in: "java:main=auto", scanLane: "java"},
 		{name: "js auto with a lane-wide deny", in: "js:auto !js:bin:x", scanLane: "js", wantJS: true},
-		{name: "js lane-wide path deny", in: "!js:src/cli.js", scanLane: "js", wantErr: "can never match"},
+		{name: "js lane-wide path deny", in: "!js:src/cli.js", scanLane: "js", wantErr: "a removable js entry point is named by npm: or bin:"},
 		{name: "js auto with a lane-wide path deny", in: "js:auto !js:src/cli.js", scanLane: "js", wantErr: "npm: or bin:"},
 		{name: "js bin path deny", in: "!js:bin=src/cli.js", scanLane: "js", wantErr: "!js:bin=src/cli.js can never match"},
 		{name: "js script path deny", in: "!js:script=src/x.js", scanLane: "js", wantErr: "js script entry point is named by npm: or bin:"},
@@ -89,7 +89,7 @@ func TestRouteEntrypoints(t *testing.T) {
 		{name: "bare none, go scan", in: "none", scanLane: "go", wantErr: "write go:library=none"},
 		{name: "bare none, java scan", in: "none", scanLane: "java", wantErr: "lane java " + refusal},
 		{name: "bare none, kotlin scan", in: "none", scanLane: "kotlin", wantErr: "lane kotlin " + refusal},
-		{name: "bare none, js scan", in: "none", scanLane: "js", wantErr: "lane js " + refusal},
+		{name: "bare none, js scan", in: "none", scanLane: "js", wantErr: "lane js cannot honour this clause"},
 		{name: "bare none, python scan", in: "none", scanLane: "python", wantErr: "lane python " + refusal},
 		{name: "bare none, dotnet scan", in: "none", scanLane: "dotnet", wantErr: "lane dotnet " + refusal},
 		{name: "bare none, a scan no lane runs", in: "none", scanLane: "cfamily"},
@@ -264,7 +264,7 @@ func TestReachability_EntrypointsRouteToLibraryEntrypoints(t *testing.T) {
 	})
 	t.Run("a clause no lane honours fails the stage", func(t *testing.T) {
 		got, err := reachRequest(t, WithEntrypoints(mustOverrides(t, "js:none")))
-		if err == nil || !strings.Contains(err.Error(), "lane js does not accept entry-point overrides yet") {
+		if err == nil || !strings.Contains(err.Error(), "lane js cannot honour this clause") {
 			t.Fatalf("err = %v, want the lane refusal", err)
 		}
 		if got.VulnID != "" {
@@ -277,4 +277,13 @@ func TestReachability_EntrypointsRouteToLibraryEntrypoints(t *testing.T) {
 			t.Errorf("request = %+v, err = %v, want nil statement", got.LibraryEntrypoints, err)
 		}
 	})
+}
+
+// TestRouteEntrypoints_JSRefusalDoesNotDenyTheFeature: a js clause that can never match is refused
+// without saying the lane takes no overrides, since it takes removals.
+func TestRouteEntrypoints_JSRefusalDoesNotDenyTheFeature(t *testing.T) {
+	_, err := RouteEntrypoints(mustOverrides(t, "!js:bin=src/cli.js"), "js")
+	if err == nil || strings.Contains(err.Error(), "does not accept") || !strings.Contains(err.Error(), "cannot honour") {
+		t.Errorf("err = %v, want a refusal that does not deny the lane's removals", err)
+	}
 }

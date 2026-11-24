@@ -36,6 +36,15 @@ const (
 // kind scope has the Origin "entrypoints:<kind>", which keeps the kind the caller declared it for.
 const EntryOriginDeclared = "entrypoints"
 
+// JSRemovableKinds are the kinds of the js lane a caller can remove. A first-party module is always
+// an entry point.
+var JSRemovableKinds = []string{EntryKindBin, EntryKindScript}
+
+// JSRemovableSelectors are the selector forms that name a removable js root: every one has an
+// npm:<package>/<file> selector or a bin:<name> word, so a path selector never matches, lane-wide or
+// of a kind.
+var JSRemovableSelectors = []string{"npm:", "bin:"}
+
 // entryLaneKinds lists the kinds each lane infers, and so the kinds an override clause may qualify.
 var entryLaneKinds = map[string][]string{
 	EntryLaneGo:     {EntryKindMain, EntryKindLibrary, EntryKindHandler},
@@ -292,7 +301,7 @@ func RemovalOnlyRefusal(o EntryOverride, overridable []string, laneSelectors ...
 		forms := strings.Join(laneSelectors, " or ")
 		for _, sel := range o.Exclude {
 			if !matchable(sel) {
-				return fmt.Sprintf("!%s:%s can never match: a %s entry point is named by %s", o.Lane, sel, o.Lane, forms)
+				return fmt.Sprintf("!%s:%s can never match: a removable %s entry point is named by %s", o.Lane, sel, o.Lane, forms)
 			}
 		}
 		for _, kind := range sortedKeys(o.Kinds) {

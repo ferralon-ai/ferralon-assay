@@ -53,7 +53,7 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 			case plugin.EntryLaneGo:
 				why = `bare "none" drops every root of the lane and the go lane can drop library roots only; write go:library=none`
 			case plugin.EntryLaneJS:
-				why = plugin.RemovalOnlyRefusal(o, jsOverridable, jsLaneSelectors...)
+				why = plugin.RemovalOnlyRefusal(o, plugin.JSRemovableKinds, plugin.JSRemovableSelectors...)
 			}
 			return nil, laneRefusal(lane, why, o.Input)
 		}
@@ -64,7 +64,7 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 			if ko, ok := o.Kinds[plugin.EntryKindModule]; ok && !statesDefault(plugin.EntryOverride{KindOverride: ko}) {
 				return nil, fmt.Errorf("entrypoints: js:module cannot be overridden: first-party modules always stay entry points, and only bin and script roots can be removed (%q)", o.Input)
 			}
-			if why := plugin.RemovalOnlyRefusal(o, jsOverridable, jsLaneSelectors...); why != "" {
+			if why := plugin.RemovalOnlyRefusal(o, plugin.JSRemovableKinds, plugin.JSRemovableSelectors...); why != "" {
 				return nil, laneRefusal(lane, why, o.Input)
 			}
 			continue
@@ -83,14 +83,6 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 	}
 	return routed, nil
 }
-
-// jsOverridable are the kinds of the js lane a caller can remove.
-var jsOverridable = []string{plugin.EntryKindBin, plugin.EntryKindScript}
-
-// jsLaneSelectors are the selector forms that name a removable js root: every one has an
-// npm:<package>/<file> selector or a bin:<name> word, so a path selector never matches, lane-wide or
-// of a kind.
-var jsLaneSelectors = []string{"npm:", "bin:"}
 
 // JSEntryOverride is the js lane's override of overrides, the one reachability_ingress hands the lane,
 // or nil when the input states the default for it. RouteEntrypoints has already refused what the
@@ -141,6 +133,9 @@ func statesDefault(o plugin.EntryOverride) bool {
 
 func laneRefusal(lane, why, input string) error {
 	msg := fmt.Sprintf("entrypoints: lane %s does not accept entry-point overrides yet", lane)
+	if lane == plugin.EntryLaneJS {
+		msg = "entrypoints: lane js cannot honour this clause"
+	}
 	if why != "" {
 		msg += ": " + why
 	}

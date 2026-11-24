@@ -1,11 +1,15 @@
 package report
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jsanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -293,25 +297,69 @@ func TestJSEntryRootsDoNotDrift(t *testing.T) {
 	}
 }
 
-// TestEntrypointRecords_FullJSRecordBeatsUnlisted: of two js records offered, the one that lists
-// what the lane inferred stands over one from a run that read no closure, in either order.
+// laneUnlistedRecord is the js record a run that read no closure emits, as the lane builds it and a
+// stored report returns it: a removing override and no dependency cache.
+func laneUnlistedRecord(t *testing.T, input string) plugin.EntryRootRecord {
+	t.Helper()
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"index.js":     "console.log('x');\n",
+		"package.json": `{"name":"app","version":"1.0.0","scripts":{"start":"tool --serve"}}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := plugin.ParseEntryOverrides(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := m[plugin.EntryLaneJS]
+	res, err := jsanalysis.Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{"npm:idle@1.0.0#bad"}, EntryOverride: &o})
+	if err != nil || res.EntryRoots == nil {
+		t.Fatalf("Reachability: record %+v, err %v", res.EntryRoots, err)
+	}
+	b, err := json.Marshal(res.EntryRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec plugin.EntryRootRecord
+	if err := json.Unmarshal(b, &rec); err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+// TestEntrypointRecords_FullJSRecordBeatsUnlisted: of two js records offered under one statement, the
+// one that reports what the lane inferred stands over one from a run that read no closure, in either
+// order, and a record of another statement never displaces it: its Input would be on this report.
 func TestEntrypointRecords_FullJSRecordBeatsUnlisted(t *testing.T) {
-	unlisted := plugin.EntryRootRecord{
-		Lane: plugin.EntryLaneJS, Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!js:bin=bin:storybook",
-		Effective: map[string][]string{},
+	const in = "!js:bin=bin:storybook"
+	unlisted := laneUnlistedRecord(t, in)
+	if len(unlisted.Inferred) != 0 {
+		t.Fatalf("the lane's unlisted record reports a guess: %+v", unlisted.Inferred)
 	}
 	full := unlisted
-	full.Effective = map[string][]string{plugin.EntryKindBin: {}}
-	full.Inferred = map[string][]string{plugin.EntryKindBin: {"bin:storybook"}}
+	full.Effective = map[string][]string{plugin.EntryKindBin: {}, plugin.EntryKindScript: {}}
+	full.Inferred = map[string][]string{plugin.EntryKindBin: {"bin:storybook"}, plugin.EntryKindScript: {}}
 	full.Denied = []string{"!bin:storybook"}
-	for name, roots := range map[string][]plugin.EntryRootRecord{
-		"unlisted first": {unlisted, full},
-		"full first":     {full, unlisted},
+	other := full
+	other.Input = "!js:bin=bin:other"
+	other.Denied = []string{"!bin:other"}
+
+	for name, tc := range map[string]struct {
+		roots []plugin.EntryRootRecord
+		want  plugin.EntryRootRecord
+	}{
+		"unlisted first":                      {[]plugin.EntryRootRecord{unlisted, full}, full},
+		"full first":                          {[]plugin.EntryRootRecord{full, unlisted}, full},
+		"another statement does not displace": {[]plugin.EntryRootRecord{unlisted, other}, unlisted},
+		"another statement, other order":      {[]plugin.EntryRootRecord{other, unlisted}, other},
 	} {
 		t.Run(name, func(t *testing.T) {
-			r := NewBuilder(Subject{ResolvedCommit: "c"}).WithEntryRoots(roots...).Build()
-			if len(r.Entrypoints) != 1 || !reflect.DeepEqual(r.Entrypoints[0], full) {
-				t.Errorf("Entrypoints = %+v, want [%+v]", r.Entrypoints, full)
+			r := NewBuilder(Subject{ResolvedCommit: "c"}).WithEntryRoots(tc.roots...).Build()
+			if len(r.Entrypoints) != 1 || !reflect.DeepEqual(r.Entrypoints[0], tc.want) {
+				t.Errorf("Entrypoints = %+v, want [%+v]", r.Entrypoints, tc.want)
 			}
 		})
 	}

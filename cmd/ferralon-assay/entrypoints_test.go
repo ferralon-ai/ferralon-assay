@@ -74,7 +74,7 @@ func TestEntrypointsOptions(t *testing.T) {
 		{name: "js bin removal", lang: "js", env: "!js:bin=bin:storybook", wantStated: true},
 		{name: "python", lang: "python", env: "python:handler=app/x.py", wantErr: []string{"lane python does not accept entry-point overrides yet"}},
 		{name: "dotnet", lang: "dotnet", env: "dotnet:runtime=none", wantErr: []string{"lane dotnet does not accept entry-point overrides yet"}},
-		{name: "a clause for a lane the scan does not run", lang: "go", env: "js:none", wantErr: []string{"lane js does not accept entry-point overrides yet"}},
+		{name: "a clause for a lane the scan does not run", lang: "go", env: "js:none", wantErr: []string{"lane js cannot honour this clause"}},
 		{name: "js lane auto on a js scan", lang: "js", env: "js:auto", wantStated: true},
 		{name: "java kind auto", lang: "java", env: "java:main=auto", wantStated: true},
 		{name: "js lane auto with a deny", lang: "js", env: "js:auto,!js:bin:x", wantStated: true},

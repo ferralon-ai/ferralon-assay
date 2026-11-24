@@ -20,6 +20,11 @@ import (
 // the caller declared. A clause that asks for something is refused whatever lane the scan runs; a "js:none" clause on a
 // Go scan fails the run too.
 //
+// The js lane takes removal of an inferred script binary or script root: "!js:bin=bin:<name>",
+// "!js:npm:<package>/<file>" and the like, handed to the lane by JSEntryOverride, not through the
+// library statement. Its module kind is not overridable (first-party modules stay entry points), and
+// an allow or a "none" is refused until the lane can resolve what the caller adds.
+//
 // A bare "auto" changes nothing and is accepted everywhere; so is an explicit "<lane>:auto" or
 // "<lane>:<kind>=auto" with no other clause for that lane, which states the default. A bare "none" names all six lanes, so it
 // binds the lane the scan runs and no other: that lane must be able to honour it, and the go lane
@@ -43,13 +48,28 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 				continue
 			}
 			why := ""
-			if lane == plugin.EntryLaneGo {
+			switch lane {
+			case plugin.EntryLaneGo:
 				why = `bare "none" drops every root of the lane and the go lane can drop library roots only; write go:library=none`
+			case plugin.EntryLaneJS:
+				why = plugin.RemovalOnlyRefusal(o, plugin.JSRemovableKinds, plugin.JSRemovableSelectors...)
 			}
 			return nil, laneRefusal(lane, why, o.Input)
 		}
+		if lane == plugin.EntryLaneJS {
+			if plugin.StatesDefault(o) {
+				continue
+			}
+			if ko, ok := o.Kinds[plugin.EntryKindModule]; ok && !plugin.StatesDefault(plugin.EntryOverride{KindOverride: ko}) {
+				return nil, fmt.Errorf("entrypoints: js:module cannot be overridden: first-party modules always stay entry points, and only bin and script roots can be removed (%q)", o.Input)
+			}
+			if why := plugin.RemovalOnlyRefusal(o, plugin.JSRemovableKinds, plugin.JSRemovableSelectors...); why != "" {
+				return nil, laneRefusal(lane, why, o.Input)
+			}
+			continue
+		}
 		if lane != plugin.EntryLaneGo {
-			if statesDefault(o) {
+			if plugin.StatesDefault(o) {
 				continue
 			}
 			return nil, laneRefusal(lane, "", o.Input)
@@ -63,25 +83,22 @@ func RouteEntrypoints(overrides map[string]plugin.EntryOverride, scanLane string
 	return routed, nil
 }
 
-// statesDefault reports whether an override asks for nothing: auto at the lane scope and at every
-// kind scope, with no path selected or denied.
-func statesDefault(o plugin.EntryOverride) bool {
-	plain := func(k plugin.KindOverride) bool {
-		return (k.Mode == "" || k.Mode == plugin.LibraryEntrypointsAuto) && len(k.Include) == 0 && len(k.Exclude) == 0
+// JSEntryOverride is the js lane's override of overrides, the one reachability_ingress hands the lane,
+// or nil when the input states the default for it. RouteEntrypoints has already refused what the
+// lane cannot honour.
+func JSEntryOverride(overrides map[string]plugin.EntryOverride) *plugin.EntryOverride {
+	o, ok := overrides[plugin.EntryLaneJS]
+	if !ok || o.Input == plugin.LibraryEntrypointsAuto || plugin.StatesDefault(o) {
+		return nil
 	}
-	if !plain(o.KindOverride) {
-		return false
-	}
-	for _, k := range o.Kinds {
-		if !plain(k) {
-			return false
-		}
-	}
-	return true
+	return &o
 }
 
 func laneRefusal(lane, why, input string) error {
 	msg := fmt.Sprintf("entrypoints: lane %s does not accept entry-point overrides yet", lane)
+	if lane == plugin.EntryLaneJS {
+		msg = "entrypoints: lane js cannot honour this clause"
+	}
 	if why != "" {
 		msg += ": " + why
 	}
@@ -100,7 +117,7 @@ func libraryStatement(o plugin.EntryOverride) (le *plugin.LibraryEntrypoints, wh
 		return nil, onlyLibrary
 	}
 	for kind, ko := range o.Kinds {
-		if kind != plugin.EntryKindLibrary && !statesDefault(plugin.EntryOverride{KindOverride: ko}) {
+		if kind != plugin.EntryKindLibrary && !plugin.StatesDefault(plugin.EntryOverride{KindOverride: ko}) {
 			return nil, onlyLibrary
 		}
 	}
@@ -140,6 +157,20 @@ func LibraryStatementOf(opts ...AssessOption) plugin.LibraryEntrypoints {
 		return plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}
 	}
 	return *declared
+}
+
+// JSStatementOf is the js lane's entry-point override a run assessed with opts makes: the one its
+// entrypoints input states for the lane, nil when it states none. A scan of another language states
+// none, since no lane but js reads it. It is the override reachability_ingress hands the lane.
+func JSStatementOf(opts ...AssessOption) *plugin.EntryOverride {
+	var cfg AssessConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.Plugin != nil && cfg.Plugin.Language() != plugin.EntryLaneJS {
+		return nil
+	}
+	return JSEntryOverride(cfg.Entrypoints)
 }
 
 // SameLibraryStatement reports whether two library-entrypoints statements say the same thing: the

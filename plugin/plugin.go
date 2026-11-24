@@ -552,6 +552,12 @@ type ReachabilityRequest struct {
 	// importer may contradict resolves its entry points from it and reports them in
 	// ReachabilityResult.LibraryEntrypoints.
 	LibraryEntrypoints *LibraryEntrypoints `json:"library_entrypoints,omitempty"`
+	// EntryOverride is the caller's override of the entry points the lane infers, for a lane that
+	// roots its analysis at inferred entry points other than library packages (JavaScript's script
+	// binaries). Nil is auto with nothing declared. A lane that reads it reports the set it
+	// analysed in ReachabilityResult.EntryRoots. It is additive on the wire: a lane that does not
+	// read it ignores it, and ProtocolVersion is unchanged.
+	EntryOverride *EntryOverride `json:"entry_override,omitempty"`
 	// MatchOnly asks only whether the lane's own vulnerability database places VulnID against the
 	// build, answered in ReachabilityResult.AnalyzerMatched; the lane derives no paths, refutations or
 	// searched sinks. A lane with no database of its own answers false, which changes nothing.

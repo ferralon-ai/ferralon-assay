@@ -294,3 +294,69 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 		})
 	}
 }
+
+// TestEntryRoots_JSReadsReachabilityRecord: the js lane's record comes off the reachability artifact
+// as recorded, whatever lane wrote it.
+func TestEntryRoots_JSReadsReachabilityRecord(t *testing.T) {
+	want := &plugin.EntryRootRecord{
+		Lane: plugin.EntryLaneJS, Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!js:bin=bin:tool",
+		Effective: map[string][]string{plugin.EntryKindBin: {}, plugin.EntryKindScript: {"npm:tool/index.js"}},
+		Inferred:  map[string][]string{plugin.EntryKindBin: {"bin:tool"}, plugin.EntryKindScript: {"npm:tool/index.js"}},
+		Denied:    []string{"!bin:tool"},
+		Unmatched: []string{"!bin:nothing"},
+	}
+	store := artifact.NewMemStore()
+	seedReachArtifact(t, store, "a", plugin.CallGraphResult{Partiality: plugin.Complete()}, plugin.ReachabilityResult{Partiality: plugin.Complete(), EntryRoots: want})
+	if got := entryRoots(store, "a"); len(got) != 1 || !reflect.DeepEqual(got[0], *want) {
+		t.Errorf("entryRoots = %+v, want [%+v]", got, *want)
+	}
+}
+
+// TestEntryRoots_JSCarriedWhereTheLaneRecordedNone: a PR inherit or CVE-watch pass that records no
+// js record carries the stored report's, which the inherited rows rest on, unchanged.
+func TestEntryRoots_JSCarriedWhereTheLaneRecordedNone(t *testing.T) {
+	stored := plugin.EntryRootRecord{
+		Lane: plugin.EntryLaneJS, Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!js:bin=bin:old",
+		Effective: map[string][]string{plugin.EntryKindBin: {}, plugin.EntryKindScript: {"npm:tool/index.js"}},
+		Inferred:  map[string][]string{plugin.EntryKindBin: {"bin:old"}, plugin.EntryKindScript: {"npm:tool/index.js"}},
+		Denied:    []string{"!bin:old"},
+	}
+	opts := []pipeline.AssessOption{
+		pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
+		pipeline.WithPlugin(refutingGoPlugin{inventory: plugin.Complete()}),
+	}
+	t.Run("PR inherit fast path", func(t *testing.T) {
+		store, baseline := groundedBaseline()
+		baseline.Entrypoints = []plugin.EntryRootRecord{stored}
+		res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+			Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+			Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+			PRSBOM:        baseline.SBOM,
+			Advisories:    []assessment.VulnRef{wiringAdvisory},
+			AssessOptions: opts,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.ContainsFunc(res.Report.Entrypoints, func(r plugin.EntryRootRecord) bool { return reflect.DeepEqual(r, stored) }) {
+			t.Errorf("entrypoints = %+v, want the stored js record", res.Report.Entrypoints)
+		}
+	})
+	t.Run("CVE-watch", func(t *testing.T) {
+		store, _ := seedBaseline(t)
+		store.state.Report.Entrypoints = []plugin.EntryRootRecord{stored}
+		store.state.Cursor = ""
+		osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
+		res, err := RunCVEWatch(context.Background(), store, osv, CVEWatchRequest{
+			Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+			Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+			AssessOptions: opts,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Report == nil || !slices.ContainsFunc(res.Report.Entrypoints, func(r plugin.EntryRootRecord) bool { return reflect.DeepEqual(r, stored) }) {
+			t.Errorf("CVE-watch dropped the stored js record: %+v", res.Report)
+		}
+	})
+}

@@ -5062,28 +5062,30 @@ rows:
       - GO-2026-4883
     package: github.com/docker/docker@v27.1.1+incompatible
     target: traefik
-    comparator_observed: not_reachable
-    basis: required, vulnerable package never imported
+    comparator_observed: reachable
+    basis: 'symbol-level: github.com/docker/docker/api.init, github.com/docker/docker/api/types/swarm/runtime.init, github.com/docker/docker/api/types/system.init, github.com/docker/docker/api/types/versions.init, github.com/docker/docker/client.*Client.Close, github.com/docker/docker/client.WithDialContext, github.com/docker/docker/errdefs.errNotFound.Unwrap, github.com/docker/docker/errdefs.errUnauthorized.Unwrap reached from github.com/traefik/traefik/v3/pkg/provider/docker.init'
     source: govulncheck v1.9.0
     adjudicated:
       status: unknown
     engine_expected:
       verdict: not_exploitable
-      reason: vulnerable_symbol_unreachable
+      reason: vulnerable_symbol_absent
+    gap: 'unfiled: not_exploitable/vulnerable_symbol_absent'
   - advisory:
       - CVE-2026-34040
       - GHSA-x744-4wpc-v9h2
       - GO-2026-4887
     package: github.com/docker/docker@v27.1.1+incompatible
     target: traefik
-    comparator_observed: not_reachable
-    basis: required, vulnerable package never imported
+    comparator_observed: reachable
+    basis: 'symbol-level: github.com/docker/docker/api/types/swarm/runtime.init, github.com/docker/docker/api/types/time.GetTimestamp, github.com/docker/docker/api/types/versions.LessThan, github.com/docker/docker/client.*Client.ServiceList, github.com/docker/docker/client.WithHost, github.com/docker/docker/errdefs.errCancelled.Cause, github.com/docker/docker/errdefs.errInvalidParameter.Unwrap, github.com/docker/docker/errdefs.init reached from github.com/traefik/traefik/v3/pkg/provider/docker.init'
     source: govulncheck v1.9.0
     adjudicated:
       status: unknown
     engine_expected:
       verdict: not_exploitable
-      reason: vulnerable_symbol_unreachable
+      reason: vulnerable_symbol_absent
+    gap: 'unfiled: not_exploitable/vulnerable_symbol_absent'
   - advisory:
       - CVE-2026-34986
       - GHSA-78h2-9frx-2jm8

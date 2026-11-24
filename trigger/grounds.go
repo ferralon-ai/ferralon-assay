@@ -362,10 +362,11 @@ func goModulesOf(sbom report.SBOM, limits []report.PartialityNote) goModules {
 }
 
 // boundedNestedModule returns the module paths a Go inventory nested-module limit names, and whether
-// it is bounded: scoped to one directory, with Targets naming the module and every module its go.mod
-// requires (a go 1.17 or later go.mod; the inventory leaves an older one's Targets empty). The limit
-// the inventory declares when its walk of the checkout was incomplete has no directory and may have
-// missed a module, so it is not bounded, and neither is a target that is not a Go package URL.
+// it is bounded. The inventory merges every nested module into one note, with their directories
+// comma-joined in Path, and gives it Targets (each module and every module its go.mod requires) only
+// when every one of them is bounded: no module has a go.mod older than go 1.17 and the walk of the
+// checkout was complete. Empty Targets is therefore the guard: such a note may have missed a module.
+// A target that is not a Go package URL is not bounded either.
 func boundedNestedModule(n report.PartialityNote) ([]string, bool) {
 	if n.Reason != plugin.PartialReasonNestedModule || n.Path == "" || len(n.Targets) == 0 {
 		return nil, false

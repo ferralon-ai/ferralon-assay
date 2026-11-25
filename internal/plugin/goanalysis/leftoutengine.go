@@ -767,15 +767,17 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 
 // counts reports whether the left-out file at path may reach S. A file the engine does not hold, or
 // any file when the engine could not be built, counts. When the file counts because its closure
-// links assembly, binds a //go:linkname to one of S's packages or includes C (lofAnnotated), reasons holds the
-// excluded_files localisations naming them. failed is set when it counts because the engine itself
+// runs assembly it cannot follow, follows assembly of or naming one of S's packages, binds a
+// //go:linkname to one of them or includes C (lofAnnotated), reasons holds the excluded_files
+// localisations naming them. failed is set when it counts because the engine itself
 // failed: it could not be built, or the walk could not read or parse a file or ran out of budget
 // (lofFailed).
 //
 // Stage 0: when none of S's packages is loaded, the file counts only when it can link one of them
 // (lofWorld.links), or that walk fails closed: S executes only once linked.
 //
-// Stage 1: the file counts when its closure fails closed, or when one of these holds against R,
+// Stage 1: the file counts when its closure fails closed, follows assembly of or naming one of S's
+// packages, or binds a //go:linkname to one, or when one of these holds against R,
 // what reaches S in the graph the file is tested against:
 //
 //   - func-in-R: it reaches a loaded function in R;

@@ -276,9 +276,9 @@ const (
 	// tag) may call into the module an analyzer found no path to, and the analyzer never traced
 	// them, so its refutation does not cover the builds that compile them.
 	PartialReasonExcludedFiles = "excluded_files"
-	// PartialReasonExcludedFilesAssembly localises excluded_files: a file the build left out may
-	// run Go assembly, which the analyzer does not read, so what that assembly calls is unknown.
-	// The Go lane declares it in place of the base when a left-out file links assembly.
+	// PartialReasonExcludedFilesAssembly localises excluded_files: a file the build left out runs
+	// assembly or C the analyzer cannot follow to a declaration, or assembly of or naming a package
+	// the advisory counts. The Go lane declares it in place of the base.
 	PartialReasonExcludedFilesAssembly = PartialReasonExcludedFiles + ":assembly"
 	// PartialReasonExcludedFilesLinkname localises excluded_files: a file the build left out reaches a
 	// //go:linkname directive the analyzer cannot follow (malformed, or naming a symbol it cannot

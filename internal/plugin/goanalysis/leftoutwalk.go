@@ -1631,8 +1631,8 @@ func (k *lofWalk) remote(from *lofPkg, remote string) {
 // bodyless resolves a function declared without a body: a //go:linkname pull names its body (an
 // edge touch follows), the host provides it (//go:wasmimport: foreign code, a dynamic call), its
 // package's assembly or a push from another package provides it, or the compiler expands it inline.
-// Assembly fails closed, as does anything else unresolved: assembly is not read, so it may call any
-// function value. A push is followed through the pushing body and names p as its target (link).
+// The assembly is followed (asm); a push is followed through the pushing body and names p as its
+// target (link). Anything else unresolved fails closed.
 func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 	p := d.file.pkg
 	if d.file.links[d.name] != "" {

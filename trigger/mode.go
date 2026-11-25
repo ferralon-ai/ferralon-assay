@@ -46,3 +46,24 @@ func carryToolchain(b *report.Builder, fresh []*report.SubjectToolchain, stored 
 	}
 	b.WithSubjectToolchain(stored.SubjectToolchain)
 }
+
+// otherModeRun is stored, a report of another strictness than the pass's, as the pass carries it
+// into its own report: none of its entry points, toolchain or partiality notes, which describe the
+// analysis behind rows the pass does not keep, except the notes keep accepts.
+func otherModeRun(stored *report.Report, keep func(report.PartialityNote) bool) *report.Report {
+	out := *stored
+	out.Partiality = nil
+	for _, n := range stored.Partiality {
+		if keep != nil && keep(n) {
+			out.Partiality = append(out.Partiality, n)
+		}
+	}
+	out.LibraryEntrypoints, out.Entrypoints, out.SubjectToolchain = nil, nil, nil
+	return &out
+}
+
+// describesStoredSBOM reports whether n describes the stored SBOM itself: an inventory limit, or
+// the note that the SBOM is an earlier baseline's.
+func describesStoredSBOM(n report.PartialityNote) bool {
+	return isInventoryLimit(n) || (n.Reason == priorSBOMNote.Reason && n.Detail == priorSBOMNote.Detail)
+}

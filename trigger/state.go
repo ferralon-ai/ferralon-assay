@@ -496,19 +496,28 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	for _, f := range rows {
 		b.AddFinding(f)
 	}
+	// described is what the report carries from the baseline's description of its run. Under
+	// another strictness no baseline row stands, so none of it does: its notes describe the
+	// baseline's SBOM and rows, its entry points and toolchain the analysis behind those rows. The
+	// head inventory's own limits stand in for the baseline's.
+	described := baseline
+	if remoded {
+		described = otherModeRun(baseline, nil)
+		b.AddPartiality(req.DiffLimits...)
+	}
 	// Baseline limits apply to the findings inherited verbatim; the fresh notes apply
 	// to the re-analyzed slice. Build de-duplicates the union.
-	b.AddPartiality(withoutCutShortCount(baseline.Partiality)...)
+	b.AddPartiality(withoutCutShortCount(described.Partiality)...)
 	b.AddPartiality(notes...)
 	// The head's entry points for each ecosystem this pass resolved them on, else the baseline's,
 	// which the inherited refutations rest on.
 	b.WithLibraryEntrypoints(entrypoints...)
-	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, baseline.LibraryEntrypoints)...)
-	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
-	b.WithEntryRoots(baseline.Entrypoints...)
-	carryToolchain(b, toolchains, baseline)
+	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, described.LibraryEntrypoints)...)
+	b.WithLibraryEntrypoints(described.LibraryEntrypoints...)
+	b.WithEntryRoots(described.Entrypoints...)
+	carryToolchain(b, toolchains, described)
 	b.AddPartiality(req.WorkSetLimits...)
-	if note, ok := recountCutShort(rows, baseline.Partiality, ownStop(analysis, cut)); ok {
+	if note, ok := recountCutShort(rows, described.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
 	}
 
@@ -999,14 +1008,22 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// for a stored tool_failure:dependency_code_unavailable too, even when this run read all the
 	// dependency code: the note covers every row the run that fell back reached, and this run
 	// replaces only the rows it assessed. Only a baseline, which rebuilds every row, drops it.
-	b.AddPartiality(withoutCutShortCount(prior.Partiality)...)
+	//
+	// Under another strictness only a dependency_not_fetched row of the prior report stands, and it
+	// carries no verdict, so the prior's description of its run is carried only where it describes
+	// what this report keeps: the stored SBOM, whose inventory limits still bound this pass's rows.
+	described := prior
+	if remoded {
+		described = otherModeRun(prior, describesStoredSBOM)
+	}
+	b.AddPartiality(withoutCutShortCount(described.Partiality)...)
 	b.AddPartiality(notes...)
 	b.WithLibraryEntrypoints(entrypoints...)
-	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, prior.LibraryEntrypoints)...)
-	b.WithLibraryEntrypoints(prior.LibraryEntrypoints...)
-	b.WithEntryRoots(prior.Entrypoints...)
-	carryToolchain(b, toolchains, prior)
-	if note, ok := recountCutShort(rows, prior.Partiality, ownStop(analysis, cut)); ok {
+	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, described.LibraryEntrypoints)...)
+	b.WithLibraryEntrypoints(described.LibraryEntrypoints...)
+	b.WithEntryRoots(described.Entrypoints...)
+	carryToolchain(b, toolchains, described)
+	if note, ok := recountCutShort(rows, described.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
 	}
 	if cut > 0 || (req.Hold != nil && req.Hold(state.DepFetch)) {

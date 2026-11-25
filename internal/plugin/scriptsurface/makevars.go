@@ -23,10 +23,10 @@ var (
 	makeListStartRE = regexp.MustCompile(`['"](?:[^'"\s]*[/\\])?(?:g|[A-Za-z0-9_]+-)?make(?:\.exe)?['"]\s*,`)
 	// makeArgSetRE is a variable a make run sets on its command line, which no makefile
 	// assignment overrides.
-	makeArgSetRE = regexp.MustCompile(`(?:^|[\s,\[])['"]?([A-Za-z_][A-Za-z0-9_]*)\s*(?:::?=|:?=|\+=|\?=|!=)`)
+	makeArgSetRE = regexp.MustCompile(`(?:^|[\s,\[])['"\x60]?([A-Za-z_][A-Za-z0-9_]*)\s*(?:::?=|:?=|\+=|\?=|!=)`)
 	// makeEnvFlagRE is make's -e, under any abbreviation of --environment-overrides, and its
 	// --eval/-E, which may assign anything: either overrides every makefile assignment.
-	makeEnvFlagRE = regexp.MustCompile(`(?:^|[\s,'"\[])(?:--e|-[A-Za-z]*[eE])`)
+	makeEnvFlagRE = regexp.MustCompile(`(?:^|[\s,'"\x60\[])(?:--e|-[A-Za-z]*[eE])`)
 	// makeFlagsRE names a variable through which a run's flags and overrides reach make.
 	makeFlagsRE = regexp.MustCompile(`\b(?:GNU)?MAKE(?:FLAGS|OVERRIDES)\b`)
 )
@@ -194,7 +194,11 @@ func (v *Veto) noteMakeOverrides(src string) {
 		runs = append(runs, m[1])
 	}
 	for _, loc := range makeListStartRE.FindAllStringIndex(src, -1) {
-		runs = append(runs, makeListRest(src[loc[1]:]))
+		rest, comment := makeListRest(src[loc[1]:])
+		if comment {
+			v.makeSet[makeAll] = true
+		}
+		runs = append(runs, rest)
 	}
 	for _, run := range runs {
 		if makeEnvFlagRE.MatchString(run) {
@@ -207,24 +211,19 @@ func (v *Veto) noteMakeOverrides(src string) {
 }
 
 // makeListRest returns the rest of a list-form argv: the text up to the bracket that closes
-// the list, past nested calls and brackets and over quoted strings and # comments, or all of s
-// when none does.
-func makeListRest(s string) string {
+// the list, past nested calls and brackets and over quoted strings, or all of s when none
+// does. A # that may open a comment (any # outside a word such as this.#x, $#, ${#, p#a)
+// leaves where the list ends unknown across languages, so it reports comment and the caller
+// fails closed.
+func makeListRest(s string) (rest string, comment bool) {
 	depth := 0
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; c {
 		case '#':
-			// A # inside a word (this.#x, $#, ${#, p#a) is no comment; any other opens one. An
-			// opener inside a comment still counts, so reading code as a comment never lets a
-			// later closer end the list early.
 			if i > 0 && isMakeListWordByte(s[i-1]) {
 				continue
 			}
-			for i++; i < len(s) && s[i] != '\n'; i++ {
-				if s[i] == '(' || s[i] == '[' || s[i] == '{' {
-					depth++
-				}
-			}
+			return s[:i], true
 		case '"', '\'', '`':
 			for i++; i < len(s) && s[i] != c; i++ {
 				if s[i] == '\\' {
@@ -235,12 +234,12 @@ func makeListRest(s string) string {
 			depth++
 		case ')', ']', '}':
 			if depth == 0 {
-				return s[:i]
+				return s[:i], false
 			}
 			depth--
 		}
 	}
-	return s
+	return s, false
 }
 
 // isMakeListWordByte reports whether a # after c continues a word or reference rather than

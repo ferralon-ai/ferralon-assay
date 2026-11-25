@@ -194,8 +194,8 @@ func (v *Veto) noteMakeOverrides(src string) {
 		runs = append(runs, m[1])
 	}
 	for _, loc := range makeListStartRE.FindAllStringIndex(src, -1) {
-		rest, comment := makeListRest(src[loc[1]:])
-		if comment {
+		rest, unsure := makeListRest(src[loc[1]:])
+		if unsure {
 			v.makeSet[makeAll] = true
 		}
 		runs = append(runs, rest)
@@ -212,18 +212,13 @@ func (v *Veto) noteMakeOverrides(src string) {
 
 // makeListRest returns the rest of a list-form argv: the text up to the bracket that closes
 // the list, past nested calls and brackets and over quoted strings, or all of s when none
-// does. A #, // or /* outside a string may open a comment in some language, which leaves
-// where the list ends unknown, so it reports comment and the caller fails closed.
-func makeListRest(s string) (rest string, comment bool) {
+// does. Outside strings a list argv holds only names, calls, brackets, commas, spreads and
+// whitespace; any other byte may open a comment or construct in some language that leaves
+// where the list ends unknown, so it reports unsure and the caller fails closed.
+func makeListRest(s string) (rest string, unsure bool) {
 	depth := 0
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; c {
-		case '#':
-			return s[:i], true
-		case '/':
-			if i+1 < len(s) && (s[i+1] == '/' || s[i+1] == '*') {
-				return s[:i], true
-			}
 		case '"', '\'', '`':
 			for i++; i < len(s) && s[i] != c; i++ {
 				if s[i] == '\\' {
@@ -237,9 +232,27 @@ func makeListRest(s string) (rest string, comment bool) {
 				return s[:i], false
 			}
 			depth--
+		default:
+			if !isMakeListArgvByte(c) {
+				return s[:i], true
+			}
 		}
 	}
 	return s, false
+}
+
+// isMakeListArgvByte reports whether c may appear outside a string in a list argv without
+// leaving where the list ends in doubt.
+func isMakeListArgvByte(c byte) bool {
+	switch {
+	case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		return true
+	}
+	switch c {
+	case '_', ' ', '\t', '\r', '\n', ',', '.', '*', '+', '$':
+		return true
+	}
+	return false
 }
 
 // makeProgram resolves a command's first word when it is a reference to a variable the

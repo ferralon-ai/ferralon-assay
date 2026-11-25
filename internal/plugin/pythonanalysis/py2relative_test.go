@@ -3,6 +3,7 @@ package pythonanalysis
 import (
 	"context"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -183,6 +184,64 @@ func TestCallGraph_Py2SiblingNamedLikeUndeclaredCuratedDist(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestCallGraph_Py2RelativeBesideUnattributedImport: a graph that also holds an import no
+// reading attributes declares tool_failure naming that import, and rests on no Python 2
+// assumption, though it reads another import as relative.
+func TestCallGraph_Py2RelativeBesideUnattributedImport(t *testing.T) {
+	res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: writeTree(t, py2Tree(map[string]string{
+		"pkg/views.py": "import forms\nimport rest_framework\nimport undeclared_dist\n\ndef view():\n    forms.clean()\n",
+	}))})
+	if err != nil {
+		t.Fatalf("CallGraph: %v", err)
+	}
+	if !hasReason(res.Partiality, plugin.PartialReasonToolFailure) || len(res.Annotations) != 0 {
+		t.Fatalf("reasons %v, annotations %+v: want tool_failure and no assumption", res.Partiality.Reasons, res.Annotations)
+	}
+	if !strings.Contains(res.Partiality.Cause, "import of undeclared_dist") {
+		t.Errorf("cause %q does not name the unattributed import", res.Partiality.Cause)
+	}
+}
+
+// TestCallGraph_Py2FirstPartyTopLevelImport (precision): a bare import naming a first-party
+// top-level package is first-party either way it is read, so the graph rests on no Python 2
+// assumption even when a sibling module shares the name.
+func TestCallGraph_Py2FirstPartyTopLevelImport(t *testing.T) {
+	res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: writeTree(t, py2Tree(map[string]string{
+		"pkg/util.py":      "def f():\n    pass\n",
+		"util/__init__.py": "def f():\n    pass\n",
+		"pkg/views.py":     "import util\nimport rest_framework\n",
+	}))})
+	if err != nil {
+		t.Fatalf("CallGraph: %v", err)
+	}
+	if hasReason(res.Partiality, plugin.PartialReasonToolFailure) || len(res.Annotations) != 0 {
+		t.Errorf("reasons %v, cause %q, annotations %+v: want no failure and no assumption", res.Partiality.Reasons, res.Partiality.Cause, res.Annotations)
+	}
+}
+
+// TestPy2RelativeImport_DeclaredDistributionName: a top-level name that is a declared
+// distribution's own name, not one of its import names (pyyaml, which ships yaml), is never
+// read as relative.
+func TestPy2RelativeImport_DeclaredDistributionName(t *testing.T) {
+	prog, err := loadProgram(writeTree(t, map[string]string{
+		"requirements.txt": "pyyaml==5.1\n",
+		"Dockerfile":       "FROM python:2.7\n",
+		"pkg/__init__.py":  "",
+		"pkg/pyyaml.py":    "",
+		"pkg/views.py":     "import pyyaml\n",
+	}))
+	if err != nil {
+		t.Fatalf("loadProgram: %v", err)
+	}
+	i := slices.IndexFunc(prog.files, func(f fileParse) bool { return f.path == "pkg/views.py" })
+	if i < 0 {
+		t.Fatal("pkg/views.py not loaded")
+	}
+	if prog.py2RelativeImport(prog.files[i], "pyyaml") {
+		t.Error("py2RelativeImport(pyyaml) = true, want false")
 	}
 }
 

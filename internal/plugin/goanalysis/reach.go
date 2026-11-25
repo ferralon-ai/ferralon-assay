@@ -23,6 +23,7 @@ import (
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/vuln/scan"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -1203,7 +1204,7 @@ func failurePackageErrors(err error) []packages.Error {
 // file:///path/to/db. Unset or empty, govulncheck reads its default, https://vuln.go.dev. It is read
 // from the run's env, which is also the run cache key, so runs against different databases never
 // share a stream.
-const goVulnDBEnv = "ASSAY_GO_VULN_DB"
+const goVulnDBEnv = brand.EnvPrefix + "_GO_VULN_DB"
 
 // govulncheckArgs is govulncheck's command line over patterns in buildDir under env.
 func govulncheckArgs(buildDir string, env, patterns []string) []string {

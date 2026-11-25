@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
 // A fixture's govulncheck database is a slice of the Go vulnerability database in its v1 layout
@@ -26,7 +28,7 @@ import (
 // the advisories the fixture grades. The scan reads it through the scanner's ASSAY_GO_VULN_DB, so a
 // rerun on the same fixture reads the same entries whatever vuln.go.dev serves that day.
 const (
-	goVulnDBEnv = "ASSAY_GO_VULN_DB"
+	goVulnDBEnv = brand.EnvPrefix + "_GO_VULN_DB"
 	goVulnDBDir = "govulndb"
 )
 

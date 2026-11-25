@@ -232,6 +232,30 @@ Findings are sorted most-actionable first, and every projection keeps that order
 | PR comment and pinned Issue | The grade and EPSS/KEV columns, each value with its own date, and a one-line reminder that neither is an exploitability claim. |
 | `openvex.json` | No priority data. OpenVEX has no field for it, so none is projected. |
 
+## Strictness
+
+Strictness decides which clearances stand.
+
+- `strict`: no clearance rests on an assumption Assay inferred.
+- `practical` (the default): a row may clear under an assumption only when the row names it.
+
+The first of these decides the mode:
+
+1. The `strictness` Action input, the `-strictness` flag or `ASSAY_STRICTNESS` (the flag wins over
+   the variable). Values are lowercase `practical` or `strict`; empty states nothing, and any other
+   value fails the run before the target is acquired.
+2. The `strictness` key of `.github/ferralon.yml`, `strictness: practical` or `strictness: strict`.
+   A value of any other type or spelling fails the run. A remote URL target has no checkout to read
+   it from, so only the input applies there.
+3. `practical`.
+
+The report records the mode in `mode` as `{"strictness": ..., "source": "input" | "ferralon.yml" |
+"default"}`, and the job summary, PR comment, pinned issue and CLI summary print it. A stored
+baseline written under another mode is not inherited: `pr-inherit` and `cve-watch` analyse the
+affected advisories again. A baseline with no `mode` field reads as practical. See
+[sample-report.md](sample-report.md#mode-and-run-assumptions) for the field and the
+`run_assumptions` block beside it.
+
 ## The Go toolchain your repository builds with
 
 For a Go standard-library advisory, the question is about the Go **you** build with, which is not

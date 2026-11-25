@@ -78,6 +78,12 @@ func (f *runFlags) publishAnalyzerMissing(ctx context.Context, mode string, e *a
 	if err != nil {
 		return err
 	}
+	f.repoStrictness = e.acq.cfgStrictness
+	runMode, err := f.resolveMode()
+	if err != nil {
+		return err
+	}
+	rep.Mode = &runMode
 	detail := analyzerMissingDetail(e.acq.language, e.missing.Binary)
 	fmt.Fprintf(os.Stderr, "::warning title=%s::%s\n", brand.Name, escapeWorkflowData(detail))
 	fmt.Fprintf(os.Stdout, "%s %s — %s\n", brand.Name, mode, detail)

@@ -22,6 +22,19 @@ as a plain-words label; the JSON below keeps the raw names. The mapping:
 ```json
 {
   "schema_version": "tegron.report.v3",
+  "mode": {
+    "strictness": "practical",
+    "source": "default"
+  },
+  "run_assumptions": {
+    "entrypoints": [
+      { "lane": "go", "stance": "application" }
+    ],
+    "build": {
+      "resolved_commit": "a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3",
+      "go_main_module": "github.com/example/widget"
+    }
+  },
   "subject": {
     "repo": "github.com/example/widget",
     "revision": "main",
@@ -107,6 +120,39 @@ analysis withheld, and a non-empty `partiality` array whenever
 some part of the codebase could not be resolved — see [Scope](../README.md#scope) for when that
 happens. See [`report/report.go`](../report/report.go) for the authoritative field-by-field
 documentation.
+
+## Mode and run assumptions
+
+Every report carries `mode`, the strictness the run adjudicated under and which statement decided
+it:
+
+```json
+{ "strictness": "strict", "source": "ferralon.yml" }
+```
+
+`strictness` is `practical` or `strict`. `source` is `input` (the `strictness` Action input, the
+`-strictness` flag or `ASSAY_STRICTNESS`), `ferralon.yml` (the `strictness` key of
+`.github/ferralon.yml`) or `default` (nothing stated, so practical). A report written before the
+field existed has no `mode` and reads as practical. The job summary, PR comment, pinned issue and
+CLI summary each print the mode and its source. See
+[Strictness](operator-guide.md#strictness).
+
+`run_assumptions` collects what the run took as given about the build, read from fields the report
+already holds. It adds no fact of its own.
+
+| Field | Carries | Source in the report |
+|---|---|---|
+| `entrypoints[]` | Per entry-point lane, its `stance`: `application` (the lane read the build as an application and took its mains), `declared` (the entry points rest on the caller's declaration) or `library`. The sets are in `entrypoints`. | `entrypoints[].source` |
+| `build.resolved_commit` | The commit the scan built. | `subject.resolved_commit` |
+| `build.go_main_module`, `build.go_workspace_modules` | The Go main module and the go.work modules the build list was resolved for. | `sbom.go_main_module`, `sbom.go_workspace_modules` |
+| `build.build_graph_source` | Where a Java or Kotlin scan's dependency graph came from. | `build_graph.source` |
+| `build.dependency_code_source` | Where a JavaScript scan's dependency code came from. | `dependency_code.source` |
+| `skipped_targets[]` | Modules in the checkout the scan left out, each with its `path` and `reason`. | `partiality` notes with reason `unsupported_phase1:nested_module` |
+
+Two parts have no source in the report and are not stated. The build toolchain (the Go version, the
+JDK) is not in `run_assumptions`: the report carries no run-level record of it to read from.
+`skipped_targets` covers only the Go nested-module limit; no other lane records a module it
+skipped.
 
 ## Optional fields not shown above
 

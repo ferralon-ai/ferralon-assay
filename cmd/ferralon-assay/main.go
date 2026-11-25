@@ -187,6 +187,9 @@ func runBaseline(args []string) error {
 	if err := f.checkEntrypoints(); err != nil {
 		return err
 	}
+	if err := f.checkStrictness(); err != nil {
+		return err
+	}
 	acq, err := acquireTarget(analysis, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	var missing *analyzerMissingError
 	if errors.As(err, &missing) {
@@ -196,6 +199,7 @@ func runBaseline(args []string) error {
 		return markIfStopped(analysis, err)
 	}
 	acq.goWork = f.declaredGoWork()
+	f.repoStrictness = acq.cfgStrictness
 	defer acq.cleanup()
 
 	store, cleanup, err := baselineStore(f.sf)
@@ -226,6 +230,7 @@ func runBaseline(args []string) error {
 	revision, commit := acq.provenance(*f.revision, *f.commit)
 	req := baselineRequest(analysis, acq, revision, commit, ws, assessOptions, f.resolvedSignals, f.depRun)
 
+	req.ModeSource = f.resolvedMode.Source
 	rep, err := trigger.RunBaseline(ctx, store, req)
 	if err != nil {
 		return err
@@ -306,6 +311,9 @@ func printSummary(outDir string, rep *report.Report, signals string) {
 	abs, _ := filepath.Abs(outDir)
 	fmt.Fprintf(os.Stdout, "%s baseline complete\n", brand.Name)
 	fmt.Fprintf(os.Stdout, "  subject:    %s@%s\n", rep.Subject.Repo, rep.Subject.Revision)
+	if rep.Mode != nil {
+		fmt.Fprintf(os.Stdout, "  strictness: %s (%s)\n", rep.Mode.Strictness, rep.Mode.Source)
+	}
 	fmt.Fprintf(os.Stdout, "  SBOM:       %d package(s)\n", len(rep.SBOM.Packages))
 	for _, p := range rep.SBOM.Packages {
 		fmt.Fprintf(os.Stdout, "    - %s %s %s\n", p.Ecosystem, p.Name, p.Version)

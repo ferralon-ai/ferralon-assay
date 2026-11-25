@@ -46,6 +46,10 @@ type acquired struct {
 	// versions and the observation's trust, as runAssessOptions hands them to the pipeline. The zero
 	// value states nothing.
 	goToolchain subjectGoToolchain
+
+	// cfgStrictness is the strictness key of .github/ferralon.yml, "" when the target has none or is
+	// a remote URL, whose config is never read.
+	cfgStrictness string
 }
 
 // provenance returns the Revision and ResolvedCommit to record on the Report's subject. By default
@@ -91,7 +95,7 @@ func (a *acquired) provenance(revision, commit string) (string, string) {
 // enumerate and fire.
 func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBin string, includeHouseCanaries bool, graphReq graphRequest) (*acquired, error) {
 	start := time.Now()
-	var buildDir, language, repo, analyzeRef, analyzedCommit string
+	var buildDir, language, repo, analyzeRef, analyzedCommit, cfgStrictness string
 	cleanup := func() {}
 
 	if isRemoteURL(target) {
@@ -118,6 +122,7 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		if err != nil {
 			return nil, err
 		}
+		cfgStrictness = cfg.Strictness
 		for _, w := range warnings {
 			fmt.Fprintf(os.Stderr, "warning: %s: %s\n", repoconfig.DefaultPath, w)
 		}
@@ -227,7 +232,7 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		var missing *plugin.NotInstalledError
 		if errors.As(err, &missing) && !releaseLanguage(language) {
 			return nil, &analyzerMissingError{
-				acq:     acquired{language: language, repo: repo, analyzeRef: analyzeRef, analyzedCommit: analyzedCommit},
+				acq:     acquired{language: language, repo: repo, analyzeRef: analyzeRef, analyzedCommit: analyzedCommit, cfgStrictness: cfgStrictness},
 				missing: missing,
 			}
 		}
@@ -246,6 +251,8 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		analyzeRef:     analyzeRef,
 		analyzedCommit: analyzedCommit,
 		graph:          graph,
+
+		cfgStrictness: cfgStrictness,
 	}, nil
 }
 

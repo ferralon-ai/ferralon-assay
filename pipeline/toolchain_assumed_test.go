@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -169,5 +170,75 @@ func TestResolveToolchainFact_PracticalOnlyRaisesTheFloor(t *testing.T) {
 	}
 	if n == 0 {
 		t.Fatal("empty grid")
+	}
+}
+
+// alsoPresentStdlibSource is a two-element advisory whose stdlib element is fixed at go1.21.3, so a
+// target requiring a fixed x/net adjudicates x/net and carries stdlib as an also-present package.
+type alsoPresentStdlibSource struct{}
+
+func (alsoPresentStdlibSource) Lookup(string) (AdvisoryFacts, bool) {
+	return AdvisoryFacts{
+		Module:         "golang.org/x/net",
+		VersionScheme:  "gomod",
+		PURL:           "pkg:golang/golang.org/x/net",
+		AffectedRanges: []Range{{Fixed: "v0.17.0", FixedVersion: "v0.17.0"}},
+		Provenance:     Provenance{Source: "synthetic", TrustTier: TrustFirstParty},
+		AffectedPackages: []AffectedPackage{
+			{
+				Module:         "golang.org/x/net",
+				Coordinate:     "golang.org/x/net",
+				VersionScheme:  "gomod",
+				PURL:           "pkg:golang/golang.org/x/net",
+				AffectedRanges: []Range{{Fixed: "v0.17.0", FixedVersion: "v0.17.0"}},
+			},
+			{
+				Coordinate:     "stdlib",
+				VersionScheme:  "go-toolchain",
+				PURL:           "pkg:golang/stdlib",
+				AffectedRanges: []Range{{Fixed: "go1.21.3", FixedVersion: "go1.21.3"}},
+			},
+		},
+	}, true
+}
+
+// TestAssumedToolchainFloor_AlsoPresentStdlib: when stdlib is an also-present package rather than the
+// adjudicated element, a clearance that holds only at the toolchain line still names the assumption.
+func TestAssumedToolchainFloor_AlsoPresentStdlib(t *testing.T) {
+	const assumption = "the build runs under GOTOOLCHAIN=auto, so on the toolchain line's go1.21.3 or newer"
+	tests := []struct {
+		name           string
+		goMod          string
+		wantAssumption string
+	}{
+		{
+			name:           "stdlib past the fix only at the toolchain line",
+			goMod:          "module example.com/target\n\ngo 1.21.0\n\ntoolchain go1.21.3\n\nrequire golang.org/x/net v0.17.0\n",
+			wantAssumption: assumption,
+		},
+		{
+			name:  "stdlib past the fix at the go line alone",
+			goMod: "module example.com/target\n\ngo 1.21.4\n\ntoolchain go1.21.5\n\nrequire golang.org/x/net v0.17.0\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runDisqualWith(t, "CVE-2023-39325", "go", alsoPresentStdlibSource{}, map[string]string{"go.mod": tc.goMod}, goManifestPlugin{})
+			if !res.Disqualified || res.Reason != ReasonVersionNotInRange {
+				t.Fatalf("disqualified=%v reason=%q, want version_not_in_range", res.Disqualified, res.Reason)
+			}
+			var named []string
+			for _, a := range res.Assumptions {
+				if strings.Contains(a, "GOTOOLCHAIN=auto") {
+					named = append(named, a)
+				}
+			}
+			switch {
+			case tc.wantAssumption == "" && len(named) > 0:
+				t.Errorf("assumptions = %q, want none: the go line alone clears stdlib", named)
+			case tc.wantAssumption != "" && (len(named) != 1 || !strings.Contains(named[0], "go1.21.3")):
+				t.Errorf("assumptions = %q, want exactly %q", res.Assumptions, tc.wantAssumption)
+			}
+		})
 	}
 }

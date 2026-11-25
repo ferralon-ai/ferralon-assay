@@ -140,8 +140,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck),
 			},
 		}
-		// A version placed outside only under an assumption about a pseudo-version's ancestry is
-		// not proven out of scope: it is refuted under that stated assumption.
+		// A version placed outside only under an assumption (a pseudo-version's ancestry, or the
+		// toolchain line under GOTOOLCHAIN=auto) is not proven out of scope: it is refuted under
+		// the stated assumptions.
 		if len(res.Assumptions) > 0 {
 			f.Verdict = report.VerdictNotExploitable
 			f.Evidence.Detail = versionOutsideAssumingDetail + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck)
@@ -1095,8 +1096,8 @@ func disqualBasis(reason string) verdict.NonExploitableBasis {
 }
 
 // versionOutsideAssumingDetail is the detail of a version-axis refute that holds only under the
-// row's stated assumptions about a pseudo-version's ancestry.
-const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumption about a pseudo-version's ancestry"
+// row's stated assumptions, which its evidence lists.
+const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumptions"
 
 // disqualDetail renders the customer-visible grounds for a disqualification. Each reason code
 // gets its own arm: the version and symbol axes record an adjudicated comparison that cleared

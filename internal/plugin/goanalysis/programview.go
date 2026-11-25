@@ -115,7 +115,8 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 			if !ok {
 				return nil
 			}
-			r := moduleRefutationOf(slices.Concat(prog.findings, scanned.findings), m, env)
+			// Imports are the program run's: the detail speaks for the binaries alone.
+			r := moduleRefutationOf(slices.Concat(prog.findings, scanned.findings), prog.findings, m, env)
 			r.Basis = ruled.Refutation.Basis
 			r.Detail = started + r.Detail + scope
 			others = append(others, *r)
@@ -131,7 +132,7 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 // advisory was matched to than the one ruled refutes: the run declares no limit that says a step did
 // not run for it, and neither a file the build left out nor a call reflection makes may reach it.
 // When the left-out-file check keeps the refutation only for the scanned platform, it returns the
-// scope that check stated, for the view's detail to carry; any other change to the refutation does
+// scope that check stated, for the module's own refutation to carry; any other change to the refutation does
 // not rule the module out. run is the program run's partiality before those checks ran for the
 // refuted module: a scope they kept the refutation with is that module's, not a step the run left
 // undone for this one.

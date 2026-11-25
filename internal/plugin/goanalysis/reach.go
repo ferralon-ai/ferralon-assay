@@ -811,24 +811,23 @@ func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 	if len(modules) == 0 {
 		return nil
 	}
-	return moduleRefutationOf(findings, modules[0], env)
+	return moduleRefutationOf(findings, findings, modules[0], env)
 }
 
 // moduleRefutationOf states govulncheck's module-level evidence as a refutation of module, one of
-// the modules findings matched: the version matched, whether a vulnerable package is imported, and the
-// platform and build tags the run used.
-func moduleRefutationOf(findings []vulnFinding, module string, env []string) *plugin.Refutation {
+// the modules matched: the version the first of matched states, whether a vulnerable package is
+// imported in the run that found imports, and the platform and build tags the run used.
+func moduleRefutationOf(matched, imports []vulnFinding, module string, env []string) *plugin.Refutation {
 	version := ""
-	imported := false
-	for _, f := range findings {
-		if len(f.Trace) == 0 || f.Trace[0].Module != module {
-			continue
-		}
-		if version == "" {
+	for _, f := range matched {
+		if len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Version != "" {
 			version = f.Trace[0].Version
+			break
 		}
-		imported = imported || f.Trace[0].Package != ""
 	}
+	imported := slices.ContainsFunc(imports, func(f vulnFinding) bool {
+		return len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Package != ""
+	})
 	use := "a vulnerable package is not imported"
 	if imported {
 		use = "a vulnerable package is imported"

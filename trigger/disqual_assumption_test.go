@@ -51,3 +51,29 @@ func TestFinding_PseudoVersionOrderAssumption(t *testing.T) {
 		})
 	}
 }
+
+// A row cleared by a release in the scanned history is not_exploitable under the stated assumption
+// that no fix was reverted after it, and its detail names the release, not a resolved version.
+func TestFinding_AncestorReleaseAssumption(t *testing.T) {
+	const assumption = "the advisory's fix was not reverted between the release tag v1.3.0 and the scanned commit"
+	store := artifact.NewMemStore()
+	payload, err := json.Marshal(pipeline.DisqualResult{Disqualified: true, Reason: pipeline.ReasonAncestorReleaseOutsideRange,
+		AncestorRelease: "v1.3.0", Assumptions: []string{assumption}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := store.Put(&artifact.Artifact{AssessmentID: "a1", Type: artifact.TypeDiscovery, ProducedBy: "test", Payload: payload}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	f := finding(store, "a1", report.Advisory{ID: "GO-TEST-0001", Source: "osv"}, nil)
+	if f.Verdict != report.VerdictNotExploitable || f.Evidence.Basis != verdict.BasisVersionNotAffected || !slices.Equal(f.Evidence.Assumptions, []string{assumption}) {
+		t.Fatalf("got %s basis %q assumptions %q, want %s basis %q with the assumption",
+			f.Verdict, f.Evidence.Basis, f.Evidence.Assumptions, report.VerdictNotExploitable, verdict.BasisVersionNotAffected)
+	}
+	if want := disqualDetail(pipeline.ReasonAncestorReleaseOutsideRange); f.Evidence.Detail != want {
+		t.Fatalf("detail %q, want %q", f.Evidence.Detail, want)
+	}
+	if err := report.NewBuilder(report.Subject{ResolvedCommit: "c"}).AddFinding(f).Build().Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}

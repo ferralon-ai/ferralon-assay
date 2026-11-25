@@ -316,6 +316,17 @@ func (d distResolver) knownTop(path string) bool {
 	return d.python.ships(top) || len(d.curated.Reverse(top)) > 0 || d.declared[normalizePyCoordinate(top)]
 }
 
+// curatedUndeclared reports whether importDeclared counts the dotted path only because its
+// top-level name is the import name of exactly one curated distribution, which no manifest
+// read here declares.
+func (d distResolver) curatedUndeclared(path string) bool {
+	top, _, _ := strings.Cut(path, ".")
+	if top == "" || d.firstParty[top] || d.python.ships(top) || len(d.curated.Reverse(top)) != 1 {
+		return false
+	}
+	return !slices.ContainsFunc(d.distsFor(path), func(s string) bool { return d.declared[s] })
+}
+
 // curatedShippers returns the curated distributions shipping exactly the longest curated
 // package that is path or a whole-segment prefix of it, or nil when none is.
 func (d distResolver) curatedShippers(path string) []string {

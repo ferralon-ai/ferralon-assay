@@ -37,6 +37,8 @@ type program struct {
 	// importUnattributed counts as attributed only by assuming it a Python 2 implicit relative
 	// import (py2RelativeImport). Strict mode counts it unattributed.
 	py2Relative importSite
+	// py2 indexes the build's modules for py2RelativeImport.
+	py2 py2Index
 	// unreadSurface is the first surface the walk could not read in full, when unattributed or
 	// py2Relative is set: "" when the walk read every surface and a manifest is what failed.
 	unreadSurface string
@@ -1182,8 +1184,9 @@ func loadProgramCtx(ctx context.Context, buildDir string) (*program, error) {
 		firstParty: firstPartyTops(modules),
 		python:     buildInterpreter(buildDir),
 	}
+	prog.py2 = prog.newPy2Index(declared)
 	if !declaredComplete {
-		prog.unattributed, prog.py2Relative = prog.undeclaredImports(declared)
+		prog.unattributed, prog.py2Relative = prog.undeclaredImports()
 		prog.importUnattributed = prog.unattributed.target != ""
 		if prog.unattributed.target != "" || prog.py2Relative.target != "" {
 			prog.unreadSurface = unreadDeclarationSurface(ctx, buildDir)
@@ -1279,6 +1282,7 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 		}
 	}
 	f.depBinds = map[string]map[string]bool{}
+	absolute := f.absoluteImports()
 	for _, b := range raw {
 		if b.target == "" || !prog.dists.firstParty[firstSegment(b.target)] {
 			if f.depBinds[b.scope] == nil {
@@ -1293,7 +1297,8 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 					f.depImports[b.scope] = map[string]int{}
 				}
 				f.depImports[b.scope][b.local]++
-				if prog.named[strings.ReplaceAll(b.target, ".", "/")] && !prog.dists.knownTop(b.target) {
+				if prog.named[strings.ReplaceAll(b.target, ".", "/")] && (!prog.dists.knownTop(b.target) ||
+					!absolute && prog.dists.curatedUndeclared(b.target) && prog.py2RelativeImport(*f, b.target)) {
 					addNames(&f.depNamed, b.scope, []string{b.local})
 				}
 			}
@@ -1340,34 +1345,21 @@ type importSite struct {
 // undeclaredImports returns the first import binding that names a module no distribution the
 // manifests read here declare provides, and the first that does only when read as a Python 2
 // implicit relative import (py2RelativeImport), in file, scope and local-name order.
-func (prog *program) undeclaredImports(declared map[string]bool) (unattributed, py2Relative importSite) {
-	modules := map[string]bool{}
-	packages := map[string]bool{}
-	for _, f := range prog.files {
-		modules[f.module] = true
-		if f.isPackage {
-			packages[f.module] = true
-		}
-	}
-	declaredTops := map[string]bool{}
-	if prog.dists.python.mayBePython2() {
-		for dist := range declared {
-			for _, top := range prog.dists.importTops(dist) {
-				declaredTops[top] = true
-			}
-		}
-	}
+func (prog *program) undeclaredImports() (unattributed, py2Relative importSite) {
 	for _, f := range prog.files {
 		absolute := f.absoluteImports()
 		for _, scope := range slices.Sorted(maps.Keys(f.bindings)) {
 			for _, local := range slices.Sorted(maps.Keys(f.bindings[scope])) {
 				target := f.bindings[scope][local].target
-				if !prog.dists.undeclaredImport(target) {
+				// A name only an undeclared curated distribution provides is still the
+				// sibling module Python 2 reads first.
+				py2 := !absolute && prog.py2RelativeImport(f, target)
+				if !prog.dists.undeclaredImport(target) && !(py2 && prog.dists.curatedUndeclared(target)) {
 					continue
 				}
 				site := importSite{path: f.path, target: target}
 				switch {
-				case !absolute && prog.py2RelativeImport(f, target, modules, packages, declaredTops):
+				case py2:
 					if py2Relative.target == "" {
 						py2Relative = site
 					}
@@ -1409,16 +1401,41 @@ func (f fileParse) absoluteImports() bool {
 // may mean the distribution, and Python 2 would load whichever the path search reaches first.
 // It is an assumption: Python 3, or a sys.path that puts an installed module first, reads the
 // same import as absolute.
-func (prog *program) py2RelativeImport(f fileParse, target string, modules, packages, declaredTops map[string]bool) bool {
+func (prog *program) py2RelativeImport(f fileParse, target string) bool {
 	top, _, _ := strings.Cut(target, ".")
-	if !prog.dists.python.mayBePython2() || declaredTops[top] || prog.dists.declared[normalizePyCoordinate(top)] {
+	if !prog.dists.python.mayBePython2() || prog.py2.declaredTops[top] || prog.dists.declared[normalizePyCoordinate(top)] {
 		return false
 	}
 	pkg := f.module
 	if !f.isPackage {
 		pkg = parentModule(f.module)
 	}
-	return pkg != "" && packages[pkg] && modules[pkg+"/"+top]
+	return pkg != "" && prog.py2.packages[pkg] && prog.py2.modules[pkg+"/"+top]
+}
+
+// py2Index is what py2RelativeImport reads off the build: its module paths, those that are
+// regular packages, and, when the interpreter may be Python 2, every import name of a declared
+// distribution.
+type py2Index struct {
+	modules, packages, declaredTops map[string]bool
+}
+
+func (prog *program) newPy2Index(declared map[string]bool) py2Index {
+	ix := py2Index{modules: map[string]bool{}, packages: map[string]bool{}, declaredTops: map[string]bool{}}
+	for _, f := range prog.files {
+		ix.modules[f.module] = true
+		if f.isPackage {
+			ix.packages[f.module] = true
+		}
+	}
+	if prog.dists.python.mayBePython2() {
+		for dist := range declared {
+			for _, top := range prog.dists.importTops(dist) {
+				ix.declaredTops[top] = true
+			}
+		}
+	}
+	return ix
 }
 
 // callerSCIP is the SCIP id of a call site's caller: its enclosing def, or the module-init

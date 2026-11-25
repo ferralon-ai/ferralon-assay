@@ -141,6 +141,51 @@ func TestCallGraph_Py2RelativeImportSkips(t *testing.T) {
 	}
 }
 
+// TestCallGraph_Py2SiblingNamedLikeUndeclaredCuratedDist: a sibling module named like the
+// import name of a curated distribution no manifest declares (pkg/environ.py, django-environ)
+// is the module the bare import names. The call reaches it whether or not the manifests are
+// read in full; with a manifest unread, practical mode rests that on the Python 2 assumption
+// and strict mode leaves the import unattributed.
+func TestCallGraph_Py2SiblingNamedLikeUndeclaredCuratedDist(t *testing.T) {
+	const caller, callee = "scip-python python . . pkg/views/view().", "scip-python python . . pkg/environ/clean(1)."
+	for _, unread := range []bool{false, true} {
+		files := map[string]string{
+			"requirements.txt": "pyyaml==5.1\n",
+			"pkg/__init__.py":  "",
+			"pkg/environ.py":   "import yaml\n\ndef clean(x):\n    return yaml.load(x)\n",
+			"pkg/views.py":     "import environ\n\ndef view():\n    return environ.clean('a')\n",
+		}
+		if unread {
+			files["Dockerfile"] = "FROM python:2.7\nRUN pip install setuptools_scm\n"
+		}
+		dir := writeTree(t, files)
+		for _, strict := range []bool{false, true} {
+			cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir, Strict: strict})
+			if err != nil {
+				t.Fatalf("unread=%v strict=%v: CallGraph: %v", unread, strict, err)
+			}
+			if !hasEdge(cg.Edges, caller, callee) {
+				t.Errorf("unread=%v strict=%v: no edge %s -> %s", unread, strict, caller, callee)
+			}
+			failed := hasReason(cg.Partiality, plugin.PartialReasonToolFailure)
+			switch {
+			case !unread:
+				if failed || len(cg.Annotations) != 0 {
+					t.Errorf("manifests read, strict=%v: reasons %v, annotations %+v", strict, cg.Partiality.Reasons, cg.Annotations)
+				}
+			case strict:
+				if !failed || len(cg.Annotations) != 0 || !strings.Contains(cg.Partiality.Cause, "import of environ") {
+					t.Errorf("strict: reasons %v, cause %q, annotations %+v", cg.Partiality.Reasons, cg.Partiality.Cause, cg.Annotations)
+				}
+			default:
+				if failed || len(cg.Annotations) != 1 || !strings.Contains(cg.Annotations[0].Detail, "import of environ") {
+					t.Errorf("practical: reasons %v, annotations %+v", cg.Partiality.Reasons, cg.Annotations)
+				}
+			}
+		}
+	}
+}
+
 // TestCallGraph_CuratedOnlyImportAttributed: an import only a curated row binds to a declared
 // distribution (rest_framework, djangorestframework) is attributed even when a manifest is not
 // read in full.

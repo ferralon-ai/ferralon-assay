@@ -709,6 +709,11 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 		return workSet{}, err
 	}
 	acq.goToolchain = f.subjectGoToolchain()
+	mode, err := f.resolveMode()
+	if err != nil {
+		return workSet{}, err
+	}
+	acq.strict = mode.Strictness == report.StrictnessStrict
 	ws := selectWorkSet(ctx, acq, f.corpusReader, f.resolvedSource, f.resolvedPolicy, enabled, &trigger.HTTPOSVClient{})
 	if ctx.Err() != nil {
 		if len(ws.advisories) == 0 {

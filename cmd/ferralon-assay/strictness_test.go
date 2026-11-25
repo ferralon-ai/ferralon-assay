@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -139,4 +141,68 @@ func TestAcquireTarget_ReadsStrictnessKey(t *testing.T) {
 			t.Fatal("acquired under an invalid strictness key")
 		}
 	})
+}
+
+// In strict the work-set inventory asks the reader under strict, so a version the JS lane reads
+// only by assuming the install honours the lockfile does not pin the coordinate: it is admitted by
+// name, unresolved, instead of by the assumed version.
+func TestDependencyInventory_Strict(t *testing.T) {
+	dir := t.TempDir()
+	for f, body := range map[string]string{
+		"package.json": `{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"}}`,
+		"package-lock.json": `{"name":"app","lockfileVersion":3,"packages":{` +
+			`"":{"name":"app","version":"1.0.0","dependencies":{"express":"^4.19.0"}},` +
+			`"node_modules/express":{"version":"4.19.2"}}}`,
+		"Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY . /app\nRUN npm install\n",
+	} {
+		writeT(t, filepath.Join(dir, f), body)
+	}
+	express := report.Package{Ecosystem: "npm", Name: "express"}
+	for _, tc := range []struct {
+		strict         bool
+		wantResolved   []report.Package
+		wantUnresolved []report.Package
+	}{
+		{strict: false, wantResolved: []report.Package{{Ecosystem: "npm", Name: "express", Version: "4.19.2"}}},
+		{strict: true, wantUnresolved: []report.Package{express}},
+	} {
+		acq := &acquired{
+			buildDir: dir, language: checkout.LangJS, repo: "example.com/fixture",
+			plugin: jsInventory{unsearchingAnalyzer{language: checkout.LangJS}}, strict: tc.strict,
+		}
+		resolved, unresolved, notes := dependencyInventory(context.Background(), acq)
+		if !slices.Equal(resolved, tc.wantResolved) || !slices.Equal(unresolved, tc.wantUnresolved) {
+			t.Errorf("strict=%v: resolved=%+v unresolved=%+v notes=%+v, want resolved=%+v unresolved=%+v",
+				tc.strict, resolved, unresolved, notes, tc.wantResolved, tc.wantUnresolved)
+		}
+	}
+}
+
+// scanWorkSet hands the run's resolved strictness to the work-set inventory, from the input and
+// from the ferralon.yml key alike.
+func TestScanWorkSet_CarriesStrict(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		config string
+		want   bool
+	}{
+		{name: "default", want: false},
+		{name: "input", args: []string{"-strictness=strict"}, want: true},
+		{name: "config", config: "strict", want: true},
+		{name: "input over config", args: []string{"-strictness=practical"}, config: "strict", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(envStrictness, "")
+			t.Setenv(envOSVWorkSet, "")
+			trapEgress(t)
+			f := runFlagsFor(t, tc.args...)
+			f.repoStrictness = tc.config
+			acq := goFixture(t, fixtureGoMod)
+			_, _ = f.scanWorkSet(context.Background(), acq)
+			if acq.strict != tc.want {
+				t.Errorf("acq.strict = %v, want %v", acq.strict, tc.want)
+			}
+		})
+	}
 }

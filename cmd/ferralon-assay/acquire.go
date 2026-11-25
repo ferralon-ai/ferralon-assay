@@ -50,6 +50,11 @@ type acquired struct {
 	// cfgStrictness is the strictness key of .github/ferralon.yml, "" when the target has none or is
 	// a remote URL, whose config is never read.
 	cfgStrictness string
+
+	// strict is the run's resolved strictness, set before the work set is chosen: in strict the
+	// dependency inventory asks the reader for versions under strict, so no version it reads under
+	// an assumption it inferred pins a coordinate.
+	strict bool
 }
 
 // provenance returns the Revision and ResolvedCommit to record on the Report's subject. By default

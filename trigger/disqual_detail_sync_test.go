@@ -17,6 +17,7 @@ func TestDisqualDetailReadsBackToItsBasis(t *testing.T) {
 	for _, reason := range []string{
 		pipeline.ReasonVersionNotInRange,
 		pipeline.ReasonFixCommitInHistory,
+		pipeline.ReasonAncestorReleaseOutsideRange,
 		pipeline.ReasonSymbolAbsent,
 		pipeline.ReasonAdvisoryEcosystemMismatch,
 		pipeline.ReasonNoManifestEntry,
@@ -24,7 +25,7 @@ func TestDisqualDetailReadsBackToItsBasis(t *testing.T) {
 	} {
 		for _, detail := range []string{disqualDetail(reason), disqualDetail(reason) + refuteAttribution(src), disqualDetail(reason) + refuteAttribution(src) + crossCheckNote("govulncheck's database could not be consulted: build failed")} {
 			want := disqualBasis(reason)
-			if reason == pipeline.ReasonVersionNotInRange || reason == pipeline.ReasonFixCommitInHistory || reason == pipeline.ReasonSymbolAbsent {
+			if reason == pipeline.ReasonVersionNotInRange || reason == pipeline.ReasonFixCommitInHistory || reason == pipeline.ReasonAncestorReleaseOutsideRange || reason == pipeline.ReasonSymbolAbsent {
 				// These always carried their basis; a stored one without it is refused, not backfilled.
 				want = verdict.BasisNone
 			}

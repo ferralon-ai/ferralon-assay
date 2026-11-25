@@ -221,7 +221,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 		advisoryIntake{src: cfg.Source},
 		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, strict: cfg.Strict, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
 		maliciousPresence{},
-		disqualificationDiscovery{src: cfg.Source, plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability},
+		disqualificationDiscovery{src: cfg.Source, plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, strict: cfg.Strict},
 	}
 	if cfg.DependencyAcquisition != nil {
 		stages = append(stages, dependencyAcquisition{acq: cfg.DependencyAcquisition, plugin: cfg.Plugin})
@@ -1735,6 +1735,9 @@ type disqualificationDiscovery struct {
 	src              AdvisorySource
 	plugin           plugin.LanguagePlugin
 	subjectToolchain bool
+	// strict withholds the clearance a release in the scanned history gives an unversioned project
+	// (ReasonAncestorReleaseOutsideRange), which rests on an assumption.
+	strict bool
 }
 
 func (disqualificationDiscovery) Name() string              { return "disqualification_discovery" }
@@ -1746,15 +1749,21 @@ func (disqualificationDiscovery) Status() assessment.Status { return assessment.
 type DisqualResult struct {
 	Disqualified bool   `json:"disqualified"`
 	Reason       string `json:"reason"`
-	// Source names the advisory record a version, symbol or fix-commit refute relied on. Set exactly
-	// when Disqualified is true on ReasonVersionNotInRange, ReasonSymbolAbsent or
-	// ReasonFixCommitInHistory; nil otherwise.
+	// Source names the advisory record a version, symbol, fix-commit or ancestor-release refute
+	// relied on. Set exactly when Disqualified is true on ReasonVersionNotInRange,
+	// ReasonSymbolAbsent, ReasonFixCommitInHistory or ReasonAncestorReleaseOutsideRange; nil
+	// otherwise.
 	Source *RefuteSource `json:"source,omitempty"`
 	// FixCommit is the commit a ReasonFixCommitInHistory refute found in the scanned history.
 	FixCommit string `json:"fix_commit,omitempty"`
-	// Assumptions are the lines a ReasonVersionNotInRange refute rests on: an installed
+	// AncestorRelease is the release tag a ReasonAncestorReleaseOutsideRange refute found in the
+	// scanned history.
+	AncestorRelease string `json:"ancestor_release,omitempty"`
+	// Assumptions are the lines a refute rests on: for ReasonVersionNotInRange, an installed
 	// pseudo-version placed outside a range only under an assumption about its revision's ancestry
-	// (compareGoModVersionsAssuming). Empty when the refute rests on version order alone.
+	// (compareGoModVersionsAssuming), or the toolchain line under GOTOOLCHAIN=auto; for
+	// ReasonAncestorReleaseOutsideRange, that no fix was reverted after the release. Empty when the
+	// refute rests on version order alone.
 	Assumptions []string `json:"assumptions,omitempty"`
 	// RangeDisputed, on a row that proceeds, names the source that contradicted a version-axis
 	// disqualification: an alias record of the advisory, or the analyzer's own database.
@@ -1789,6 +1798,11 @@ const (
 	// range of it ends at a fixed version, and the commit the advisory names as the fix is HEAD or
 	// an ancestor of it (fixCommitClears). It clears; its absence establishes nothing.
 	ReasonFixCommitInHistory = "fix_commit_in_history"
+	// ReasonAncestorReleaseOutsideRange: the advisory is against the scanned project's own Go
+	// module, HEAD carries no release tag of its own, and the highest release tag in HEAD's history
+	// is at or past the fixed version of every range (ancestorReleaseClears). It clears, practical
+	// mode only, under the assumption that no fix was reverted between that release and HEAD.
+	ReasonAncestorReleaseOutsideRange = "ancestor_release_outside_range"
 
 	// Intake disqualification reason codes (M0). These short-circuit advisories that are
 	// un-adjudicable BY DESIGN — nothing in the resolved codebase the analysis could ever
@@ -2942,10 +2956,17 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	}
 	// A disputed row cannot be re-cleared here: a version-axis disqualification needs a resolved
 	// version, and fixCommitClears refuses any.
+	// fixCommitAbsent records that the complete history lacks the commit the advisory names as its
+	// fix. A release tag in that history then cannot be read as carrying the fix.
+	var fixCommitAbsent bool
 	if !disqualified {
 		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) {
 			cleared, unanswered := fixCommitClears(rngs, rangeKnown, axis.Versions, others,
-				func() historyAnswer { return headContainsCommit(ctx, buildDir, commit) },
+				func() historyAnswer {
+					a := headContainsCommit(ctx, buildDir, commit)
+					fixCommitAbsent = a == historyLacks
+					return a
+				},
 				func(lower string) bool {
 					return rangeEnteredBeforeFix(ctx, buildDir, rootGoModule(store, c.ID, buildDir), commit, lower)
 				})
@@ -2955,6 +2976,20 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 				res = DisqualResult{Disqualified: true, Reason: ReasonFixCommitInHistory, FixCommit: commit}
 			case unanswered:
 				res.FixCommitUnanswered = commit
+			}
+		}
+	}
+	if !disqualified && !s.strict && !fixCommitAbsent && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) {
+		if mod := rootGoModule(store, c.ID, buildDir); mod != "" {
+			var tag string
+			if ancestorReleaseClears(rngs, rangeKnown, axis.Versions, others, func() (string, bool) {
+				t, v, ok := ancestorReleaseTag(ctx, buildDir, mod)
+				tag = t
+				return v, ok
+			}) {
+				disqualified = true
+				res = DisqualResult{Disqualified: true, Reason: ReasonAncestorReleaseOutsideRange, AncestorRelease: tag,
+					Assumptions: []string{ancestorReleaseAssumption(tag)}}
 			}
 		}
 	}

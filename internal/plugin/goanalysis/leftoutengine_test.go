@@ -1289,6 +1289,15 @@ func TestLofWalk_Link(t *testing.T) {
 			k.link(from, "example.com/v/vuln")
 			check(t, k)
 		})
+		// A file's directive links from the file's own package.
+		t.Run(tc.name+", from a file's directive", func(t *testing.T) {
+			tp := types.NewPackage("example.com/v/vuln", "vuln")
+			tp.Scope().Insert(types.NewFunc(token.NoPos, tp, "Bad", types.NewSignatureType(nil, nil, nil, nil, nil, false)))
+			vuln := &lofPkg{path: tp.Path(), loaded: &packages.Package{Types: tp}}
+			k := &lofWalk{w: &lofWorld{pkgs: map[string]*lofPkg{tp.Path(): vuln}}, out: newLofClosure(), entered: map[*lofPkg]bool{}, touched: map[*lofFile]bool{}}
+			k.touch(&lofFile{pkg: from, links: map[string]string{"local": "example.com/v/vuln.Bad"}})
+			check(t, k)
+		})
 		// A directive resolved to a loaded declaration links from the package that raised it.
 		t.Run(tc.name+", through its directive", func(t *testing.T) {
 			tp := types.NewPackage("example.com/v/vuln", "vuln")

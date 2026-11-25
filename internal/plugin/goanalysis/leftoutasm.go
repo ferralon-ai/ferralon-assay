@@ -30,15 +30,17 @@ var lofCFamily = map[string]bool{
 type lofAsm struct {
 	// text holds the package's functions the assembly gives a body (TEXT); defs the symbols of the
 	// package it names that every file naming one defines itself (TEXT, GLOBL, DATA), outside any
-	// conditional. A file-local symbol is keyed "name<>".
-	text, defs map[string]bool
+	// conditional; locals the symbols without a package, not file-local, it defines. A file-local
+	// symbol is keyed "name<>".
+	text, defs, locals map[string]bool
 	// refs holds the Go symbols it names outside a definition, as package path ("" for the
 	// package itself) and name.
 	refs [][2]string
 	// opaque is set when the assembly may run code the walk cannot follow to a declaration: a
 	// symbol it names that is not a Go symbol of the package, a definition, or a symbol of a
-	// package it names; a header it cannot find; text it cannot read or tokenize; or other source
-	// that may give the package's functions their bodies (lofWorld.foreignBody).
+	// package it names; a macro or conditional outside the toolchain's own headers; a header it
+	// cannot find; text it cannot read or tokenize; or other source that may give the package's
+	// functions their bodies (lofWorld.foreignBody).
 	opaque bool
 }
 
@@ -51,7 +53,7 @@ func (w *lofWorld) asmOf(p *lofPkg) *lofAsm {
 }
 
 func (w *lofWorld) readAsm(p *lofPkg) *lofAsm {
-	a := &lofAsm{text: map[string]bool{}, defs: map[string]bool{}}
+	a := &lofAsm{text: map[string]bool{}, defs: map[string]bool{}, locals: map[string]bool{}}
 	if w.foreignBody(p) {
 		a.opaque = true
 		return a
@@ -63,8 +65,8 @@ func (w *lofWorld) readAsm(p *lofPkg) *lofAsm {
 	own, other := map[string]bool{}, map[string]bool{}
 	for _, f := range p.asmFiles {
 		r := &lofAsmReader{w: w, p: p, a: a, read: map[string]bool{}, local: map[string]bool{}, ext: map[string]bool{},
-			alias: map[string]bool{}, raw: map[string]bool{}, defs: map[string]bool{}, refs: map[string]bool{}, macros: map[string]int{}}
-		r.file(f)
+			raw: map[string]bool{}, defs: map[string]bool{}, refs: map[string]bool{}, macros: map[string]int{}}
+		r.file(f, false)
 		r.close(own, other)
 	}
 	for name := range own {
@@ -132,16 +134,15 @@ type lofAsmReader struct {
 	a    *lofAsm
 	read map[string]bool
 	// local holds the names without a package the file defines; ext those it names as a symbol
-	// (name(SB)) outside a definition; alias the macros defined to one Go symbol; raw the names it
-	// takes as a symbol, defined or named, that are not then a macro defined once to one Go
-	// symbol; defs and refs the package's symbols it defines and names; macros how many times
-	// each macro is defined or undefined.
-	local, ext, alias, raw, defs, refs map[string]bool
-	macros                             map[string]int
-	// cond is set when the file holds a conditional (#if, #ifdef, #ifndef, #elif, #else), which
-	// may drop any definition from the build that assembles it; aliased when it names a symbol
-	// through an alias; funcdata when it names a stack map the assembler makes (FUNCDATA).
-	cond, aliased, funcdata bool
+	// (name(SB)) outside a definition; raw the names it takes as a symbol, defined or named; defs
+	// and refs the package's symbols it defines and names; macros how many times each macro is
+	// defined or undefined.
+	local, ext, raw, defs, refs map[string]bool
+	macros                      map[string]int
+	// cond is set when the file or a header it includes holds a conditional, which may drop any
+	// definition from the build that assembles it; funcdata when the file names a stack map the
+	// assembler makes (FUNCDATA).
+	cond, funcdata bool
 }
 
 // close marks the package's assembly opaque if the file names a symbol it does not itself define
@@ -152,15 +153,19 @@ func (r *lofAsmReader) close(own, other map[string]bool) {
 			r.a.opaque = true
 		}
 	}
-	// A macro is expanded where it is used, from its definition up to that point: used as a
-	// symbol other than when then defined once to one Go symbol, it may stand for anything.
+	// A macro used as a symbol may stand for anything.
 	for name := range r.raw {
 		if r.macros[name] > 0 {
 			r.a.opaque = true
 		}
 	}
-	if r.cond && r.aliased || r.funcdata && r.macros["FUNCDATA"] > 0 {
+	if r.funcdata && r.macros["FUNCDATA"] > 0 {
 		r.a.opaque = true
+	}
+	for name := range r.local {
+		if !strings.HasSuffix(name, "<>") {
+			r.a.locals[name] = true
+		}
 	}
 	for name := range r.refs {
 		if r.defs[name] && !r.cond {
@@ -171,8 +176,11 @@ func (r *lofAsmReader) close(own, other map[string]bool) {
 	}
 }
 
-// file reads one assembly file or header, and every header it includes.
-func (r *lofAsmReader) file(path string) {
+// file reads one assembly file or header, and every header it includes. A header of the
+// toolchain's own (trusted) may define macros and hold conditionals: what they are is known. Any
+// other file that does may make of the text the walk reads something else, wherever the macro is
+// used and expanded, so its assembly is opaque.
+func (r *lofAsmReader) file(path string, trusted bool) {
 	if r.read[path] {
 		return
 	}
@@ -202,31 +210,35 @@ func (r *lofAsmReader) file(path string) {
 	}
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]
-		if t.tok == '#' && at(i+1, scanner.Ident, "include") {
-			if !at(i+2, scanner.String, "") {
-				r.a.opaque = true
-				return
+		if t.tok == '#' {
+			directive := ""
+			if at(i+1, scanner.Ident, "") {
+				directive = toks[i+1].text
 			}
-			r.include(toks[i+2].text)
-			i += 2
-			continue
-		}
-		if t.tok == '#' && i+1 < len(toks) && toks[i+1].tok == scanner.Ident {
-			switch toks[i+1].text {
-			case "if", "ifdef", "ifndef", "elif", "else":
+			switch directive {
+			case "include":
+				if !at(i+2, scanner.String, "") {
+					r.a.opaque = true
+					return
+				}
+				r.include(toks[i+2].text)
+				i += 2
+				continue
+			case "define", "undef":
+				if !trusted {
+					r.a.opaque = true
+				}
+				if at(i+2, scanner.Ident, "") {
+					r.macros[toks[i+2].text]++
+				}
+			case "ifdef", "ifndef", "else", "endif":
 				r.cond = true
-			}
-		}
-		// A macro defined once, to one Go symbol the walk follows from its definition, names
-		// that symbol when used as name(SB) after it. Any other macro used so stays an unknown
-		// symbol.
-		if t.tok == '#' && (at(i+1, scanner.Ident, "define") || at(i+1, scanner.Ident, "undef")) && at(i+2, scanner.Ident, "") {
-			name := toks[i+2].text
-			r.macros[name]++
-			delete(r.alias, name)
-			if toks[i+1].text == "define" && r.macros[name] == 1 && at(i+3, scanner.Ident, "") && strings.Contains(toks[i+3].text, "·") && toks[i+3].line == toks[i+2].line &&
-				(i+4 == len(toks) || toks[i+4].line > toks[i+3].line) {
-				r.alias[name] = true
+				if !trusted {
+					r.a.opaque = true
+				}
+			case "line":
+			default:
+				r.a.opaque = true
 			}
 		}
 		// The assembler takes a symbol only against the static base, (SB); SB anywhere else, as
@@ -253,10 +265,6 @@ func (r *lofAsmReader) file(path string) {
 		}
 		sym := at(j, '(', "") && at(j+1, scanner.Ident, "SB") && at(j+2, ')', "")
 		def := i > 0 && toks[i-1].tok == scanner.Ident && (toks[i-1].text == "TEXT" || toks[i-1].text == "GLOBL" || toks[i-1].text == "DATA")
-		if sym && !def && r.alias[t.text] {
-			r.aliased = true
-			continue
-		}
 		if sym {
 			r.raw[t.text] = true
 		}
@@ -308,8 +316,8 @@ func (r *lofAsmReader) file(path string) {
 				r.a.text[name] = true
 			}
 		case def:
-			// A definition of another package's symbol gives that package a body; its own
-			// bodyless function finds none in its own assembly and stays opaque.
+			// A definition of another package's symbol gives that package a body, which only a
+			// package whose symbols assembly can name may take (lofWalk.asm).
 		default:
 			r.a.refs = append(r.a.refs, [2]string{pkg, name})
 			if pkg == "" {
@@ -331,11 +339,11 @@ func (r *lofAsmReader) include(quoted string) {
 		return
 	}
 	if filepath.IsAbs(name) {
-		r.file(name)
+		r.file(name, false)
 		return
 	}
 	if local := filepath.Join(r.p.dir, name); lofIsFile(local) {
-		r.file(local)
+		r.file(local, false)
 		return
 	}
 	if name == "go_asm.h" {
@@ -343,7 +351,7 @@ func (r *lofAsmReader) include(quoted string) {
 	}
 	if r.w.goroot != "" {
 		if std := filepath.Join(r.w.goroot, "pkg", "include", name); lofIsFile(std) {
-			r.file(std)
+			r.file(std, true)
 			return
 		}
 	}

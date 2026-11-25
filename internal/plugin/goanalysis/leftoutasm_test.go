@@ -1,6 +1,7 @@
 package goanalysis
 
 import (
+	"cmp"
 	"go/token"
 	"go/types"
 	"maps"
@@ -17,6 +18,7 @@ func TestLofAsm_Read(t *testing.T) {
 	const funcdata = "#define FUNCDATA_ArgsPointerMaps 0\n#define FUNCDATA_LocalsPointerMaps 1\n" +
 		"#define GO_ARGS\tFUNCDATA $FUNCDATA_ArgsPointerMaps, go_args_stackmap(SB)\n" +
 		"#define NO_LOCAL_POINTERS\tFUNCDATA $FUNCDATA_LocalsPointerMaps, no_pointers_stackmap(SB)\n"
+	const asmAMD64 = "#ifdef GOAMD64_v3\n#define hasAVX2\n#endif\n"
 	for _, tc := range []struct {
 		name string
 		// files are the package directory's files; a .s file is one of its assembly files.
@@ -27,6 +29,7 @@ func TestLofAsm_Read(t *testing.T) {
 		text   []string
 		refs   [][2]string
 		defs   []string
+		locals []string
 		opaque bool
 	}{
 		{name: "a local call", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tCALL ·g(SB)\n\tRET\n"},
@@ -38,7 +41,7 @@ func TestLofAsm_Read(t *testing.T) {
 		{name: "the package's own path", files: map[string]string{"a.s": "TEXT m∕p·f(SB),0,$0\n\tCALL m∕p·g(SB)\n\tRET\n"},
 			text: []string{"f"}, refs: [][2]string{{"", "g"}}},
 		{name: "a macro standing for a symbol", files: map[string]string{"a.s": "#define TGT x∕y·Bar\nTEXT ·f(SB),0,$0\n\tCALL TGT(SB)\n\tRET\n"},
-			text: []string{"f"}, refs: [][2]string{{"x/y", "Bar"}}},
+			text: []string{"f"}, refs: [][2]string{{"x/y", "Bar"}}, opaque: true},
 		{name: "a macro redefined", files: map[string]string{"a.s": "#define TGT x∕y·Bar\n#undef TGT\n#define TGT libc_bar\nTEXT ·f(SB),0,$0\n\tCALL TGT(SB)\n\tRET\n"},
 			text: []string{"f"}, refs: [][2]string{{"x/y", "Bar"}}, opaque: true},
 		{name: "a macro standing for other text", files: map[string]string{"a.s": "#define TGT libc_bar\nTEXT ·f(SB),0,$0\n\tCALL TGT(SB)\n\tRET\n"},
@@ -54,7 +57,29 @@ func TestLofAsm_Read(t *testing.T) {
 		{name: "a macro named as a package symbol", files: map[string]string{"a.s": "#define ·g libc_bar\nTEXT ·f(SB),0,$0\n\tCALL ·g(SB)\n\tRET\n"},
 			text: []string{"f"}, refs: [][2]string{{"", "g"}}, opaque: true},
 		{name: "a conditional around nothing the file names", files: map[string]string{"a.s": "#ifndef NOSPLIT\n#define NOSPLIT 4\n#endif\nTEXT ·f(SB),NOSPLIT,$0\n\tCALL ·g(SB)\n\tRET\n"},
+			text: []string{"f"}, refs: [][2]string{{"", "g"}}, opaque: true},
+		{name: "a conditional alone", files: map[string]string{"a.s": "#ifdef GOARCH_amd64\n#endif\nTEXT ·f(SB),0,$0\n\tRET\n"},
+			text: []string{"f"}, opaque: true},
+		{name: "a macro alone", files: map[string]string{"a.s": "#define N 4\nTEXT ·f(SB),0,$0\n\tRET\n"},
+			text: []string{"f"}, opaque: true},
+		{name: "an #undef alone", files: map[string]string{"a.s": "#undef N\nTEXT ·f(SB),0,$0\n\tRET\n"},
+			text: []string{"f"}, opaque: true},
+		{name: "an #undef in another macro's body", files: map[string]string{"a.s": "#define TGT ·f\n#define JTGT JMP TGT(SB)\n#undef TGT\nTEXT ·f(SB),0,$0\n\tJTGT\n"},
+			text: []string{"f"}, refs: [][2]string{{"", "f"}}, defs: []string{"f"}, opaque: true},
+		{name: "a function-like macro's parameter shadows an alias", files: map[string]string{"a.s": "#define TGT ·f\n#define J(TGT) JMP TGT(SB)\nTEXT ·f(SB),0,$0\n\tJ(helper)\n"},
+			text: []string{"f"}, refs: [][2]string{{"", "f"}}, defs: []string{"f"}, opaque: true},
+		{name: "TEXT redefined", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n#define TEXT JMP\nTEXT ·g(SB)\n"},
+			text: []string{"f", "g"}, opaque: true},
+		{name: "a directive the assembler does not know", files: map[string]string{"a.s": "#if 1\nTEXT ·f(SB),0,$0\n\tRET\n"},
+			text: []string{"f"}, opaque: true},
+		{name: "a #line directive", files: map[string]string{"a.s": "#line 10 \"x.s\"\nTEXT ·f(SB),0,$0\n\tRET\n"},
+			text: []string{"f"}},
+		{name: "the toolchain's header with a conditional", files: map[string]string{"a.s": "#include \"asm_amd64.h\"\nTEXT ·f(SB),0,$0\n\tCALL ·g(SB)\n\tRET\n"},
 			text: []string{"f"}, refs: [][2]string{{"", "g"}}},
+		{name: "the package's header named like the toolchain's", files: map[string]string{"a.s": "#include \"textflag.h\"\nTEXT ·f(SB),NOSPLIT,$0\n\tRET\n", "textflag.h": textflag},
+			text: []string{"f"}, opaque: true},
+		{name: "the package's header without a directive", files: map[string]string{"a.s": "#include \"h.h\"\nTEXT ·f(SB),0,$0\n\tRET\n", "h.h": "// nothing\n"},
+			text: []string{"f"}},
 		{name: "the toolchain's stack maps", files: map[string]string{"a.s": "#include \"funcdata.h\"\nTEXT ·f(SB),0,$0\n\tGO_ARGS\n\tNO_LOCAL_POINTERS\n\tFUNCDATA $1, no_pointers_stackmap(SB)\n\tRET\n"},
 			text: []string{"f"}},
 		{name: "a stack map's name outside FUNCDATA", files: map[string]string{"a.s": "#include \"funcdata.h\"\nTEXT ·f(SB),0,$0\n\tNO_LOCAL_POINTERS\n\tJMP no_pointers_stackmap(SB)\n"},
@@ -67,14 +92,16 @@ func TestLofAsm_Read(t *testing.T) {
 			text: []string{"f"}, opaque: true},
 		{name: "an assembly-only helper", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP helper<>(SB)\nTEXT helper<>(SB),0,$0\n\tRET\n"},
 			text: []string{"f"}},
+		{name: "a helper without a package its file defines", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP helper(SB)\nTEXT helper(SB),0,$0\n\tRET\n"},
+			text: []string{"f"}, locals: []string{"helper"}},
 		{name: "a helper another file defines", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP helper(SB)\n", "b.s": "TEXT helper(SB),0,$0\n\tRET\n"},
-			text: []string{"f"}, opaque: true},
+			text: []string{"f"}, locals: []string{"helper"}, opaque: true},
 		{name: "a helper defined under a conditional", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP helper(SB)\n#ifdef GOARCH_amd64\nTEXT helper(SB),0,$0\n\tRET\n#endif\n"},
-			text: []string{"f"}, opaque: true},
+			text: []string{"f"}, locals: []string{"helper"}, opaque: true},
 		{name: "a package symbol another file defines", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP ·h(SB)\n", "b.s": "TEXT ·h(SB),0,$0\n\tRET\nTEXT ·g(SB),0,$0\n\tJMP ·h(SB)\n"},
 			text: []string{"f", "g", "h"}, refs: [][2]string{{"", "h"}}},
 		{name: "a package symbol its file defines under a conditional", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP ·h(SB)\n#ifdef GOARCH_amd64\nTEXT ·h(SB),0,$0\n\tRET\n#endif\n"},
-			text: []string{"f", "h"}, refs: [][2]string{{"", "h"}}},
+			text: []string{"f", "h"}, refs: [][2]string{{"", "h"}}, opaque: true},
 		{name: "a package symbol its file defines", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP ·h(SB)\nTEXT ·h(SB),0,$0\n\tRET\n"},
 			text: []string{"f", "h"}, refs: [][2]string{{"", "h"}}, defs: []string{"h"}},
 		{name: "a compiler-made name", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tCALL ·f.func1(SB)\n\tRET\n"},
@@ -88,7 +115,7 @@ func TestLofAsm_Read(t *testing.T) {
 		{name: "the toolchain's header", files: map[string]string{"a.s": "#include \"textflag.h\"\nTEXT ·f(SB),NOSPLIT,$0\n\tRET\n"},
 			text: []string{"f"}},
 		{name: "the package's header", files: map[string]string{"a.s": "#include \"h.h\"\nTEXT ·f(SB),0,$0\n\tRET\n", "h.h": "#define CALLH CALL ·h(SB)\n"},
-			text: []string{"f"}, refs: [][2]string{{"", "h"}}},
+			text: []string{"f"}, refs: [][2]string{{"", "h"}}, opaque: true},
 		{name: "another package's body", files: map[string]string{"a.s": "TEXT m∕q·F(SB),0,$0\n\tRET\n"}},
 		{name: "a comment and a string", files: map[string]string{"a.s": "// CALL ·x(SB)\nTEXT ·f(SB),0,$0\n\tRET\n/* CALL libc_y(SB) */\n#include \"textflag.h\" // \"·z\"\n"},
 			text: []string{"f"}},
@@ -117,6 +144,9 @@ func TestLofAsm_Read(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(goroot, "pkg", "include", "funcdata.h"), []byte(funcdata), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(goroot, "pkg", "include", "asm_amd64.h"), []byte(asmAMD64), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			p := &lofPkg{path: "m/p", dir: dir}
@@ -152,6 +182,9 @@ func TestLofAsm_Read(t *testing.T) {
 			if got := slices.Sorted(maps.Keys(a.defs)); !slices.Equal(got, tc.defs) {
 				t.Errorf("defs = %v, want %v", got, tc.defs)
 			}
+			if got := slices.Sorted(maps.Keys(a.locals)); !slices.Equal(got, tc.locals) {
+				t.Errorf("locals = %v, want %v", got, tc.locals)
+			}
 		})
 	}
 }
@@ -169,26 +202,40 @@ func TestLofWalk_Asm(t *testing.T) {
 		name string
 		asm  string
 		// fn is the bodyless function followed; "f" when empty.
-		fn     string
-		std    bool
+		fn  string
+		std bool
+		// pkgPath and pkgName are the package's; "x.com/p" and "p" when empty.
+		pkgPath, pkgName string
+		// links are the //go:linkname targets the program pushes a body to.
+		links  []string
 		fc     []string
 		fcStd  []string
 		asmTo  []string
 		pushed []string
 	}{
-		{name: "a call in its own package", asm: head + "\tCALL ·g(SB)\n\tRET\n", asmTo: []string{"m/p"}, pushed: []string{"g"}},
-		{name: "an assembly-only helper", asm: head + "\tJMP ·h(SB)\nTEXT ·h(SB),0,$0\n\tRET\n", asmTo: []string{"m/p"}},
-		{name: "a name nothing declares", asm: head + "\tCALL ·nope(SB)\n\tRET\n", fc: []string{lofAssembly}, asmTo: []string{"m/p"}},
-		{name: "a standard-library function", asm: head + "\tCALL runtime·entersyscall(SB)\n\tRET\n", asmTo: []string{"m/p", "runtime"}},
-		{name: "a standard-library symbol nothing declares", asm: head + "\tCALL runtime·load_g(SB)\n\tRET\n", fcStd: []string{lofAssembly}, asmTo: []string{"m/p"}},
-		{name: "a dotless module's function", asm: head + "\tCALL m∕q·F(SB)\n\tRET\n", asmTo: []string{"m/p", "m/q"}},
-		{name: "a dotless module's symbol nothing declares", asm: head + "\tCALL m∕q·Nope(SB)\n\tRET\n", fc: []string{lofAssembly}, asmTo: []string{"m/p"}},
-		{name: "a package that cannot be found", asm: head + "\tCALL m∕gone·F(SB)\n\tRET\n", fc: []string{lofUnresolvedImport}, asmTo: []string{"m/p"}},
+		{name: "a call in its own package", asm: head + "\tCALL ·g(SB)\n\tRET\n", asmTo: []string{"x.com/p"}, pushed: []string{"g"}},
+		{name: "an assembly-only helper", asm: head + "\tJMP ·h(SB)\nTEXT ·h(SB),0,$0\n\tRET\n", asmTo: []string{"x.com/p"}},
+		{name: "a name nothing declares", asm: head + "\tCALL ·nope(SB)\n\tRET\n", fc: []string{lofAssembly}, asmTo: []string{"x.com/p"}},
+		{name: "a standard-library function", asm: head + "\tCALL runtime·entersyscall(SB)\n\tRET\n", asmTo: []string{"runtime", "x.com/p"}},
+		{name: "a standard-library symbol nothing declares", asm: head + "\tCALL runtime·load_g(SB)\n\tRET\n", fcStd: []string{lofAssembly}, asmTo: []string{"x.com/p"}},
+		{name: "a dotless module's function", asm: head + "\tCALL m∕q·F(SB)\n\tRET\n", asmTo: []string{"m/q", "x.com/p"}},
+		{name: "a dotless module's symbol nothing declares", asm: head + "\tCALL m∕q·Nope(SB)\n\tRET\n", fc: []string{lofAssembly}, asmTo: []string{"x.com/p"}},
+		{name: "a package that cannot be found", asm: head + "\tCALL m∕gone·F(SB)\n\tRET\n", fc: []string{lofUnresolvedImport}, asmTo: []string{"x.com/p"}},
 		{name: "a function its assembly does not define", asm: head + "\tRET\n", fn: "g", fc: []string{lofAssembly}},
 		{name: "a C symbol", asm: head + "\tJMP libc_x(SB)\n", fc: []string{lofAssembly}},
 		{name: "a compiler-made name", asm: head + "\tCALL ·g.func1(SB)\n\tRET\n", fc: []string{lofAssembly}},
 		{name: "a missing header", asm: "#include \"missing.h\"\n" + head + "\tRET\n", fc: []string{lofAssembly}},
 		{name: "a standard-library package's assembly", asm: head + "\tCALL ·g(SB)\n\tRET\n", std: true, fcStd: []string{lofAssembly}},
+		// Another package's assembly can name a symbol of a package whose path has no dot, or of a
+		// main package, and give its function a body.
+		{name: "a package whose path has no dot", asm: head + "\tRET\n", pkgPath: "m/p", fc: []string{lofAssembly}},
+		{name: "a main package", asm: head + "\tRET\n", pkgName: "main", fc: []string{lofAssembly}},
+		// The linker may keep a Go function a //go:linkname binds over the assembly's definition.
+		{name: "a helper without a package a linkname names", asm: head + "\tJMP helper(SB)\nTEXT helper(SB),0,$0\n\tRET\n", links: []string{"helper"}, fc: []string{lofAssembly}, asmTo: []string{"x.com/p"}},
+		{name: "a helper without a package no linkname names", asm: head + "\tJMP helper(SB)\nTEXT helper(SB),0,$0\n\tRET\n", links: []string{"x.com/p.helper"}, asmTo: []string{"x.com/p"}},
+		{name: "a package symbol a linkname names", asm: head + "\tJMP ·h(SB)\nTEXT ·h(SB),0,$0\n\tRET\n", links: []string{"x.com/p.h"}, fc: []string{lofAssembly}, asmTo: []string{"x.com/p"}},
+		{name: "a declared package symbol a linkname names", asm: head + "\tCALL ·g(SB)\n\tRET\n", links: []string{"x.com/p.g"}, fc: []string{lofAssembly}, asmTo: []string{"x.com/p"}, pushed: []string{"g"}},
+		{name: "a file-local helper", asm: head + "\tJMP h<>(SB)\nTEXT h<>(SB),0,$0\n\tRET\n", links: []string{"h", "h<>", "x.com/p.h"}, asmTo: []string{"x.com/p"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -196,7 +243,8 @@ func TestLofWalk_Asm(t *testing.T) {
 			if err := os.WriteFile(full, []byte(tc.asm), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			p := &lofPkg{path: "m/p", dir: dir, std: tc.std, asmFiles: []string{full}, decls: map[string][]*lofDecl{}}
+			pkgPath, pkgName := cmp.Or(tc.pkgPath, "x.com/p"), cmp.Or(tc.pkgName, "p")
+			p := &lofPkg{path: pkgPath, name: pkgName, dir: dir, std: tc.std, asmFiles: []string{full}, decls: map[string][]*lofDecl{}}
 			for _, n := range []string{"f", "g"} {
 				p.decls[n] = []*lofDecl{{name: n}}
 			}
@@ -204,13 +252,17 @@ func TestLofWalk_Asm(t *testing.T) {
 				"runtime": loaded("runtime", "runtime", "entersyscall"),
 				"m/q":     loaded("m/q", "q", "F"),
 				"m/gone":  {path: "m/gone", missing: lofUnresolvedImport},
-			}}
+			}, pushes: map[string][][2]string{}}
+			for _, l := range tc.links {
+				w.pushes[l] = [][2]string{{"lib/hl.go", "helperImpl"}}
+			}
 			k := &lofWalk{w: w, out: newLofClosure(), epoch: 1, entered: map[*lofPkg]bool{}, touched: map[*lofFile]bool{}}
 			fn := tc.fn
 			if fn == "" {
 				fn = "f"
 			}
 			k.asm(p, fn)
+			k.asmLinked()
 			if !slices.Equal(k.out.fc, tc.fc) || !slices.Equal(k.out.fcStd, tc.fcStd) {
 				t.Errorf("fails closed on %v, standard library only on %v; want %v and %v", k.out.fc, k.out.fcStd, tc.fc, tc.fcStd)
 			}

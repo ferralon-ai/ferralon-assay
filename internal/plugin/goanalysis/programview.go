@@ -3,7 +3,6 @@ package goanalysis
 import (
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
@@ -132,45 +131,7 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 	refutation := *ruled.Refutation
 	refutation.Detail = started + refutation.Detail
 	refutation.Assumptions = nil
-	view := &plugin.ProgramView{Module: module, Binaries: binaries, Refutation: refutation, Refutations: others}
-	if compiled := compiledModules(mains); len(compiled) > 0 {
-		view.CompiledModules = compiled
-		view.CompiledFor = strings.TrimSuffix(strings.TrimPrefix(platformDetail(env), "("), ")")
-	}
-	return view
-}
-
-// compiledModules returns the sorted paths of the modules that hold a package in the import closure
-// of mains: the modules whose code the binaries are built from, under the load's build context. It
-// returns nil when a package outside the standard library in that closure has no module, since the
-// set is then not known.
-func compiledModules(mains []*packages.Package) []string {
-	seen := map[*packages.Package]bool{}
-	mods := map[string]bool{}
-	unknown := false
-	var walk func(p *packages.Package)
-	walk = func(p *packages.Package) {
-		if seen[p] {
-			return
-		}
-		seen[p] = true
-		switch first, _, _ := strings.Cut(p.PkgPath, "/"); {
-		case p.Module != nil:
-			mods[p.Module.Path] = true
-		case strings.Contains(first, "."):
-			unknown = true
-		}
-		for _, imp := range p.Imports {
-			walk(imp)
-		}
-	}
-	for _, m := range mains {
-		walk(m)
-	}
-	if unknown {
-		return nil
-	}
-	return slices.Sorted(maps.Keys(mods))
+	return &plugin.ProgramView{Module: module, Binaries: binaries, Refutation: refutation, Refutations: others}
 }
 
 // programRulesOut reports whether the program view's checks hold for module, another module the

@@ -779,14 +779,6 @@ type ProgramView struct {
 	// admitted on one of them is grounded by it, and the rest stand beside it for that row's scoped
 	// verdict alone.
 	Refutations []Refutation `json:"refutations,omitempty"`
-	// CompiledModules are the paths of the modules that hold a package in the import closure of the
-	// binaries' main packages, sorted, as loaded under CompiledFor; empty when that set is not known.
-	// A module the advisory names that none of them holds has no package compiled into the binaries
-	// in that build context.
-	CompiledModules []string `json:"compiled_modules,omitempty"`
-	// CompiledFor states the build context CompiledModules was loaded under: GOOS, GOARCH and the
-	// build tags, tests excluded.
-	CompiledFor string `json:"compiled_for,omitempty"`
 }
 
 // Refutation grounds a not_exploitable verdict without a searched sink. Package is a PURL (version

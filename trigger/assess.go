@@ -1850,11 +1850,16 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 		// lost when the union is unavailable.
 		reasons = inv.PartialityFlags
 	}
+	cause := reachabilityFailureCause(store, assessmentID)
 	for _, reason := range reasons {
-		notes = append(notes, report.PartialityNote{
-			Reason:    reason,
-			Ecosystem: ecosystem,
-		})
+		note := report.PartialityNote{Reason: reason, Ecosystem: ecosystem}
+		if reason == plugin.PartialReasonToolFailure {
+			note.Detail, cause = cause, ""
+		}
+		notes = append(notes, note)
+	}
+	if cause != "" {
+		notes = append(notes, report.PartialityNote{Reason: plugin.PartialReasonToolFailure, Ecosystem: ecosystem, Detail: cause})
 	}
 	// A scoped limit is disclosed whether or not it counted against any advisory: it is still a
 	// part of the program the analysis could not see.
@@ -1867,6 +1872,21 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 		})
 	}
 	return notes
+}
+
+// reachabilityFailureCause is the reachability result's Cause when it explains the tool_failure
+// that result declares. Beside unsearched_methods the Cause names an unsearched method, not the
+// failure.
+func reachabilityFailureCause(store artifact.Store, assessmentID string) string {
+	reach, ok := reachabilityResult(store, assessmentID)
+	if !ok || reach.Partiality.Cause == "" {
+		return ""
+	}
+	reasons := reach.Partiality.Reasons
+	if !slices.Contains(reasons, plugin.PartialReasonToolFailure) || slices.Contains(reasons, plugin.PartialReasonUnsearchedMethods) {
+		return ""
+	}
+	return reach.Partiality.Cause
 }
 
 // footprintPartialityFlags reads the unioned partiality reason codes off the

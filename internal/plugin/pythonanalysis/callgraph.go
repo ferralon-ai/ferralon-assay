@@ -1520,14 +1520,14 @@ func (prog *program) py2RelativeAssumption() (*plugin.Annotation, string) {
 	return &plugin.Annotation{
 			Reason: AnnotationPy2RelativeImport,
 			Path:   site.path,
-			Detail: fmt.Sprintf("import %s is read as a module of the importing file's own package, as Python 2 reads an import the file does not declare absolute; read as absolute, no distribution declared in the manifests read in full provides it, and %s was not read in full", site.target, prog.unreadSurfaceName()),
+			Detail: fmt.Sprintf("the import of %s is read as a module of the importing file's own package, as Python 2 reads an import the file does not declare absolute; read as absolute, no distribution declared in the manifests read in full provides it, and %s was not read in full", site.target, prog.unreadSurfaceName()),
 		},
 		importCause(site, prog.unreadSurfaceName()) + " unless read as a Python 2 implicit relative import"
 }
 
 // importCause names an import no read manifest attributes and the surface left unread.
 func importCause(site importSite, unread string) string {
-	return fmt.Sprintf("import %s in %s resolves to no distribution a manifest read here declares, and %s was not read in full", site.target, site.path, unread)
+	return fmt.Sprintf("the import of %s in %s resolves to no distribution a manifest read here declares, and %s was not read in full", site.target, site.path, unread)
 }
 
 // unreadSurfaceName is the surface the walk could not read in full, for a cause or detail.

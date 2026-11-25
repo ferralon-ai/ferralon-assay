@@ -43,9 +43,11 @@ func reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	}
 
 	paths, reasons := firstPartyPaths(cg, ing, req.Symbols)
+	partiality := reachabilityPartiality(reasons)
+	partiality.Cause = cg.Partiality.Cause
 
 	return plugin.ReachabilityResult{
-		Partiality:  reachabilityPartiality(reasons),
+		Partiality:  partiality,
 		Paths:       paths,
 		Annotations: cg.Annotations,
 	}, nil

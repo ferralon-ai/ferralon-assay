@@ -47,7 +47,7 @@ func TestCallGraph_Py2RelativeImportStrictVersusPractical(t *testing.T) {
 				t.Fatalf("practical: annotations = %+v, want one", practical.Annotations)
 			}
 			a := practical.Annotations[0]
-			if a.Reason != AnnotationPy2RelativeImport || a.Path != "pkg/views.py" || !strings.Contains(a.Detail, "import forms") || !strings.Contains(a.Detail, "Dockerfile") {
+			if a.Reason != AnnotationPy2RelativeImport || a.Path != "pkg/views.py" || !strings.Contains(a.Detail, "import of forms") || !strings.Contains(a.Detail, "Dockerfile") {
 				t.Errorf("practical: annotation = %+v", a)
 			}
 
@@ -61,7 +61,7 @@ func TestCallGraph_Py2RelativeImportStrictVersusPractical(t *testing.T) {
 			if len(strict.Annotations) != 0 {
 				t.Errorf("strict: annotations = %+v, want none", strict.Annotations)
 			}
-			for _, want := range []string{"import forms", "pkg/views.py", "Dockerfile", "Python 2"} {
+			for _, want := range []string{"import of forms", "pkg/views.py", "Dockerfile", "Python 2"} {
 				if !strings.Contains(strict.Partiality.Cause, want) {
 					t.Errorf("strict: cause %q does not name %q", strict.Partiality.Cause, want)
 				}
@@ -80,8 +80,8 @@ func TestCallGraph_Py2RelativeImportStrictVersusPractical(t *testing.T) {
 			if r := reach(false); len(r.Annotations) != 1 || r.Annotations[0] != a || hasReason(r.Partiality, plugin.PartialReasonToolFailure) {
 				t.Errorf("practical reachability: annotations %+v, reasons %v", r.Annotations, r.Partiality.Reasons)
 			}
-			if r := reach(true); len(r.Annotations) != 0 || !hasReason(r.Partiality, plugin.PartialReasonToolFailure) {
-				t.Errorf("strict reachability: annotations %+v, reasons %v", r.Annotations, r.Partiality.Reasons)
+			if r := reach(true); len(r.Annotations) != 0 || !hasReason(r.Partiality, plugin.PartialReasonToolFailure) || r.Partiality.Cause != strict.Partiality.Cause {
+				t.Errorf("strict reachability: annotations %+v, reasons %v, cause %q", r.Annotations, r.Partiality.Reasons, r.Partiality.Cause)
 			}
 			if again, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir}); err != nil || len(again.Annotations) != 1 || hasReason(again.Partiality, plugin.PartialReasonToolFailure) {
 				t.Errorf("practical call graph after strict calls: err %v, annotations %+v, reasons %v", err, again.Annotations, again.Partiality.Reasons)
@@ -102,12 +102,12 @@ func TestCallGraph_Py2RelativeImportSkips(t *testing.T) {
 		{
 			name:    "the file declares absolute imports",
 			extra:   map[string]string{"pkg/views.py": "from __future__ import absolute_import\nimport forms\nimport rest_framework\n\ndef view():\n    forms.clean()\n"},
-			binding: "import forms",
+			binding: "import of forms",
 		},
 		{
 			name:    "the build declares a Python 3 interpreter",
 			extra:   map[string]string{".python-version": "3.11.9\n"},
-			binding: "import forms",
+			binding: "import of forms",
 		},
 		{
 			name: "the bare name is a declared distribution's import name",
@@ -117,7 +117,7 @@ func TestCallGraph_Py2RelativeImportSkips(t *testing.T) {
 				"pkg/azure/identity.py": "",
 				"pkg/views.py":          "import azure.identity\nimport rest_framework\n",
 			},
-			binding: "import azure in",
+			binding: "import of azure in",
 		},
 	}
 	for _, c := range cases {

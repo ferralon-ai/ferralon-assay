@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -70,11 +71,60 @@ func TestAnnotations_ReadFromInventory(t *testing.T) {
 	}
 }
 
+// The reachability result's Cause details its tool_failure note, once, and stays off a
+// result whose Cause names an unsearched method.
+func TestPartialityNotes_ReachabilityFailureCause(t *testing.T) {
+	const cause = "the import of azure in pkg/views.py resolves to no distribution a manifest read here declares, and Dockerfile was not read in full"
+	cases := []struct {
+		name      string
+		reasons   []string
+		footprint []string
+		want      string
+	}{
+		{"detailed", []string{plugin.PartialReasonToolFailure}, []string{plugin.PartialReasonReflection, plugin.PartialReasonToolFailure}, cause},
+		{"no footprint tool_failure", []string{plugin.PartialReasonToolFailure}, []string{plugin.PartialReasonReflection}, cause},
+		{"unsearched methods", []string{plugin.PartialReasonToolFailure, plugin.PartialReasonUnsearchedMethods}, []string{plugin.PartialReasonToolFailure}, ""},
+		{"no tool_failure", []string{plugin.PartialReasonDynamicDispatch}, []string{plugin.PartialReasonToolFailure}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			annotatedInventory(t, store)
+			p := plugin.Partial(c.reasons...)
+			p.Cause = cause
+			putJSON(t, store, "a1", artifact.TypeReachability, map[string]any{
+				"reachability": plugin.ReachabilityResult{Partiality: p},
+				"call_graph":   plugin.CallGraphResult{Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch)},
+			})
+			seedFootprint(t, store, "a1", c.footprint)
+			seedDisqual(t, store, "a1", false)
+			var details []string
+			failures := 0
+			for _, n := range partialityNotes(store, "a1") {
+				if n.Reason == plugin.PartialReasonToolFailure {
+					failures++
+					details = append(details, n.Detail)
+				}
+			}
+			wantFailures := 1
+			if c.want == "" && !slices.Contains(c.footprint, plugin.PartialReasonToolFailure) {
+				wantFailures = 0
+			}
+			if failures != wantFailures {
+				t.Fatalf("tool_failure notes = %d (%q), want %d", failures, details, wantFailures)
+			}
+			if wantFailures == 1 && details[0] != c.want {
+				t.Errorf("detail = %q, want %q", details[0], c.want)
+			}
+		})
+	}
+}
+
 // An assumption the reachability analysis rests on (a lane's call graph) reaches the row and
 // its partiality notes beside the inventory's, once each, and stays off a disqualified row,
 // whose verdict that analysis did not reach.
 func TestAnnotations_ReachabilityAssumption(t *testing.T) {
-	py2 := plugin.Annotation{Reason: plugin.AnnotationAssumptionPrefix + "py2_implicit_relative_import", Path: "pkg/views.py", Detail: "import forms is read as a module of the importing file's own package"}
+	py2 := plugin.Annotation{Reason: plugin.AnnotationAssumptionPrefix + "py2_implicit_relative_import", Path: "pkg/views.py", Detail: "the import of forms is read as a module of the importing file's own package"}
 	for _, disqual := range []bool{false, true} {
 		store := artifact.NewMemStore()
 		annotatedInventory(t, store)

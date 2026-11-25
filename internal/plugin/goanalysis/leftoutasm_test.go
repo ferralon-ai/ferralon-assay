@@ -14,6 +14,9 @@ import (
 
 func TestLofAsm_Read(t *testing.T) {
 	const textflag = "#define NOSPLIT 4\n"
+	const funcdata = "#define FUNCDATA_ArgsPointerMaps 0\n#define FUNCDATA_LocalsPointerMaps 1\n" +
+		"#define GO_ARGS\tFUNCDATA $FUNCDATA_ArgsPointerMaps, go_args_stackmap(SB)\n" +
+		"#define NO_LOCAL_POINTERS\tFUNCDATA $FUNCDATA_LocalsPointerMaps, no_pointers_stackmap(SB)\n"
 	for _, tc := range []struct {
 		name string
 		// files are the package directory's files; a .s file is one of its assembly files.
@@ -23,6 +26,7 @@ func TestLofAsm_Read(t *testing.T) {
 		gone   bool
 		text   []string
 		refs   [][2]string
+		defs   []string
 		opaque bool
 	}{
 		{name: "a local call", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tCALL ·g(SB)\n\tRET\n"},
@@ -42,13 +46,37 @@ func TestLofAsm_Read(t *testing.T) {
 		{name: "SB hidden in a macro", files: map[string]string{"a.s": "#define BASE SB\nTEXT ·f(SB),0,$0\n\tCALL libc_bar(BASE)\n\tRET\n"},
 			text: []string{"f"}, opaque: true},
 		{name: "file-local and ABI-selected symbols", files: map[string]string{"a.s": "TEXT ·f<ABI0>(SB),0,$0\n\tCALL ·g<>(SB)\n\tRET\nTEXT ·g<>(SB),0,$0\n\tMOVQ ·tab<>+8(SB), AX\n\tRET\nGLOBL ·tab<>(SB),8,$16\n"},
-			text: []string{"f"}, refs: [][2]string{{"", "g<>"}, {"", "tab<>"}}},
+			text: []string{"f"}, refs: [][2]string{{"", "g<>"}, {"", "tab<>"}}, defs: []string{"g<>", "tab<>"}},
+		{name: "a macro defined after its use", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tCALL TGT(SB)\n\tRET\n#define TGT x∕y·Bar\n"},
+			text: []string{"f"}, refs: [][2]string{{"x/y", "Bar"}}, opaque: true},
+		{name: "a macro defined under a conditional", files: map[string]string{"a.s": "#ifdef GOARCH_amd64\n#define TGT x∕y·Bar\n#endif\nTEXT ·f(SB),0,$0\n\tCALL TGT(SB)\n\tRET\n"},
+			text: []string{"f"}, refs: [][2]string{{"x/y", "Bar"}}, opaque: true},
+		{name: "a macro named as a package symbol", files: map[string]string{"a.s": "#define ·g libc_bar\nTEXT ·f(SB),0,$0\n\tCALL ·g(SB)\n\tRET\n"},
+			text: []string{"f"}, refs: [][2]string{{"", "g"}}, opaque: true},
+		{name: "a conditional around nothing the file names", files: map[string]string{"a.s": "#ifndef NOSPLIT\n#define NOSPLIT 4\n#endif\nTEXT ·f(SB),NOSPLIT,$0\n\tCALL ·g(SB)\n\tRET\n"},
+			text: []string{"f"}, refs: [][2]string{{"", "g"}}},
+		{name: "the toolchain's stack maps", files: map[string]string{"a.s": "#include \"funcdata.h\"\nTEXT ·f(SB),0,$0\n\tGO_ARGS\n\tNO_LOCAL_POINTERS\n\tFUNCDATA $1, no_pointers_stackmap(SB)\n\tRET\n"},
+			text: []string{"f"}},
+		{name: "a stack map's name outside FUNCDATA", files: map[string]string{"a.s": "#include \"funcdata.h\"\nTEXT ·f(SB),0,$0\n\tNO_LOCAL_POINTERS\n\tJMP no_pointers_stackmap(SB)\n"},
+			text: []string{"f"}, opaque: true},
+		{name: "FUNCDATA redefined", files: map[string]string{"a.s": "#include \"funcdata.h\"\n#define FUNCDATA JMP\nTEXT ·f(SB),0,$0\n\tFUNCDATA $1, no_pointers_stackmap(SB)\n"},
+			text: []string{"f"}, opaque: true},
 		{name: "a C symbol", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP libc_x(SB)\n"},
 			text: []string{"f"}, opaque: true},
 		{name: "a C symbol's address", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tMOVQ $libc_x+0(SB), AX\n\tRET\n"},
 			text: []string{"f"}, opaque: true},
 		{name: "an assembly-only helper", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP helper<>(SB)\nTEXT helper<>(SB),0,$0\n\tRET\n"},
 			text: []string{"f"}},
+		{name: "a helper another file defines", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP helper(SB)\n", "b.s": "TEXT helper(SB),0,$0\n\tRET\n"},
+			text: []string{"f"}, opaque: true},
+		{name: "a helper defined under a conditional", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP helper(SB)\n#ifdef GOARCH_amd64\nTEXT helper(SB),0,$0\n\tRET\n#endif\n"},
+			text: []string{"f"}, opaque: true},
+		{name: "a package symbol another file defines", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP ·h(SB)\n", "b.s": "TEXT ·h(SB),0,$0\n\tRET\nTEXT ·g(SB),0,$0\n\tJMP ·h(SB)\n"},
+			text: []string{"f", "g", "h"}, refs: [][2]string{{"", "h"}}},
+		{name: "a package symbol its file defines under a conditional", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP ·h(SB)\n#ifdef GOARCH_amd64\nTEXT ·h(SB),0,$0\n\tRET\n#endif\n"},
+			text: []string{"f", "h"}, refs: [][2]string{{"", "h"}}},
+		{name: "a package symbol its file defines", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tJMP ·h(SB)\nTEXT ·h(SB),0,$0\n\tRET\n"},
+			text: []string{"f", "h"}, refs: [][2]string{{"", "h"}}, defs: []string{"h"}},
 		{name: "a compiler-made name", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tCALL ·f.func1(SB)\n\tRET\n"},
 			text: []string{"f"}, opaque: true},
 		{name: "a dotted import path", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tCALL golang.org∕x∕sys·F(SB)\n\tRET\n"},
@@ -88,6 +116,9 @@ func TestLofAsm_Read(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(goroot, "pkg", "include", "textflag.h"), []byte(textflag), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(goroot, "pkg", "include", "funcdata.h"), []byte(funcdata), 0o644); err != nil {
+				t.Fatal(err)
+			}
 			p := &lofPkg{path: "m/p", dir: dir}
 			for _, n := range slices.Sorted(maps.Keys(tc.files)) {
 				full := filepath.Join(dir, n)
@@ -117,6 +148,9 @@ func TestLofAsm_Read(t *testing.T) {
 			}
 			if !slices.Equal(a.refs, tc.refs) {
 				t.Errorf("refs = %v, want %v", a.refs, tc.refs)
+			}
+			if got := slices.Sorted(maps.Keys(a.defs)); !slices.Equal(got, tc.defs) {
+				t.Errorf("defs = %v, want %v", got, tc.defs)
 			}
 		})
 	}

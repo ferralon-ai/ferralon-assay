@@ -1345,7 +1345,7 @@ func (k *lofWalk) walk(d *lofDecl) {
 			}
 		}
 		k.out.src[[2]string{p.path, d.src}] = true
-		if n.Body == nil && d.recv == "" {
+		if n.Body == nil {
 			k.bodyless(d, n)
 		}
 	case *ast.TypeSpec:
@@ -1632,9 +1632,19 @@ func (k *lofWalk) remote(from *lofPkg, remote string) {
 // edge touch follows), the host provides it (//go:wasmimport: foreign code, a dynamic call), its
 // package's assembly or a push from another package provides it, or the compiler expands it inline.
 // The assembly is followed (asm); a push is followed through the pushing body and names p as its
-// target (link). Anything else unresolved fails closed.
+// target (link). Anything else unresolved fails closed. A method's body is its package's assembly
+// (the toolchain takes one only for an architecture without the register ABI), whose ·T·M the walk
+// does not follow, or nothing: it fails closed.
 func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 	p := d.file.pkg
+	if d.recv != "" {
+		if len(p.asmFiles) > 0 {
+			k.fail(p, lofAssembly)
+		} else {
+			k.fail(p, lofBodyless)
+		}
+		return
+	}
 	if d.file.links[d.name] != "" {
 		return
 	}

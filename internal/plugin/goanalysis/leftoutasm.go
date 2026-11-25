@@ -28,8 +28,9 @@ var lofCFamily = map[string]bool{
 // lofAsm is what a package's Plan 9 assembly defines and names, read from its assembly files some
 // build the refutation describes compiles (lofPkg.asmFiles) and the headers they include.
 type lofAsm struct {
-	// text holds the package's functions the assembly gives a body (TEXT); defs every symbol of
-	// the package it defines (TEXT, GLOBL, DATA). A file-local symbol is keyed "name<>".
+	// text holds the package's functions the assembly gives a body (TEXT); defs the symbols of the
+	// package it names that every file naming one defines itself (TEXT, GLOBL, DATA), outside any
+	// conditional. A file-local symbol is keyed "name<>".
 	text, defs map[string]bool
 	// refs holds the Go symbols it names outside a definition, as package path ("" for the
 	// package itself) and name.
@@ -55,13 +56,20 @@ func (w *lofWorld) readAsm(p *lofPkg) *lofAsm {
 		a.opaque = true
 		return a
 	}
-	r := &lofAsmReader{w: w, p: p, a: a, read: map[string]bool{}, local: map[string]bool{}, ext: map[string]bool{}, alias: map[string]bool{}, macros: map[string]int{}}
+	// The assembler reads each file alone, with the headers it includes, and the build that runs
+	// one file's use of a symbol may compile no other file's definition of it: the files are kept
+	// for different architectures, or a conditional drops the definition. So a name is taken as
+	// defined only where the file that uses it defines it, outside any conditional.
+	own, other := map[string]bool{}, map[string]bool{}
 	for _, f := range p.asmFiles {
+		r := &lofAsmReader{w: w, p: p, a: a, read: map[string]bool{}, local: map[string]bool{}, ext: map[string]bool{},
+			alias: map[string]bool{}, raw: map[string]bool{}, defs: map[string]bool{}, refs: map[string]bool{}, macros: map[string]int{}}
 		r.file(f)
+		r.close(own, other)
 	}
-	for name := range r.ext {
-		if !r.local[name] && !(r.alias[name] && r.macros[name] == 1) {
-			a.opaque = true
+	for name := range own {
+		if !other[name] {
+			a.defs[name] = true
 		}
 	}
 	slices.SortFunc(a.refs, func(x, y [2]string) int { return strings.Compare(x[0]+"\x00"+x[1], y[0]+"\x00"+y[1]) })
@@ -117,16 +125,50 @@ type lofAsmTok struct {
 	line, off, end int
 }
 
+// lofAsmReader reads one assembly file and the headers it includes.
 type lofAsmReader struct {
 	w    *lofWorld
 	p    *lofPkg
 	a    *lofAsm
 	read map[string]bool
-	// local holds the names without a package the assembly defines; ext those it names as a
-	// symbol (name(SB)) outside a definition; alias the macros defined to one Go symbol, and
-	// macros how many times each macro is defined or undefined.
-	local, ext, alias map[string]bool
-	macros            map[string]int
+	// local holds the names without a package the file defines; ext those it names as a symbol
+	// (name(SB)) outside a definition; alias the macros defined to one Go symbol; raw the names it
+	// takes as a symbol, defined or named, that are not then a macro defined once to one Go
+	// symbol; defs and refs the package's symbols it defines and names; macros how many times
+	// each macro is defined or undefined.
+	local, ext, alias, raw, defs, refs map[string]bool
+	macros                             map[string]int
+	// cond is set when the file holds a conditional (#if, #ifdef, #ifndef, #elif, #else), which
+	// may drop any definition from the build that assembles it; aliased when it names a symbol
+	// through an alias; funcdata when it names a stack map the assembler makes (FUNCDATA).
+	cond, aliased, funcdata bool
+}
+
+// close marks the package's assembly opaque if the file names a symbol it does not itself define
+// for certain, and adds each package symbol it names to own, if it defines it, or other.
+func (r *lofAsmReader) close(own, other map[string]bool) {
+	for name := range r.ext {
+		if r.cond || !r.local[name] {
+			r.a.opaque = true
+		}
+	}
+	// A macro is expanded where it is used, from its definition up to that point: used as a
+	// symbol other than when then defined once to one Go symbol, it may stand for anything.
+	for name := range r.raw {
+		if r.macros[name] > 0 {
+			r.a.opaque = true
+		}
+	}
+	if r.cond && r.aliased || r.funcdata && r.macros["FUNCDATA"] > 0 {
+		r.a.opaque = true
+	}
+	for name := range r.refs {
+		if r.defs[name] && !r.cond {
+			own[name] = true
+		} else {
+			other[name] = true
+		}
+	}
 }
 
 // file reads one assembly file or header, and every header it includes.
@@ -169,12 +211,20 @@ func (r *lofAsmReader) file(path string) {
 			i += 2
 			continue
 		}
+		if t.tok == '#' && i+1 < len(toks) && toks[i+1].tok == scanner.Ident {
+			switch toks[i+1].text {
+			case "if", "ifdef", "ifndef", "elif", "else":
+				r.cond = true
+			}
+		}
 		// A macro defined once, to one Go symbol the walk follows from its definition, names
-		// that symbol when used as name(SB). Any other macro used so stays an unknown symbol.
+		// that symbol when used as name(SB) after it. Any other macro used so stays an unknown
+		// symbol.
 		if t.tok == '#' && (at(i+1, scanner.Ident, "define") || at(i+1, scanner.Ident, "undef")) && at(i+2, scanner.Ident, "") {
 			name := toks[i+2].text
 			r.macros[name]++
-			if toks[i+1].text == "define" && at(i+3, scanner.Ident, "") && strings.Contains(toks[i+3].text, "·") && toks[i+3].line == toks[i+2].line &&
+			delete(r.alias, name)
+			if toks[i+1].text == "define" && r.macros[name] == 1 && at(i+3, scanner.Ident, "") && strings.Contains(toks[i+3].text, "·") && toks[i+3].line == toks[i+2].line &&
 				(i+4 == len(toks) || toks[i+4].line > toks[i+3].line) {
 				r.alias[name] = true
 			}
@@ -203,6 +253,21 @@ func (r *lofAsmReader) file(path string) {
 		}
 		sym := at(j, '(', "") && at(j+1, scanner.Ident, "SB") && at(j+2, ')', "")
 		def := i > 0 && toks[i-1].tok == scanner.Ident && (toks[i-1].text == "TEXT" || toks[i-1].text == "GLOBL" || toks[i-1].text == "DATA")
+		if sym && !def && r.alias[t.text] {
+			r.aliased = true
+			continue
+		}
+		if sym {
+			r.raw[t.text] = true
+		}
+		// The assembler rewrites FUNCDATA $n, go_args_stackmap(SB) and no_pointers_stackmap(SB),
+		// as funcdata.h's GO_ARGS and NO_LOCAL_POINTERS write them, to stack maps it makes: data,
+		// not a symbol linked from elsewhere.
+		if sym && !def && (t.text == "go_args_stackmap" || t.text == "no_pointers_stackmap") && at(i-1, ',', "") &&
+			(at(i-2, scanner.Ident, "") || at(i-2, scanner.Int, "")) && at(i-3, '$', "") && at(i-4, scanner.Ident, "FUNCDATA") {
+			r.funcdata = true
+			continue
+		}
 		dot := strings.LastIndex(t.text, "·")
 		if dot < 0 {
 			name := t.text
@@ -238,7 +303,7 @@ func (r *lofAsmReader) file(path string) {
 		}
 		switch {
 		case def && pkg == "":
-			r.a.defs[name] = true
+			r.defs[name] = true
 			if toks[i-1].text == "TEXT" && !static {
 				r.a.text[name] = true
 			}
@@ -247,6 +312,9 @@ func (r *lofAsmReader) file(path string) {
 			// bodyless function finds none in its own assembly and stays opaque.
 		default:
 			r.a.refs = append(r.a.refs, [2]string{pkg, name})
+			if pkg == "" {
+				r.refs[name] = true
+			}
 		}
 	}
 }

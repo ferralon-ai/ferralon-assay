@@ -150,6 +150,10 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 			"_w/lib/lib.go": "package lib\n\nimport \"example.com/v/vuln\"\n\nfunc Call() { " + body + " }\n",
 		}
 	}
+	// asmPush gives the symbol sym, in loaded code, a Go body that calls the symbol.
+	asmPush := func(sym string) map[string]string {
+		return map[string]string{"lib/hl.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname helperImpl " + sym + "\nfunc helperImpl() { vuln.Bad() }\n"}
+	}
 	bad := map[string][]string{"example.com/v/vuln": {"Bad", "T.Bad", "P.Bad", "Variadic"}}
 	badFunc := map[string][]string{"example.com/v/vuln": {"Bad"}}
 	cases := []struct {
@@ -306,6 +310,36 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 			"_v/am/am.s":      "TEXT ·Run(SB),0,$0\n\tCALL ·helper(SB)\n\tRET\n",
 			"_v/am/helper.go": "package am\n\nimport \"example.com/v/vuln\"\n\nfunc helper() { vuln.Safe() }\n",
 		}), badFunc, false, "", false},
+		// Each assembly file is assembled alone, for the build that compiles it: a symbol it names
+		// that another file, a conditional or a later #define provides may be, in that build, the
+		// loaded Go function a //go:linkname pushes to that symbol.
+		{"a left-out file calls a bodyless function whose assembly jumps to a helper only another architecture's file defines", merge(x("\t\"example.com/v/am\"", "func init() { am.Run() }\n"), asmPush("helper"), map[string]string{
+			"_v/am/am.go":     "package am\n\nfunc Run()\n",
+			"_v/am/a_amd64.s": "TEXT helper(SB),0,$0\n\tRET\nTEXT ·Run(SB),0,$0\n\tRET\n",
+			"_v/am/a_arm64.s": "TEXT ·Run(SB),0,$0\n\tJMP helper(SB)\n",
+		}), badFunc, true, lofAssembly, false},
+		{"a left-out file calls a bodyless function whose assembly jumps to a package symbol only another architecture's file defines", merge(x("\t\"example.com/v/am\"", "func init() { am.Run() }\n"), asmPush("example.com/v/am.helper"), map[string]string{
+			"_v/am/am.go":     "package am\n\nfunc Run()\n",
+			"_v/am/a_amd64.s": "TEXT ·helper(SB),0,$0\n\tRET\nTEXT ·Run(SB),0,$0\n\tRET\n",
+			"_v/am/a_arm64.s": "TEXT ·Run(SB),0,$0\n\tJMP ·helper(SB)\n",
+		}), badFunc, true, lofAssembly, false},
+		{"a left-out file calls a bodyless function whose assembly jumps through a macro defined under #ifdef", merge(x("\t\"example.com/v/am\"", "func init() { am.Run() }\n"), asmPush("TGT"), map[string]string{
+			"_v/am/am.go":     "package am\n\nfunc Run()\n",
+			"_v/am/a_arm64.s": "#ifdef GOARCH_amd64\n#define TGT ·Run\n#endif\nTEXT ·Run(SB),0,$0\n\tJMP TGT(SB)\n",
+		}), badFunc, true, lofAssembly, false},
+		{"a left-out file calls a bodyless function whose assembly jumps through a macro defined after the jump", merge(x("\t\"example.com/v/am\"", "func init() { am.Run() }\n"), asmPush("TGT"), map[string]string{
+			"_v/am/am.go":     "package am\n\nfunc Run()\n",
+			"_v/am/a_arm64.s": "TEXT ·Run(SB),0,$0\n\tJMP TGT(SB)\n#define TGT ·Run\n",
+		}), badFunc, true, lofAssembly, false},
+		// The toolchain takes a method's assembly body only on an architecture without the register ABI.
+		{"a left-out file calls a bodyless method whose 386 assembly calls a Go function that calls the symbol", merge(x("\t\"example.com/v/am\"", "func init() { am.T{}.Run() }\n"), map[string]string{
+			"_v/am/am.go":     "package am\n\ntype T struct{}\n\nfunc (T) Run()\n",
+			"_v/am/am_386.s":  "TEXT ·T·Run(SB),0,$0\n\tCALL ·helper(SB)\n\tRET\n",
+			"_v/am/helper.go": "package am\n\nimport \"example.com/v/vuln\"\n\nfunc helper() { vuln.Bad() }\n",
+		}), badFunc, true, lofAssembly, false},
+		{"a left-out file calls a bodyless method with no body anywhere", merge(x("\t\"example.com/v/am\"", "func init() { am.T{}.Run() }\n"), map[string]string{
+			"_v/am/am.go": "package am\n\ntype T struct{}\n\nfunc (T) Run()\n",
+		}), badFunc, true, lofBodyless, false},
 		// A dotless module path is one assembly can name: w∕lib·Call is w/lib.Call.
 		{"a left-out bodyless function's assembly calls a function of a dotless module that calls the symbol", merge(x("\t_ \"w/lib\"", "func asm()\n\nfunc init() { asm() }\n"), dotless("vuln.Bad()"), map[string]string{
 			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL w∕lib·Call(SB)\n\tRET\n",

@@ -214,9 +214,10 @@ func makeListRest(s string) string {
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; c {
 		case '#':
-			// A # inside a word (this.#x, $#, ${#) is no comment. An opener inside a comment
-			// still counts, so a skipped # never lets a later closer end the list early.
-			if i > 0 && s[i-1] != ' ' && s[i-1] != '\t' && s[i-1] != '\n' {
+			// A # inside a word (this.#x, $#, ${#, p#a) is no comment; any other opens one. An
+			// opener inside a comment still counts, so reading code as a comment never lets a
+			// later closer end the list early.
+			if i > 0 && isMakeListWordByte(s[i-1]) {
 				continue
 			}
 			for i++; i < len(s) && s[i] != '\n'; i++ {
@@ -240,6 +241,13 @@ func makeListRest(s string) string {
 		}
 	}
 	return s
+}
+
+// isMakeListWordByte reports whether a # after c continues a word or reference rather than
+// opening a comment.
+func isMakeListWordByte(c byte) bool {
+	return c == '_' || c == '.' || c == '$' || c == '{' ||
+		'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
 }
 
 // makeProgram resolves a command's first word when it is a reference to a variable the

@@ -1037,6 +1037,7 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		vr, err := s.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{
 			BuildDir:   buildDir,
 			Coordinate: coordinate,
+			Strict:     s.strict,
 		})
 		if err != nil {
 			return depVersions{}, nil, err
@@ -1424,7 +1425,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// construction. A root package need not list itself, and may match with no version.
 	var membership *manifestMembership
 	if buildDir != "" && resolved.Version == "" && !isRoot {
-		membership = resolveManifestMembership(ctx, s.plugin, buildDir, language, AffectedPackageKeys(facts))
+		membership = resolveManifestMembership(ctx, s.plugin, buildDir, language, AffectedPackageKeys(facts), s.strict)
 	}
 
 	inv := struct {

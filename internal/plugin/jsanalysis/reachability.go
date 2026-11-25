@@ -34,7 +34,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
-	cg, closure, err := callGraphAndClosure(ctx, req.BuildDir, req.DependencyCache, override)
+	cg, closure, err := callGraphAndClosure(ctx, req.BuildDir, req.DependencyCache, override, req.Strict)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}

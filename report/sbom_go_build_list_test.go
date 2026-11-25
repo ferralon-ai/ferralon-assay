@@ -72,3 +72,26 @@ func TestSetGoBuildListCopies(t *testing.T) {
 		t.Fatalf("GoWorkspaceModules = %v, want [example.com/a]", got)
 	}
 }
+
+// The js launch digest reaches the report and round-trips; a builder never handed one emits no field.
+func TestBuilderCarriesJSLaunchDigest(t *testing.T) {
+	r := NewBuilder(Subject{Repo: "r", ResolvedCommit: "sha"}).SetJSLaunchDigest(SBOM{JSLaunchDigest: "abc"}).Build()
+	j, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Report
+	if err := json.Unmarshal(j, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.SBOM.JSLaunchDigest != "abc" {
+		t.Fatalf("js_launch_digest = %q after a round trip, want abc", back.SBOM.JSLaunchDigest)
+	}
+	bare, err := json.Marshal(NewBuilder(Subject{Repo: "r", ResolvedCommit: "sha"}).Build())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(bare, []byte("js_launch_digest")) {
+		t.Fatalf("a report with no digest serializes the field: %s", bare)
+	}
+}

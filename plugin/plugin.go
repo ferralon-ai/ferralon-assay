@@ -431,6 +431,9 @@ type ResolveSymbolsRequest struct {
 type ResolveVersionsRequest struct {
 	BuildDir   string `json:"build_dir"`
 	Coordinate string `json:"coordinate"` // e.g. "com.fasterxml.jackson.core:jackson-databind"
+	// Strict asks for strict mode, as on CallGraphRequest: the result rests on no assumption the lane
+	// names in an Annotation, and the lane declares a limit in its place.
+	Strict bool `json:"strict,omitempty"`
 }
 
 // ResolvedDependency is one declared dependency coordinate with its resolved version.
@@ -874,6 +877,11 @@ type DependencyInventory struct {
 	// WorkspaceModules are the other modules of the go.work the build list was resolved under (Go),
 	// sorted: main modules like MainModule, part of the build but not among Nodes; set with BuildList.
 	WorkspaceModules []string `json:"workspace_modules,omitempty"`
+	// LaunchDigest digests the texts the lane infers entry points from that can change without
+	// changing any dependency (the JS lane's package.json values, launch files and
+	// interpreter-line files), so a run can tell that an inherited clear rests on a different
+	// launch surface. Empty from a lane with no such surface.
+	LaunchDigest string `json:"launch_digest,omitempty"`
 }
 
 // BuildListGoModGraph is the BuildList of a Go inventory resolved from `go mod graph`: the selected

@@ -426,8 +426,11 @@ zero-config path the README Quickstart uses.
 ### `pr-inherit`
 
 Resolves the SBOM of the checked-out PR head and diffs it against the stored baseline. If the
-dependency set is unchanged, it inherits the baseline's findings without re-scanning. If it changed, it
-re-analyzes only the affected advisories and merges them over the inherited findings. Either way it
+dependency set and the JS launch surface (`sbom.js_launch_digest`: the package.json values,
+launch files and interpreter-line files the JS lane infers entry points from) are unchanged, it
+inherits the baseline's findings without re-scanning. Otherwise it re-analyzes only the affected
+advisories, plus every npm row when the launch surface changed, and merges them over the inherited
+findings. Either way it
 publishes the PR's Report without storing it: the baseline stays the default branch's, so later PRs
 inherit from it and `cve-watch` diffs against it, and a read-only token is enough — including a
 fork's. With no baseline in the selected store it stops with:

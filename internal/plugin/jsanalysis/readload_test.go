@@ -583,7 +583,7 @@ func TestDepGraph_ReadLoadDepsOffUnchanged(t *testing.T) {
 		"import { run } from 'dep';\nrun();\nrequire('fs').readFileSync('x');\n",
 	} {
 		dir := writeProgram(t, map[string]string{"index.js": app, "package.json": `{"name":"app","version":"1.0.0"}`})
-		cg, err := callGraphFor(context.Background(), dir, "")
+		cg, err := callGraphFor(context.Background(), dir, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}

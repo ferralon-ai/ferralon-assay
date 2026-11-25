@@ -316,6 +316,17 @@ func (d distResolver) knownTop(path string) bool {
 	return d.python.ships(top) || len(d.curated.Reverse(top)) > 0 || d.declared[normalizePyCoordinate(top)]
 }
 
+// curatedUndeclared reports whether importDeclared counts the dotted path only because its
+// top-level name is the import name of exactly one curated distribution, which no manifest
+// read here declares.
+func (d distResolver) curatedUndeclared(path string) bool {
+	top, _, _ := strings.Cut(path, ".")
+	if top == "" || d.firstParty[top] || d.python.ships(top) || len(d.curated.Reverse(top)) != 1 {
+		return false
+	}
+	return !slices.ContainsFunc(d.distsFor(path), func(s string) bool { return d.declared[s] })
+}
+
 // curatedShippers returns the curated distributions shipping exactly the longest curated
 // package that is path or a whole-segment prefix of it, or nil when none is.
 func (d distResolver) curatedShippers(path string) []string {
@@ -444,6 +455,32 @@ func declaredDistributions(ctx context.Context, buildDir string) (names map[stri
 		}
 	}
 	return names, complete, read
+}
+
+// unreadDeclarationSurface names the first surface that left declaredDistributions incomplete,
+// relative to buildDir and slash-separated: an install surface the walk could not read in full,
+// else a manifest candidate not read in full, else a manifest that would not read or parse. It is
+// "" when none is named (the tree walk itself stopped short).
+func unreadDeclarationSurface(ctx context.Context, buildDir string) string {
+	if at := unreadSurfaceCached(ctx, buildDir); at != "" {
+		return at
+	}
+	for _, c := range ManifestCandidates(buildDir) {
+		if !c.FullyRead {
+			return relSlash(buildDir, c.Path)
+		}
+	}
+	manifests, _, _, _, _, _, _, _, _ := versionSurfacesCached(ctx, buildDir)
+	for _, f := range manifests {
+		data, err := readRegular(f)
+		if err != nil {
+			return relSlash(buildDir, f)
+		}
+		if _, _, ok := parseManifestData(f, data); !ok {
+			return relSlash(buildDir, f)
+		}
+	}
+	return ""
 }
 
 // boundaryPrefix marks a dependency boundary node: a dependency attribute the build's code

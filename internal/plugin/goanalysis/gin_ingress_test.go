@@ -58,6 +58,9 @@ var ginForms = []struct {
 	{"NoRoute", "server#noRouteForm().", "*", "sinkNoRoute"},
 	{"NoMethod", "server#noMethodForm().", "*", "sinkNoMethod"},
 	{"non-constant Group prefix", "server#dynamicForm().", "/dynamic/:id", "sinkDynamic"},
+	{"handler in a package var", "init$1().", "/var/:id", "sinkVar"},
+	{"handler in a struct field", "fieldForm().", "/field", "sinkField"},
+	{"handler from a factory", "makeHandler$1().", "/factory/:id", "sinkFactory"},
 }
 
 // ginAccessors lists each modeled *gin.Context accessor and binder with the sink only
@@ -118,6 +121,7 @@ func TestGin_RouteIngressHeadsTaintTrace(t *testing.T) {
 	}
 	negSinks := []string{
 		ginFixtureSCIP + "sinkNeverRegistered().",
+		ginFixtureSCIP + "sinkUnbound().",
 		ginFixtureSCIP + "sinkMiddleware().",
 		ginFixtureSCIP + "sinkLookalike().",
 		ginFixtureSCIP + "sinkCtxStore().",
@@ -225,11 +229,16 @@ func TestGin_StaticIsNoIngress(t *testing.T) {
 
 // TestGin_UnregisteredHandlerIsNoIngress proves a handler-shaped func that no router
 // registers — a method (reaching gin only through fwdRouter's forwarding) and a
-// package-scope func(*gin.Context) — yields no ingress of any kind.
+// package-scope func(*gin.Context) — yields no ingress of any kind. Nor does a
+// handler bound so that the registered value is no one function: a package var stored
+// twice, a struct field holding two handlers, or a factory returning its parameter.
 func TestGin_UnregisteredHandlerIsNoIngress(t *testing.T) {
 	assertNoGinIngress(t, ginIngresses(t),
 		"server#neverRegistered().",
 		"unregisteredFunc().",
+		"reboundA().", "reboundB().", // a package var stored twice
+		"twoA().", "twoB().", // a struct field holding two handlers
+		"paramHandler().", // returned by a factory that returns its parameter
 	)
 }
 
@@ -250,10 +259,14 @@ func TestGin_MiddlewareIsNoIngress(t *testing.T) {
 // the fixture's own package: not gin's Engine.ServeHTTP (an engine mounted through
 // WrapH: the gin-path clause), not the HandlerFunc adapter's ServeHTTP (a handler
 // reaching WrapH as an http.HandlerFunc in a variable, through fwdRouter: the adapter
-// clause), and not the closures gin's WrapF/WrapH build around what they wrap.
+// clause), and not the closures gin's WrapF/WrapH build around what they wrap. The
+// one exception is the closure the look-alike WrapF returns: the look-alike is
+// first-party code here, so it is a handler factory whose closure is what gin calls,
+// never unwrapped to the handler it takes.
 func TestGin_OwnHandlersAndAdaptersAreNoIngress(t *testing.T) {
+	const lookalikeClosure = "scip-go gomod tegron.test/ginmod/lookalike . tegron.test/ginmod/lookalike/WrapF$1()."
 	for _, in := range ginIngresses(t) {
-		if in.Kind == "http_route" && !strings.HasPrefix(in.Symbol.SCIP, ginFixtureSCIP) {
+		if in.Kind == "http_route" && !strings.HasPrefix(in.Symbol.SCIP, ginFixtureSCIP) && in.Symbol.SCIP != lookalikeClosure {
 			t.Errorf("http_route ingress outside the fixture: %s (selector %q)", in.Symbol.SCIP, in.Selector)
 		}
 	}

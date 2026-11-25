@@ -15,6 +15,11 @@ import (
 func (e entrypoints) disclosure(pkgs []*packages.Package, buildDir string) *plugin.EntryRootRecord {
 	rec, _ := plugin.EntryRootRecordOf(*e.record())
 	rec.Inferred = inferredEntrypoints(pkgs)
+	if len(e.mains) > 0 {
+		// Read as an application, the mains are the entry points: the record names the ones the
+		// reading rests on.
+		rec.Effective[plugin.EntryKindMain] = pkgPaths(e.mains)
+	}
 	rec.Denied = e.denied(pkgs, buildDir)
 	return &rec
 }

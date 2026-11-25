@@ -333,6 +333,7 @@ func TestResolveToolchainFact(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			tc.in.strict = true
 			got := resolveToolchainFact(tc.in)
 			if !toolchainFactEqual(got, tc.want) {
 				t.Errorf("resolveToolchainFact(%+v)\n got %+v\nwant %+v", tc.in, got, tc.want)
@@ -475,6 +476,7 @@ func TestResolveToolchainFact_ContradictionGuard(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			tc.in.strict = true
 			got := resolveToolchainFact(tc.in)
 			if !toolchainFactEqual(got, tc.want) {
 				t.Errorf("resolveToolchainFact(%+v)\n got %+v (contradiction %+v)\nwant %+v (contradiction %+v)",

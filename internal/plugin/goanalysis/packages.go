@@ -32,6 +32,7 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/mod/modfile"
 	"golang.org/x/tools/go/packages"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -86,6 +87,65 @@ type LoadResult struct {
 	goVersion      string
 	buildGoVersion string
 	buildGoFloor   string
+	// directives are the go and toolchain lines of the go.mod and go.work the load's go command read.
+	directives modDirectives
+}
+
+// modDirectives are the go and toolchain lines, as written, of the go.mod and go.work files the go
+// command resolves in a directory. read is false when it named no go.mod or a file did not parse.
+type modDirectives struct {
+	read       bool
+	goLines    []string
+	toolchains []string
+}
+
+// readModDirectives reads the go and toolchain lines of the go.mod and go.work the go command in
+// buildDir resolves under env.
+func readModDirectives(ctx context.Context, buildDir string, env []string) modDirectives {
+	cmd := exec.CommandContext(ctx, "go", "env", "GOMOD", "GOWORK")
+	cmd.Dir, cmd.Env = buildDir, env
+	out, err := cmd.Output()
+	if err != nil {
+		return modDirectives{}
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) != 2 {
+		return modDirectives{}
+	}
+	gomod, gowork := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
+	if gomod == "" || gomod == os.DevNull {
+		return modDirectives{}
+	}
+	d := modDirectives{read: true}
+	add := func(g *modfile.Go, t *modfile.Toolchain) {
+		if g != nil {
+			d.goLines = append(d.goLines, "go"+g.Version)
+		}
+		if t != nil {
+			d.toolchains = append(d.toolchains, t.Name)
+		}
+	}
+	data, err := os.ReadFile(gomod)
+	if err != nil {
+		return modDirectives{}
+	}
+	mf, err := modfile.Parse(gomod, data, nil)
+	if err != nil {
+		return modDirectives{}
+	}
+	add(mf.Go, mf.Toolchain)
+	if gowork != "" && gowork != "off" {
+		data, err := os.ReadFile(gowork)
+		if err != nil {
+			return modDirectives{}
+		}
+		wf, err := modfile.ParseWork(gowork, data, nil)
+		if err != nil {
+			return modDirectives{}
+		}
+		add(wf.Go, wf.Toolchain)
+	}
+	return d
 }
 
 // releaseBound is what is established about the Go release a build compiles under: exactly release,
@@ -97,20 +157,45 @@ type releaseBound struct {
 
 // buildRelease returns what is established about the Go release the build compiles under, or nil
 // when nothing is. The load's release is the build's exactly when the subject's toolchain is known
-// and names the same minor, which alone decides the goN.M build tags a build satisfies. Otherwise
-// the subject's binding floor, when the caller holds one, bounds it from below. The go command on the
-// analyzer's PATH establishes neither: in a dedicated scan job that is the runner's Go, not the
-// build's.
+// and names the same minor, which alone decides the goN.M build tags a build satisfies. With no
+// subject toolchain stated, the load's release is taken as the build's when it satisfies the
+// subject's binding floor and no go.mod or go.work toolchain line names another release
+// (runningIsBuild). Otherwise the binding floor, when the caller holds one, bounds it from below.
 func (l *LoadResult) buildRelease() *releaseBound {
 	loaded, okLoaded := parseGoRelease(l.goVersion)
 	build, okBuild := parseGoRelease(l.buildGoVersion)
 	if okLoaded && okBuild && build.major == loaded.major && build.minor == loaded.minor {
 		return &releaseBound{release: loaded, exact: true}
 	}
+	if okLoaded && l.buildGoVersion == "" && l.runningIsBuild(loaded) {
+		return &releaseBound{release: loaded, exact: true}
+	}
 	if floor, ok := parseGoRelease(l.buildGoFloor); ok {
 		return &releaseBound{release: floor}
 	}
 	return nil
+}
+
+// runningIsBuild reports whether the load's release, loaded, is taken as the build's when no subject
+// toolchain is stated: the caller holds a binding floor, loaded is at or above it and above every go
+// line the load read, and every toolchain line it read names loaded itself. Directives it could not
+// read, and a go or toolchain line with no release identity, establish nothing.
+func (l *LoadResult) runningIsBuild(loaded goRelease) bool {
+	floor, ok := parseGoRelease(l.buildGoFloor)
+	if !ok || !l.directives.read || loaded.less(floor) {
+		return false
+	}
+	for _, g := range l.directives.goLines {
+		if r, ok := parseGoRelease(g); !ok || loaded.less(r) {
+			return false
+		}
+	}
+	for _, t := range l.directives.toolchains {
+		if r, ok := parseGoRelease(t); !ok || r != loaded {
+			return false
+		}
+	}
+	return true
 }
 
 // LoadProgram loads the buildable module rooted at buildDir with full type and
@@ -186,6 +271,7 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 	return &LoadResult{
 		Packages: pkgs, Partiality: part, members: members, cgo: cgo, cgoBounded: bounded,
 		cgoUnresolved: cgoErr != nil, goVersion: goVersion, plugin: pluginBuildOf(ctx, buildDir, pkgs, cfg.Env),
+		directives: readModDirectives(ctx, buildDir, cfg.Env),
 	}, nil
 }
 

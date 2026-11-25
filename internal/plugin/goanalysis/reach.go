@@ -1090,6 +1090,17 @@ func parseGoRelease(s string) (goRelease, bool) {
 	return goRelease{major: nums[0], minor: nums[1], patch: nums[2]}, true
 }
 
+// less reports whether r is an earlier release than o.
+func (r goRelease) less(o goRelease) bool {
+	if r.major != o.major {
+		return r.major < o.major
+	}
+	if r.minor != o.minor {
+		return r.minor < o.minor
+	}
+	return r.patch < o.patch
+}
+
 // loaderMinMinor is the oldest Go 1.x minor whose `go list` the bundled go/packages loader can
 // drive, and therefore the oldest subject toolchain this analysis can run under. Below it the
 // toolchain fetch succeeds and the scan then fails on a flag the older go command does not have,

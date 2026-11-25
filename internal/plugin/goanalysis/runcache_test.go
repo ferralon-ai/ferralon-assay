@@ -194,11 +194,12 @@ func TestReachabilityWithholdsFromCache(t *testing.T) {
 
 // TestReachabilityCarriesFloorToLoad pins that the request's GoToolchainFloor reaches the load that
 // judges left-out files: a !go1.22 file that calls the refuted module is ruled out under a go1.22.0
-// floor and withholds the refutation without one.
+// floor and withholds the refutation without one. The toolchain line names a release other than the
+// loader's, so the floor is all the load establishes.
 func TestReachabilityCarriesFloorToLoad(t *testing.T) {
 	t.Setenv("GOTOOLCHAIN", "local")
 	dir := writeTree(t, map[string]string{
-		"go.mod":              "module example.com/m\n\ngo 1.22.0\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"go.mod":              "module example.com/m\n\ngo 1.22.0\n\ntoolchain go1.22.1\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
 		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
 		"old.go":              "//go:build !go1.22\n\npackage main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n",
 		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",

@@ -444,6 +444,7 @@ var mavenPlugins = map[string]map[string]bool{
 	"org.jacoco:jacoco-maven-plugin":                            nil,
 	"org.springframework.boot:spring-boot-maven-plugin":         nil,
 	"com.google.cloud.tools:jib-maven-plugin":                   nil,
+	"io.fabric8:docker-maven-plugin":                            nil,
 	"org.openapitools:openapi-generator-maven-plugin":           nil,
 	"org.apache.rat:apache-rat-plugin":                          nil,
 	"org.hjug.refactorfirst.plugin:refactor-first-maven-plugin": nil,

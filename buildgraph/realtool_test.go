@@ -126,6 +126,11 @@ func TestMavenComplete(t *testing.T) {
 	plugin := func(xml string) map[string]string {
 		return map[string]string{"module-a/pom.xml": "<build><plugins>" + xml + "</plugins></build>"}
 	}
+	const fabric8 = `<build><plugins><plugin><groupId>io.fabric8</groupId><artifactId>docker-maven-plugin</artifactId><version>0.46.0</version>` +
+		`<configuration><images><image><name>ferralon/fixture</name><build><from>eclipse-temurin:21-jre</from></build></image></images></configuration>` +
+		`<executions><execution><id>image</id><phase>package</phase><goals><goal>build</goal></goals></execution>` +
+		`<execution><id>start</id><phase>pre-integration-test</phase><goals><goal>start</goal></goals></execution>` +
+		`<execution><id>stop</id><phase>post-integration-test</phase><goals><goal>stop</goal></goals></execution></executions></plugin></plugins></build>`
 	for _, tc := range []struct {
 		name string
 		edit map[string]string // file -> XML inserted before its closing </project>
@@ -141,6 +146,16 @@ func TestMavenComplete(t *testing.T) {
 			name: "dependency copy",
 			edit: plugin(`<plugin><artifactId>maven-dependency-plugin</artifactId><version>3.8.1</version><executions><execution><id>agent</id><phase>package</phase><goals><goal>copy</goal></goals><configuration><artifactItems><artifactItem><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId><version>2.0.16</version></artifactItem></artifactItems></configuration></execution></executions></plugin>`),
 			want: "maven-dependency-plugin",
+		},
+		{
+			// The fabric8 plugin builds and runs images from what the modules already package, so
+			// binding it in two modules of one reactor, one depending on the other, leaves the
+			// graph Complete.
+			name: "fabric8 docker-maven-plugin bound across the reactor",
+			edit: map[string]string{
+				"module-a/pom.xml": fabric8,
+				"module-c/pom.xml": fabric8,
+			},
 		},
 		{
 			name: "execution disabled by phase none",

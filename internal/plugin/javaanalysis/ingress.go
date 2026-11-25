@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -17,6 +18,13 @@ import (
 // (absence is declared at the reachability layer, never fabricated here). A
 // missing build dir is a hard error (inv.4).
 func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest, opts ...Option) (plugin.IngressResult, error) {
+	return findIngresses(ctx, req, nil, opts...)
+}
+
+// findIngresses is FindIngresses with the first-party bytecode the caller already read, nil to
+// read it here. The compiled entry points (ingress_bytecode.go) are added to the lexical ones
+// before the container-resolved set is merged, so both tracks list them.
+func findIngresses(ctx context.Context, req plugin.FindIngressesRequest, fp *firstPartyBytecode, opts ...Option) (plugin.IngressResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
 		return plugin.IngressResult{}, err
@@ -39,6 +47,11 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest, opts ..
 			})
 		}
 	}
+
+	if fp == nil {
+		fp = loadFirstPartyBytecode(req.BuildDir, prog)
+	}
+	ingresses = append(ingresses, compiledIngresses(fp.classes, supertypeLookup(req.BuildDir, fp, opts...), ingresses)...)
 
 	// Prove-path enrichment (gated by WithAnalyzerImage). Merge the
 	// container-resolved @RestController/@GetMapping routes — DI-wired ingresses
@@ -223,4 +236,18 @@ func indexByteRune(s string, b byte) int {
 		}
 	}
 	return -1
+}
+
+// supertypeLookup resolves a binary name against the first-party classes and the dependency
+// closure, the lookup the search's roots use, so the listing names every route the roots do.
+// When the closure cannot be loaded it falls back to the first-party classes.
+func supertypeLookup(buildDir string, fp *firstPartyBytecode, opts ...Option) func(string) (*classfile.Class, bool) {
+	if rc, err := loadReachClosure(buildDir, fp.classes, fp.cp, opts...); err == nil {
+		return rc.class
+	}
+	byName := make(map[string]*classfile.Class, len(fp.classes))
+	for i := range fp.classes {
+		byName[fp.classes[i].Name] = &fp.classes[i]
+	}
+	return func(n string) (*classfile.Class, bool) { c, ok := byName[n]; return c, ok }
 }

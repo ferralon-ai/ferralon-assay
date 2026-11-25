@@ -14,6 +14,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jvmingress"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -185,6 +186,12 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 	for i := range fp.classes {
 		if containerCallback(&fp.classes[i], lookup) {
 			r.reasons[reasonContainerCallback] = true
+			break
+		}
+	}
+	for i := range fp.classes {
+		if jvmingress.UnresolvedSupertype(&fp.classes[i], lookup) {
+			r.reasons[reasonInheritedRoute] = true
 			break
 		}
 	}

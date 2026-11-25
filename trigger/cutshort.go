@@ -48,17 +48,18 @@ func assessWithin(analysis context.Context, areq assessment.Request, opts ...pip
 	return st, assessmentID, false, err
 }
 
-// inventoryWithin resolves the codebase inventory under analysis. When the scan stopped before it
-// returned, the inventory is declared unresolved instead, so the Report is still built and every
-// advisory still gets its row.
-func inventoryWithin(analysis context.Context, codebase assessment.CodebaseRef, opts ...pipeline.AssessOption) (plugin.DependencyInventory, string, error) {
+// inventoryWithin resolves the codebase inventory under analysis, with the launch digest the
+// plugin reported for the tree it was resolved from. When the scan stopped before it returned, the inventory is declared
+// unresolved instead, so the Report is still built and every advisory still gets its row.
+func inventoryWithin(analysis context.Context, codebase assessment.CodebaseRef, opts ...pipeline.AssessOption) (plugin.DependencyInventory, string, string, error) {
 	start := time.Now()
 	inv, language, _, err := pipeline.ResolveCodebaseInventory(analysis, codebase, "", opts...)
+	digest := inv.LaunchDigest
 	if analysis.Err() != nil {
-		return plugin.DependencyInventory{Partiality: plugin.Partial(report.ReasonScanCutShort)}, language, nil
+		return plugin.DependencyInventory{Partiality: plugin.Partial(report.ReasonScanCutShort)}, language, digest, nil
 	}
 	observePhase(analysis, "inventory", start)
-	return inv, language, err
+	return inv, language, digest, err
 }
 
 // cutShortFinding is the row for an advisory the scan stopped before assessing. Like

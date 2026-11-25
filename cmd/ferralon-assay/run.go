@@ -1396,7 +1396,11 @@ func runPRInherit(args []string) error {
 		}
 	} else {
 		fmt.Fprintf(os.Stdout, "  path:       re-analyzed affected slice\n")
-		fmt.Fprintf(os.Stdout, "  changed:    %s\n", strings.Join(res.ChangedPackages, ", "))
+		changed := strings.Join(res.ChangedPackages, ", ")
+		if changed == "" {
+			changed = "no package (the entry-point statement or the JS launch surface differs from the baseline's)"
+		}
+		fmt.Fprintf(os.Stdout, "  changed:    %s\n", changed)
 	}
 	rescan := rescanFromEnv()
 	publishStart := time.Now()

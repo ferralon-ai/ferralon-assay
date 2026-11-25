@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -15,6 +14,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
+	"github.com/ferralon-ai/ferralon-assay/internal/redact"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -89,10 +89,14 @@ func siblingInstanceFindings(analysis context.Context, areq assessment.Request, 
 // finding maps one advisory's S1–S6 artifacts into a single report.AdvisoryFinding,
 // applying the deterministic verdict rule (inv. 5):
 //
-//   - disqualification_discovery disqualified  → VerdictDisqualified.
+//   - disqualification_discovery disqualified  → VerdictDisqualified, or VerdictNotExploitable
+//     on the same basis carrying the stage's Assumptions when the disqualification rests on one.
 //   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate, or
 //     VerdictUndetermined/advisory_range_absent with the path kept when the advisory
-//     carries no affected range the version axis can bound for the admitted package.
+//     carries no affected range the version axis can bound for the admitted package, or
+//     VerdictUndetermined/own_release_version_unknown with the path kept when the advisory is
+//     on the unversioned project itself and only its fix commit, which the checkout's
+//     history could not place, would decide it (ownFixCommitUnanswered).
 //   - neither, and the empty path set is not evidence about the subject (see
 //     undeterminedReason) or has no positive grounds (see
 //     notExploitableGrounds)                    → VerdictUndetermined, no basis.
@@ -133,8 +137,15 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			Verdict:  report.VerdictDisqualified,
 			Evidence: report.EvidenceSummary{
 				Basis:  disqualBasis(res.Reason),
-				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source),
+				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck),
 			},
+		}
+		// A version placed outside only under an assumption about a pseudo-version's ancestry is
+		// not proven out of scope: it is refuted under that stated assumption.
+		if len(res.Assumptions) > 0 {
+			f.Verdict = report.VerdictNotExploitable
+			f.Evidence.Detail = versionOutsideAssumingDetail + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck)
+			f.Evidence.Assumptions = res.Assumptions
 		}
 	case hasCandidate(store, assessmentID):
 		shown, shownFromTaint, shownOK := evidencePath(store, assessmentID)
@@ -176,6 +187,9 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				GuardSufficiency: guardSufficiencyFor(guards, advisoryGuardSufficiency(store, assessmentID)),
 			},
 		}
+		if pkg == nil && ownReleaseUnversioned(store, assessmentID) {
+			f.Evidence.Detail = ownReleaseCandidateDetail
+		}
 		// An advisory with no affected range for the admitted package is admitted at every version,
 		// so the path says nothing about whether this version carries the flaw. The path stays as
 		// evidence; the candidate-only annotations go with the verdict.
@@ -189,6 +203,18 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				CallPath:         frames,
 				MitigatingGuards: guards,
 				AdvisoryBounds:   advisoryBounds(store, assessmentID),
+			}
+		} else if commit := ownFixCommitUnanswered(store, assessmentID, pkg); commit != "" {
+			// The advisory is on the project itself, whose version nothing established, and only the
+			// history the checkout lacks could place the fix commit. The path stays as evidence.
+			f.Verdict = report.VerdictUndetermined
+			f.UndeterminedReason = report.ReasonOwnReleaseVersionUnknown
+			f.Evidence = report.EvidenceSummary{
+				Detail:           ownFixCommitUnansweredDetail(commit),
+				ReachablePath:    path,
+				EntryPoint:       entry,
+				CallPath:         frames,
+				MitigatingGuards: guards,
 			}
 		}
 	default:
@@ -238,6 +264,8 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			}
 			if pipeline.OwnAdvisoryHeldForPartialRun(store, assessmentID) {
 				f.Evidence.Detail = ownAdvisoryPartialRunDetail
+			} else if r, replaced := moduleReplacement(store, assessmentID, pkg); replaced && reason == report.ReasonPackageVersionUnresolved {
+				f.Evidence.Detail = replacedHeldDetail(store, assessmentID, mods, r)
 			}
 			break
 		}
@@ -1014,6 +1042,15 @@ func refuteAttribution(src *pipeline.RefuteSource) string {
 	return " (per " + strings.Join(parts, ", ") + ")"
 }
 
+// crossCheckNote discloses on a version-axis disqualification that the analyzer's own vulnerability
+// database could not be consulted, so the clear rests on the corpus range alone.
+func crossCheckNote(note string) string {
+	if note == "" {
+		return ""
+	}
+	return "; not cross-checked: " + note
+}
+
 // maxFeedName bounds the record-declared feed name carried into customer-visible detail.
 const maxFeedName = 64
 
@@ -1056,6 +1093,10 @@ func disqualBasis(reason string) verdict.NonExploitableBasis {
 		return verdict.BasisNone
 	}
 }
+
+// versionOutsideAssumingDetail is the detail of a version-axis refute that holds only under the
+// row's stated assumptions about a pseudo-version's ancestry.
+const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumption about a pseudo-version's ancestry"
 
 // disqualDetail renders the customer-visible grounds for a disqualification. Each reason code
 // gets its own arm: the version and symbol axes record an adjudicated comparison that cleared
@@ -1333,7 +1374,31 @@ func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.P
 // advisory_unknown_to_analyzer. When every did-not-run limit is one an analyzer declares only after
 // its search ran and came back empty (refutationWithheldReasons), the reason is
 // refutation_withheld: the steps ran, and the search did not cover all the code the build may run.
+// When the advisory is on the scanned project itself and the project's own release version was not
+// established (ownReleaseUnversioned), the reason is own_release_version_unknown, whichever of these
+// it would otherwise be.
 func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
+	reason, ok := didNotRunReason(store, assessmentID, pkg)
+	if ok && pkg == nil && ownReleaseUnversioned(store, assessmentID) {
+		return report.ReasonOwnReleaseVersionUnknown, true
+	}
+	return reason, ok
+}
+
+// ownReleaseUnversioned reports that the advisory is on the scanned project itself and the
+// project's own release version was not established. Such an advisory's affected range names
+// releases of this project, so nothing places this checkout inside or outside it, and the
+// reason a row is held is that missing version, whatever steps beside it also did not run.
+func ownReleaseUnversioned(store artifact.Store, assessmentID string) bool {
+	if !pipeline.RootSubject(store, assessmentID) {
+		return false
+	}
+	_, versioned := pipeline.ResolvedVersion(store, assessmentID)
+	return !versioned
+}
+
+// didNotRunReason is analysisDidNotRun without the own-release case.
+func didNotRunReason(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
 	if emptyGraphUncalledComplete(store, assessmentID) {
 		return report.ReasonAnalysisDidNotRun, true
 	}
@@ -1342,6 +1407,11 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	// different path or a directory has none), so the limit that held it is the specific
 	// statement, whatever other axes declared.
 	if versionHeld && pkg == nil {
+		// A module the build compiles from a fork or a local directory has no version to resolve,
+		// and with no other step held, notExploitableGrounds judges it on that compiled code.
+		if _, replaced := moduleReplacement(store, assessmentID, pkg); replaced && len(reasons) == 0 {
+			return "", false
+		}
 		return report.ReasonPackageVersionUnresolved, true
 	}
 	switch {
@@ -1392,7 +1462,7 @@ var scopeStatedLimits = map[string]bool{
 // footprint. They drop only while the assessment holds an analyzer refutation on the admitted
 // package, and every other limit stays.
 func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg *report.Package, reasons []string) []string {
-	if !slices.ContainsFunc(reasons, func(r string) bool { return scopeStatedLimits[r] }) {
+	if !slices.ContainsFunc(reasons, func(r string) bool { return scopeStatedLimits[r] || r == plugin.PartialReasonPluginLoad }) {
 		return reasons
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
@@ -1407,12 +1477,23 @@ func withoutBuildConstraintLimit(store artifact.Store, assessmentID string, pkg 
 	case plugin.RefutationAnalyzerPackageNotImported:
 		// "No build file imports the package" is a claim about every platform, so it does not stand
 		// beside a file another platform builds that may call into the module. It reads the files cgo
-		// off drops too, so the cgo-off limits still clear.
+		// off drops too, so the cgo-off limits still clear. A plugin the program loads with cgo on is
+		// a separate build, which cannot make this one import the package, so plugin_load clears
+		// too once the refutation carries that as its assumption. A refutation the ground rests on
+		// beside it must carry it too: a call-path refutation of another module is the claim a
+		// loaded plugin can contradict.
 		drops = map[string]bool{plugin.PartialReasonPluginLoadCgoOff: true, plugin.PartialReasonCgoFilesDropped: true}
+		if assumesPluginsSeparate(*r) && !slices.ContainsFunc(refutedBeside(store, assessmentID, reach), func(b plugin.Refutation) bool { return !assumesPluginsSeparate(b) }) {
+			drops[plugin.PartialReasonPluginLoad] = true
+		}
 	default:
 		return reasons
 	}
 	return slices.DeleteFunc(slices.Clone(reasons), func(r string) bool { return drops[r] })
+}
+
+func assumesPluginsSeparate(r plugin.Refutation) bool {
+	return slices.Contains(r.Assumptions, plugin.AssumptionPluginsNotAssessed)
 }
 
 // refutationWithheldReasons holds the did-not-run limits an analyzer declares only in place of a
@@ -1678,7 +1759,10 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 //
 // The positive-grounds reasons (notExploitableGrounds) are scoped to the finding's own package
 // ecosystem: they are about that package's admission and symbols, not the Go toolchain. So is
-// dependency_not_fetched, which is about the package's dependency code.
+// dependency_not_fetched, which is about the package's dependency code. own_release_version_unknown
+// is about the checkout's own release version, which no scan-level limit states; its row names no
+// package, so its note is scoped to no ecosystem, as a package_version_unresolved row's is when it
+// names none.
 func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	switch {
 	case f.Verdict != report.VerdictUndetermined,
@@ -1688,7 +1772,7 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 		return report.PartialityNote{}, false
 	}
 	switch f.UndeterminedReason {
-	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
+	case report.ReasonPackageVersionUnresolved, report.ReasonOwnReleaseVersionUnknown, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
 		report.ReasonAdvisorySymbolsUnvetted, report.ReasonAdvisoryRangeAbsent, report.ReasonDependencyNotFetched:
 		note := report.PartialityNote{Reason: f.UndeterminedReason}
 		if f.Package != nil {
@@ -1838,33 +1922,6 @@ func stageCause(err error) error {
 // assessErrorLimit bounds the error text a failed-assessment row carries, in runes.
 const assessErrorLimit = 200
 
-// secretREs match the credentials a tool error can echo, each with what replaces them: the
-// userinfo of a URL (with or without a scheme, up to the authority's last '@', since a password
-// may hold one), a user:password@host without one (a proxy setting), query-string values, an
-// Authorization header, a bearer token and a GitLab PRIVATE-TOKEN header; a token= or npm
-// _authToken= setting outside a query string; a .netrc entry's password; and a bare GitHub, GitLab
-// or npm token, by its prefix and a body of a token's length (the prefix is kept). A Go
-// module@version has no ':' before its '@', so it is kept; a word that only contains "token" or
-// "password" (tokenizer, password-reset) has no value to redact, so it is kept.
-var secretREs = []struct {
-	re   *regexp.Regexp
-	repl string
-}{
-	{regexp.MustCompile(`((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)[^/\s]*@`), "${1}REDACTED@"},
-	{regexp.MustCompile(`[^\s/:@]+:[^\s/]*@`), "REDACTED@"},
-	{regexp.MustCompile(`([?&][^\s?&#=]+=)[^\s&#]*`), "${1}REDACTED"},
-	{regexp.MustCompile(`(?i)\b((?:proxy-)?authorization)\s*[:=]\s*(?:(?:bearer|basic|token|digest)\s+)?[^\s,;]+`), "${1}: REDACTED"},
-	{regexp.MustCompile(`(?i)\b(bearer)\s+[^\s,;]+`), "${1} REDACTED"},
-	{regexp.MustCompile(`(?i)\b(private-token)\s*[:=]\s*[^\s,;]+`), "${1}: REDACTED"},
-	{regexp.MustCompile(`(?i)(_authToken)\s*=\s*[^\s,;]+`), "${1}=REDACTED"},
-	{regexp.MustCompile(`(?i)\b([A-Za-z0-9_-]*token)=[^\s&#,;]+`), "${1}=REDACTED"},
-	{regexp.MustCompile(`(?i)\b((?:machine\s+\S+(?:\s+(?:login|account)\s+\S+)*|default(?:\s+(?:login|account)\s+\S+)+)\s+password)\s+\S+`), "${1} REDACTED"},
-	{regexp.MustCompile(`\b(gh[pousr]_)[A-Za-z0-9]{36,}`), "${1}REDACTED"},
-	{regexp.MustCompile(`\b(github_pat_)[A-Za-z0-9_]{22,}`), "${1}REDACTED"},
-	{regexp.MustCompile(`\b(glpat-)[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*`), "${1}REDACTED"},
-	{regexp.MustCompile(`\b(npm_)[A-Za-z0-9]{36,}`), "${1}REDACTED"},
-}
-
 // assessErrorText renders err for a report row: one line, credentials redacted, at most
 // assessErrorLimit runes.
 func assessErrorText(err error) string {
@@ -1875,9 +1932,7 @@ func assessErrorText(err error) string {
 		return r
 	}, err.Error())
 	s = strings.Join(strings.Fields(s), " ")
-	for _, r := range secretREs {
-		s = r.re.ReplaceAllString(s, r.repl)
-	}
+	s = redact.Secrets(s)
 	if r := []rune(s); len(r) > assessErrorLimit {
 		s = string(r[:assessErrorLimit-1]) + "…"
 	}

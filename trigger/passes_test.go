@@ -23,13 +23,15 @@ import (
 
 // disqualifiableSource serves GO-2021-0113's facts for every id, with the affected range closed
 // below the build's v0.3.6 for each id starting "GO-D-": those advisories settle at disqualification
-// discovery, the others need the plugin.
+// discovery, the others need the plugin. A GO-D- record names no aliases, since the aliases it
+// would inherit are served the open range and would dispute its own.
 type disqualifiableSource struct{}
 
 func (disqualifiableSource) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
 	facts, ok := fixtureSource().Lookup(wiringAdvisory.ID)
 	if strings.HasPrefix(id, "GO-D-") {
 		facts.UpperExclusive, facts.FixedVersion = "v0.3.0", "v0.3.0"
+		facts.Aliases = nil
 	}
 	return facts, ok
 }
@@ -208,7 +210,8 @@ func (siblingSource) Lookup(string) (pipeline.AdvisoryFacts, bool) {
 	return facts, true
 }
 
-// stopOnNthPlugin is refutingGoPlugin whose nth Reachability call stops the scan.
+// stopOnNthPlugin is refutingGoPlugin whose nth analysis Reachability call stops the scan; a
+// MatchOnly request is disqualification discovery's and is not counted.
 type stopOnNthPlugin struct {
 	refutingGoPlugin
 	stop  context.CancelFunc
@@ -217,7 +220,7 @@ type stopOnNthPlugin struct {
 }
 
 func (p stopOnNthPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
-	if p.calls.Add(1) == p.n {
+	if !req.MatchOnly && p.calls.Add(1) == p.n {
 		p.stop()
 		<-ctx.Done()
 		return plugin.ReachabilityResult{}, ctx.Err()
@@ -360,8 +363,12 @@ type stopOnManifestPlugin struct {
 }
 
 // Reachability holds every analysis until the scan stops, so the first pass running ahead of it
-// never lets an advisory finish before the stop.
-func (p stopOnManifestPlugin) Reachability(ctx context.Context, _ plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+// never lets an advisory finish before the stop. A MatchOnly request is the first pass's own and
+// answers at once.
+func (p stopOnManifestPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	if req.MatchOnly {
+		return p.refutingGoPlugin.Reachability(ctx, req)
+	}
 	<-ctx.Done()
 	return plugin.ReachabilityResult{}, ctx.Err()
 }
@@ -1000,6 +1007,9 @@ type failFirstPlugin struct {
 }
 
 func (p failFirstPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	if req.MatchOnly {
+		return p.refutingGoPlugin.Reachability(ctx, req)
+	}
 	if p.calls.Add(1) == 1 {
 		return plugin.ReachabilityResult{}, errors.New("plugin crashed")
 	}

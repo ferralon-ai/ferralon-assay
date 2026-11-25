@@ -336,3 +336,89 @@ func TestEntrypointsInput_RestatedEdges(t *testing.T) {
 		t.Errorf("restatedRetry = %+v, want only A", got)
 	}
 }
+
+// TestRestated_BaselineEntrypointsRecord: restated reads the statement from library_entrypoints
+// alone. A baseline whose assessments judged no refutation (path-only rows, or a build whose cgo
+// did not resolve) holds an entrypoints[] record of the Go lane but no library_entrypoints, and
+// reads as auto: it inherits under auto and re-assesses under any other statement, whatever its
+// entrypoints[] record says.
+func TestRestated_BaselineEntrypointsRecord(t *testing.T) {
+	record := func(input string) []plugin.EntryRootRecord {
+		return []plugin.EntryRootRecord{{
+			Lane: plugin.EntryLaneGo, Source: plugin.LibraryEntrypointsSourceDeclared, Input: input,
+			Effective: map[string][]string{plugin.EntryKindLibrary: {"example.com/m/pkg/api"}},
+			Inferred: map[string][]string{
+				plugin.EntryKindLibrary: {"example.com/m/pkg/api", "example.com/m/pkg/lib"},
+				plugin.EntryKindMain:    {"example.com/m/cmd/tool"},
+			},
+			Denied: []string{"!pkg/lib"},
+		}}
+	}
+	cases := []struct {
+		name     string
+		baseline report.Report
+		input    string
+		want     bool
+	}{
+		{"path-only baseline, same statement", report.Report{Entrypoints: record("auto")}, "auto", false},
+		{"path-only baseline, changed statement", report.Report{Entrypoints: record("auto")}, "!pkg/lib", true},
+		{"path-only baseline, an entrypoints record of another statement does not restate auto", report.Report{Entrypoints: record("!pkg/lib")}, "auto", false},
+		{"cgo-unresolved baseline, same statement", report.Report{Entrypoints: record("auto")}, "auto", false},
+		{"cgo-unresolved baseline, changed statement", report.Report{Entrypoints: record("auto")}, "none", true},
+		{"refutation baseline, same declared statement",
+			report.Report{LibraryEntrypoints: []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Input: "!pkg/lib"}}, Entrypoints: record("!pkg/lib")}, "!pkg/lib", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			le, err := plugin.ParseLibraryEntrypoints(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := []pipeline.AssessOption{pipeline.WithPlugin(fakeInventoryPlugin{lang: "go"}), pipeline.WithLibraryEntrypoints(le)}
+			if got := restated(&tc.baseline, opts); got != tc.want {
+				t.Errorf("restated = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRestated_JSStatement: the js lane's statement is compared per lane. A run that states the same
+// removal as the stored js record inherits, a changed or newly stated one re-assesses, and the go
+// lane's comparison stands beside it unchanged.
+func TestRestated_JSStatement(t *testing.T) {
+	record := func(input string) *report.Report {
+		return &report.Report{Entrypoints: []plugin.EntryRootRecord{{Lane: plugin.EntryLaneJS, Source: plugin.LibraryEntrypointsSourceDeclared, Input: input}}}
+	}
+	run := func(t *testing.T, lang, in string) []pipeline.AssessOption {
+		m, err := plugin.ParseEntryOverrides(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []pipeline.AssessOption{pipeline.WithPlugin(fakeInventoryPlugin{lang: lang}), pipeline.WithEntrypoints(m)}
+	}
+	cases := []struct {
+		name   string
+		stored *report.Report
+		lang   string
+		in     string
+		want   bool
+	}{
+		{"same removal", record("!js:bin=bin:a"), "js", "!js:bin=bin:a", false},
+		{"same removal, order of denies", record("!js:bin=bin:a !js:bin=bin:b"), "js", "!js:bin=bin:b !js:bin=bin:a", false},
+		{"changed removal", record("!js:bin=bin:a"), "js", "!js:bin=bin:b", true},
+		{"removal added", &report.Report{}, "js", "!js:bin=bin:a", true},
+		{"removal withdrawn", record("!js:bin=bin:a"), "js", "js:auto", true},
+		{"nothing stated either side", &report.Report{}, "js", "js:auto", false},
+		{"recorded auto, none stated", record("auto"), "js", "js:auto", false},
+		{"unparsable record", record("!!"), "js", "!js:bin=bin:a", true},
+		{"scan of another language states nothing for js", record("!js:bin=bin:a"), "go", "!js:bin=bin:a", true},
+		{"a go scan ignores a js clause", &report.Report{}, "go", "!js:bin=bin:a", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := restated(tc.stored, run(t, tc.lang, tc.in)); got != tc.want {
+				t.Errorf("restated = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -31,7 +31,8 @@ Advisory ranges are placed against the resolved module version with the semver c
 | Feature | Status | Caveats |
 |---|---|---|
 | Semver introduced/fixed bounds (both sides) | Complete |  |
-| Pseudo-version / prerelease upper bounds | Partial | [GO-PSEUDOVERSION](#go-pseudoversion) |
+| Prerelease versions, ordered as `golang.org/x/mod/semver` orders them | Complete |  |
+| Pseudo-version resolved versions | Partial | [GO-PSEUDOVERSION](#go-pseudoversion) |
 | Stdlib/toolchain ranges (`go1.X.Y`), multi-range backport | Complete |  |
 | Toolchain fact from `go` / `toolchain` directive | Partial | [GO-TOOLCHAIN-PRE121](#go-toolchain-pre121) |
 | Module found at multiple versions in the build | Complete |  |
@@ -157,9 +158,9 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 ### GO-PSEUDOVERSION
 
-**Trigger.** Resolved module version is a pseudo-version or prerelease.
+**Trigger.** Resolved module version is a pseudo-version.
 
-**Effect.** The upper-bound test is not applied, so the advisory stays admitted (fail-open to admission, precision only).
+**Effect.** A pseudo-version is placed against a tagged bound at or below its own base by ordinary version order. Against a pseudo-version bound on the same base and major it is placed by commit time, which does not prove ancestry: a row cleared that way is `not_exploitable` on `version_not_in_affected_range`, and its Assumptions name both revisions. Every other placement is left unmade and the advisory stays admitted: a tagged bound above the pseudo-version's base, a pseudo-version bound on another base or major, two commits with the same time, and the same revision at another time.
 
 ### GO-TOOLCHAIN-PRE121
 
@@ -199,7 +200,7 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Trigger.** `plugin.Open` reached from entry roots.
 
-**Effect.** `plugin_load`, run-wide did-not-run.
+**Effect.** `plugin_load`, run-wide did-not-run. When every refutation a row rests on, for each module the advisory names, is that the build imports none of the module's vulnerable packages, `plugin_load` does not withhold it: the row clears as `not_exploitable` unless another limit withholds it, with the assumption "Go plugins loaded at run time are separate builds and were not assessed". A plugin may hold the package, but it cannot put it in this build. A row resting on any call-path refutation stays withheld, since a loaded plugin can call back into the build's exported code.
 
 ### GO-LIBRARY-ESCAPE
 

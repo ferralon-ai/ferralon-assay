@@ -345,6 +345,9 @@ func reportHTMLLimitLabel(reason string) string {
 	case report.ReasonPackageVersionUnresolved:
 		return "The installed version of an affected package could not be resolved, so no verdict is " +
 			"reported for its advisories."
+	case report.ReasonOwnReleaseVersionUnknown:
+		return "Some advisories are on this repository's own code, and the release version of this checkout " +
+			"could not be established, so no verdict is reported for them."
 	case report.ReasonAdvisorySymbolAbsent:
 		return "Some advisories name no vulnerable function to search for, so no verdict is reported for them."
 	case report.ReasonVulnerableSymbolUnresolved:

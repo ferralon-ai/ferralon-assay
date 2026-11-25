@@ -138,6 +138,30 @@ func statePluginScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
 	return res
 }
 
+// assumePluginsSeparate attaches plugin.AssumptionPluginsNotAssessed to each refutation resting on
+// the build importing none of the advisory's vulnerable packages, when the program reaches
+// plugin.Open in a build that can load plugins (plugin_load).
+func assumePluginsSeparate(res plugin.ReachabilityResult) plugin.ReachabilityResult {
+	if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoad) {
+		return res
+	}
+	assume := func(r plugin.Refutation) plugin.Refutation {
+		if r.Basis == plugin.RefutationAnalyzerPackageNotImported && !slices.Contains(r.Assumptions, plugin.AssumptionPluginsNotAssessed) {
+			r.Assumptions = append(slices.Clone(r.Assumptions), plugin.AssumptionPluginsNotAssessed)
+		}
+		return r
+	}
+	if res.Refutation != nil {
+		assumed := assume(*res.Refutation)
+		res.Refutation = &assumed
+	}
+	res.Refutations = slices.Clone(res.Refutations)
+	for i, r := range res.Refutations {
+		res.Refutations[i] = assume(r)
+	}
+	return res
+}
+
 // pluginScopeDetail and cgoFilesScopeDetail are what statePluginScope adds to a refutation's detail.
 const (
 	pluginScopeDetail   = "holds for CGO_ENABLED=0, where the plugin.Open call the program reaches loads nothing; a build with cgo on was not checked"

@@ -51,8 +51,9 @@ type BaselineRequest struct {
 	// AssessOptions are the pipeline seams (WithPlugin / WithCheckout) the Assess
 	// stages run with. Empty = the hermetic stub path.
 	AssessOptions []pipeline.AssessOption
-	// ModeSource is the report.ModeSource the run's strictness came from; "" records default. The
-	// strictness itself is the one AssessOptions select (pipeline.WithStrict).
+	// ModeSource is the report.ModeSource the run's strictness came from; "" records default for a
+	// practical run and input for a strict one. The strictness itself is the one AssessOptions select
+	// (pipeline.WithStrict).
 	ModeSource string
 	// Signals is the EPSS/KEV signals file the run was given; nil for none, in which case no
 	// finding carries a Priority. Ranking context only: it is applied after every verdict is final.

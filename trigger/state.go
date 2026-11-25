@@ -387,6 +387,11 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// The baseline's rows were reached under its entry-point statement; under another they are
 	// assessed again, not inherited.
 	entryChanged := restated(baseline, req.AssessOptions)
+	// Under another strictness no baseline row stands: each advisory in the work set is assessed
+	// again with its sibling instances, as a baseline assesses it, and a baseline row the pass does
+	// not assess again is dropped.
+	remoded := baseline.ModeOf() != modeStrictness(req.AssessOptions)
+	var siblings []report.AdvisoryFinding
 	// Its js rows were reached from the baseline's JS launch surface; under another they
 	// are assessed again, not inherited.
 	launchChanged := relaunched(baseline.SBOM, req.PRSBOM)
@@ -419,7 +424,18 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		entryRecords = append(entryRecords, entryRoots(st, assessmentID)...)
 		toolchains = append(toolchains, subjectToolchain(st, assessmentID))
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits, pipeline.AdvisoryPackagePURLs(st, assessmentID))
+		mods := goModulesOf(req.PRSBOM, req.DiffLimits)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), req.DiffLimits, pipeline.AdvisoryPackagePURLs(st, assessmentID))
+		if remoded {
+			sibs, sibNotes := siblingInstanceFindings(analysis, areq, st, assessmentID, assessOpts, req.PRSBOM.Packages, mods, req.DiffLimits)
+			for _, sf := range sibs {
+				if sf.UndeterminedReason == report.ReasonScanCutShort {
+					cut++
+				}
+			}
+			siblings = append(siblings, sibs...)
+			notes = append(notes, sibNotes...)
+		}
 		// An undetermined toolchain advisory is keyed in like any other fresh finding, so it
 		// REPLACES the baseline's row below. It has to be harvested ahead of the two skips: a
 		// toolchain advisory carries no SBOM package, so `pkg == nil` would drop it and leave
@@ -462,7 +478,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	var rows []report.AdvisoryFinding
 	for i := range baseline.Advisories {
 		f := baseline.Advisories[i]
-		if supersededByFresh(f, freshIDs) {
+		if remoded || supersededByFresh(f, freshIDs) {
 			continue
 		}
 		key := f.Advisory.ID + "\x00" + f.Advisory.Source
@@ -476,6 +492,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	for _, re := range reFindings {
 		rows = append(rows, re)
 	}
+	rows = append(rows, siblings...)
 	for _, f := range rows {
 		b.AddFinding(f)
 	}
@@ -739,6 +756,10 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	}
 	var todo []watched
 	cutKeys := cutOnlyKeys(prior)
+	// Under another strictness than the prior report's, every retried advisory is assessed with its
+	// sibling instances and all of its key's stored rows give way, whatever the retry's outcome: a
+	// stored sibling row was reached under the other mode.
+	remoded := prior.ModeOf() != modeStrictness(req.AssessOptions)
 	keyed := map[string]struct{}{}
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
@@ -756,7 +777,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if _, ok := keyed[key]; ok {
 			continue
 		}
-		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, key, cutKeys[key]})
+		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, key, cutKeys[key] || remoded})
 		keyed[key] = struct{}{}
 	}
 	// Most likely exploited first, so a stop reaches the least likely last. A stable sort: with no
@@ -888,7 +909,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		// A cut-only key's rows all give way, whatever the retry's outcome. A newly-relevant
 		// advisory's do once its sibling pass ran; a parent that stopped or failed before it
 		// replaces only its own row, as a retry's does.
-		fanned[w.key] = cutKeys[w.key] || fannedOut[w.key]
+		fanned[w.key] = remoded || cutKeys[w.key] || fannedOut[w.key]
 		instance[w.key] = packageInstance(adjudicated[w.key])
 	}
 	for key, re := range reFindings {

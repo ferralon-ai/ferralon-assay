@@ -15,12 +15,17 @@ func modeStrictness(opts []pipeline.AssessOption) string {
 }
 
 // runMode is the Mode a run's Report records: the strictness opts select and the source the caller
-// says decided it, default when it names none.
+// says decided it. A caller that names no source records default for practical, which is the
+// default, and input for strict, which only a statement selects.
 func runMode(opts []pipeline.AssessOption, source string) report.Mode {
+	strictness := modeStrictness(opts)
 	if source == "" {
 		source = report.ModeSourceDefault
+		if strictness == report.StrictnessStrict {
+			source = report.ModeSourceInput
+		}
 	}
-	return report.Mode{Strictness: modeStrictness(opts), Source: source}
+	return report.Mode{Strictness: strictness, Source: source}
 }
 
 // subjectToolchain is the Go toolchain fact the assessment resolved, as the report records it; nil

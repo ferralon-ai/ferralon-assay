@@ -3,6 +3,7 @@ package statestore
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -354,8 +355,7 @@ func TestMergeKeepsJSLaunchDigest(t *testing.T) {
 	}
 }
 
-// A merged state keeps the mode of the report it stores, never the other side's: an older strict
-// report must not make a newer report without a mode read as strict.
+// A merged state keeps the later report's subject toolchain.
 func TestMergeKeepsSubjectToolchain(t *testing.T) {
 	ts := time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)
 	tc := &report.SubjectToolchain{Version: "go1.22.4", Bound: "exact", Source: "ci_observed"}
@@ -367,6 +367,8 @@ func TestMergeKeepsSubjectToolchain(t *testing.T) {
 	}
 }
 
+// A merged state keeps the mode of the report it stores, never the other side's: an older strict
+// report must not make a newer report without a mode read as strict.
 func TestMergeKeepsStoredReportMode(t *testing.T) {
 	strict := report.Mode{Strictness: report.StrictnessStrict, Source: report.ModeSourceInput}
 	ts := time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)
@@ -399,4 +401,58 @@ func TestMergeKeepsStoredReportMode(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Two reports in different modes merge to the primary's rows and limits alone, so the mode the merge
+// keeps stamps no row reached under the other; two in one mode still union.
+func TestMergeTakesNoRowAcrossModes(t *testing.T) {
+	strict := &report.Mode{Strictness: report.StrictnessStrict, Source: report.ModeSourceInput}
+	practical := &report.Mode{Strictness: report.StrictnessPractical, Source: report.ModeSourceDefault}
+	t0 := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	side := func(commit string, ts time.Time, mode *report.Mode, id, limit string) *report.Report {
+		r := sampleReport(commit, "c", ts, id)
+		r.Mode = mode
+		r.Partiality = []report.PartialityNote{{Reason: limit, Detail: limit}}
+		return r
+	}
+	tests := []struct {
+		name               string
+		olderMode, newMode *report.Mode
+		wantIDs            []string
+	}{
+		{name: "practical older, strict newer", olderMode: practical, newMode: strict, wantIDs: []string{"GO-NEW"}},
+		{name: "strict older, practical newer", olderMode: strict, newMode: practical, wantIDs: []string{"GO-NEW"}},
+		{name: "strict older, newer without a mode", olderMode: strict, wantIDs: []string{"GO-NEW"}},
+		{name: "both strict", olderMode: strict, newMode: strict, wantIDs: []string{"GO-NEW", "GO-OLD"}},
+		{name: "practical older, newer without a mode", olderMode: practical, wantIDs: []string{"GO-NEW", "GO-OLD"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			older := side("old", t0, tt.olderMode, "GO-OLD", "older_limit")
+			newer := side("new", t0.Add(time.Hour), tt.newMode, "GO-NEW", "newer_limit")
+			for name, out := range map[string]*State{
+				"newer committed": Merge(&State{Report: newer, CommitSHA: "x"}, &State{Report: older}),
+				"newer retrying":  Merge(&State{Report: older, CommitSHA: "x"}, &State{Report: newer}),
+			} {
+				var ids []string
+				for _, f := range out.Report.Advisories {
+					ids = append(ids, f.Advisory.ID)
+				}
+				if !reflect.DeepEqual(ids, tt.wantIDs) {
+					t.Errorf("%s: rows = %v, want %v", name, ids, tt.wantIDs)
+				}
+				var limits []string
+				for _, n := range out.Report.Partiality {
+					limits = append(limits, n.Reason)
+				}
+				wantOlderLimit := len(tt.wantIDs) == 2
+				if hasOlder := slices.Contains(limits, "older_limit"); hasOlder != wantOlderLimit {
+					t.Errorf("%s: partiality = %v, older report's limit kept = %v, want %v", name, limits, hasOlder, wantOlderLimit)
+				}
+				if out.Report.ModeOf() != newer.ModeOf() {
+					t.Errorf("%s: mode = %s, want the newer report's %s", name, out.Report.ModeOf(), newer.ModeOf())
+				}
+			}
+		})
+	}
 }

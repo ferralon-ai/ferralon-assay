@@ -265,6 +265,10 @@ func TestEntryRootsCarryApplicationMains(t *testing.T) {
 	if len(recorded.Entrypoints) != 1 || !reflect.DeepEqual(recorded.Entrypoints[0], rec) {
 		t.Fatalf("Entrypoints = %+v, want [%+v]", recorded.Entrypoints, rec)
 	}
+	// Against a literal, not rec: rec shares its maps with what the builder was handed.
+	if got := recorded.Entrypoints[0].Effective[plugin.EntryKindMain]; !reflect.DeepEqual(got, []string{"example.com/m/cmd/app"}) {
+		t.Fatalf("effective.main = %v, want [example.com/m/cmd/app]", got)
+	}
 	// Another application's mains are another set's record.
 	other := rec
 	other.Effective = map[string][]string{plugin.EntryKindLibrary: {"example.com/m/pkg/api"}, plugin.EntryKindMain: {"example.com/m/cmd/app"}}

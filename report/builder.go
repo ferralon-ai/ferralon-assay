@@ -502,7 +502,7 @@ func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plu
 		for _, r := range roots {
 			bare := r
 			bare.Inferred, bare.Denied = nil, nil
-			if r.Lane == plugin.EntryLaneGo {
+			if r.Source == plugin.LibraryEntrypointsSourceMains {
 				// library_entrypoints states the library set alone: the mains an application reading
 				// rests on are the record's to add, like Inferred.
 				bare.Effective = maps.Clone(r.Effective)

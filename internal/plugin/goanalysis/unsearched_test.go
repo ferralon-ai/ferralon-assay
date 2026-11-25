@@ -112,8 +112,9 @@ func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 
 // TestReconciledResult_WithholdsForLibraryEscape: a refutation is withheld whenever an importable package
 // reaches the refuted module, however it hands a value of it to its importer, and stands when only main
-// or internal packages do. A build that ships a main is read as an application: its importable
-// packages are not entry points, so one reaching the module beside a main does not withhold.
+// or internal packages do. A build of one module with a main at its root or under cmd is read as an
+// application: its importable packages are not entry points, so one reaching the module beside such a
+// main does not withhold.
 func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 	base := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/neutral v0.0.0\n\texample.com/vulnmod v0.0.0\n)\n\nreplace example.com/vulnmod => ./_vulnmod\n\nreplace example.com/neutral => ./_neutral\n",

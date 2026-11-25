@@ -129,6 +129,18 @@ func settleWithin(ctx context.Context, req assessment.Request, settle []pipeline
 	s.settled = pipeline.SettledByDisqualification(store, a.ID)
 }
 
+// settledStore is advisory i's store and assessment id once the first pass has settled it, nil when
+// the scan stopped before the first pass finished with it or the first pass failed. Analysis adds to
+// the same store, so call it before assess(i).
+func (p *advisoryPasses) settledStore(i int) (artifact.Store, string) {
+	s := p.staged[i]
+	<-s.ready
+	if s.stopped || s.err != nil {
+		return nil, ""
+	}
+	return s.store, s.id
+}
+
 // assess finishes the assessment of advisory i, in place of assessWithin(analysis, reqs[i], opts...):
 // the same store, assessment id, stopped and error. Call it once per advisory.
 //

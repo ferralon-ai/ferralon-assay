@@ -271,6 +271,12 @@ type SBOM struct {
 	// GoWorkspaceModules are the go.work's other main modules when GoBuildList was resolved under one;
 	// set with it.
 	GoWorkspaceModules []string `json:"go_workspace_modules,omitempty"`
+	// JSLaunchDigest is a sha256 over the "scripts" and "bin" fields of every first-party
+	// package.json in the scanned tree. Those fields add js entry points without changing any
+	// package, so a PR whose digest differs from its baseline's assesses its js rows again
+	// rather than inheriting them. Empty when the tree has no first-party package.json, or for
+	// an SBOM written before the digest was recorded.
+	JSLaunchDigest string `json:"js_launch_digest,omitempty"`
 }
 
 // Relationship is one parent→child dependency edge in the SBOM (§4.1.2). Endpoints are

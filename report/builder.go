@@ -22,17 +22,18 @@ import (
 // never embeds pipeline state. Build sorts the SBOM and findings into a stable order
 // so the serialized Report is deterministic (content-addressable in the StateStore).
 type Builder struct {
-	subject       Subject
-	packages      []Package
-	relationships []Relationship
-	goBuildList   SBOM
-	advisories    []AdvisoryFinding
-	partiality    []PartialityNote
-	provenance    Provenance
-	baseline      *BaselineRef
-	priority      func(Advisory) *Priority
-	entrypoints   []plugin.ResolvedLibraryEntrypoints
-	entryRoots    []plugin.EntryRootRecord
+	subject        Subject
+	packages       []Package
+	relationships  []Relationship
+	goBuildList    SBOM
+	jsLaunchDigest string
+	advisories     []AdvisoryFinding
+	partiality     []PartialityNote
+	provenance     Provenance
+	baseline       *BaselineRef
+	priority       func(Advisory) *Priority
+	entrypoints    []plugin.ResolvedLibraryEntrypoints
+	entryRoots     []plugin.EntryRootRecord
 }
 
 // NewBuilder starts a Report for the given scanned subject. CommitSHA in provenance
@@ -72,6 +73,13 @@ func (b *Builder) SetRelationships(rels []Relationship) *Builder {
 // set values; the SBOM's packages and relationships are not read.
 func (b *Builder) SetGoBuildList(s SBOM) *Builder {
 	b.goBuildList = SBOM{GoBuildList: s.GoBuildList, GoMainModule: s.GoMainModule, GoWorkspaceModules: slices.Clone(s.GoWorkspaceModules)}
+	return b
+}
+
+// SetJSLaunchDigest records the SBOM's JSLaunchDigest, so a Report rebuilt from a stored SBOM
+// keeps the launch surface its js rows were reached under. Replaces any previously set value.
+func (b *Builder) SetJSLaunchDigest(s SBOM) *Builder {
+	b.jsLaunchDigest = s.JSLaunchDigest
 	return b
 }
 
@@ -338,6 +346,7 @@ func (b *Builder) Build() Report {
 		GoBuildList:        b.goBuildList.GoBuildList,
 		GoMainModule:       b.goBuildList.GoMainModule,
 		GoWorkspaceModules: sortedUnique(b.goBuildList.GoWorkspaceModules),
+		JSLaunchDigest:     b.jsLaunchDigest,
 	}
 	return Report{
 		SchemaVersion:      SchemaVersion,

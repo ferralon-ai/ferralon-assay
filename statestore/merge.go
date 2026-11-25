@@ -167,6 +167,7 @@ func mergeReports(base, mine *report.Report) *report.Report {
 		AddPackages(primary.SBOM.Packages...).
 		SetRelationships(primary.SBOM.Relationships).
 		SetGoBuildList(primary.SBOM).
+		SetJSLaunchDigest(primary.SBOM).
 		WithLibraryEntrypoints(primary.LibraryEntrypoints...).
 		WithEntryRoots(primary.Entrypoints...).
 		WithProvenance(prov)

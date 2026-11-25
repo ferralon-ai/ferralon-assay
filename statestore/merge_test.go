@@ -337,3 +337,19 @@ func TestMergeKeepsJSEntrypoints(t *testing.T) {
 		}
 	}
 }
+
+// A merged state keeps the later report's js launch digest, so the next PR compares its package.json
+// scripts and bin against the tree that report assessed.
+func TestMergeKeepsJSLaunchDigest(t *testing.T) {
+	newer := report.NewBuilder(report.Subject{ResolvedCommit: "new"}).
+		SetJSLaunchDigest(report.SBOM{JSLaunchDigest: "digest"}).
+		WithProvenance(report.Provenance{Timestamp: time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)}).
+		Build()
+	for name, out := range mergeOrders(newer) {
+		for where, s := range map[string]report.SBOM{"report": out.Report.SBOM, "state": out.SBOM} {
+			if s.JSLaunchDigest != "digest" {
+				t.Errorf("%s: %s js_launch_digest = %q, want the newer report's", name, where, s.JSLaunchDigest)
+			}
+		}
+	}
+}

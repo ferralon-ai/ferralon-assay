@@ -196,6 +196,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// would see every relationship as newly-absent.
 	b.SetRelationships(baseline.SBOM.Relationships)
 	b.SetGoBuildList(baseline.SBOM)
+	b.SetJSLaunchDigest(baseline.SBOM)
 	// A baseline row a fresh row stands in for (a scan_cut_short row unrowedAdvisories skipped) is
 	// dropped. The head's inventory limits apply to the inherited rows as to fresh ones: a package
 	// the head could not inventory may be installed where the baseline's analysis never looked.
@@ -383,6 +384,9 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// The baseline's rows were reached under its entry-point statement; under another they are
 	// assessed again, not inherited.
 	entryChanged := restated(baseline, req.AssessOptions)
+	// Its js rows were reached from the baseline's package.json scripts and bin; under others they
+	// are assessed again, not inherited.
+	launchChanged := relaunched(baseline.SBOM, req.PRSBOM)
 	cut := 0
 	advisories := bySignal(req.Advisories, req.Advisories, baseline.Advisories, req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...))
 	passes := newAdvisoryPasses(analysis, requestsFor(advisories, req.Codebase), assessOpts)
@@ -431,7 +435,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		if !inherited {
 			_, inherited = baselineRows[advisory.ID+"\x00"]
 		}
-		if inherited && !entryChanged && !affectedPackageChanged(st, assessmentID, pkg, changedSet) {
+		if inherited && !entryChanged && !(launchChanged && onJSLane(pkg)) && !affectedPackageChanged(st, assessmentID, pkg, changedSet) {
 			continue
 		}
 		reFindings[advisory.ID+"\x00"+advisory.Source] = f
@@ -448,6 +452,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// the stored head SBOM stays a whole graph and the next diff has edges to compare.
 	b.SetRelationships(req.PRSBOM.Relationships)
 	b.SetGoBuildList(req.PRSBOM)
+	b.SetJSLaunchDigest(req.PRSBOM)
 
 	var rows []report.AdvisoryFinding
 	for i := range baseline.Advisories {
@@ -590,6 +595,19 @@ func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
 		return true
 	}
 	return jsRestated(stored, opts)
+}
+
+// relaunched reports whether the head's first-party package.json scripts or bin differ from the
+// ones the stored SBOM was resolved from. A stored SBOM written before the digest was recorded has
+// none, so it differs from any head that has a package.json.
+func relaunched(stored, head report.SBOM) bool {
+	return stored.JSLaunchDigest != head.JSLaunchDigest
+}
+
+// onJSLane reports whether a row on pkg rests on the js lane's entry points: an npm package's, or
+// one the head selected no package for, whose baseline row may be on one.
+func onJSLane(pkg *report.Package) bool {
+	return pkg == nil || pkg.Ecosystem == "npm"
 }
 
 // jsRestated reports whether the run states a js entry-point override other than the one the stored
@@ -833,6 +851,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// across scheduled watches.
 	b.SetRelationships(prior.SBOM.Relationships)
 	b.SetGoBuildList(prior.SBOM)
+	b.SetJSLaunchDigest(prior.SBOM)
 
 	// A fresh row replaces the prior rows of its own instance. Under a retried cut row's key, which
 	// holds only cut rows, that is all of them (the parent's and its siblings', which siblings

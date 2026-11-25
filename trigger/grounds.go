@@ -123,7 +123,8 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 // positive grounds as arm B of notExploitableGrounds: the admitted package's version resolved, the
 // advisory names no other package, and the refutation is of the admitted package. The view refutes
 // each module the advisory was matched to: the one of them the row was admitted on grounds it, and
-// the rest count as refuted beside it (standingBeside), here and nowhere else. A path the row
+// the rest count as refuted beside it (standingBeside), here and nowhere else. The detail states
+// each module refuted beside the row, by either view (withRefutedBeside). A path the row
 // records that enters at a binary holds the verdict back for every binary (entersBinary).
 func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) []report.ScopedVerdict {
 	if reason, undetermined := undeterminedReason(store, assessmentID, pkg); undetermined && reason != report.ReasonRefutationWithheld {
@@ -148,15 +149,18 @@ func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Packa
 	// The view's refutations of the advisory's other modules stand beside this row's scoped verdict
 	// alone, held back as the library view's are (standingBeside); the row's own verdict never reads them.
 	beside := append(refutedBeside(store, assessmentID, reach), standingBeside(store, assessmentID, slices.Delete(slices.Clone(refuted), own, own+1))...)
-	if namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted, mods, beside) || entersBinary(store, assessmentID, view) {
+	purls := pipeline.AdvisoryPackagePURLs(store, assessmentID)
+	if namesOtherPackage(purls, admitted, mods, beside) || entersBinary(store, assessmentID, view) {
 		return nil
 	}
+	detail, _, _ := withRefutedBeside(fmt.Sprintf("%s: %s (%s)", label, refuted[own].Detail, refuted[own].Basis),
+		verdict.BasisSymbolUnreachable, nil, purls, admitted, mods, beside)
 	return []report.ScopedVerdict{{
 		Verdict: report.VerdictNotExploitable,
 		Scope:   report.Scope{Kind: report.ScopeBinaries, Targets: slices.Clone(view.Binaries), Module: view.Module},
 		Evidence: report.EvidenceSummary{
 			Basis:  verdict.BasisSymbolUnreachable,
-			Detail: fmt.Sprintf("%s: %s (%s)", label, refuted[own].Detail, refuted[own].Basis),
+			Detail: detail,
 		},
 	}}
 }

@@ -106,9 +106,8 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 	started := "started from the main and init of " + strings.Join(binaries, ", ") + " only: "
 	// The run found no call into any module, but the refutation names the first alone; every other
 	// module the advisory was matched to is ruled out by the same checks, or the view is empty. Each
-	// gets its own refutation, and a module ruled out only for the scanned platform adds its scope to
-	// its own detail and to the view's.
-	var scopes []string
+	// gets its own refutation, stated as the first is, and a module ruled out only for the scanned
+	// platform adds its scope to its own detail.
 	var others []plugin.Refutation
 	for _, m := range findingModules(slices.Concat(scanned.findings, prog.findings)) {
 		if other := "pkg:golang/" + m; other != library.Package {
@@ -116,16 +115,14 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 			if !ok {
 				return nil
 			}
-			scopes = append(scopes, scope)
-			others = append(others, plugin.Refutation{
-				Basis:   ruled.Refutation.Basis,
-				Package: other,
-				Detail:  started + "govulncheck found no call path to the advisory's vulnerable functions in " + m + scope,
-			})
+			r := moduleRefutationOf(slices.Concat(prog.findings, scanned.findings), m, env)
+			r.Basis = ruled.Refutation.Basis
+			r.Detail = started + r.Detail + scope
+			others = append(others, *r)
 		}
 	}
 	refutation := *ruled.Refutation
-	refutation.Detail = started + refutation.Detail + strings.Join(scopes, "")
+	refutation.Detail = started + refutation.Detail
 	refutation.Assumptions = nil
 	return &plugin.ProgramView{Module: module, Binaries: binaries, Refutation: refutation, Refutations: others}
 }

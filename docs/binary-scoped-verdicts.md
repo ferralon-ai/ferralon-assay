@@ -109,7 +109,9 @@ and the OpenVEX projector emits no scoped statement for it even when validation 
   modules, the program view refutes each one it rules out, so a row admitted on any of them is
   grounded by that module's refutation, and the view's refutations of the others count as ruling those
   out, for this scoped verdict only. They are held back by the same limits as a library view's
-  refutation of another module, and they never ground the row's own verdict. The row also passes the gate every
+  refutation of another module, and they never ground the row's own verdict. The scoped verdict's
+  detail states each module ruled out beside it, by either view, with that module's own grounds and
+  platform scope. The row also passes the gate every
   `not_exploitable` passes: no toolchain axis left undetermined and no did-not-run limit counting for
   the package, other than the library-entry withholds the program view answers. A `reachable_candidate`
   row is held to it too, though its own verdict never reaches that gate.

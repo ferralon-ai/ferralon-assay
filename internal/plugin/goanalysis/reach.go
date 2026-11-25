@@ -807,25 +807,28 @@ func evidenceResult(findings []vulnFinding, cg plugin.CallGraphResult, env []str
 // matched. An advisory spanning several modules refutes the first in path order; resultPerModule
 // refutes the others, and the gate matches each against the packages the advisory names.
 func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
-	var module, version string
-	for _, f := range findings {
-		if len(f.Trace) == 0 {
-			continue
-		}
-		fr := f.Trace[0]
-		if fr.Module == "" {
-			continue
-		}
-		if module == "" || fr.Module < module {
-			module, version = fr.Module, fr.Version
-		}
-	}
-	if module == "" {
+	modules := findingModules(findings)
+	if len(modules) == 0 {
 		return nil
 	}
-	imported := slices.ContainsFunc(findings, func(f vulnFinding) bool {
-		return len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Package != ""
-	})
+	return moduleRefutationOf(findings, modules[0], env)
+}
+
+// moduleRefutationOf states govulncheck's module-level evidence as a refutation of module, one of
+// the modules findings matched: the version matched, whether a vulnerable package is imported, and the
+// platform and build tags the run used.
+func moduleRefutationOf(findings []vulnFinding, module string, env []string) *plugin.Refutation {
+	version := ""
+	imported := false
+	for _, f := range findings {
+		if len(f.Trace) == 0 || f.Trace[0].Module != module {
+			continue
+		}
+		if version == "" {
+			version = f.Trace[0].Version
+		}
+		imported = imported || f.Trace[0].Package != ""
+	}
 	use := "a vulnerable package is not imported"
 	if imported {
 		use = "a vulnerable package is imported"

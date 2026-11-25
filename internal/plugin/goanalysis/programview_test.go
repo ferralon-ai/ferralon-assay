@@ -369,15 +369,16 @@ func TestProgramView_SecondModuleOwnScope(t *testing.T) {
 			if !strings.Contains(v.Refutation.Detail, "may call into example.com/vulnmod") {
 				t.Errorf("program view detail %q does not state the first module's platform scope", v.Refutation.Detail)
 			}
-			if got := strings.Contains(v.Refutation.Detail, "may call into example.com/xmod"); got != tc.wantScope {
-				t.Errorf("program view detail %q states the second module's platform scope: %v, want %v", v.Refutation.Detail, got, tc.wantScope)
+			if strings.Contains(v.Refutation.Detail, "example.com/xmod") {
+				t.Errorf("program view detail %q states the second module, whose own refutation states it", v.Refutation.Detail)
 			}
 			if len(v.Refutations) != 1 {
 				t.Fatalf("program view refutations = %+v, want the second module's alone", v.Refutations)
 			}
 			r := v.Refutations[0]
 			if r.Package != "pkg:golang/example.com/xmod" || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || len(r.Assumptions) > 0 ||
-				!strings.HasPrefix(r.Detail, "started from the main and init of cmd/tool only: ") || strings.Contains(r.Detail, "may call into example.com/vulnmod") {
+				!strings.HasPrefix(r.Detail, "started from the main and init of cmd/tool only: govulncheck matched the advisory to example.com/xmod v") ||
+				!strings.Contains(r.Detail, "tests excluded)") || strings.Contains(r.Detail, "example.com/vulnmod") {
 				t.Errorf("second module's refutation = %+v", r)
 			}
 			if got := strings.Contains(r.Detail, "may call into example.com/xmod"); got != tc.wantScope {

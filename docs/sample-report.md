@@ -22,31 +22,6 @@ as a plain-words label; the JSON below keeps the raw names. The mapping:
 ```json
 {
   "schema_version": "tegron.report.v3",
-  "mode": {
-    "strictness": "practical",
-    "source": "default"
-  },
-  "run_assumptions": {
-    "entrypoints": [
-      {
-        "lane": "go",
-        "stance": "application",
-        "source": "mains",
-        "roots": [
-          { "kind": "main", "count": 1, "first": ["github.com/example/widget/cmd/widget"] }
-        ]
-      }
-    ],
-    "build": {
-      "resolved_commit": "a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3",
-      "go_main_module": "github.com/example/widget",
-      "toolchain": { "version": "go1.22.4", "bound": "exact", "source": "ci_observed" }
-    },
-    "skipped_targets": [
-      { "kind": "module", "path": "tools/gen", "reason": "unsupported_phase1:nested_module" }
-    ]
-  },
-  "subject_toolchain": { "version": "go1.22.4", "bound": "exact", "source": "ci_observed" },
   "subject": {
     "repo": "github.com/example/widget",
     "revision": "main",
@@ -122,6 +97,31 @@ as a plain-words label; the JSON below keeps the raw names. The mapping:
       "fact_source": "corpus",
       "signals_digest": "sha256:5d1e…"
     }
+  },
+  "subject_toolchain": { "version": "go1.22.4", "bound": "exact", "source": "ci_observed" },
+  "mode": {
+    "strictness": "practical",
+    "source": "default"
+  },
+  "run_assumptions": {
+    "entrypoints": [
+      {
+        "lane": "go",
+        "stance": "application",
+        "source": "mains",
+        "roots": [
+          { "kind": "main", "count": 1, "first": ["github.com/example/widget/cmd/widget"] }
+        ]
+      }
+    ],
+    "build": {
+      "resolved_commit": "a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3",
+      "go_main_module": "github.com/example/widget",
+      "toolchain": { "version": "go1.22.4", "bound": "exact", "source": "ci_observed" }
+    },
+    "skipped_targets": [
+      { "kind": "module", "path": "tools/gen", "reason": "unsupported_phase1:nested_module" }
+    ]
   }
 }
 ```

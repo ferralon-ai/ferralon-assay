@@ -250,11 +250,25 @@ The first of these decides the mode:
 3. `practical`.
 
 The report records the mode in `mode` as `{"strictness": ..., "source": "input" | "ferralon.yml" |
-"default"}`, and the job summary, PR comment, pinned issue and CLI summary print it. A stored
-baseline written under another mode is not inherited: `pr-inherit` and `cve-watch` analyse the
-affected advisories again. A baseline with no `mode` field reads as practical. See
+"default"}`, and the job summary, PR comment, pinned issue and CLI summary print it. See
 [sample-report.md](sample-report.md#mode-and-run-assumptions) for the field and the
 `run_assumptions` block beside it.
+
+A report never carries a row produced under the other mode. When the stored baseline's mode differs
+from the run's (a baseline with no `mode` field reads as practical):
+
+- `pr-inherit` analyses every advisory in the PR's work set again, including the instances under
+  other Go major versions of the same module, and drops every baseline row outside the work set. If
+  a stop cut the work set short, the `scan_cut_short` note names the advisories left out.
+- `cve-watch` analyses every stored advisory again, and every stored row of an advisory it retries
+  gives way to the new analysis. A row withheld as `dependency_not_fetched` carries no verdict and
+  is not retried, so it stays.
+- When two runs store at once, the stored state keeps the later report's rows alone if their modes
+  differ.
+
+Set `strictness` in `.github/ferralon.yml` rather than in a workflow's Action input, so the PR
+workflow and the scheduled `cve-watch` workflow run under the same mode. If they disagree, each run
+finds the other's baseline under another mode and analyses everything again.
 
 ## The Go toolchain your repository builds with
 

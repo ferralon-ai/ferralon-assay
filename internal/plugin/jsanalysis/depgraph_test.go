@@ -508,7 +508,7 @@ func TestDepGraph_NoTokenInRecords(t *testing.T) {
 	}, bodyParserPkg("node_modules/body-parser", "6.7.0"), qsPkg("node_modules/qs", "6.7.0"))
 	runDir := t.TempDir()
 	ctx := WithRunCacheDir(context.Background(), runDir)
-	cg, err := callGraphFor(ctx, f.dir, f.diskCache(t))
+	cg, err := callGraphFor(ctx, f.dir, f.diskCache(t), false)
 	if err != nil {
 		t.Fatal(err)
 	}

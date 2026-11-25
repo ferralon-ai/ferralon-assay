@@ -548,8 +548,9 @@ func readOneDep(ctx context.Context, store artifactcache.Store, e *depEntry, par
 
 // callGraphFor builds the call graph for buildDir, with the dependency code depCache holds
 // when it names a store. The dependency graph is built once per scan through the run cache.
-func callGraphFor(ctx context.Context, buildDir, depCache string) (plugin.CallGraphResult, error) {
-	res, _, err := callGraphAndClosure(ctx, buildDir, depCache, nil)
+// strict selects strict mode (loadClosure.strict).
+func callGraphFor(ctx context.Context, buildDir, depCache string, strict bool) (plugin.CallGraphResult, error) {
+	res, _, err := callGraphAndClosure(ctx, buildDir, depCache, nil, strict)
 	return res, err
 }
 
@@ -565,14 +566,18 @@ type cachedGraph struct {
 //
 // override is the caller's removal of inferred entry points, nil for none. It changes the closure and
 // so the graph's limits, which a closure scopes to the code that loads, and keys the run cache: a
-// graph built under one statement is not the graph under another.
-func callGraphAndClosure(ctx context.Context, buildDir, depCache string, override *plugin.EntryOverride) (plugin.CallGraphResult, *loadClosure, error) {
+// graph built under one statement is not the graph under another. strict does the same.
+func callGraphAndClosure(ctx context.Context, buildDir, depCache string, override *plugin.EntryOverride, strict bool) (plugin.CallGraphResult, *loadClosure, error) {
 	if depCache == "" {
 		res, _, err := callGraphInternal(buildDir)
 		return res, nil, err
 	}
-	b, err := runCached(ctx, "callgraph", append([]string{buildDir, depCache}, overrideKey(override)...), func() ([]byte, error) {
-		res, _, lc, err := callGraphWithOverride(ctx, buildDir, artifactcache.NewDiskStore(depCache), depReadBudget, override)
+	key := append([]string{buildDir, depCache}, overrideKey(override)...)
+	if strict {
+		key = append(key, "strict")
+	}
+	b, err := runCached(ctx, "callgraph", key, func() ([]byte, error) {
+		res, _, lc, err := callGraphWithOverride(ctx, buildDir, artifactcache.NewDiskStore(depCache), depReadBudget, override, strict)
 		if err != nil {
 			return nil, err
 		}
@@ -601,12 +606,13 @@ func callGraphWithDeps(ctx context.Context, buildDir string, store artifactcache
 // While the closure is not complete the graph and its limits are what they would be without
 // it; once it is, dependency limits count only where the code holding them loads.
 func callGraphWithClosure(ctx context.Context, buildDir string, store artifactcache.Store, budget time.Duration) (plugin.CallGraphResult, map[plugin.CallEdge]provenance, *loadClosure, error) {
-	return callGraphWithOverride(ctx, buildDir, store, budget, nil)
+	return callGraphWithOverride(ctx, buildDir, store, budget, nil, false)
 }
 
 // callGraphWithOverride is callGraphWithClosure with the inferred script roots the override removes
-// taken out of the entry points the closure starts from.
-func callGraphWithOverride(ctx context.Context, buildDir string, store artifactcache.Store, budget time.Duration, override *plugin.EntryOverride) (plugin.CallGraphResult, map[plugin.CallEdge]provenance, *loadClosure, error) {
+// taken out of the entry points the closure starts from, and in strict mode with no clear resting on
+// an assumption the lane infers (loadClosure.strict).
+func callGraphWithOverride(ctx context.Context, buildDir string, store artifactcache.Store, budget time.Duration, override *plugin.EntryOverride, strict bool) (plugin.CallGraphResult, map[plugin.CallEdge]provenance, *loadClosure, error) {
 	prog, err := loadProgram(buildDir)
 	if err != nil {
 		return plugin.CallGraphResult{}, nil, nil, err
@@ -754,6 +760,9 @@ func callGraphWithOverride(ctx context.Context, buildDir string, store artifactc
 	}
 	if layout.buildAssumed {
 		lc.Assumptions = append(lc.Assumptions, buildOutputAssumption)
+	}
+	if strict {
+		lc.strict()
 	}
 
 	// render folds the dependency limits dep into the first-party ones. Unresolved and Escaped

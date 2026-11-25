@@ -35,6 +35,18 @@ func closureOf(t *testing.T, f *depFixture, unread ...string) (plugin.CallGraphR
 	return cg, lc
 }
 
+// strictClosureOf is closureOf in strict mode.
+func strictClosureOf(t *testing.T, f *depFixture, unread ...string) *loadClosure {
+	t.Helper()
+	kept := *f
+	kept.pkgs = slices.DeleteFunc(slices.Clone(f.pkgs), func(p *depPkg) bool { return slices.Contains(unread, p.name) })
+	_, _, lc, err := callGraphWithOverride(context.Background(), f.dir, kept.memStore(), time.Minute, nil, true)
+	if err != nil {
+		t.Fatalf("callGraphWithOverride: %v", err)
+	}
+	return lc
+}
+
 // TestLoadClosure_Refutes: a package is refuted only when the closure is complete and nothing
 // in it loads any installed copy. Every row asks about idle@1.0.0, which no first-party module
 // loads; each withheld row is one way it may still run, or one way the closure may be missing
@@ -406,6 +418,15 @@ func TestLoadClosure_Refutes(t *testing.T) {
 			}
 			if lc.refutes("pkg:npm/absent@1.0.0") {
 				t.Errorf("a package no lockfile places is refuted; closure %+v", lc)
+			}
+
+			// Strict refutes what practical refutes on no assumption, and nothing else.
+			strict := strictClosureOf(t, f, tc.unread...)
+			if got, want := strict.refutes(purl), tc.want && len(lc.Assumptions) == 0; got != want {
+				t.Errorf("strict refutes(%s) = %v, want %v; practical assumptions %q, strict vetoes %q", purl, got, want, lc.Assumptions, strict.Vetoes)
+			}
+			if len(lc.Assumptions) > 0 && !slices.ContainsFunc(strict.Vetoes, func(v string) bool { return strings.Contains(v, "in strict mode no clear rests on an assumption") }) {
+				t.Errorf("strict vetoes = %q, want one naming each practical assumption %q", strict.Vetoes, lc.Assumptions)
 			}
 		})
 	}

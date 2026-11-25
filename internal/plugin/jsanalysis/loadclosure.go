@@ -426,6 +426,25 @@ func computedLoadAssumption(packages []string) string {
 		" are assumed to resolve only to that code's own modules, its declared dependencies, the project's direct dependencies and any package a literal prefix names"
 }
 
+// declaredClearsInStrict reports whether a strict clear may rest on what the caller declared in the
+// entrypoints input: the inferred entry points its "!" selectors remove. It is the one place strict
+// mode tells an assumption the caller declares from one the lane infers.
+func declaredClearsInStrict() bool { return true }
+
+// strict leaves the closure complete only when no clear from it rests on an assumption the lane
+// infers. An assumption becomes a veto instead, so the closure clears no package and every
+// dependency limit counts against every advisory, as for a closure the lane cannot bound.
+func (lc *loadClosure) strict() {
+	for _, a := range lc.Assumptions {
+		lc.Vetoes = append(lc.Vetoes, "in strict mode no clear rests on an assumption: "+a)
+	}
+	if len(lc.Removed) > 0 && !declaredClearsInStrict() {
+		lc.Vetoes = append(lc.Vetoes, "strict mode clears on no declared entry-point override")
+	}
+	lc.Vetoes = slices.Compact(slices.Sorted(slices.Values(lc.Vetoes)))
+	lc.Complete = len(lc.Vetoes) == 0
+}
+
 // prefixTargets returns what the literal prefix of a computed load in module adds to the load's
 // bound: the installed packages the prefix names, in whole (`idle/locale/`) or by the start of
 // a name (`eslint-plugin-`). pkgPath is the loading package's directory, empty for first-party

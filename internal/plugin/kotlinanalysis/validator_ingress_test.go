@@ -55,7 +55,7 @@ func validatorIngressNames(t *testing.T, classes []validatorClass) (names []stri
 	if err != nil {
 		t.Fatalf("loadProgram: %v", err)
 	}
-	for _, r := range frameworkIngressRefs(prog.classes) {
+	for _, r := range frameworkIngressRefs(prog.classes, nil) {
 		searchedRefs = append(searchedRefs, symbolLabel(SymbolFromMethodRef(r)))
 	}
 	sort.Strings(names)

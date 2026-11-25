@@ -212,18 +212,18 @@ func (v *Veto) noteMakeOverrides(src string) {
 
 // makeListRest returns the rest of a list-form argv: the text up to the bracket that closes
 // the list, past nested calls and brackets and over quoted strings, or all of s when none
-// does. A # that may open a comment (any # outside a word such as this.#x, $#, ${#, p#a)
-// leaves where the list ends unknown across languages, so it reports comment and the caller
-// fails closed.
+// does. A #, // or /* outside a string may open a comment in some language, which leaves
+// where the list ends unknown, so it reports comment and the caller fails closed.
 func makeListRest(s string) (rest string, comment bool) {
 	depth := 0
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; c {
 		case '#':
-			if i > 0 && isMakeListWordByte(s[i-1]) {
-				continue
-			}
 			return s[:i], true
+		case '/':
+			if i+1 < len(s) && (s[i+1] == '/' || s[i+1] == '*') {
+				return s[:i], true
+			}
 		case '"', '\'', '`':
 			for i++; i < len(s) && s[i] != c; i++ {
 				if s[i] == '\\' {
@@ -240,13 +240,6 @@ func makeListRest(s string) (rest string, comment bool) {
 		}
 	}
 	return s, false
-}
-
-// isMakeListWordByte reports whether a # after c continues a word or reference rather than
-// opening a comment.
-func isMakeListWordByte(c byte) bool {
-	return c == '_' || c == '.' || c == '$' || c == '{' ||
-		'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
 }
 
 // makeProgram resolves a command's first word when it is a reference to a variable the

@@ -446,6 +446,32 @@ func declaredDistributions(ctx context.Context, buildDir string) (names map[stri
 	return names, complete, read
 }
 
+// unreadDeclarationSurface names the first surface that left declaredDistributions incomplete,
+// relative to buildDir and slash-separated: an install surface the walk could not read in full,
+// else a manifest candidate not read in full, else a manifest that would not read or parse. It is
+// "" when none is named (the tree walk itself stopped short).
+func unreadDeclarationSurface(ctx context.Context, buildDir string) string {
+	if at := unreadSurfaceCached(ctx, buildDir); at != "" {
+		return at
+	}
+	for _, c := range ManifestCandidates(buildDir) {
+		if !c.FullyRead {
+			return relSlash(buildDir, c.Path)
+		}
+	}
+	manifests, _, _, _, _, _, _, _, _ := versionSurfacesCached(ctx, buildDir)
+	for _, f := range manifests {
+		data, err := readRegular(f)
+		if err != nil {
+			return relSlash(buildDir, f)
+		}
+		if _, _, ok := parseManifestData(f, data); !ok {
+			return relSlash(buildDir, f)
+		}
+	}
+	return ""
+}
+
 // boundaryPrefix marks a dependency boundary node: a dependency attribute the build's code
 // calls through an import binding, whose own code the lane does not read.
 const boundaryPrefix = "pypi:"

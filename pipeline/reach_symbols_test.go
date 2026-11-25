@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -59,5 +61,48 @@ func TestReachability_AskedAboutEveryResolvedSink(t *testing.T) {
 	}
 	if len(pairs) != 1 {
 		t.Fatalf("got %d candidate pairs, want 1: the reachable sink is the third resolved", len(pairs))
+	}
+}
+
+// strictSeenPlugin records the strict mode each analysis request carries.
+type strictSeenPlugin struct {
+	multiSinkPlugin
+	graph *bool
+}
+
+func (p strictSeenPlugin) CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
+	*p.graph = req.Strict
+	return p.multiSinkPlugin.CallGraph(ctx, req)
+}
+
+// TestReachability_StrictReachesLane: WithStrict reaches the lane on the call-graph and
+// reachability requests reachability_ingress sends, so a lane declares a limit in place of an
+// assumption; without it neither request asks for strict mode.
+func TestReachability_StrictReachesLane(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		var seen plugin.ReachabilityRequest
+		var graph bool
+		p := strictSeenPlugin{multiSinkPlugin: multiSinkPlugin{seen: &seen}, graph: &graph}
+		var stage reachabilityIngress
+		for _, s := range AssessStages(WithPlugin(p), WithStrict(strict)) {
+			if r, ok := s.(reachabilityIngress); ok {
+				stage = r
+			}
+		}
+		if stage.strict != strict {
+			t.Fatalf("WithStrict(%v): stage strict = %v", strict, stage.strict)
+		}
+		store := artifact.NewMemStore()
+		c := &assessment.Assessment{ID: "case-strict"}
+		c.Request.Vulnerability = assessment.VulnRef{ID: "FERRALON-APP-SSRF-0001", Source: "osv"}
+		if err := (symbolMapping{plugin: p}).Run(context.Background(), c, store); err != nil {
+			t.Fatalf("symbol_mapping: %v", err)
+		}
+		if err := stage.Run(context.Background(), c, store); err != nil {
+			t.Fatalf("reachability_ingress: %v", err)
+		}
+		if seen.Strict != strict || graph != strict {
+			t.Errorf("WithStrict(%v): reachability request strict = %v, call graph request strict = %v", strict, seen.Strict, graph)
+		}
 	}
 }

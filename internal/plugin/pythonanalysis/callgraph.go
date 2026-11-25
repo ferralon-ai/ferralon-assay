@@ -30,8 +30,16 @@ type program struct {
 	dists distResolver
 	// importUnattributed records that a manifest could not be read in full and an import
 	// resolves to no distribution, so the name that would attribute it may be in the unread
-	// part and the boundary nodes behind it are missing.
+	// part and the boundary nodes behind it are missing. unattributed is the first such import.
 	importUnattributed bool
+	unattributed       importSite
+	// py2Relative is the first import, when a manifest could not be read in full, that
+	// importUnattributed counts as attributed only by assuming it a Python 2 implicit relative
+	// import (py2RelativeImport). Strict mode counts it unattributed.
+	py2Relative importSite
+	// unreadSurface is the first surface the walk could not read in full, when unattributed or
+	// py2Relative is set: "" when the walk read every surface and a manifest is what failed.
+	unreadSurface string
 	// sourceUnread records a .py source the lane could not read, whose call sites are
 	// therefore missing from Unresolved.
 	sourceUnread bool
@@ -830,6 +838,7 @@ func (d funcDecl) scip() string {
 // imports holds the dotted modules the file's import statements name (importedModules).
 type fileParse struct {
 	module    string
+	path      string // the source file, relative to the build root and slash-separated
 	isPackage bool
 	calls     []callSite
 	ingresses []ingressMarker
@@ -1120,6 +1129,7 @@ func loadProgramCtx(ctx context.Context, buildDir string) (*program, error) {
 		}
 		prog.files = append(prog.files, fileParse{
 			module:        module,
+			path:          relSlash(buildDir, p),
 			isPackage:     strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)) == "__init__",
 			calls:         scan.calls,
 			ingresses:     scan.ingresses,
@@ -1172,7 +1182,13 @@ func loadProgramCtx(ctx context.Context, buildDir string) (*program, error) {
 		firstParty: firstPartyTops(modules),
 		python:     buildInterpreter(buildDir),
 	}
-	prog.importUnattributed = !declaredComplete && prog.hasUndeclaredImport()
+	if !declaredComplete {
+		prog.unattributed, prog.py2Relative = prog.undeclaredImports(declared)
+		prog.importUnattributed = prog.unattributed.target != ""
+		if prog.unattributed.target != "" || prog.py2Relative.target != "" {
+			prog.unreadSurface = unreadDeclarationSurface(ctx, buildDir)
+		}
+	}
 	prog.indexModules()
 	for i := range prog.files {
 		prog.bindFirstParty(i, rawBindings[i], relBindings[i], modRefs[i])
@@ -1315,19 +1331,94 @@ func (prog *program) bindFirstParty(i int, raw, rel []scopedBinding, modRefs []s
 	}
 }
 
-// hasUndeclaredImport reports whether any import binding names a module no distribution the
-// manifests read here declare provides.
-func (prog *program) hasUndeclaredImport() bool {
+// importSite is one import binding: the file holding it, relative to the build and
+// slash-separated, and the dotted module it names.
+type importSite struct {
+	path, target string
+}
+
+// undeclaredImports returns the first import binding that names a module no distribution the
+// manifests read here declare provides, and the first that does only when read as a Python 2
+// implicit relative import (py2RelativeImport), in file, scope and local-name order.
+func (prog *program) undeclaredImports(declared map[string]bool) (unattributed, py2Relative importSite) {
+	modules := map[string]bool{}
+	packages := map[string]bool{}
 	for _, f := range prog.files {
-		for _, scope := range f.bindings {
-			for _, b := range scope {
-				if prog.dists.undeclaredImport(b.target) {
-					return true
+		modules[f.module] = true
+		if f.isPackage {
+			packages[f.module] = true
+		}
+	}
+	declaredTops := map[string]bool{}
+	if prog.dists.python.mayBePython2() {
+		for dist := range declared {
+			for _, top := range prog.dists.importTops(dist) {
+				declaredTops[top] = true
+			}
+		}
+	}
+	for _, f := range prog.files {
+		absolute := f.absoluteImports()
+		for _, scope := range slices.Sorted(maps.Keys(f.bindings)) {
+			for _, local := range slices.Sorted(maps.Keys(f.bindings[scope])) {
+				target := f.bindings[scope][local].target
+				if !prog.dists.undeclaredImport(target) {
+					continue
+				}
+				site := importSite{path: f.path, target: target}
+				switch {
+				case !absolute && prog.py2RelativeImport(f, target, modules, packages, declaredTops):
+					if py2Relative.target == "" {
+						py2Relative = site
+					}
+				case unattributed.target == "":
+					unattributed = site
 				}
 			}
 		}
 	}
+	return unattributed, py2Relative
+}
+
+// relSlash is path relative to root and slash-separated, or path itself when it is not under root.
+func relSlash(root, path string) string {
+	if rel, err := filepath.Rel(root, path); err == nil {
+		return filepath.ToSlash(rel)
+	}
+	return filepath.ToSlash(path)
+}
+
+// absoluteImports reports whether the file opts out of implicit relative imports with
+// `from __future__ import absolute_import`.
+func (f fileParse) absoluteImports() bool {
+	for _, scope := range f.bindings {
+		for _, b := range scope {
+			if b.target == "__future__.absolute_import" {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// py2RelativeImport reports whether an absolute import target is, read the way Python 2 reads
+// an import with no `from __future__ import absolute_import`, a module of the importing file's
+// own package: the interpreter may be Python 2, the package is a regular one (it has an
+// __init__), and a first-party module or package by the target's top-level name sits in it. A
+// top-level name that is an import name of a declared distribution never counts: the build
+// may mean the distribution, and Python 2 would load whichever the path search reaches first.
+// It is an assumption: Python 3, or a sys.path that puts an installed module first, reads the
+// same import as absolute.
+func (prog *program) py2RelativeImport(f fileParse, target string, modules, packages, declaredTops map[string]bool) bool {
+	top, _, _ := strings.Cut(target, ".")
+	if !prog.dists.python.mayBePython2() || declaredTops[top] || prog.dists.declared[normalizePyCoordinate(top)] {
+		return false
+	}
+	pkg := f.module
+	if !f.isPackage {
+		pkg = parentModule(f.module)
+	}
+	return pkg != "" && packages[pkg] && modules[pkg+"/"+top]
 }
 
 // callerSCIP is the SCIP id of a call site's caller: its enclosing def, or the module-init
@@ -1381,20 +1472,70 @@ func (f fileParse) callerSCIP(cs callSite) string {
 //
 // The result depends on the tree at req.BuildDir alone, so with a run cache (WithRunCacheDir)
 // it is computed once per scan.
+//
+// When the graph's boundary nodes are whole only if an import reads as a Python 2 implicit
+// relative import (py2RelativeImport), the result carries that assumption as an Annotation; a
+// req.Strict result declares tool_failure in its place.
 func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
 	tg, err := treeGraphOf(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.CallGraphResult{}, err
 	}
-	return tg.Graph, nil
+	g := tg.Graph
+	switch {
+	case tg.Assumption == nil:
+	case req.Strict:
+		g.Partiality.Reasons = append(slices.Clone(g.Partiality.Reasons), plugin.PartialReasonToolFailure)
+		g.Partiality.Cause = tg.StrictCause
+	default:
+		g.Annotations = []plugin.Annotation{*tg.Assumption}
+	}
+	return g, nil
 }
 
 // treeGraph is what one load of a tree yields that more than one op reads: its call graph and
 // the top-level import names its own sources provide. It is the run cache's "callgraph" entry,
-// so the graph ops and symbol resolution share one load per tree per scan.
+// so the graph ops and symbol resolution share one load per tree per scan. Assumption is the
+// Python 2 relative-import assumption Graph rests on, if any, and StrictCause the cause a strict
+// graph names when it declares tool_failure in its place.
 type treeGraph struct {
-	Graph      plugin.CallGraphResult `json:"graph"`
-	FirstParty []string               `json:"first_party"`
+	Graph       plugin.CallGraphResult `json:"graph"`
+	FirstParty  []string               `json:"first_party"`
+	Assumption  *plugin.Annotation     `json:"assumption,omitempty"`
+	StrictCause string                 `json:"strict_cause,omitempty"`
+}
+
+// AnnotationPy2RelativeImport is the reason of an import the lane attributes only by reading it
+// as a Python 2 implicit relative import (py2RelativeImport).
+const AnnotationPy2RelativeImport = plugin.AnnotationAssumptionPrefix + "py2_implicit_relative_import"
+
+// py2RelativeAssumption is the assumption a graph rests on when its only imports no read
+// manifest attributes are Python 2 implicit relative imports, and the cause a strict graph names
+// in its place; nil when the graph rests on none.
+func (prog *program) py2RelativeAssumption() (*plugin.Annotation, string) {
+	if prog.py2Relative.target == "" || prog.importUnattributed || prog.readFailed {
+		return nil, ""
+	}
+	site := prog.py2Relative
+	return &plugin.Annotation{
+			Reason: AnnotationPy2RelativeImport,
+			Path:   site.path,
+			Detail: fmt.Sprintf("import %s is read as a module of the importing file's own package, as Python 2 reads an import the file does not declare absolute; read as absolute, no distribution declared in the manifests read in full provides it, and %s was not read in full", site.target, prog.unreadSurfaceName()),
+		},
+		importCause(site, prog.unreadSurfaceName()) + " unless read as a Python 2 implicit relative import"
+}
+
+// importCause names an import no read manifest attributes and the surface left unread.
+func importCause(site importSite, unread string) string {
+	return fmt.Sprintf("import %s in %s resolves to no distribution a manifest read here declares, and %s was not read in full", site.target, site.path, unread)
+}
+
+// unreadSurfaceName is the surface the walk could not read in full, for a cause or detail.
+func (prog *program) unreadSurfaceName() string {
+	if prog.unreadSurface == "" {
+		return "a manifest or install surface"
+	}
+	return prog.unreadSurface
 }
 
 // treeGraphOf loads the tree at buildDir and builds its call graph, through the run cache.
@@ -1406,9 +1547,12 @@ func treeGraphOf(ctx context.Context, buildDir string) (treeGraph, error) {
 		if err != nil {
 			return treeGraph{}, err
 		}
+		assumption, strictCause := prog.py2RelativeAssumption()
 		return treeGraph{
-			Graph:      callGraphOf(prog),
-			FirstParty: slices.Sorted(maps.Keys(prog.dists.firstParty)),
+			Graph:       callGraphOf(prog),
+			FirstParty:  slices.Sorted(maps.Keys(prog.dists.firstParty)),
+			Assumption:  assumption,
+			StrictCause: strictCause,
 		}, nil
 	})
 }
@@ -1739,7 +1883,11 @@ func callGraphPartiality(prog *program, reached []bool) plugin.Partiality {
 	if prog.sitesUnlisted(reached) {
 		reasons = append(reasons, plugin.PartialReasonUnlistedSites)
 	}
-	return plugin.Partial(reasons...)
+	p := plugin.Partial(reasons...)
+	if prog.importUnattributed {
+		p.Cause = importCause(prog.unattributed, prog.unreadSurfaceName())
+	}
+	return p
 }
 
 // sitesUnlisted reports whether some declined call site in a reached file is missing from

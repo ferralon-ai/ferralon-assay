@@ -228,7 +228,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 	}
 	return append(stages,
 		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition, libraryEntrypoints: cfg.LibraryEntrypoints, entrypoints: cfg.Entrypoints},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition, libraryEntrypoints: cfg.LibraryEntrypoints, entrypoints: cfg.Entrypoints, strict: cfg.Strict},
 		exposureFootprintStage{},
 	)
 }
@@ -3161,6 +3161,9 @@ type reachabilityIngress struct {
 	libraryEntrypoints *plugin.LibraryEntrypoints
 	// entrypoints is the parsed entrypoints input; see entrypointsFor.
 	entrypoints map[string]plugin.EntryOverride
+	// strict asks the plugin for strict mode (WithStrict): a lane declares a limit where it would
+	// otherwise rest its answer on an assumption.
+	strict bool
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
@@ -3476,7 +3479,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	}
 
 	depCache := s.deps.cacheFor(store, c.ID)
-	cg, err := plugin.SharedCallGraph(ctx, s.plugin, plugin.CallGraphRequest{BuildDir: buildDir, GoWork: goWork.File, DependencyCache: depCache})
+	cg, err := plugin.SharedCallGraph(ctx, s.plugin, plugin.CallGraphRequest{BuildDir: buildDir, GoWork: goWork.File, DependencyCache: depCache, Strict: s.strict})
 	if err != nil {
 		return err
 	}
@@ -3504,6 +3507,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		DependencyCache:    depCache,
 		LibraryEntrypoints: entrypoints,
 		EntryOverride:      s.entryOverrideFor(),
+		Strict:             s.strict,
 	})
 	if err != nil {
 		return err
@@ -3580,7 +3584,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 	if sink != "" {
-		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, GoWork: goWork.File, Sinks: []string{sink}, DependencyCache: depCache})
+		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, GoWork: goWork.File, Sinks: []string{sink}, DependencyCache: depCache, Strict: s.strict})
 		if err != nil {
 			return err
 		}

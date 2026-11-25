@@ -69,3 +69,35 @@ func TestAnnotations_ReadFromInventory(t *testing.T) {
 		t.Fatalf("annotations without an inventory = %+v, want none", got)
 	}
 }
+
+// An assumption the reachability analysis rests on (a lane's call graph) reaches the row and
+// its partiality notes beside the inventory's, once each, and stays off a disqualified row,
+// whose verdict that analysis did not reach.
+func TestAnnotations_ReachabilityAssumption(t *testing.T) {
+	py2 := plugin.Annotation{Reason: plugin.AnnotationAssumptionPrefix + "py2_implicit_relative_import", Path: "pkg/views.py", Detail: "import forms is read as a module of the importing file's own package"}
+	for _, disqual := range []bool{false, true} {
+		store := artifact.NewMemStore()
+		annotatedInventory(t, store)
+		putJSON(t, store, "a1", artifact.TypeReachability, map[string]any{
+			"reachability": plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch), Annotations: []plugin.Annotation{py2, inactiveInstall}},
+			"call_graph":   plugin.CallGraphResult{Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch)},
+		})
+		seedDisqual(t, store, "a1", disqual)
+		want := []plugin.Annotation{inactiveInstall, py2}
+		if disqual {
+			want = want[:1]
+		}
+		if got := annotations(store, "a1"); !reflect.DeepEqual(got, want) {
+			t.Errorf("disqualified=%v: annotations = %+v, want %+v", disqual, got, want)
+		}
+		var notes []plugin.Annotation
+		for _, n := range partialityNotes(store, "a1") {
+			if n.Reason == py2.Reason || n.Reason == inactiveInstall.Reason {
+				notes = append(notes, plugin.Annotation{Reason: n.Reason, Path: n.Path, Detail: n.Detail})
+			}
+		}
+		if !reflect.DeepEqual(notes, want) {
+			t.Errorf("disqualified=%v: partiality notes = %+v, want %+v", disqual, notes, want)
+		}
+	}
+}

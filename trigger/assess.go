@@ -292,11 +292,28 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 	return f
 }
 
-// annotations returns the assumptions the assessment's resolved versions rest on. They qualify
-// whatever verdict the row reaches, so they are read for every row and gate none.
+// annotations returns the assumptions the assessment's resolved versions rest on, and those its
+// reachability analysis rests on unless the advisory is disqualified, a verdict that analysis
+// did not reach. They qualify the verdict the row reaches and gate none.
 func annotations(store artifact.Store, assessmentID string) []plugin.Annotation {
 	inv, _ := inventory(store, assessmentID)
-	return withoutReadPins(inv.Annotations)
+	return withReachabilityAssumptions(store, assessmentID, withoutReadPins(inv.Annotations))
+}
+
+// withReachabilityAssumptions appends to as the assumptions the assessment's reachability result
+// rests on, unless the advisory is disqualified.
+func withReachabilityAssumptions(store artifact.Store, assessmentID string, as []plugin.Annotation) []plugin.Annotation {
+	reach, ok := reachabilityResult(store, assessmentID)
+	if !ok || len(reach.Annotations) == 0 || disqualified(store, assessmentID) {
+		return as
+	}
+	out := slices.Clone(as)
+	for _, a := range reach.Annotations {
+		if !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // guardsOnPath returns the advisory-declared guard symbols present on the candidate
@@ -1819,7 +1836,7 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 		ecosystem = ecosystemFor(inv.Language)
 	}
 	var notes []report.PartialityNote
-	for _, a := range withoutReadPins(inv.Annotations) {
+	for _, a := range withReachabilityAssumptions(store, assessmentID, withoutReadPins(inv.Annotations)) {
 		notes = append(notes, report.PartialityNote{Reason: a.Reason, Ecosystem: ecosystem, Path: a.Path, Detail: a.Detail})
 	}
 	if disqualified(store, assessmentID) {

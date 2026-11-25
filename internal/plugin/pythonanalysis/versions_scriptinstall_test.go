@@ -193,6 +193,59 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 	}
 }
 
+// A make recipe whose installer is a make variable installs what pip would only when every
+// assignment of the variable in that Makefile, global or target-specific, is a pip program and
+// no make run may set it: anything else stays an expansion this cannot read.
+func TestResolveVersions_MakeVariableInstaller(t *testing.T) {
+	const (
+		reqs   = "jinja2==3.1.4\n"
+		recipe = "install:\n\t${PIP} install -r requirements.txt\n"
+	)
+	tests := []struct {
+		name     string
+		makefile string
+		extra    map[string]string
+		want     bool
+	}{
+		{"global pip", "PIP = pip\n" + recipe, nil, true},
+		{"$(PIP) of an absolute pip3", "PIP := /usr/bin/pip3\ninstall:\n\t@$(PIP) install -q -r requirements.txt\n", nil, true},
+		{"venv path from an expansion and a target-specific which pip",
+			"PIP=\"${VIRTUALENVWRAPPER_HOOK_DIR}/app/bin/pip\"\n\nsetup-ci: PIP=`which pip`\nsetup-ci: install\n\n" + recipe, nil, true},
+		{"$(shell which pip3)", "PIP := $(shell which pip3)\n" + recipe, nil, true},
+
+		{"assignment runs pip with a name", "PIP=\"pip install foo\"\n" + recipe, nil, false},
+		{"no assignment", recipe, nil, false},
+		{"conditional assignment", "PIP ?= pip\n" + recipe, nil, false},
+		{"appended assignment", "PIP = pip\nPIP += --user\n" + recipe, nil, false},
+		{"shell assignment", "PIP != which pip\n" + recipe, nil, false},
+		{"target-specific python -m pip", "PIP = pip\nci: PIP = python -m pip\n" + recipe, nil, false},
+		{"override directive", "override PIP = pip\n" + recipe, nil, false},
+		{"relative path", "PIP = venv/bin/pip\n" + recipe, nil, false},
+		{"define", "define PIP\npip\nendef\n" + recipe, nil, false},
+		{"include", "include local.mk\nPIP = pip\n" + recipe, nil, false},
+		{"computed name", "$(X)PIP = uv\nPIP = pip\n" + recipe, nil, false},
+		{"extra name beside -r", "PIP = pip\ninstall:\n\t${PIP} install -r requirements.txt jinja2==3.1.2\n", nil, false},
+		{"make run sets the variable", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make install PIP=/opt/other/pip\n"}, false},
+		{"recursive make sets the variable", "PIP = pip\n" + recipe + "ci:\n\t$(MAKE) install PIP=pip3\n", nil, false},
+		{"make -e", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make -e install\n"}, false},
+		{"MAKEFLAGS", "PIP = pip\n" + recipe, map[string]string{"install.sh": "export MAKEFLAGS=-e\nmake install\n"}, false},
+		{"make run sets another variable", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make install DEBUG=1\n"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"requirements.txt": reqs, "Makefile": tt.makefile}
+			maps.Copy(files, tt.extra)
+			r := resolveVersion(t, writeTree(t, files), "jinja2")
+			if !r.Found {
+				t.Fatalf("jinja2 not found: %+v", r.All)
+			}
+			if r.Match.Resolved != tt.want {
+				t.Fatalf("Resolved = %v, want %v (match %+v)", r.Match.Resolved, tt.want, r.Match)
+			}
+		})
+	}
+}
+
 // A PIP_* or UV_* variable whose option changes nothing the build installs, or where, is kept:
 // it resolves beside an allowed install. Every other name still withholds, beside a kept one or
 // not, and a kept name is matched exactly but in any case, as pip and a Windows runner read it.

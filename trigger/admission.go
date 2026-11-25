@@ -60,6 +60,9 @@ const (
 type ScheduledAdvisory struct {
 	Vuln assessment.VulnRef
 	Band Band
+	// carried is set for an advisory the previous run's scan stopped before assessing. It orders
+	// work after the band and ahead of signal priority, and is read only by admitAdvisories.
+	carried bool
 	// priority is the advisory's EPSS/KEV standing among the run's advisories. Zero is "no
 	// signal", which is every advisory when the run has no signals.
 	priority signalPriority
@@ -113,6 +116,8 @@ type AdmissionResult struct {
 	Admitted []assessment.VulnRef
 	Deferred []string
 	Skipped  []string
+	// Carried is parallel to Admitted: true for an advisory carried from the previous run.
+	Carried []bool
 }
 
 // admit is the admission gate: it maps a band to a scheduling decision. It is the whole
@@ -138,24 +143,25 @@ func admit(band Band) Admission {
 // returned []assessment.VulnRef — the only thing that reaches assess()/S1 — has no band.
 //
 // Admission is stable-ordered by band rank (immediate before standard before the
-// fail-open default), then by signal priority (KEV-listed, then EPSS descending, then no
+// fail-open default), then by carried-from-the-previous-run, then by signal priority (KEV-listed, then EPSS descending, then no
 // signal), then by input position, so the likeliest-exploited advisories are assessed before
 // a time budget stops the scan; ordering is a scheduling effect only and never changes any
 // verdict. With no bands and no signals supplied every case ties on both and the order is
 // unchanged (byte-identical to the pre-gate behavior).
 func admitAdvisories(scheduled []ScheduledAdvisory) AdmissionResult {
 	type ranked struct {
-		vuln assessment.VulnRef
-		rank int
-		prio signalPriority
-		idx  int
+		vuln    assessment.VulnRef
+		rank    int
+		carried bool
+		prio    signalPriority
+		idx     int
 	}
 	var admit0 []ranked
 	var res AdmissionResult
 	for i, s := range scheduled {
 		switch admit(s.Band) {
 		case AdmitNow:
-			admit0 = append(admit0, ranked{vuln: s.Vuln, rank: bandRank(s.Band), prio: s.priority, idx: i})
+			admit0 = append(admit0, ranked{vuln: s.Vuln, rank: bandRank(s.Band), carried: s.carried, prio: s.priority, idx: i})
 		case AdmitDefer:
 			res.Deferred = append(res.Deferred, s.Vuln.ID)
 		case AdmitSkip:
@@ -166,14 +172,19 @@ func admitAdvisories(scheduled []ScheduledAdvisory) AdmissionResult {
 		if admit0[a].rank != admit0[b].rank {
 			return admit0[a].rank < admit0[b].rank
 		}
+		if admit0[a].carried != admit0[b].carried {
+			return admit0[a].carried
+		}
 		if pa, pb := admit0[a].prio, admit0[b].prio; pa.before(pb) || pb.before(pa) {
 			return pa.before(pb)
 		}
 		return admit0[a].idx < admit0[b].idx
 	})
 	res.Admitted = make([]assessment.VulnRef, 0, len(admit0))
+	res.Carried = make([]bool, 0, len(admit0))
 	for _, r := range admit0 {
 		res.Admitted = append(res.Admitted, r.vuln)
+		res.Carried = append(res.Carried, r.carried)
 	}
 	return res
 }
@@ -259,4 +270,26 @@ func signalPriorities(subjects, workSet []assessment.VulnRef, rows []report.Advi
 		out[i] = signalPriority{kev: m.HasKEV && m.KEV.Listed, hasEPSS: m.HasEPSS, epss: m.EPSS.Score}
 	}
 	return out
+}
+
+// withCarried returns scheduled with the carried flag set on each advisory that prior holds a
+// scan_cut_short row for, by ID and source. A cut row whose advisory is not in scheduled sets
+// nothing: a baseline drops it, never retries it. cve-watch has no work set, so it keeps the row
+// as cut.
+func withCarried(scheduled []ScheduledAdvisory, prior *report.Report) []ScheduledAdvisory {
+	cut := map[string]struct{}{}
+	for _, f := range prior.Advisories {
+		if f.UndeterminedReason == report.ReasonScanCutShort {
+			cut[f.Advisory.ID+"\x00"+f.Advisory.Source] = struct{}{}
+		}
+	}
+	if len(cut) == 0 {
+		return scheduled
+	}
+	for i, s := range scheduled {
+		if _, ok := cut[s.Vuln.ID+"\x00"+s.Vuln.Source]; ok {
+			scheduled[i].carried = true
+		}
+	}
+	return scheduled
 }

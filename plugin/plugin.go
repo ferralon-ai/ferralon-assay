@@ -616,6 +616,12 @@ type SymbolResolutionResult struct {
 	// advisory symbol accounted for, and only the lane's own matcher knows which resolved symbol
 	// answered which advisory symbol.
 	Matched map[string][]string `json:"matched,omitempty"`
+	// OutsideBuild lists the request advisory symbols, verbatim, whose qualifying package is absent
+	// from the build's resolved package set: under every reading of the qualifier, the build compiles
+	// no package of that path and no replace directive's source holds it. Code the build does not
+	// compile cannot be reached, so a gate may leave these symbols out of what it requires searched.
+	// A lane fills it only from a complete reading of the build's package set.
+	OutsideBuild []string `json:"outside_build,omitempty"`
 	// ModuleSearch is a search of the source of every module in the build for the request's
 	// advisory symbols, for an advisory whose package no module in the build holds. Nil when no
 	// such search ran.

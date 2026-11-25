@@ -164,6 +164,7 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 // scanned — the caller decides what an empty path set is evidence of.
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
 	ctx, err := withGoWork(ctx, req.GoWork)
+	ctx = withStrict(ctx, req.Strict)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
@@ -271,7 +272,7 @@ func libraryView(ctx context.Context, scanned vulnScan, g reconcileGraph, buildD
 		if err != nil {
 			return plugin.ReachabilityResult{}, evidence, fmt.Errorf("load for withholding a refutation: %w", err)
 		}
-		entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir)
+		entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir, strictFrom(ctx))
 		res.EntryRoots = entrypoints.disclosure(loaded.Packages, buildDir)
 		if loaded.cgoUnresolved {
 			res.Refutation = nil
@@ -524,6 +525,18 @@ func reaching(pkgs, set []*packages.Package, incomplete bool, module string, vul
 	return slices.DeleteFunc(slices.Clone(set), func(p *packages.Package) bool { return !reach.reachesModule(p) })
 }
 
+type strictKey struct{}
+
+// withStrict carries the request's strict mode to the entry-point resolution.
+func withStrict(ctx context.Context, strict bool) context.Context {
+	return context.WithValue(ctx, strictKey{}, strict)
+}
+
+func strictFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(strictKey{}).(bool)
+	return v
+}
+
 // entrypoints is the build's library entry points: the packages code outside the build may import
 // and call, resolved from the caller's statement.
 type entrypoints struct {
@@ -554,8 +567,9 @@ var autoExcludedElements = []string{"cmd", "example", "examples", "test", "tests
 // application instead, and auto takes no package: the mains are the entry points. A declared path is
 // matched against the package's directory relative to decl.Base, or buildDir when that is empty,
 // and counts as matched only when it covers an importable package. A package whose directory cannot
-// be placed there keeps auto's answer, and is an entry point under a path list.
-func resolveEntrypoints(pkgs []*packages.Package, decl plugin.LibraryEntrypoints, buildDir string) entrypoints {
+// be placed there keeps auto's answer, and is an entry point under a path list. strict withholds the
+// application reading from auto.
+func resolveEntrypoints(pkgs []*packages.Package, decl plugin.LibraryEntrypoints, buildDir string, strict bool) entrypoints {
 	e := entrypoints{decl: decl, matched: map[string]bool{}}
 	base := decl.Base
 	if base == "" {
@@ -594,7 +608,8 @@ func resolveEntrypoints(pkgs []*packages.Package, decl plugin.LibraryEntrypoints
 	}
 	// The known packages of a partial run are not excused here: the reading holds for the whole run,
 	// so it must not turn on which advisory's search went partial.
-	if !decl.Declared() && !incompleteLoad(pkgs, nil) {
+	// A strict request reads auto as a library: no clearance rests on the application assumption.
+	if !strict && !decl.Declared() && !incompleteLoad(pkgs, nil) {
 		if mains := applicationMains(pkgs); len(mains) > 0 {
 			e.mains = mains
 			e.auto, e.pkgs = append(e.auto, e.pkgs...), nil

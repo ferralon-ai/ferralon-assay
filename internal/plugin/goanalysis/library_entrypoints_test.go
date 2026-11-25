@@ -243,7 +243,7 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 					t.Fatalf("ill-typed load: refutation %+v, partiality %+v, want it withheld as reflection:call", res.Refutation, res.Partiality)
 				}
 				escaped := withholdRefutation(context.Background(), plugin.ReachabilityResult{Refutation: moduleRefutation(tc.scanned.findings, env)},
-					tc.scanned, load.Packages, load.buildRelease(), dir, env, resolveEntrypoints(load.Packages, entry, dir))
+					tc.scanned, load.Packages, load.buildRelease(), dir, env, resolveEntrypoints(load.Packages, entry, dir, false))
 				res.Refutation, res.Partiality = escaped.Refutation, escaped.Partiality
 			}
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
@@ -329,7 +329,7 @@ func TestResolveEntrypoints_Placement(t *testing.T) {
 				t.Fatal(err)
 			}
 			decl.Base = tc.base
-			rec := resolveEntrypoints(tc.pkgs, decl, module).record()
+			rec := resolveEntrypoints(tc.pkgs, decl, module, false).record()
 			if !slices.Equal(rec.Packages, tc.entries) {
 				t.Errorf("entry points = %q, want %q", rec.Packages, tc.entries)
 			}
@@ -372,7 +372,7 @@ func TestWithholdForLibraryEscape_IncompleteLoad(t *testing.T) {
 				Partiality: plugin.Complete(),
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
 			}
-			res := withholdForLibraryEscape(refuted, scanned, load.Packages, resolveEntrypoints(load.Packages, entry, dir))
+			res := withholdForLibraryEscape(refuted, scanned, load.Packages, resolveEntrypoints(load.Packages, entry, dir, false))
 			if res.Refutation != nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonLibraryEscape) {
 				t.Fatalf("result %+v, want the refutation withheld as library_escape", res)
 			}
@@ -426,6 +426,72 @@ func TestApplicationMains(t *testing.T) {
 			}
 			if !slices.Equal(got, tc.want) {
 				t.Errorf("applicationMains = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A strict request reads auto as a library even where practical mode reads the build as an
+// application; a declaration applies in both modes.
+func TestReconciledResult_LibraryEntrypointsStrict(t *testing.T) {
+	files := map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Bad() {}\n",
+		"cmd/app/main.go":     "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+		"pkg/x/x.go":          "package x\n\nimport \"example.com/vulnmod\"\n\nfunc Get() func() { return vulnmod.Bad }\n",
+	}
+	scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
+	const appAssumption = "treated as an application: 1 main package; no code outside the build imports example.com/m/pkg/x"
+	cases := []struct {
+		name       string
+		input      string
+		strict     bool
+		withheld   bool
+		assumption string
+		source     string
+		packages   []string
+	}{
+		{"auto, practical", "auto", false, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}},
+		{"auto, strict", "auto", true, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}},
+		{"nothing stated, practical", "", false, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}},
+		{"nothing stated, strict", "", true, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}},
+		{"none, practical", "none", false, false, `library-entrypoints "none": no code outside the build imports example.com/m/pkg/x`, plugin.LibraryEntrypointsSourceDeclared, []string{}},
+		{"none, strict", "none", true, false, `library-entrypoints "none": no code outside the build imports example.com/m/pkg/x`, plugin.LibraryEntrypointsSourceDeclared, []string{}},
+		{"the whole tree as library, practical", ".", false, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}},
+		{"the whole tree as library, strict", ".", true, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, err := plugin.ParseLibraryEntrypoints(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := writeTree(t, files)
+			load, err := LoadProgram(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := withStrict(context.Background(), tc.strict)
+			res, err := reconciledResult(ctx, scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
+			}
+			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonLibraryEscape); declared != tc.withheld {
+				t.Errorf("library_escape declared = %v, want %v", declared, tc.withheld)
+			}
+			if r := res.Refutation; r != nil && (len(r.Assumptions) != 1 || !strings.Contains(r.Assumptions[0], tc.assumption)) {
+				t.Errorf("assumptions = %q, want one containing %q", r.Assumptions, tc.assumption)
+			}
+			rec := res.LibraryEntrypoints
+			if rec == nil {
+				t.Fatal("no library_entrypoints record")
+			}
+			if rec.Source != tc.source || !slices.Equal(rec.Packages, tc.packages) {
+				t.Errorf("record = source %q packages %q, want %q %q", rec.Source, rec.Packages, tc.source, tc.packages)
 			}
 		})
 	}

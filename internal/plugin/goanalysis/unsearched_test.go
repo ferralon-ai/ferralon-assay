@@ -218,7 +218,7 @@ func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 			res := withholdRefutation(context.Background(), plugin.ReachabilityResult{
 				Partiality: plugin.Complete(),
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: module},
-			}, tc.scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"), resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir))
+			}, tc.scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"), resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir, false))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}
@@ -322,7 +322,7 @@ func TestWithholdForUnsearchedMethods_VulnerablePackages(t *testing.T) {
 			if incompleteLoad(load.Packages, nil) {
 				t.Fatal("load incomplete")
 			}
-			res := withholdForUnsearchedMethods(narrowedRefutation(), tc.scanned, load.Packages, resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir))
+			res := withholdForUnsearchedMethods(narrowedRefutation(), tc.scanned, load.Packages, resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir, false))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
@@ -389,7 +389,7 @@ func TestWithholdForLibraryEscape_VulnerablePackages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			entry := resolveEntrypoints(load.Packages, decl, dir)
+			entry := resolveEntrypoints(load.Packages, decl, dir, false)
 			res := withholdForLibraryEscape(narrowedRefutation(), tc.scanned, load.Packages, entry)
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
@@ -442,7 +442,7 @@ func TestNarrowedGates_StandardLibraryWidening(t *testing.T) {
 	if incompleteLoad(load.Packages, nil) {
 		t.Fatal("load incomplete")
 	}
-	entry := resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir)
+	entry := resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir, false)
 	for _, g := range gates {
 		for _, tc := range scans {
 			t.Run(g.name+"/"+tc.name, func(t *testing.T) {
@@ -483,7 +483,7 @@ func TestWithholdForUnsearchedMethods_DeclaringPackageNotLoaded(t *testing.T) {
 	}
 	lib.Imports = map[string]*packages.Package{}
 	pkgs := []*packages.Package{lib}
-	res := withholdForUnsearchedMethods(narrowedRefutation(), narrowedScans.narrow, pkgs, resolveEntrypoints(pkgs, plugin.LibraryEntrypoints{}, dir))
+	res := withholdForUnsearchedMethods(narrowedRefutation(), narrowedScans.narrow, pkgs, resolveEntrypoints(pkgs, plugin.LibraryEntrypoints{}, dir, false))
 	if res.Refutation != nil {
 		t.Fatal("refutation stands, want withheld")
 	}
@@ -530,7 +530,7 @@ func TestWithholdForUnsearchedMethods_EntryPoints(t *testing.T) {
 				t.Fatal(err)
 			}
 			scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
-			entry := resolveEntrypoints(load.Packages, tc.decl, dir)
+			entry := resolveEntrypoints(load.Packages, tc.decl, dir, false)
 			// The package's types are walked off a map: repeat the step so a result that depends on
 			// that order shows.
 			for range 50 {

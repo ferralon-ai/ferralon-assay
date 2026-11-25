@@ -753,8 +753,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	defer passes.close()
 	invNotes := inventoryLimits(prior.Partiality)
 	mods := goModulesOf(prior.SBOM, invNotes)
-	// siblings are the rows for the other instances of a retried cut row's advisory; they key
-	// under the parent's key, so they are appended beside the rows the parent replaces.
+	// siblings are the rows for the other instances of an assessed advisory, whether a retried
+	// cut row or a new one; they key under the parent's key, so they are appended beside the rows
+	// the parent replaces.
 	var siblings []report.AdvisoryFinding
 	// adjudicated is the instance an assessment's first pass selected, known even when its analysis
 	// then stopped or failed.

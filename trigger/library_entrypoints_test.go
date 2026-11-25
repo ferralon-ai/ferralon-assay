@@ -219,11 +219,18 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 		return rec
 	}
 	storedMains, headMains := mainsOf("example.com/target/cmd/app"), mainsOf("example.com/target/cmd/app", "example.com/target/cmd/newtool")
+	// storedPair is the stored report's go set and record; a zero lib means it stored no set.
 	type storedPair struct {
 		lib plugin.ResolvedLibraryEntrypoints
 		rec plugin.EntryRootRecord
 	}
 	held := storedPair{storedLib, stored}
+	storedSets := func() []plugin.ResolvedLibraryEntrypoints {
+		if held.lib.Ecosystem == "" {
+			return nil
+		}
+		return []plugin.ResolvedLibraryEntrypoints{held.lib}
+	}
 	options := func(t *testing.T, lib *plugin.ResolvedLibraryEntrypoints, roots *plugin.EntryRootRecord) []pipeline.AssessOption {
 		return []pipeline.AssessOption{
 			pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
@@ -235,7 +242,7 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 	}
 	pr := func(t *testing.T, sbom func(*report.Report) report.SBOM, lib *plugin.ResolvedLibraryEntrypoints, roots *plugin.EntryRootRecord) *report.Report {
 		store, baseline := groundedBaseline()
-		baseline.LibraryEntrypoints = []plugin.ResolvedLibraryEntrypoints{held.lib}
+		baseline.LibraryEntrypoints = storedSets()
 		baseline.Entrypoints = []plugin.EntryRootRecord{held.rec}
 		res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
 			Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
@@ -254,7 +261,7 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 	}
 	cveWatch := func(t *testing.T, lib *plugin.ResolvedLibraryEntrypoints, roots *plugin.EntryRootRecord) *report.Report {
 		store, _ := seedBaseline(t)
-		store.state.Report.LibraryEntrypoints = []plugin.ResolvedLibraryEntrypoints{held.lib}
+		store.state.Report.LibraryEntrypoints = storedSets()
 		store.state.Report.Entrypoints = []plugin.EntryRootRecord{held.rec}
 		store.state.Cursor = ""
 		osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
@@ -272,6 +279,8 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 		return res.Report
 	}
 	mainsHeld := &storedPair{mainsLib, storedMains}
+	// A stored report that judged no go refutation holds a record and no set.
+	noSetHeld := &storedPair{rec: storedMains}
 	cases := []struct {
 		name   string
 		stored *storedPair
@@ -304,6 +313,10 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 			func(t *testing.T) *report.Report { return pr(t, bumped, nil, &headMains) }, storedMains},
 		{"CVE-watch, application, pass resolved a record but no set", mainsHeld,
 			func(t *testing.T) *report.Report { return cveWatch(t, nil, &headMains) }, storedMains},
+		{"PR re-analysis, application, neither side resolved a set", noSetHeld,
+			func(t *testing.T) *report.Report { return pr(t, bumped, nil, &headMains) }, headMains},
+		{"CVE-watch, application, neither side resolved a set", noSetHeld,
+			func(t *testing.T) *report.Report { return cveWatch(t, nil, &headMains) }, headMains},
 		{"CVE-watch, application, pass resolved", mainsHeld,
 			func(t *testing.T) *report.Report { return cveWatch(t, &mainsLib, &headMains) }, headMains},
 	}

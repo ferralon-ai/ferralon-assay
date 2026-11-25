@@ -43,7 +43,7 @@ type goManifestPlugin struct {
 // ToolchainFact compares the Contradiction POINTER, so two facts describing the same refuted claim
 // would read as different and every contradiction assertion would fail for the wrong reason.
 func toolchainFactEqual(a, b ToolchainFact) bool {
-	if a.Version != b.Version || a.Bound != b.Bound || a.Source != b.Source {
+	if a.Version != b.Version || a.Bound != b.Bound || a.Source != b.Source || a.Assumption != b.Assumption || a.StrictVersion != b.StrictVersion {
 		return false
 	}
 	switch {

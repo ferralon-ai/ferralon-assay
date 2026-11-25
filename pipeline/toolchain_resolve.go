@@ -18,6 +18,9 @@ type ToolchainCandidates struct {
 	// BazelWorkspace is set when a Bazel workspace sits at or above the module root; no go.mod
 	// directive is then a floor.
 	BazelWorkspace bool
+	// Strict withholds the practical-mode floor from the `toolchain` line, which rests on the
+	// assumption that the build runs under GOTOOLCHAIN=auto.
+	Strict bool
 }
 
 // ResolveToolchain resolves the candidates to the subject's Go toolchain fact: the fact
@@ -32,5 +35,6 @@ func ResolveToolchain(c ToolchainCandidates) ToolchainFact {
 		toolchainDirective: c.ToolchainDirective,
 		goDirective:        c.GoDirective,
 		bazelWorkspace:     c.BazelWorkspace,
+		strict:             c.Strict,
 	})
 }

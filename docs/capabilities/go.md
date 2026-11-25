@@ -31,7 +31,8 @@ Advisory ranges are placed against the resolved module version with the semver c
 | Feature | Status | Caveats |
 |---|---|---|
 | Semver introduced/fixed bounds (both sides) | Complete |  |
-| Pseudo-version / prerelease upper bounds | Partial | [GO-PSEUDOVERSION](#go-pseudoversion) |
+| Prerelease versions, ordered as `golang.org/x/mod/semver` orders them | Complete |  |
+| Pseudo-version resolved versions | Partial | [GO-PSEUDOVERSION](#go-pseudoversion) |
 | Stdlib/toolchain ranges (`go1.X.Y`), multi-range backport | Complete |  |
 | Toolchain fact from `go` / `toolchain` directive | Partial | [GO-TOOLCHAIN-PRE121](#go-toolchain-pre121) |
 | Module found at multiple versions in the build | Complete |  |
@@ -80,6 +81,8 @@ A Go dependency advisory gets per-advisory govulncheck evidence. `reachable_cand
 | Advisories with no symbol coordinates | Partial | [GO-NO-SYMBOLS](#go-no-symbols) |
 | Go stdlib / toolchain advisories | Partial | [GO-TOOLCHAIN-NOT-SCANNED](#go-toolchain-not-scanned), [GO-TOOLCHAIN-PRE121](#go-toolchain-pre121) |
 | Run-wide did-not-run gate on `not_exploitable` | Partial | [GO-CGO](#go-cgo), [GO-PLUGIN-LOAD](#go-plugin-load) |
+
+`unsearched_methods` counts only the exported methods govulncheck never searches (a generic type's, or one promoted from a type outside the search) on an exported package-level type in a library entry point, the packages [GO-LIBRARY-ESCAPE](#go-library-escape) names, and only when the package declaring the method reaches one of the refuted module's vulnerable packages. A method of an unexported type, a type declared inside a function, or a package outside the entry points (a `main` package, `internal/` or `cmd/` under `auto`, or any library package of a build `auto` reads as an application) no longer withholds the refutation.
 
 ## 6. Framework & dynamic-dispatch modeling
 
@@ -155,9 +158,9 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 ### GO-PSEUDOVERSION
 
-**Trigger.** Resolved module version is a pseudo-version or prerelease.
+**Trigger.** Resolved module version is a pseudo-version.
 
-**Effect.** The upper-bound test is not applied, so the advisory stays admitted (fail-open to admission, precision only).
+**Effect.** A pseudo-version is placed against a tagged bound at or below its own base by ordinary version order. Against a pseudo-version bound on the same base and major it is placed by commit time, which does not prove ancestry: a row cleared that way is `not_exploitable` on `version_not_in_affected_range`, and its Assumptions name both revisions. Every other placement is left unmade and the advisory stays admitted: a tagged bound above the pseudo-version's base, a pseudo-version bound on another base or major, two commits with the same time, and the same revision at another time.
 
 ### GO-TOOLCHAIN-PRE121
 
@@ -175,7 +178,7 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Trigger.** A first-party file excluded by build constraints on the analysed platform (or otherwise left out of the load) that calls into the refuted module.
 
-**Effect.** The refutation is withheld with `excluded_files`, or `excluded_files:assembly`, `excluded_files:linkname` or `excluded_files:cgo_include` naming what the file reaches. The withhold is scoped to the advisory, and the row is `undetermined` with `refutation_withheld`.
+**Effect.** The refutation is withheld with `excluded_files`, or `excluded_files:assembly`, `excluded_files:linkname`, `excluded_files:cgo_include` or `excluded_files:unresolved_name` naming what the file reaches or the name it uses that the analyzer cannot resolve. The withhold is scoped to the advisory, and the row is `undetermined` with `refutation_withheld`.
 
 **Exception: build constraints alone.** When every file that may call into the module is one the scanned platform leaves out by its build constraints (a `GOOS` or `GOARCH` file-name suffix, or a `//go:build` line the scan's tags do not satisfy), the left-out-file engine traced each one to a possible call, and nothing failed closed on the way (no assembly, `//go:linkname`, cgo include, unresolved import, or failed step), the refutation is kept and the result declares `excluded_files:build_constraint` beside it. The row clears to `not_exploitable` (`evidence.basis` `vulnerable_symbol_unreachable`) through the usual path, provided no other did-not-run limit applies; `unsearched_methods`, `library_escape`, `reflection:call`, any other `excluded_files` form and a failed step still withhold it. The scope is on the finding: `evidence.detail` says which `GOOS`, `GOARCH` and build tags the decision holds for and how many files built only for other platforms or tags may call into the module and were not analyzed, so other platforms were not checked. The limit is still disclosed at scan level. Where the scan's platform is not the one that ships, scan once per platform.
 
@@ -197,13 +200,15 @@ Go hands the paid tier a reach path set and a harness skeleton: a generated Go s
 
 **Trigger.** `plugin.Open` reached from entry roots.
 
-**Effect.** `plugin_load`, run-wide did-not-run.
+**Effect.** `plugin_load`, run-wide did-not-run. When every refutation a row rests on, for each module the advisory names, is that the build imports none of the module's vulnerable packages, `plugin_load` does not withhold it: the row clears as `not_exploitable` unless another limit withholds it, with the assumption "Go plugins loaded at run time are separate builds and were not assessed". A plugin may hold the package, but it cannot put it in this build. A row resting on any call-path refutation stays withheld, since a loaded plugin can call back into the build's exported code.
 
 ### GO-LIBRARY-ESCAPE
 
-**Trigger.** A library entry point reaches one of the refuted module's vulnerable packages. `library-entrypoints` (`-library-entrypoints`, `ASSAY_LIBRARY_ENTRYPOINTS`) names the entry points: `auto` (the default) takes every importable package outside `cmd/`, `example(s)/`, `test(s)/` and `testdata/`, `none` takes none, and a list of paths relative to the repository root names them, with `!path` taking a path out.
+**Trigger.** A library entry point reaches one of the refuted module's vulnerable packages. `library-entrypoints` (`-library-entrypoints`, `ASSAY_LIBRARY_ENTRYPOINTS`) names the entry points: `auto` (the default) takes every importable package outside `cmd/`, `example(s)/`, `test(s)/` and `testdata/`, `none` takes none, and a list of paths relative to the repository root names them, with `!path` taking a path out. A bare `auto` on a build of one main module that ships a `main` package at the module root or under `cmd/` (outside `example(s)/`, `test(s)/` and `testdata/`), when every package loaded and type-checked, reads the build as an application and takes none: `entrypoints[].source` is `mains`, and `entrypoints[].effective.main` names those packages. A `main` elsewhere, such as under `benchmark/`, `interop/` or `internal/`, keeps the library reading. Any other statement, `auto,path` or `!path` included, keeps the library reading; `go:library=.` takes every importable package, `cmd/`, example and test paths included, so it is wider than `auto`'s library reading.
 
-**Effect.** The refutation is withheld with `library_escape`, and the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that stands only because of what you declared carries that declaration on the report as an assumption.
+**Effect.** The refutation is withheld with `library_escape`, and the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that stands only because of what you declared, or because the build was read as an application, carries that on the report as an assumption: for the application reading, "treated as an application: N main packages; … library mode: go:library=.".
+
+**Scoped answer.** When the build ships programs, the lane also runs a program view, and a row held here can carry a `not_exploitable` scoped to those binaries: see [Binary-scoped verdicts](../binary-scoped-verdicts.md). A row that records a reach or taint path starting in one of those binaries' `main` packages carries none, for any of them: the path is a call the program view did not see. Only a `reachable_candidate` or a `refutation_withheld` row can carry one; a row undetermined for any other reason, such as a cut-short scan or an analysis that did not run, carries none. The path's entry package is read from its SCIP id; one that cannot be read counts as entering a binary. Mains spread over more than one module give no scoped verdict either.
 
 ### GO-NO-SYMBOLS
 

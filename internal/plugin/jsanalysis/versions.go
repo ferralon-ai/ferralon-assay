@@ -96,7 +96,7 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 		parsed[l] = info
 		all = append(all, info.deps...)
 	}
-	unread, scriptWithheld, unrecognised, inactive, lockAssumed := installSurfaces(ctx, req.BuildDir, func() map[string]lockInfo { return parsed })
+	unread, scriptWithheld, unrecognised, inactive, lockAssumed, buildAssumed := installSurfaces(ctx, req.BuildDir, func() map[string]lockInfo { return parsed })
 	parseFailed = parseFailed || unread
 
 	part := plugin.Complete()
@@ -121,6 +121,9 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 	}
 	if lockAssumed {
 		res.Annotations = append(res.Annotations, plugin.Annotation{Reason: AnnotationInstallHonoursLock, Detail: lockAssumption})
+	}
+	if buildAssumed {
+		res.Annotations = append(res.Annotations, plugin.Annotation{Reason: AnnotationBuildOutputInstall, Detail: buildOutputAssumption})
 	}
 	want := normalizeNPMCoordinate(req.Coordinate)
 	installs := append(all[:len(all):len(all)], copies...)

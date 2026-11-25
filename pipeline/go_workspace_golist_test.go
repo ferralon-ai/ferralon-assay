@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -143,20 +144,23 @@ func TestModuleVersionFromBuild_WorkspaceReplace(t *testing.T) {
 	publish(t, proxy, "example.com/fork", "v1.0.0", map[string]string{"go.mod": "module example.com/fork\n\ngo 1.21\n", "m.go": "package m\n"})
 	sum := download(t, proxy, "example.com/m@v1.0.0", "example.com/m@v1.1.0", "example.com/fork@v1.0.0")
 	const memberHead = "module example.com/mono/a\n\ngo 1.21\n\nrequire example.com/m v1.0.0\n"
+	fork := &ModuleReplacement{Path: "example.com/fork", Version: "v1.0.0"}
 	cases := []struct {
-		name        string
-		work, goMod string
-		want        string
-		wantPinned  bool
+		name         string
+		work, goMod  string
+		want         string
+		wantPinned   bool
+		wantReplaced *ModuleReplacement // what moduleReplacementInBuild records under the go.work
 	}{
-		{"version-only replace in the go.mod", "", "replace example.com/m => example.com/m v1.1.0\n", "v1.1.0", true},
-		{"version-only replace in the go.work", "replace example.com/m => example.com/m v1.1.0\n", "", "v1.1.0", true},
-		{"version-specific replace of the required version", "", "replace example.com/m v1.0.0 => example.com/m v1.1.0\n", "v1.1.0", true},
-		{"version-specific replace of another version", "", "replace example.com/m v0.9.0 => example.com/m v1.1.0\n", "v1.0.0", true},
-		{"fork replace in the go.mod", "", "replace example.com/m => example.com/fork v1.0.0\n", "", false},
-		{"fork replace in the go.work", "replace example.com/m => example.com/fork v1.0.0\n", "", "", false},
-		{"local-directory replace in the go.mod", "", "replace example.com/m => ../m\n", "", false},
-		{"local-directory replace in the go.work", "replace example.com/m => ./m\n", "", "", false},
+		{"version-only replace in the go.mod", "", "replace example.com/m => example.com/m v1.1.0\n", "v1.1.0", true, nil},
+		{"version-only replace in the go.work", "replace example.com/m => example.com/m v1.1.0\n", "", "v1.1.0", true, nil},
+		{"version-specific replace of the required version", "", "replace example.com/m v1.0.0 => example.com/m v1.1.0\n", "v1.1.0", true, nil},
+		{"version-specific replace of another version", "", "replace example.com/m v0.9.0 => example.com/m v1.1.0\n", "v1.0.0", true, nil},
+		{"fork replace in the go.mod", "", "replace example.com/m => example.com/fork v1.0.0\n", "", false, fork},
+		{"fork replace in the go.work", "replace example.com/m => example.com/fork v1.0.0\n", "", "", false, fork},
+		// go list names a member's relative replace from the workspace root: a/../m is ./m.
+		{"local-directory replace in the go.mod", "", "replace example.com/m => ../m\n", "", false, &ModuleReplacement{Path: "./m", Directory: true}},
+		{"local-directory replace in the go.work", "replace example.com/m => ./m\n", "", "", false, &ModuleReplacement{Path: "./m", Directory: true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,6 +184,9 @@ func TestModuleVersionFromBuild_WorkspaceReplace(t *testing.T) {
 			}
 			if got, held := pinned["example.com/m"]; held != tc.wantPinned || got != tc.want || slices.Contains(unpinned, "example.com/m") == tc.wantPinned {
 				t.Fatalf("GoWorkspaceModules = %v, %v; want example.com/m at %q, pinned %v", pinned, unpinned, tc.want, tc.wantPinned)
+			}
+			if got := moduleReplacementInBuild(context.Background(), buildDir, ws, "example.com/m"); !reflect.DeepEqual(got, tc.wantReplaced) {
+				t.Fatalf("under the go.work: moduleReplacementInBuild = %+v, want %+v", got, tc.wantReplaced)
 			}
 			if tc.work == "" {
 				if v, pinned, read := moduleVersionFromBuild(context.Background(), buildDir, GoWorkspace{}, "example.com/m"); v != tc.want || pinned != tc.wantPinned || !read {

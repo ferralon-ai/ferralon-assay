@@ -496,8 +496,10 @@ type EvidenceSummary struct {
 	// HTTP handler reaches the advisory symbol"). Neutral phrasing only — never
 	// asserts exploitability.
 	Detail string `json:"detail,omitempty"`
-	// Assumptions are the caller's declarations a not_exploitable verdict holds only under, each one
-	// checkable line (a library-entrypoints declaration that took a package out of the entry points).
+	// Assumptions are the assumptions a not_exploitable verdict holds only under, each one checkable
+	// line: a caller's declaration (a library-entrypoints declaration that took a package out of the
+	// entry points), or one the scanner itself made (an installed pseudo-version ordered against a
+	// bound by a version order that does not prove its revision's ancestry, naming both revisions).
 	// Empty means the verdict rests on the scan's evidence alone. Set only on a not_exploitable.
 	Assumptions []string `json:"assumptions,omitempty"`
 	// ReachablePath, for a reachable_candidate, names the entrypoint→symbol path that
@@ -551,6 +553,46 @@ type EvidenceSummary struct {
 	// on-path guard ⇒ the candidate is reported exactly as today (honest-absent, inv.5).
 	// Populated only on a reachable_candidate — validate() rejects it on any other verdict.
 	GuardSufficiency []GuardSufficiencyNote `json:"guard_sufficiency,omitempty"`
+}
+
+// ScopeKind names what a ScopedVerdict is scoped to.
+type ScopeKind string
+
+// ScopeBinaries scopes a verdict to the shipped programs of the scanned module.
+const ScopeBinaries ScopeKind = "binaries"
+
+// Scope says which part of what was scanned a ScopedVerdict holds for.
+type Scope struct {
+	Kind ScopeKind `json:"kind"`
+	// Targets are the binaries, as main-package directories relative to the module root ("." for a
+	// main package at the root), sorted. The verdict holds for every one of them.
+	Targets []string `json:"targets"`
+	// Module is the scanned module's path, which the targets are relative to.
+	Module string `json:"module,omitempty"`
+}
+
+// ScopedVerdict is a verdict that holds for the Scope only. The finding's own verdict is the
+// library view, and says nothing about the scope narrowing it.
+type ScopedVerdict struct {
+	// Verdict is not_exploitable: the only verdict a scope narrows.
+	Verdict Verdict `json:"verdict"`
+	Scope   Scope   `json:"scope"`
+	// Evidence is the grounds, the same fields as a not_exploitable row's.
+	Evidence EvidenceSummary `json:"evidence"`
+}
+
+// Statement is the scoped verdict in one plain sentence for the surfaces a person reads.
+func (v ScopedVerdict) Statement() string {
+	names := make([]string, len(v.Scope.Targets))
+	for i, t := range v.Scope.Targets {
+		names[i] = "`" + t + "`"
+	}
+	noun := "binary"
+	if len(names) > 1 {
+		noun = "binaries"
+	}
+	return "Not reachable from the shipped " + noun + " " + strings.Join(names, ", ") +
+		"; still possible when this module is imported as a library."
 }
 
 // Priority is the EPSS/KEV prioritization context attached to a finding from the signals file the
@@ -723,6 +765,13 @@ type AdvisoryFinding struct {
 	// and each also reaches the scan's Partiality as a note. Unlike Evidence.Assumptions, which are
 	// the caller's declarations, these are the analysis's, and they qualify every verdict.
 	Annotations []plugin.Annotation `json:"annotations,omitempty"`
+	// ScopedVerdicts are verdicts that hold for part of what was scanned, beside this row's own, which
+	// never changes. A Go repo that ships programs can have a library view that cannot rule an
+	// advisory out (Verdict is undetermined or reachable_candidate) while its shipped binaries'
+	// own entry points do; the row then carries a not_exploitable scoped to those binaries. Only a
+	// reachable_candidate or an undetermined row carries one: a row that is already not_exploitable
+	// or disqualified holds for every caller.
+	ScopedVerdicts []ScopedVerdict `json:"scoped_verdicts,omitempty"`
 	// Priority is the EPSS/KEV prioritization context for this advisory, from the signals
 	// file the run was given, each value carrying its own stamp (see Priority). Nil when
 	// the run had no signals or the file had no stamped value for the advisory's id or
@@ -1038,6 +1087,10 @@ const (
 	// ReasonPackageVersionUnresolved: the advisory reached the verdict without a package whose
 	// installed version was resolved, so nothing establishes which code the build carries.
 	ReasonPackageVersionUnresolved = "package_version_unresolved"
+	// ReasonOwnReleaseVersionUnknown: the advisory is on the scanned project itself, and the
+	// project's own release version was not established, so nothing places this checkout inside or
+	// outside the advisory's affected range.
+	ReasonOwnReleaseVersionUnknown = "own_release_version_unknown"
 	// ReasonAdvisorySymbolAbsent: the advisory names no vulnerable symbol and no analyzer refuted
 	// the package as a whole, so there was nothing to search for.
 	ReasonAdvisorySymbolAbsent = "advisory_symbol_absent"
@@ -1138,10 +1191,19 @@ type Report struct {
 	BuildGraph *BuildGraph `json:"build_graph,omitempty"`
 	// LibraryEntrypoints are the sets of the build's packages the scan treated as callable by code
 	// outside the build, one per ecosystem, and whether each was inferred or declared. A lane
-	// resolves one only to judge a refutation such a caller may contradict. Sorted by ecosystem.
+	// records one only when it judged a refutation such a caller may contradict, so a report whose
+	// assessments held none states none here; Entrypoints states the set regardless. Sorted by
+	// ecosystem.
 	LibraryEntrypoints []plugin.ResolvedLibraryEntrypoints `json:"library_entrypoints,omitempty"`
 	// Entrypoints are the entry points each lane analysed, one record per lane that reported a set,
-	// rendered from the same resolved set as LibraryEntrypoints. Sorted by lane.
+	// rendered from the same resolved set as LibraryEntrypoints where both state one. effective is
+	// the library packages Assay treats as callable from outside the build, which a refutation is
+	// judged against. The search itself roots every main's main and init and the exported API of
+	// every package ./... matches, "!"-denied packages included; a partial run searches only the
+	// roots its limit names. A Go record also lists what the lane inferred (inferred: its importable
+	// library packages and the build's main packages, listed for information: no selector narrows a
+	// main) and the declared "!" selectors that removed a library package (denied), on every Go
+	// report whose packages loaded, whether or not a refutation was judged. Sorted by lane.
 	Entrypoints []plugin.EntryRootRecord `json:"entrypoints,omitempty"`
 	// DependencyCode records whether a JS scan read its dependencies' code and, when a fetch
 	// failed and the scan fell back to reading none, the cause. Set on every JavaScript scan;
@@ -1372,6 +1434,9 @@ func (r Report) Validate() error {
 			return fmt.Errorf("report: advisory %q carries symbol confidence %q but verdict is %q (a derivation-confidence signal qualifies only a reachable_candidate, never an admission or refutation)",
 				f.Advisory.ID, f.Evidence.SymbolConfidence, f.Verdict)
 		}
+		if err := f.validateScoped(); err != nil {
+			return err
+		}
 		// A declaration only ever lets a refutation stand, so only a not_exploitable rests on one.
 		if len(f.Evidence.Assumptions) > 0 && f.Verdict != VerdictNotExploitable {
 			return fmt.Errorf("report: advisory %q carries assumptions but verdict is %q (an assumption qualifies only a not_exploitable)",
@@ -1436,6 +1501,45 @@ func (r Report) Validate() error {
 			if _, ok := present[rel.Child]; !ok {
 				return fmt.Errorf("report: SBOM relationship child %q references no package in the SBOM (dangling edge)", rel.Child)
 			}
+		}
+	}
+	return nil
+}
+
+// MayCarryScoped reports whether f may carry scoped verdicts: a reachable_candidate, or an
+// undetermined row whose reason is refutation_withheld (the analysis ran and held back a refutation
+// the program view can supply). Any other undetermined row is an incomplete assessment, and no
+// narrower claim can stand on it.
+func (f AdvisoryFinding) MayCarryScoped() bool {
+	switch f.Verdict {
+	case VerdictReachableCandidate:
+		return true
+	case VerdictUndetermined:
+		return f.UndeterminedReason == ReasonRefutationWithheld
+	}
+	return false
+}
+
+// validateScoped checks f's scoped verdicts: they qualify only a reachable_candidate or a
+// refutation_withheld row, and each is a not_exploitable resting on reachability for a named scope:
+// its binaries and the module they are built from.
+func (f AdvisoryFinding) validateScoped() error {
+	if len(f.ScopedVerdicts) == 0 {
+		return nil
+	}
+	if !f.MayCarryScoped() {
+		return fmt.Errorf("report: advisory %q carries scoped verdicts but verdict is %q with undetermined_reason %q (a scope narrows only a reachable_candidate or an undetermined row whose reason is %s)",
+			f.Advisory.ID, f.Verdict, f.UndeterminedReason, ReasonRefutationWithheld)
+	}
+	for _, v := range f.ScopedVerdicts {
+		switch {
+		case v.Verdict != VerdictNotExploitable:
+			return fmt.Errorf("report: advisory %q carries a scoped verdict %q (a scope narrows only to not_exploitable)", f.Advisory.ID, v.Verdict)
+		case v.Scope.Kind != ScopeBinaries || len(v.Scope.Targets) == 0 || v.Scope.Module == "":
+			return fmt.Errorf("report: advisory %q carries a scoped verdict with scope kind %q, %d targets and module %q (it must name its binaries and their module)",
+				f.Advisory.ID, v.Scope.Kind, len(v.Scope.Targets), v.Scope.Module)
+		case v.Evidence.Basis != verdict.BasisSymbolUnreachable:
+			return fmt.Errorf("report: advisory %q carries a scoped verdict with basis %q (a program view rests on reachability)", f.Advisory.ID, v.Evidence.Basis)
 		}
 	}
 	return nil

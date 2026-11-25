@@ -4,6 +4,9 @@ import (
 	"sort"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/internal/intel"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
+	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
 // Band is the advisory prioritization band Intel emits as a scheduling hint. It is a
@@ -50,12 +53,59 @@ const (
 )
 
 // ScheduledAdvisory is the scheduler's INPUT record for one case: the advisory to assess
-// plus its (scheduler-only) band. It exists solely so the admission gate can read band
-// without band ever riding on assessment.VulnRef. The gate consumes it and emits a plain
-// assessment.VulnRef (band dropped) for the pipeline — band never crosses the S1 seam.
+// plus its (scheduler-only) band and signal priority. It exists solely so the admission gate
+// can read them without either ever riding on assessment.VulnRef. The gate consumes it and
+// emits a plain assessment.VulnRef (band and priority dropped) for the pipeline — neither
+// crosses the S1 seam.
 type ScheduledAdvisory struct {
 	Vuln assessment.VulnRef
 	Band Band
+	// carried is set for an advisory the previous run's scan stopped before assessing. It orders
+	// work after the band and ahead of signal priority, and is read only by admitAdvisories.
+	carried bool
+	// priority is the advisory's EPSS/KEV standing among the run's advisories. Zero is "no
+	// signal", which is every advisory when the run has no signals.
+	priority signalPriority
+}
+
+// signalPriority is what the run's EPSS/KEV signals say about one advisory, reduced to the
+// keys the scheduler orders by. It orders work and nothing else (inv. 5): it is built from the
+// signals here, read by admitAdvisories, and dropped before the pipeline sees the advisory.
+type signalPriority struct {
+	kev     bool
+	hasEPSS bool
+	epss    float64
+}
+
+// tier is the coarse rank: KEV-listed first, then an advisory with an EPSS score, then one with
+// no signal.
+func (p signalPriority) tier() int {
+	switch {
+	case p.kev:
+		return 0
+	case p.hasEPSS:
+		return 1
+	default:
+		return 2
+	}
+}
+
+// before reports whether p is assessed ahead of q, over the keys in order. The caller breaks a
+// tie by input position. A further key (severity, once the model carries one) goes after EPSS.
+func (p signalPriority) before(q signalPriority) bool {
+	if p.tier() != q.tier() {
+		return p.tier() < q.tier()
+	}
+	return p.epssKey() > q.epssKey()
+}
+
+// epssKey is the score, or below any score when the record carries none, so a KEV-listed advisory
+// without an EPSS value sorts after the scored ones in its tier and the order stays total.
+func (p signalPriority) epssKey() float64 {
+	if !p.hasEPSS {
+		return -1
+	}
+	return p.epss
 }
 
 // AdmissionResult is the observable outcome of an admission pass: the advisories admitted
@@ -66,6 +116,8 @@ type AdmissionResult struct {
 	Admitted []assessment.VulnRef
 	Deferred []string
 	Skipped  []string
+	// Carried is parallel to Admitted: true for an advisory carried from the previous run.
+	Carried []bool
 }
 
 // admit is the admission gate: it maps a band to a scheduling decision. It is the whole
@@ -91,21 +143,25 @@ func admit(band Band) Admission {
 // returned []assessment.VulnRef — the only thing that reaches assess()/S1 — has no band.
 //
 // Admission is stable-ordered by band rank (immediate before standard before the
-// fail-open default) so a higher band is assessed earlier; ordering is a scheduling
-// effect only and never changes any verdict. With no bands supplied every case is
-// BandUnknown and the order is unchanged (byte-identical to the pre-gate behavior).
+// fail-open default), then by carried-from-the-previous-run, then by signal priority (KEV-listed, then EPSS descending, then no
+// signal), then by input position, so the likeliest-exploited advisories are assessed before
+// a time budget stops the scan; ordering is a scheduling effect only and never changes any
+// verdict. With no bands and no signals supplied every case ties on both and the order is
+// unchanged (byte-identical to the pre-gate behavior).
 func admitAdvisories(scheduled []ScheduledAdvisory) AdmissionResult {
 	type ranked struct {
-		vuln assessment.VulnRef
-		rank int
-		idx  int
+		vuln    assessment.VulnRef
+		rank    int
+		carried bool
+		prio    signalPriority
+		idx     int
 	}
 	var admit0 []ranked
 	var res AdmissionResult
 	for i, s := range scheduled {
 		switch admit(s.Band) {
 		case AdmitNow:
-			admit0 = append(admit0, ranked{vuln: s.Vuln, rank: bandRank(s.Band), idx: i})
+			admit0 = append(admit0, ranked{vuln: s.Vuln, rank: bandRank(s.Band), carried: s.carried, prio: s.priority, idx: i})
 		case AdmitDefer:
 			res.Deferred = append(res.Deferred, s.Vuln.ID)
 		case AdmitSkip:
@@ -116,11 +172,19 @@ func admitAdvisories(scheduled []ScheduledAdvisory) AdmissionResult {
 		if admit0[a].rank != admit0[b].rank {
 			return admit0[a].rank < admit0[b].rank
 		}
+		if admit0[a].carried != admit0[b].carried {
+			return admit0[a].carried
+		}
+		if pa, pb := admit0[a].prio, admit0[b].prio; pa.before(pb) || pb.before(pa) {
+			return pa.before(pb)
+		}
 		return admit0[a].idx < admit0[b].idx
 	})
 	res.Admitted = make([]assessment.VulnRef, 0, len(admit0))
+	res.Carried = make([]bool, 0, len(admit0))
 	for _, r := range admit0 {
 		res.Admitted = append(res.Admitted, r.vuln)
+		res.Carried = append(res.Carried, r.carried)
 	}
 	return res
 }
@@ -145,4 +209,87 @@ func scheduleFor(advisories []assessment.VulnRef, bands map[string]Band) []Sched
 		out = append(out, ScheduledAdvisory{Vuln: v, Band: bands[v.ID]})
 	}
 	return out
+}
+
+// withSignalPriority returns scheduled with each advisory's signal priority set from sig. The
+// lookup is intel's Attribute join over the run's work set and the aliases src lists for it, as
+// rankWith claims them, so an alias join the Report would refuse is no signal here. With no
+// signals every priority stays zero and the order is untouched.
+func withSignalPriority(scheduled []ScheduledAdvisory, sig *intel.Signals, src pipeline.AdvisorySource) []ScheduledAdvisory {
+	if sig == nil {
+		return scheduled
+	}
+	refs := make([]assessment.VulnRef, len(scheduled))
+	for i, s := range scheduled {
+		refs[i] = s.Vuln
+	}
+	prios := signalPriorities(refs, refs, nil, sig, src)
+	for i := range scheduled {
+		scheduled[i].priority = prios[i]
+	}
+	return scheduled
+}
+
+// bySignal returns subjects in assessment order: KEV-listed, then EPSS descending, then no signal,
+// ties in input order. With no signals it returns subjects as they came.
+func bySignal(subjects, workSet []assessment.VulnRef, rows []report.AdvisoryFinding, sig *intel.Signals, src pipeline.AdvisorySource) []assessment.VulnRef {
+	if sig == nil {
+		return subjects
+	}
+	prios := signalPriorities(subjects, workSet, rows, sig, src)
+	order := make([]int, len(subjects))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return prios[order[a]].before(prios[order[b]]) })
+	out := make([]assessment.VulnRef, len(subjects))
+	for i, j := range order {
+		out[i] = subjects[j]
+	}
+	return out
+}
+
+// signalPriorities returns the signal priority of each of subjects, a subset of the run's workSet.
+// The claims the join compares against are rankWith's: the work set's ids and aliases, and the ids
+// and aliases of rows, the Report rows the run carries over.
+func signalPriorities(subjects, workSet []assessment.VulnRef, rows []report.AdvisoryFinding, sig *intel.Signals, src pipeline.AdvisorySource) []signalPriority {
+	out := make([]signalPriority, len(subjects))
+	if sig == nil {
+		return out
+	}
+	claims := new(intel.Claims)
+	aliases := claimWorkSet(claims, workSet, src)
+	for _, f := range rows {
+		claims.Add(f.Advisory.ID, f.Advisory.Aliases...)
+	}
+	for i, v := range subjects {
+		m, ok := sig.Attribute(v.ID, aliases[v.ID], claims)
+		if !ok {
+			continue
+		}
+		out[i] = signalPriority{kev: m.HasKEV && m.KEV.Listed, hasEPSS: m.HasEPSS, epss: m.EPSS.Score}
+	}
+	return out
+}
+
+// withCarried returns scheduled with the carried flag set on each advisory that prior holds a
+// scan_cut_short row for, by ID and source. A cut row whose advisory is not in scheduled sets
+// nothing: a baseline drops it, never retries it. cve-watch has no work set, so it keeps the row
+// as cut.
+func withCarried(scheduled []ScheduledAdvisory, prior *report.Report) []ScheduledAdvisory {
+	cut := map[string]struct{}{}
+	for _, f := range prior.Advisories {
+		if f.UndeterminedReason == report.ReasonScanCutShort {
+			cut[f.Advisory.ID+"\x00"+f.Advisory.Source] = struct{}{}
+		}
+	}
+	if len(cut) == 0 {
+		return scheduled
+	}
+	for i, s := range scheduled {
+		if _, ok := cut[s.Vuln.ID+"\x00"+s.Vuln.Source]; ok {
+			scheduled[i].carried = true
+		}
+	}
+	return scheduled
 }

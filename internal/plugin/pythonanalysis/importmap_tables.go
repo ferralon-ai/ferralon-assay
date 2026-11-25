@@ -16,6 +16,10 @@ const curatedTableDate = "2026-08-10"
 // importBindingTableDate is the RFC 3339 (full-date) date the import-binding rows were taken.
 const importBindingTableDate = "2026-10-12"
 
+// djangoBindingTableDate is the RFC 3339 (full-date) date the Django add-on import-binding rows
+// were taken.
+const djangoBindingTableDate = "2026-11-25"
+
 // CuratedContributions returns the inline curated rows, each with a cited Source + Date (C5).
 // Distribution names are PEP 503-normalized. The result is NOT yet canonicalized; feed it
 // (with the declared/unknown contributions) through NewDistImportMap.
@@ -212,6 +216,69 @@ func CuratedContributions() []Contribution {
 			Provenance:    ProvenanceCurated,
 			Source:        "teams-0.1.0-py3-none-any.whl from pypi.org: RECORD sole top-level package teams/ (has __init__.py); ships the same import package as teams-ai",
 			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "djangorestframework",
+			ImportPackage: "rest_framework",
+			Provenance:    ProvenanceCurated,
+			Source:        "djangorestframework-3.1.2-py2.py3-none-any.whl from pypi.org: RECORD sole top-level package rest_framework/, top_level.txt rest_framework",
+			Date:          djangoBindingTableDate,
+		},
+		{
+			Distribution:  "django-allauth",
+			ImportPackage: "allauth",
+			Provenance:    ProvenanceCurated,
+			Source:        "django-allauth-0.19.1.tar.gz from pypi.org: sole top-level package allauth/ (has __init__.py), egg-info top_level.txt allauth",
+			Date:          djangoBindingTableDate,
+		},
+		{
+			Distribution:  "django-environ",
+			ImportPackage: "environ",
+			Provenance:    ProvenanceCurated,
+			Source:        "django-environ-0.4.0.tar.gz from pypi.org: sole top-level package environ/ (has __init__.py), egg-info top_level.txt environ",
+			Date:          djangoBindingTableDate,
+		},
+		{
+			Distribution:  "django-autocomplete-light",
+			ImportPackage: "dal",
+			Provenance:    ProvenanceCurated,
+			Source:        "django-autocomplete-light-3.1.5.tar.gz from pypi.org: egg-info top_level.txt dal and dal_* packages under src/; dal is the package projects import (from dal import autocomplete)",
+			Date:          djangoBindingTableDate,
+		},
+		{
+			Distribution:  "django-filter",
+			ImportPackage: "django_filters",
+			Provenance:    ProvenanceCurated,
+			Source:        "django_filter-0.10.0-py2.py3-none-any.whl from pypi.org: RECORD sole top-level package django_filters/, top_level.txt django_filters",
+			Date:          djangoBindingTableDate,
+		},
+		{
+			Distribution:  "django-import-export",
+			ImportPackage: "import_export",
+			Provenance:    ProvenanceCurated,
+			Source:        "django-import-export-0.2.7.tar.gz from pypi.org: egg-info top_level.txt import_export and tests; only import_export is mapped, since tests is a name projects commonly use for their own code",
+			Date:          djangoBindingTableDate,
+		},
+		{
+			Distribution:  "django-modeltranslation",
+			ImportPackage: "modeltranslation",
+			Provenance:    ProvenanceCurated,
+			Source:        "django-modeltranslation-0.11.tar.gz from pypi.org: sole top-level package modeltranslation/ (has __init__.py)",
+			Date:          djangoBindingTableDate,
+		},
+		{
+			Distribution:  "django-braces",
+			ImportPackage: "braces",
+			Provenance:    ProvenanceCurated,
+			Source:        "django_braces-1.4.0-py2.py3-none-any.whl from pypi.org: RECORD sole top-level package braces/, top_level.txt braces",
+			Date:          djangoBindingTableDate,
+		},
+		{
+			Distribution:  "django-suit",
+			ImportPackage: "suit",
+			Provenance:    ProvenanceCurated,
+			Source:        "django-suit-0.2.18.tar.gz from pypi.org: sole top-level package suit/ (has __init__.py), egg-info top_level.txt suit",
+			Date:          djangoBindingTableDate,
 		},
 		// azure and botframework are PEP 420 namespaces shared by several distributions, so
 		// each row names the package its wheel ships; distsFor takes the longest one on an

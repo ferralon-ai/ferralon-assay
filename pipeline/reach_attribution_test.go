@@ -42,6 +42,7 @@ func TestCountedReachPaths(t *testing.T) {
 		packages  []map[string]any
 		toolchain *ToolchainFact
 		untrusted bool
+		disputed  bool
 		paths     []plugin.ReachPath
 		want      []string
 	}{
@@ -60,6 +61,15 @@ func TestCountedReachPaths(t *testing.T) {
 			packages: []map[string]any{xnet, stdlib},
 			paths:    []plugin.ReachPath{reachTo("net/http", "Get")},
 			want:     nil,
+		},
+		{
+			name:     "path into the fixed toolchain is kept on a disputed row",
+			selected: "golang.org/x/net",
+			present:  []map[string]any{stdlibAt(true, "go1.26.7")},
+			packages: []map[string]any{xnet, stdlib},
+			disputed: true,
+			paths:    []plugin.ReachPath{reachTo("net/http", "Get")},
+			want:     []string{"Get"},
 		},
 		{
 			name:     "path into an affected toolchain is kept",
@@ -230,6 +240,9 @@ func TestCountedReachPaths(t *testing.T) {
 				delete(adv, "trust_tier")
 			}
 			putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, adv)
+			if tt.disputed {
+				putJSON(t, store, caseID, artifact.TypeDiscovery, DisqualResult{Reason: ReasonInsufficient, RangeDisputed: "govulncheck's database matches"})
+			}
 
 			a, ok := readReachAttribution(store, caseID)
 			if !ok {

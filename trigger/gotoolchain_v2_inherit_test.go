@@ -161,9 +161,9 @@ func TestReanalyze_FreshUndeterminedReplacesAStaleInheritedVerdict(t *testing.T)
 }
 
 // TestEarnestRun_FreshUndeterminedReplacesAStaleInheritedVerdict is the same property on the
-// CVE-watch path, which merges over the PRIOR report rather than a baseline and takes its package
-// from the OSV query rather than from the pipeline. That second difference matters: the OSV package
-// must not end up on a toolchain row, or the SBOM coordinate the guard removed comes back.
+// CVE-watch path, which merges over the PRIOR report rather than a baseline and is handed the OSV
+// query's package. That package must not end up on a toolchain row, or the SBOM coordinate the
+// guard removed comes back.
 func TestEarnestRun_FreshUndeterminedReplacesAStaleInheritedVerdict(t *testing.T) {
 	buildDir := writeGoMod(t, "module example.com/target\n\ngo 1.20\n")
 	pkg := report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.17.0"}

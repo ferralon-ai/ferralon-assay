@@ -41,7 +41,7 @@ import (
 // config in the tree is read when it sets only that tool's settings (toolConfigClean). unrecognised is where a file the rule does not read as a surface runs an
 // installer (scriptsurface.Veto.Unrecognised), or "".
 func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string, inactive []scriptsurface.Site, configNamed bool) {
-	return scanSurfaces(root, nil)
+	return scanSurfaces(root, nil, nil)
 }
 
 // scriptRun is a pip install a script surface runs: one the rule withholds, from a surface it
@@ -62,8 +62,10 @@ type runFile struct {
 }
 
 // scanSurfaces is versionSurfaces, and when runs is not nil it also records there every pip
-// install the script surfaces run that names what it installs (scriptRun).
-func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string, inactive []scriptsurface.Site, configNamed bool) {
+// install the script surfaces run that names what it installs (scriptRun). When unreadAt is not
+// nil it records there the first surface the walk could not read in full, relative to root and
+// slash-separated, or leaves it empty when every walked surface was read.
+func scanSurfaces(root string, runs *[]scriptRun, unreadAt *string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string, inactive []scriptsurface.Site, configNamed bool) {
 	// A tox.ini whose deps toxDeps reads in full is a manifest here too (parseToxDeps).
 	manifests, walked := walkManifests(root, func(path string) bool {
 		return isManifest(filepath.Base(path)) || toxDepsRead(path)
@@ -162,9 +164,15 @@ func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, s
 	for _, c := range buildtree.Candidates(root, match, veto.FullyRead) {
 		if !c.FullyRead {
 			unread = true
+			if unreadAt != nil && *unreadAt == "" {
+				*unreadAt = relSlash(root, c.Path)
+			}
 		}
 	}
 	scriptWithheld = veto.Withheld() || mypyInstalls
+	if at := veto.WithheldAt(); unreadAt != nil && *unreadAt == "" && at != "" {
+		*unreadAt = relSlash(root, at)
+	}
 	if len(order.tools) > 0 && !scriptWithheld {
 		if keep, ok := order.pins(installs); ok {
 			for n := range order.withheld(keep) {
@@ -172,6 +180,9 @@ func scanSurfaces(root string, runs *[]scriptRun) (manifests []string, unread, s
 			}
 		} else {
 			scriptWithheld = true
+			if unreadAt != nil && *unreadAt == "" && len(order.toolRuns) > 0 {
+				*unreadAt = relSlash(root, order.toolRuns[0].surface)
+			}
 		}
 	}
 	if rec != nil {

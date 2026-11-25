@@ -39,16 +39,20 @@ func TestResultPerModule(t *testing.T) {
 		beside   []string
 		extra    map[string]string
 		scoped   bool
+		withheld string // the limit a withheld module brings to the result, when one is
 	}{
-		{"one module", []vulnFinding{at(a, "")}, map[string][]string{a: {"Bad"}}, "pkg:golang/" + a, nil, nil, false},
-		{"two modules, path order", []vulnFinding{at(b, ""), at(a, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false},
+		{"one module", []vulnFinding{at(a, "")}, map[string][]string{a: {"Bad"}}, "pkg:golang/" + a, nil, nil, false, ""},
+		{"two modules, path order", []vulnFinding{at(b, ""), at(a, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false, ""},
 		{"two modules, another platform's file calls the second", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b},
-			map[string]string{"main_windows.go": "package main\n\nimport \"example.com/bmod\"\n\nfunc init() { bmod.Bad() }\n"}, true},
-		{"two modules, a linkname file of another platform calls the second", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil,
-			map[string]string{"main_windows.go": "package main\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/bmod\"\n)\n\n//go:linkname x example.com/bmod.Bad\nfunc x()\n\nfunc init() { bmod.Bad(); x() }\n"}, false},
-		{"two modules, only the second's package imported", []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: a, Version: "v0.0.0"}}}, at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false},
-		{"two modules, a symbol finding in the first", []vulnFinding{at(a, "Bad"), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false},
-		{"two modules, a symbol finding in the second", []vulnFinding{at(a, ""), at(b, "Bad")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false},
+			map[string]string{"main_windows.go": "package main\n\nimport \"example.com/bmod\"\n\nfunc init() { bmod.Bad() }\n"}, true, ""},
+		// The linkname binds the second module, so it withholds that module's refutation alone.
+		{"two modules, a linkname file of another platform calls the second", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, nil,
+			map[string]string{"main_windows.go": "package main\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/bmod\"\n)\n\n//go:linkname x example.com/bmod.Bad\nfunc x()\n\nfunc init() { bmod.Bad(); x() }\n"}, false, plugin.PartialReasonExcludedFilesLinkname},
+		{"two modules, a linkname file of another platform binds the first", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", []string{"pkg:golang/" + b},
+			map[string]string{"main_windows.go": "package main\n\nimport (\n\t_ \"unsafe\"\n\n\t_ \"example.com/amod\"\n)\n\n//go:linkname x example.com/amod.Bad\nfunc x()\n\nfunc init() { x() }\n"}, false, plugin.PartialReasonExcludedFilesLinkname},
+		{"two modules, only the second's package imported", []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: a, Version: "v0.0.0"}}}, at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false, ""},
+		{"two modules, a symbol finding in the first", []vulnFinding{at(a, "Bad"), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false, ""},
+		{"two modules, a symbol finding in the second", []vulnFinding{at(a, ""), at(b, "Bad")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -92,6 +96,9 @@ func TestResultPerModule(t *testing.T) {
 					t.Errorf("the first module's refutation says its package is imported = %v, want %v (detail %q)", imported, want, res.Refutation.Detail)
 				}
 			}
+			if tt.withheld != "" && (!slices.Contains(res.Partiality.Reasons, tt.withheld) || res.Partiality.Complete) {
+				t.Errorf("result does not declare %s: %+v", tt.withheld, res.Partiality)
+			}
 			const scope = plugin.PartialReasonExcludedFilesBuildConstraint
 			if declared := slices.Contains(res.Partiality.Reasons, scope); declared != tt.scoped || declared && res.Partiality.Complete {
 				t.Errorf("result declares %s = %v (complete %v), want %v: %+v", scope, declared, res.Partiality.Complete, tt.scoped, res.Partiality)
@@ -104,7 +111,8 @@ func TestResultPerModule(t *testing.T) {
 }
 
 // TestStatePluginScope_OtherModules: beside plugin_load:cgo_off every refutation the result holds
-// states the cgo scope, the first module's or not, and the input's list is left as it was.
+// states the cgo scope, the first module's or not, and each of the program view's too, so a binary-scoped
+// refutation is never less qualified than the library's; the input's list and view are left as they were.
 func TestStatePluginScope_OtherModules(t *testing.T) {
 	other := []plugin.Refutation{
 		{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/b", Detail: "no call path"},
@@ -124,7 +132,9 @@ func TestStatePluginScope_OtherModules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			in := plugin.ReachabilityResult{Partiality: plugin.Partial(tc.reasons...), Refutation: tc.first, Refutations: slices.Clone(other)}
+			view := &plugin.ProgramView{Module: "example.com/m", Binaries: []string{"."}, Refutation: plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/a", Detail: "no call path"},
+				Refutations: []plugin.Refutation{{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/b", Detail: "no call path"}}}
+			in := plugin.ReachabilityResult{Partiality: plugin.Partial(tc.reasons...), Refutation: tc.first, Refutations: slices.Clone(other), ProgramView: view}
 			if tc.reasons == nil {
 				in.Partiality = plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonCgoFilesDropped, Package: "pkg:golang/example.com/cgomod"}}}
 			}
@@ -138,6 +148,15 @@ func TestStatePluginScope_OtherModules(t *testing.T) {
 			}
 			if !reflect.DeepEqual(in.Refutations, other) {
 				t.Error("the input refutations were changed in place")
+			}
+			if got.ProgramView == nil || got.ProgramView.Refutation.Detail != tc.want[0] {
+				t.Errorf("program view = %+v, want its detail %q", got.ProgramView, tc.want[0])
+			}
+			if len(got.ProgramView.Refutations) != 1 || got.ProgramView.Refutations[0].Detail != tc.want[0] {
+				t.Errorf("program view refutations = %+v, want each detail %q", got.ProgramView.Refutations, tc.want[0])
+			}
+			if view.Refutation.Detail != "no call path" || view.Refutations[0].Detail != "no call path" {
+				t.Error("the input program view was changed in place")
 			}
 			if (got.Refutation == nil) != (tc.first == nil) {
 				t.Errorf("first refutation = %+v, want nil: %v", got.Refutation, tc.first == nil)

@@ -237,6 +237,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	b.AddPartiality(req.WorkSetLimits...)
 	// The inherited refutations' assumptions rest on the baseline's entry points.
 	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
+	b.WithEntryRoots(baseline.Entrypoints...)
 	b.WithProvenance(withSignals(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
 		AnalyzerVersion: analyzerOr(req.AnalyzerVersion),
@@ -317,10 +318,11 @@ func unrowedAdvisories(baseline *report.Report, advisories []assessment.VulnRef)
 // assessments run under req.Analysis, as the slow path's do: an advisory the scan stopped
 // before assessing gets a scan_cut_short row, and cause is that stop (ownStop), "" when the
 // pass cut none.
-func assessUnrowed(ctx context.Context, req PRInheritRequest, advisories []assessment.VulnRef) (findings []report.AdvisoryFinding, notes []report.PartialityNote, cause string) {
+func assessUnrowed(ctx context.Context, req PRInheritRequest, baseline *report.Report, advisories []assessment.VulnRef) (findings []report.AdvisoryFinding, notes []report.PartialityNote, cause string) {
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
+	advisories = bySignal(advisories, req.Advisories, baseline.Advisories, req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...))
 	passes := newAdvisoryPasses(analysis, requestsFor(advisories, req.Codebase), assessOpts)
 	defer passes.close()
 	for i, adv := range advisories {
@@ -375,15 +377,17 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	freshIDs := make(map[string]struct{})
 	var notes []report.PartialityNote
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
+	var entryRecords []plugin.EntryRootRecord
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	// The baseline's rows were reached under its entry-point statement; under another they are
 	// assessed again, not inherited.
 	entryChanged := restated(baseline, req.AssessOptions)
 	cut := 0
-	passes := newAdvisoryPasses(analysis, requestsFor(req.Advisories, req.Codebase), assessOpts)
+	advisories := bySignal(req.Advisories, req.Advisories, baseline.Advisories, req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...))
+	passes := newAdvisoryPasses(analysis, requestsFor(advisories, req.Codebase), assessOpts)
 	defer passes.close()
-	for i, adv := range req.Advisories {
+	for i, adv := range advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
@@ -405,6 +409,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		// commonest limit (no manifest) is itself why pkg comes back nil.
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
+		entryRecords = append(entryRecords, entryRoots(st, assessmentID)...)
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		// An undetermined toolchain advisory is keyed in like any other fresh finding, so it
@@ -471,7 +476,9 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// The head's entry points for each ecosystem this pass resolved them on, else the baseline's,
 	// which the inherited refutations rest on.
 	b.WithLibraryEntrypoints(entrypoints...)
+	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, baseline.LibraryEntrypoints)...)
 	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
+	b.WithEntryRoots(baseline.Entrypoints...)
 	b.AddPartiality(req.WorkSetLimits...)
 	if note, ok := recountCutShort(rows, baseline.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
@@ -557,8 +564,17 @@ func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *repo
 
 // restated reports whether the run states a go library entry-point statement other than the one the
 // stored Report's refutations rest on, so the rows it holds were reached under another one. A Report
-// that records no golang set is read as auto: the lane records its set whenever a refutation exists.
+// that records no golang set is read as auto: the lane records library_entrypoints only on an
+// assessment that judged a refutation, so a baseline of path-only or cgo-unresolved rows holds none
+// (its entrypoints[] record is not read: those rows do not rest on the statement).
 // A recorded statement that does not parse counts as another.
+//
+// The js lane's statement is compared the same way, from the js record of entrypoints[]: every js
+// assessment records its statement (a JavaScript refutation is judged against the override, so the
+// record is the statement the rows rest on, whether or not an override removed anything). A report
+// with no js record reads as auto. A scan of another language states the default for js, so a
+// stored js record that removed something reads as restated: the rows were reached under a removal
+// this run does not state.
 func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
 	was := plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}
 	for _, r := range stored.LibraryEntrypoints {
@@ -570,7 +586,29 @@ func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
 			return true
 		}
 	}
-	return !pipeline.SameLibraryStatement(was, pipeline.LibraryStatementOf(opts...))
+	if !pipeline.SameLibraryStatement(was, pipeline.LibraryStatementOf(opts...)) {
+		return true
+	}
+	return jsRestated(stored, opts)
+}
+
+// jsRestated reports whether the run states a js entry-point override other than the one the stored
+// Report's js record was resolved from.
+func jsRestated(stored *report.Report, opts []pipeline.AssessOption) bool {
+	var was *plugin.EntryOverride
+	for _, r := range stored.Entrypoints {
+		if r.Lane != plugin.EntryLaneJS {
+			continue
+		}
+		parsed, err := plugin.ParseEntryOverrides(r.Input)
+		if err != nil {
+			return true
+		}
+		if o, ok := parsed[plugin.EntryLaneJS]; ok {
+			was = &o
+		}
+	}
+	return !plugin.SameEntryOverride(was, pipeline.JSStatementOf(opts...))
 }
 
 // restatedRetry is the stored rows a cve-watch run assesses again because the entry-point statement
@@ -604,6 +642,22 @@ func canonicalKey(ecosystem, name string) string {
 	return ecosystem + "\x00" + name
 }
 
+// cutOnlyKeys is the keys, advisory ID and source, under which prior holds a scan_cut_short row and
+// no other row. A key that also holds a completed row is a sibling instance's, which a completed
+// parent already fanned out.
+func cutOnlyKeys(prior *report.Report) map[string]bool {
+	out := map[string]bool{}
+	for _, f := range prior.Advisories {
+		key := f.Advisory.ID + "\x00" + f.Advisory.Source
+		if f.UndeterminedReason != report.ReasonScanCutShort {
+			out[key] = false
+		} else if _, ok := out[key]; !ok {
+			out[key] = true
+		}
+	}
+	return out
+}
+
 // osvSource is the advisory source a cve-watch run assesses OSV's newly-relevant advisories under.
 const osvSource = "osv"
 
@@ -633,6 +687,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// both claim, and so do the prior rows it inherits.
 	workSet := append([]assessment.VulnRef(nil), req.Advisories...)
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
+	var entryRecords []plugin.EntryRootRecord
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
@@ -641,20 +696,28 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	undetermined := map[string]bool{}
 	// What is assessed, in order: the newly-relevant advisories, then each stored row to retry that
 	// no earlier assessment already keys.
+	// Every row is labelled with the instance its assessment adjudicated, as a baseline's is: not the
+	// OSV query's package, which can be another instance of the advisory, and not a stored row's,
+	// which cannot say which of a key's rows is that instance.
 	type watched struct {
 		ref assessment.VulnRef
-		pkg *report.Package
 		key string
+		// fan assesses the sibling instances a baseline assesses with the advisory: a newly-relevant
+		// advisory, or a stored scan_cut_short row whose key holds only cut rows.
+		fan bool
 	}
 	var todo []watched
+	cutKeys := cutOnlyKeys(prior)
 	keyed := map[string]struct{}{}
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
 			continue
 		}
-		pkg := a.Package
 		key := a.ID + "\x00" + osvSource
-		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, &pkg, key})
+		if _, ok := keyed[key]; ok {
+			continue
+		}
+		todo = append(todo, watched{assessment.VulnRef{ID: a.ID, Source: osvSource}, key, true})
 		keyed[key] = struct{}{}
 	}
 	for _, f := range retry {
@@ -662,20 +725,51 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if _, ok := keyed[key]; ok {
 			continue
 		}
-		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, f.Package, key})
+		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, key, cutKeys[key]})
 		keyed[key] = struct{}{}
 	}
+	// Most likely exploited first, so a stop reaches the least likely last. A stable sort: with no
+	// signals todo keeps the order above.
+	refs := make([]assessment.VulnRef, len(todo))
+	for i, w := range todo {
+		refs[i] = w.ref
+	}
+	prios := signalPriorities(refs, append(slices.Clone(req.Advisories), refs...), prior.Advisories, req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...))
+	order := make([]int, len(todo))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return prios[order[a]].before(prios[order[b]]) })
+	sorted := make([]watched, len(todo))
+	for i, j := range order {
+		sorted[i] = todo[j]
+	}
+	todo = sorted
 	reqs := make([]assessment.Request, len(todo))
 	for i, w := range todo {
 		reqs[i] = assessment.Request{Vulnerability: w.ref, Codebase: req.Codebase}
 	}
 	passes := newAdvisoryPasses(analysis, reqs, assessOpts)
 	defer passes.close()
+	invNotes := inventoryLimits(prior.Partiality)
+	mods := goModulesOf(prior.SBOM, invNotes)
+	// siblings are the rows for the other instances of an assessed advisory, whether a retried
+	// cut row or a new one; they key under the parent's key, so they are appended beside the rows
+	// the parent replaces.
+	var siblings []report.AdvisoryFinding
+	// adjudicated is the instance an assessment's first pass selected, known even when its analysis
+	// then stopped or failed.
+	adjudicated := map[string]*report.Package{}
+	// fannedOut is each key whose sibling-instance pass ran, so its rows stand for every instance.
+	fannedOut := map[string]bool{}
 	// assess assesses todo[i] and keys the finding under its key, the row it replaces.
 	assess := func(i int) {
-		ref, pkg, key := todo[i].ref, todo[i].pkg, todo[i].key
+		ref, key := todo[i].ref, todo[i].key
 		areq := reqs[i]
 		workSet = append(workSet, ref)
+		if sst, sid := passes.settledStore(i); sst != nil {
+			_, adjudicated[key] = advisoryFromArtifacts(sst, sid, areq, prior.SBOM.Packages)
+		}
 		st, assessmentID, stopped, err := passes.assess(i)
 		if stopped {
 			reFindings[key] = cutShortFinding(ref)
@@ -693,14 +787,10 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
-		advisory, tcPkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality), pipeline.AdvisoryPackagePURLs(st, assessmentID))
+		entryRecords = append(entryRecords, entryRoots(st, assessmentID)...)
+		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
-			// The toolchain is not an SBOM dependency, so the undetermined row takes the
-			// package advisoryFromArtifacts adjudicated (nil for a toolchain subject) rather
-			// than the OSV query's package — pairing the advisory's top-level module with a
-			// go1.x.y toolchain release would emit a coordinate that does not exist.
-			f.Package = tcPkg
 			notes = append(notes, note)
 		}
 		reFindings[key] = f
@@ -709,6 +799,20 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		packages[advisory.ID] = append(packages[advisory.ID], assessedPackages(st, assessmentID, f.Package)...)
 		if f.Verdict == report.VerdictUndetermined {
 			undetermined[advisory.ID] = true
+		}
+		if todo[i].fan {
+			fannedOut[key] = true
+			sibs, sibNotes := siblingInstanceFindings(analysis, areq, st, assessmentID, assessOpts, prior.SBOM.Packages, mods, invNotes)
+			for _, sf := range sibs {
+				if sf.UndeterminedReason == report.ReasonScanCutShort {
+					cut++
+				}
+				if sf.Verdict == report.VerdictUndetermined {
+					undetermined[advisory.ID] = true
+				}
+			}
+			siblings = append(siblings, sibs...)
+			notes = append(notes, sibNotes...)
 		}
 	}
 	for i := range todo {
@@ -727,23 +831,111 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.SetRelationships(prior.SBOM.Relationships)
 	b.SetGoBuildList(prior.SBOM)
 
+	// A fresh row replaces the prior rows of its own instance. Under a retried cut row's key, which
+	// holds only cut rows, that is all of them (the parent's and its siblings', which siblings
+	// re-assesses), and under a newly-relevant advisory's key once its sibling pass ran.
+	// Under any other key the retry names the instance by its package (the one its first pass
+	// adjudicated, or the fresh row's), and a prior row is the instance's when:
+	//   - it is the key's only row;
+	//   - it names that package;
+	//   - it names none, the retry named a package that no stored row names, and the key's
+	//     package-less rows all record the same thing (a failure is a failure whoever's it is), in
+	//     which case the first is taken. A parent whose retry stopped or failed leaves a package-less
+	//     row, and a failed or cut sibling is one too, so package-less rows that differ cannot say
+	//     whose is whose;
+	//   - the retry stopped with no package, and the key's one packaged row sits among cut rows.
+	// Every other row stays, a sibling's the run did not reach or one the stored rows cannot tell
+	// from the instance's. A retry that names no package beside a row that does keeps that row, bar
+	// the last rule: a failed sibling stored above its parent looks the same as a failed parent
+	// stored above its sibling. The merge reads no row's position in the stored order.
+	fanned := map[string]bool{}
+	instance := map[string]string{}
+	for _, w := range todo {
+		// A cut-only key's rows all give way, whatever the retry's outcome. A newly-relevant
+		// advisory's do once its sibling pass ran; a parent that stopped or failed before it
+		// replaces only its own row, as a retry's does.
+		fanned[w.key] = cutKeys[w.key] || fannedOut[w.key]
+		instance[w.key] = packageInstance(adjudicated[w.key])
+	}
+	for key, re := range reFindings {
+		if re.Package != nil {
+			instance[key] = packageInstance(re.Package)
+		}
+	}
+	type shape struct {
+		rows, packaged, cuts int
+		// named: a stored row names the key's instance; anyNamed: a stored row names a package.
+		named, anyNamed bool
+		// alike: every package-less row records the same reason, reason; taken: one of them was
+		// taken as the instance's.
+		alike, taken bool
+		reason       string
+		unnamed      int
+	}
+	shapes := map[string]*shape{}
+	freshCut := map[string]bool{}
+	for key, re := range reFindings {
+		freshCut[key] = re.UndeterminedReason == report.ReasonScanCutShort
+	}
+	for _, f := range prior.Advisories {
+		key := f.Advisory.ID + "\x00" + f.Advisory.Source
+		sh := shapes[key]
+		if sh == nil {
+			sh = &shape{}
+			shapes[key] = sh
+		}
+		sh.rows++
+		if f.UndeterminedReason == report.ReasonScanCutShort {
+			sh.cuts++
+		}
+		switch {
+		case f.Package != nil:
+			sh.packaged++
+			sh.anyNamed = true
+			sh.named = sh.named || (instance[key] != "" && packageInstance(f.Package) == instance[key])
+		case sh.unnamed == 0:
+			sh.alike, sh.reason = true, f.UndeterminedReason
+			sh.unnamed++
+		default:
+			sh.alike = sh.alike && f.UndeterminedReason == sh.reason
+			sh.unnamed++
+		}
+	}
+	theirs := func(f report.AdvisoryFinding, key string) bool {
+		sh, known := shapes[key], instance[key] != ""
+		switch {
+		case sh.rows == 1:
+			return true
+		case f.Package != nil && known:
+			return packageInstance(f.Package) == instance[key]
+		case f.Package != nil:
+			// A retry that stopped with no package, beside one row naming a package and otherwise
+			// cut rows: the packaged row is taken as the parent's. Were it a sibling's, the key
+			// returns to cut-only and the next run reassesses it.
+			return freshCut[key] && sh.packaged == 1 && sh.cuts == sh.rows-1
+		case !sh.alike || sh.taken || (known && sh.named) || (!known && sh.anyNamed):
+			return false
+		}
+		sh.taken = true
+		return true
+	}
 	var rows []report.AdvisoryFinding
-	for i := range prior.Advisories {
-		f := prior.Advisories[i]
+	for _, f := range prior.Advisories {
 		if supersededByFresh(f, freshIDs) {
 			continue
 		}
 		key := f.Advisory.ID + "\x00" + f.Advisory.Source
-		if re, ok := reFindings[key]; ok {
-			rows = append(rows, re)
-			delete(reFindings, key)
+		if _, ok := reFindings[key]; ok && (fanned[key] || theirs(f, key)) {
 			continue
 		}
 		rows = append(rows, f)
 	}
-	for _, re := range reFindings {
-		rows = append(rows, re)
+	for _, w := range todo {
+		if re, ok := reFindings[w.key]; ok {
+			rows = append(rows, re)
+		}
 	}
+	rows = append(rows, siblings...)
 	for _, f := range rows {
 		b.AddFinding(f)
 	}
@@ -755,7 +947,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.AddPartiality(withoutCutShortCount(prior.Partiality)...)
 	b.AddPartiality(notes...)
 	b.WithLibraryEntrypoints(entrypoints...)
+	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, prior.LibraryEntrypoints)...)
 	b.WithLibraryEntrypoints(prior.LibraryEntrypoints...)
+	b.WithEntryRoots(prior.Entrypoints...)
 	if note, ok := recountCutShort(rows, prior.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
 	}
@@ -781,6 +975,15 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		return nil, DependencyFetchRun{}, err
 	}
 	return &rep, DependencyFetchRun{Assessed: sortedAdvisories(assessed), Packages: packages, Undetermined: undetermined}, nil
+}
+
+// packageInstance identifies the package instance a row concerns: ecosystem, name and version, empty
+// for a row that names none.
+func packageInstance(p *report.Package) string {
+	if p == nil {
+		return ""
+	}
+	return p.Ecosystem + "\x00" + p.Name + "\x00" + p.Version
 }
 
 // assessedPackages names every package an assessment concerns, as DependencyFetchRun.Packages

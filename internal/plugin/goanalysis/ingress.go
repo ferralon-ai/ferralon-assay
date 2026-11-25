@@ -228,6 +228,7 @@ type route struct {
 func (s *ssaProgram) discoverRoutes() []route {
 	var routes []route
 	prefixes := newPrefixResolver(s)
+	handlers := newHandlerResolver(s)
 	for fn := range ssautil.AllFunctions(s.prog) {
 		for _, b := range fn.Blocks {
 			for _, instr := range b.Instrs {
@@ -237,7 +238,7 @@ func (s *ssaProgram) discoverRoutes() []route {
 				}
 				common := call.Common()
 				if router, name, recv, args := pathRegistrar(common); router != nil {
-					routes = append(routes, s.pathRoutes(prefixes, router, name, recv, args)...)
+					routes = append(routes, s.pathRoutes(prefixes, handlers, router, name, recv, args)...)
 					continue
 				}
 				if rs := s.frameworkRoutes(fn, common); len(rs) > 0 {
@@ -290,7 +291,7 @@ func (s *ssaProgram) discoverRoutes() []route {
 // (report.ClassifyPartialityReason), which turns each no-path advisory on the service
 // undetermined (trigger's analysisDidNotRun) — a claim the analysis did not run that
 // is false here.
-func (s *ssaProgram) pathRoutes(prefixes *prefixResolver, r *pathRouter, name string, recv ssa.Value, args []ssa.Value) []route {
+func (s *ssaProgram) pathRoutes(prefixes *prefixResolver, handlers *handlerResolver, r *pathRouter, name string, recv ssa.Value, args []ssa.Value) []route {
 	selectors := []string{""}
 	switch {
 	case r.catchAll[name]:
@@ -323,7 +324,7 @@ func (s *ssaProgram) pathRoutes(prefixes *prefixResolver, r *pathRouter, name st
 		}
 	}
 	var routes []route
-	for _, h := range s.collectHandlers(args, func(v ssa.Value) *ssa.Function { return s.routerHandler(r, v) }) {
+	for _, h := range s.collectHandlers(args, func(v ssa.Value) *ssa.Function { return s.routerHandler(handlers, r, v) }) {
 		for _, sel := range selectors {
 			routes = append(routes, route{selector: sel, symbol: h})
 		}
@@ -606,9 +607,10 @@ func pathRegistrar(common *ssa.CallCommon) (r *pathRouter, name string, recv ssa
 	return r, name, recv, args
 }
 
-// routerHandler is staticHandler plus two shapes a pathRouter registrar takes. A
-// call to one of the router package's own wrappers (gin.WrapF / gin.WrapH,
-// echo.WrapHandler) resolves to the handler it wraps. And an http.Handler (chi's
+// routerHandler is staticHandler, extended to a handler bound through a package var,
+// a struct field or a first-party factory (handlerResolver), plus two shapes a
+// pathRouter registrar takes. A call to one of the router package's own wrappers
+// (gin.WrapF / gin.WrapH, echo.WrapHandler) resolves to the handler it wraps. And an http.Handler (chi's
 // Handle, Method and Mount, the value gin.WrapH and echo.WrapHandler take): a concrete
 // value boxed into the interface contributes its ServeHTTP method. A router mounted as
 // a sub-router (a chi Mux, a gin Engine, an echo Echo), or an adapter handler type (an
@@ -616,8 +618,8 @@ func pathRegistrar(common *ssa.CallCommon) (r *pathRouter, name string, recv ssa
 // are the ingresses, and the adapter's ServeHTTP is no first-party handler. The
 // adapter package is the one declaring the http.Handler interface the value is boxed
 // into — net/http in real code, named explicitly as well.
-func (s *ssaProgram) routerHandler(r *pathRouter, v ssa.Value) *ssa.Function {
-	if fn := staticHandler(v); fn != nil {
+func (s *ssaProgram) routerHandler(handlers *handlerResolver, r *pathRouter, v ssa.Value) *ssa.Function {
+	if fn := handlers.handler(v); fn != nil {
 		return fn
 	}
 	if call, ok := v.(*ssa.Call); ok {
@@ -626,7 +628,7 @@ func (s *ssaProgram) routerHandler(r *pathRouter, v ssa.Value) *ssa.Function {
 			len(call.Call.Args) != 1 {
 			return nil
 		}
-		return s.routerHandler(r, call.Call.Args[0])
+		return s.routerHandler(handlers, r, call.Call.Args[0])
 	}
 	mi, ok := v.(*ssa.MakeInterface)
 	if !ok {

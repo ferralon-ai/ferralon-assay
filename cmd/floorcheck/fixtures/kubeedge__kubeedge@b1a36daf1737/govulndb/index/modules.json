@@ -1,0 +1,22 @@
+[
+  {
+    "path": "github.com/gorilla/websocket",
+    "vulns": [
+      {
+        "id": "GO-2026-6278",
+        "modified": "2026-11-23T20:03:32Z",
+        "fixed": "1.5.4-0.20240701034025-d67f41855da4"
+      }
+    ]
+  },
+  {
+    "path": "oras.land/oras-go/v2",
+    "vulns": [
+      {
+        "id": "GO-2026-6499",
+        "modified": "2026-10-01T20:23:52Z",
+        "fixed": "2.6.2"
+      }
+    ]
+  }
+]

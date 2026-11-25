@@ -10,9 +10,12 @@ import (
 // resultPerModule is resultFromGraph for an advisory govulncheck matched to several of the build's
 // modules. resultFromGraph refutes the first module in path order. Each other module is then judged
 // the same way on its own findings, and a refutation that survives every withhold joins
-// Refutations. A module whose refutation is withheld is absent from it. A refutation kept for the
+// Refutations. A module whose refutation is withheld is absent from it, and the result declares
+// what withheld it. A refutation kept for the
 // scanned platform alone brings its excluded_files:build_constraint limit to the result, so the scan
-// still discloses it; everything else the result declares is the first module's judgement.
+// still discloses it; everything else the result declares is the first module's judgement. The
+// program view runs once, in the first module's call, over every module the findings name
+// (programView); the other modules are judged by the library view alone.
 func resultPerModule(ctx context.Context, scanned vulnScan, g reconcileGraph, buildDir string, env []string, load func() (*LoadResult, error), entry plugin.LibraryEntrypoints) (plugin.ReachabilityResult, error) {
 	res, err := resultFromGraph(ctx, scanned, g, buildDir, env, load, entry)
 	if err != nil {
@@ -28,11 +31,19 @@ func resultPerModule(ctx context.Context, scanned vulnScan, g reconcileGraph, bu
 		one.findings = slices.DeleteFunc(slices.Clone(scanned.findings), func(f vulnFinding) bool {
 			return len(f.Trace) == 0 || f.Trace[0].Module != module
 		})
-		other, err := resultFromGraph(ctx, one, g, buildDir, env, load, entry)
+		other, _, err := libraryView(ctx, one, g, buildDir, env, load, entry)
 		if err != nil {
 			return plugin.ReachabilityResult{}, err
 		}
 		if other.Refutation == nil {
+			// The module's refutation is withheld: what withheld it holds every row of the advisory,
+			// so the result declares it.
+			for _, r := range other.Partiality.Reasons {
+				if !slices.Contains(res.Partiality.Reasons, r) {
+					res.Partiality.Complete = false
+					res.Partiality.Reasons = append(slices.Clone(res.Partiality.Reasons), r)
+				}
+			}
 			continue
 		}
 		res.Refutations = append(res.Refutations, *other.Refutation)

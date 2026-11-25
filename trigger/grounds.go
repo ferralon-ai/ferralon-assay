@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -44,6 +45,14 @@ import (
 func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) (detail, reason string, basis verdict.NonExploitableBasis, assumptions []string, ok bool) {
 	admitted, label, ok := admittedPackage(store, assessmentID, pkg)
 	if !ok {
+		if pkg == nil && ownReleaseUnversioned(store, assessmentID) {
+			return "", report.ReasonOwnReleaseVersionUnknown, "", nil, false
+		}
+		if r, replaced := moduleReplacement(store, assessmentID, pkg); replaced {
+			if detail, basis, assumptions, ok := replacedGrounds(store, assessmentID, mods, r); ok {
+				return detail, "", basis, assumptions, true
+			}
+		}
 		return "", report.ReasonPackageVersionUnresolved, "", nil, false
 	}
 	root := pkg != nil && pkg.Root
@@ -102,6 +111,124 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 		return "", report.ReasonAdvisorySymbolAbsent, "", nil, false
 	}
 	return "", report.ReasonVulnerableSymbolUnresolved, "", nil, false
+}
+
+// scopedVerdicts is the not_exploitable the lane's program view grounds for the admitted package, scoped
+// to the build's shipped binaries, or none. It speaks beside a row whose own verdict is the library view
+// and never replaces it; the caller offers it only on a reachable_candidate or a refutation_withheld
+// row. It passes the gate every not_exploitable passes (undeterminedReason): with no reason, or only
+// refutation_withheld, whose limits are the library-entry withholds the view answers. A reachable
+// candidate never reached that gate, so a toolchain axis left undetermined or a did-not-run limit in
+// the footprint holds its scoped verdict back as it would hold a library one. It then takes the same
+// positive grounds as arm B of notExploitableGrounds: the admitted package's version resolved, the
+// advisory names no other package, and the refutation is of the admitted package. The view refutes
+// each module the advisory was matched to: the one of them the row was admitted on grounds it, and
+// the rest count as refuted beside it (standingBeside), here and nowhere else. The detail states
+// each module refuted beside the row, by either view (withRefutedBeside). A path the row
+// records that enters at a binary holds the verdict back for every binary (entersBinary).
+func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) []report.ScopedVerdict {
+	if reason, undetermined := undeterminedReason(store, assessmentID, pkg); undetermined && reason != report.ReasonRefutationWithheld {
+		return nil
+	}
+	reach, _ := reachabilityResult(store, assessmentID)
+	view := reach.ProgramView
+	if view == nil || len(view.Binaries) == 0 || view.Refutation.Package == "" || view.Refutation.Basis != plugin.RefutationAnalyzerSymbolNotReached {
+		return nil
+	}
+	admitted, label, ok := admittedPackage(store, assessmentID, pkg)
+	if !ok {
+		return nil
+	}
+	refuted := append([]plugin.Refutation{view.Refutation}, view.Refutations...)
+	own := slices.IndexFunc(refuted, func(r plugin.Refutation) bool {
+		return r.Package != "" && inAdmitted(r.Package, admitted, pkg != nil && pkg.Root)
+	})
+	if own < 0 || refuted[own].Basis != plugin.RefutationAnalyzerSymbolNotReached {
+		return nil
+	}
+	// The view's refutations of the advisory's other modules stand beside this row's scoped verdict
+	// alone, held back as the library view's are (standingBeside); the row's own verdict never reads them.
+	beside := append(refutedBeside(store, assessmentID, reach), standingBeside(store, assessmentID, slices.Delete(slices.Clone(refuted), own, own+1))...)
+	purls := pipeline.AdvisoryPackagePURLs(store, assessmentID)
+	if namesOtherPackage(purls, admitted, mods, beside) || entersBinary(store, assessmentID, view) {
+		return nil
+	}
+	detail, _, _ := withRefutedBeside(fmt.Sprintf("%s: %s (%s)", label, refuted[own].Detail, refuted[own].Basis),
+		verdict.BasisSymbolUnreachable, nil, purls, admitted, mods, beside)
+	return []report.ScopedVerdict{{
+		Verdict: report.VerdictNotExploitable,
+		Scope:   report.Scope{Kind: report.ScopeBinaries, Targets: slices.Clone(view.Binaries), Module: view.Module},
+		Evidence: report.EvidenceSummary{
+			Basis:  verdict.BasisSymbolUnreachable,
+			Detail: detail,
+		},
+	}}
+}
+
+// entersBinary reports whether a reach or taint path the row records starts in the main package of
+// one of the view's binaries. Such a path, as the call-graph fallback finds when govulncheck gives only
+// module-level evidence, is a call the program view's run from those mains did not see, so that run's
+// silence holds for none of them: one path is recorded per sink, and the next binary may be reached the
+// same way. It fails closed: a path whose entry package cannot be read counts as entering.
+func entersBinary(store artifact.Store, assessmentID string, view *plugin.ProgramView) bool {
+	mains := make(map[string]bool, len(view.Binaries))
+	for _, b := range view.Binaries {
+		mains[path.Join(view.Module, b)] = true
+	}
+	return slices.ContainsFunc(append(reachPaths(store, assessmentID), taintPaths(store, assessmentID)...), func(p plugin.ReachPath) bool {
+		entries := make([]plugin.Symbol, 0, 2)
+		if p.Ingress != (plugin.Symbol{}) {
+			entries = append(entries, p.Ingress)
+		}
+		if len(p.Trace) > 0 {
+			entries = append(entries, p.Trace[0])
+		}
+		if len(entries) == 0 {
+			return true
+		}
+		return slices.ContainsFunc(entries, func(s plugin.Symbol) bool {
+			pkg, ok := symbolPackage(s)
+			return !ok || mains[pkg]
+		})
+	})
+}
+
+// symbolPackage is the import path of the package a symbol belongs to. The Go lane records only the
+// SCIP id, so it is read from the id's last field, "<pkgPath>/<descriptor>" (a descriptor holds no
+// slash); Package is used when the lane set it. It refuses an id that does not have that shape,
+// including one whose descriptor holds a '.' before its terminal suffix: Go names hold none, so the
+// descriptor carries package-qualified type text, whose own slashes would put the boundary inside it.
+func symbolPackage(s plugin.Symbol) (string, bool) {
+	if s.Package != "" {
+		return s.Package, true
+	}
+	fields := strings.Fields(s.SCIP)
+	if len(fields) != 5 || fields[0] != "scip-go" || fields[1] != "gomod" {
+		return "", false
+	}
+	slash := strings.LastIndex(fields[4], "/")
+	if slash <= 0 || slash == len(fields[4])-1 {
+		return "", false
+	}
+	if !plainDescriptor(fields[4][slash+1:]) {
+		return "", false
+	}
+	return fields[4][:slash], true
+}
+
+// plainDescriptor reports whether d is a descriptor the Go lane emits for a named object: a name, or
+// "<recv>#<name>", ending in its terminal suffix ("().", "#" or "."), with no '.' before that suffix.
+func plainDescriptor(d string) bool {
+	var core string
+	switch {
+	case strings.HasSuffix(d, "()."):
+		core = strings.TrimSuffix(d, "().")
+	case strings.HasSuffix(d, "#"), strings.HasSuffix(d, "."):
+		core = d[:len(d)-1]
+	default:
+		return false
+	}
+	return core != "" && !strings.Contains(core, ".")
 }
 
 // vettedSymbols reports whether the advisory's symbol set is complete enough for an absence of the
@@ -240,16 +367,30 @@ type goModules map[string]bool
 // and that errs only toward "in the build", which keeps an advisory blocking. A narrower source,
 // such as the packages a build actually loads, would err toward collapsing; it qualifies only if
 // it is the build's complete package set.
+//
+// Any Go or scan-wide limit makes the list unknown, except a nested module whose limit names it and
+// everything its go.mod requires (boundedNestedModule). That module is resolved apart from the build,
+// so the build's own list is still whole; its named modules join the list, so an advisory naming one
+// of them counts it as in the build rather than outside it.
 func goModulesOf(sbom report.SBOM, limits []report.PartialityNote) goModules {
 	if sbom.GoBuildList != plugin.BuildListGoModGraph || sbom.GoMainModule == "" {
 		return nil
 	}
+	var nested []string
 	for _, n := range limits {
-		if n.Ecosystem == "" || n.Ecosystem == "Go" {
+		if n.Ecosystem != "" && n.Ecosystem != "Go" {
+			continue
+		}
+		paths, ok := boundedNestedModule(n)
+		if !ok {
 			return nil
 		}
+		nested = append(nested, paths...)
 	}
 	mods := goModules{sbom.GoMainModule: true}
+	for _, path := range nested {
+		mods[path] = true
+	}
 	for _, path := range sbom.GoWorkspaceModules {
 		mods[path] = true
 	}
@@ -264,6 +405,27 @@ func goModulesOf(sbom report.SBOM, limits []report.PartialityNote) goModules {
 		}
 	}
 	return mods
+}
+
+// boundedNestedModule returns the module paths a Go inventory nested-module limit names, and whether
+// it is bounded. The inventory merges every nested module into one note, with their directories
+// comma-joined in Path, and gives it Targets (each module and every module its go.mod requires) only
+// when every one of them is bounded: no module has a go.mod older than go 1.17 and the walk of the
+// checkout was complete. Empty Targets is therefore the guard: such a note may have missed a module.
+// A target that is not a Go package URL is not bounded either.
+func boundedNestedModule(n report.PartialityNote) ([]string, bool) {
+	if n.Reason != plugin.PartialReasonNestedModule || n.Path == "" || len(n.Targets) == 0 {
+		return nil, false
+	}
+	paths := make([]string, 0, len(n.Targets))
+	for _, t := range n.Targets {
+		path, ok := strings.CutPrefix(t, "pkg:golang/")
+		if !ok || path == "" {
+			return nil, false
+		}
+		paths = append(paths, path)
+	}
+	return paths, true
 }
 
 // holding returns the module that holds an import path: the longest module path that is the path
@@ -491,6 +653,41 @@ func libraryEntrypoints(store artifact.Store, assessmentID string) []plugin.Reso
 		return nil
 	}
 	return []plugin.ResolvedLibraryEntrypoints{*reach.LibraryEntrypoints}
+}
+
+// entryRoots reads the entrypoints[] record the lane resolved for the assessment, none when it
+// resolved none.
+func entryRoots(store artifact.Store, assessmentID string) []plugin.EntryRootRecord {
+	reach, _ := reachabilityResult(store, assessmentID)
+	if reach.EntryRoots == nil {
+		return nil
+	}
+	return []plugin.EntryRootRecord{*reach.EntryRoots}
+}
+
+// headEntryRoots is the head's records less any of a lane whose library set the report keeps from
+// the stored report: that lane's record must come from the report its set does, and a mains record
+// matches any mains set, so a head record offered first would name mains the stored refutations
+// never searched from.
+func headEntryRoots(head []plugin.EntryRootRecord, headSets, storedSets []plugin.ResolvedLibraryEntrypoints) []plugin.EntryRootRecord {
+	lanes := func(sets []plugin.ResolvedLibraryEntrypoints) map[string]bool {
+		m := map[string]bool{}
+		for _, s := range sets {
+			if rec, ok := plugin.EntryRootRecordOf(s); ok {
+				m[rec.Lane] = true
+			}
+		}
+		return m
+	}
+	fresh, stored := lanes(headSets), lanes(storedSets)
+	var out []plugin.EntryRootRecord
+	for _, r := range head {
+		if stored[r.Lane] && !fresh[r.Lane] {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // reachabilityResult reads the reachability stage's result off its artifact.

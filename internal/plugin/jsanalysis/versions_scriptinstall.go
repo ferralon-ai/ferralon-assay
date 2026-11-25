@@ -63,14 +63,16 @@ import (
 //
 // assumed is set when an allowed command is a bare install that the rule cannot show installs
 // exactly what a lock read here records (laneAssumesLock): the result then rests on
-// lockAssumption, which the caller discloses.
-func scriptSpec(root string, locks map[string]lockInfo, assumed *bool) scriptsurface.Spec {
+// lockAssumption, which the caller discloses. built is set when an allowed command is an npm
+// install into a build output (laneBuildOutputInstall): the result then rests on
+// buildOutputAssumption, which the caller discloses.
+func scriptSpec(root string, locks map[string]lockInfo, assumed, built *bool) scriptsurface.Spec {
 	return scriptsurface.Spec{
 		Token:    laneToken,
 		Env:      laneEnvRE,
 		EnvKeeps: laneEnvKeeps,
 		Allowed: func(words []string, b scriptsurface.Binder) bool {
-			return laneAllowed(words, b, root, locks, assumed)
+			return laneAllowed(words, b, root, locks, assumed, built)
 		},
 		ReadOnly:    laneReadOnly,
 		Library:     gitShellLibrary,
@@ -189,12 +191,21 @@ const lockAssumption = "install commands honour the committed lockfile"
 // AnnotationInstallHonoursLock is the reason for lockAssumption on a versions result.
 const AnnotationInstallHonoursLock = plugin.AnnotationAssumptionPrefix + "install_honours_lockfile"
 
+// buildOutputAssumption is the assumption a result rests on when the build runs an npm install
+// into a build output the tree does not hold (laneBuildOutputInstall): that install reads a
+// manifest and lock generated outside the tree, so the committed lockfile's pins standing for it
+// is an assumption about the build tool, not a reading.
+const buildOutputAssumption = "an install into a build output the repository does not hold is assumed to install the versions the committed lockfile pins"
+
+// AnnotationBuildOutputInstall is the reason for buildOutputAssumption on a versions result.
+const AnnotationBuildOutputInstall = plugin.AnnotationAssumptionPrefix + "build_output_install_honours_lockfile"
+
 // laneAllowed reports whether a command holding a package-manager token, already free of
 // expansions and redirects, is one of the allowed forms. A form that installs binds to files
-// read here or sets assumed (laneAssumesLock); a form that only runs a script withholds only
-// when it is told to run somewhere else (--prefix) that is not read here, since every
-// package.json script in the tree is gated where it is written.
-func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[string]lockInfo, assumed *bool) bool {
+// read here or sets assumed (laneAssumesLock) or built (laneBuildOutputInstall); a form that
+// only runs a script withholds only when it is told to run somewhere else (--prefix) that is
+// not read here, since every package.json script in the tree is gated where it is written.
+func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[string]lockInfo, assumed, built *bool) bool {
 	for len(words) > 0 && laneKeptAssignment(words[0]) {
 		words = words[1:]
 	}
@@ -223,7 +234,8 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 				return true
 			}
 			dir, rest, ok := lanePrefix(args)
-			return ok && laneNPMFlagsLoose(rest) && laneAssumesLock(b, dir, root, locks, assumed, lockNPM)
+			return ok && laneNPMFlagsLoose(rest) &&
+				(laneAssumesLock(b, dir, root, locks, assumed, lockNPM) || laneBuildOutputInstall(b, dir, root, built))
 		case "install", "i":
 			dir, rest, ok := lanePrefix(args)
 			if !ok {
@@ -232,7 +244,8 @@ func laneAllowed(words []string, b scriptsurface.Binder, root string, locks map[
 			if laneNPMFlags(rest) && laneLockPreserving(b, dir, root, locks) {
 				return true
 			}
-			return laneNPMFlagsLoose(rest) && laneAssumesLock(b, dir, root, locks, assumed, lockNPM)
+			return laneNPMFlagsLoose(rest) &&
+				(laneAssumesLock(b, dir, root, locks, assumed, lockNPM) || laneBuildOutputInstall(b, dir, root, built))
 		case "run", "run-script":
 			dir, rest, ok := lanePrefix(args)
 			if !ok || len(rest) == 0 || rest[0] == "" || strings.HasPrefix(rest[0], "-") {
@@ -446,6 +459,31 @@ func laneAssumesLock(b scriptsurface.Binder, dir, root string, locks map[string]
 	}
 	if assumed != nil {
 		*assumed = true
+	}
+	return true
+}
+
+// laneBuildOutputInstall reports whether an npm install or ci with package root dir runs, in a
+// Dockerfile, in a build output (Binder.Built): a project the tree does not hold, whose
+// install puts nothing where a lock read here places a package, and sets built. It binds
+// package.json and npmLocks, so a command that names one withholds. No .npmrc the command
+// may read from where it runs (Configs) sets a key outside npmrcAssumedKeys. What it leaves
+// to buildOutputAssumption: what the output's own package.json, lock and .npmrc install.
+func laneBuildOutputInstall(b scriptsurface.Binder, dir, root string, built *bool) bool {
+	if !b.Built(dir, append([]string{"package.json"}, npmLocks...)...) {
+		return false
+	}
+	files, ok := b.Configs(".npmrc")
+	if !ok {
+		return false
+	}
+	for _, f := range files {
+		if !settingFileHolds(root, f, ".npmrc", lockNPM) {
+			return false
+		}
+	}
+	if built != nil {
+		*built = true
 	}
 	return true
 }

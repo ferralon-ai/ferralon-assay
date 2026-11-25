@@ -31,7 +31,14 @@ In Go, a refutation also has to hold for code outside the build that imports you
 clause `go:library=...`: `auto` (the default) takes every importable package outside a `cmd`,
 `example`, `examples`, `test`, `tests` or `testdata` path element, `go:library=none` says the build
 ships programs only, and a list of paths relative to the repository root names them, with
-`!go:library=path` taking a path out. `library-entrypoints` (`-library-entrypoints`,
+`!go:library=path` taking a path out. A bare `auto` reads a build as an application when its packages
+all loaded and type-checked, it has one main module, and it ships a `main` package at that module's
+root or under its `cmd` directory (outside `example(s)`, `test(s)` and `testdata`): it then takes no
+library package, and a refutation that holds because of that carries the assumption "treated as an
+application", naming how many of those main packages the build ships; the PR comment names them. A
+`main` anywhere else (a benchmark, an interop client, a generator under `internal`, `hack` or `tools`)
+leaves the library reading in place. `go:library=.` reads the build as a library instead, taking every importable package, `cmd`,
+example and test paths included, so it is wider than `auto`'s library reading of a build with no `main`. `library-entrypoints` (`-library-entrypoints`,
 `ASSAY_LIBRARY_ENTRYPOINTS`) is the alias for those clauses and takes the same statement without the
 prefix: `library-entrypoints: none` is `entrypoints: go:library=none`. Give both only when they say the
 same thing, the same mode over the same paths; two different statements stop the run before it
@@ -39,14 +46,31 @@ analyses anything, naming both. A value you pass is handed to Assay and read as 
 fetches one and looks for no configuration file. When one of the packages reaches the advisory's
 vulnerable package, the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that
 holds only because of what you declared carries that declaration on the report as an assumption, and
-the Report lists the sets under `library_entrypoints`.
+the Report lists the sets under `library_entrypoints`. On every Go report whose packages loaded,
+`entrypoints[]` also records the library packages Assay treats as callable from outside the build
+(`effective`, which a refutation is judged against), whether that set was inferred (`source`
+`auto`), read as an application's (`mains`) or declared (`declared`), what it inferred with nothing declared
+(`inferred`: the importable library packages and the build's `main` packages) and the `!` selectors
+that took a library package out (`denied`), so you can read the guess before you override it. The
+search roots every `main`'s `main` and `init` and the exported API of every package `./...` matches,
+`!`-denied packages included, so `entrypoints` narrows or extends only the library packages a
+refutation is judged against and never a main; a partial run searches only the roots its limit
+names.
 
 `entrypoints` takes clauses of the form `<lane>:<selector>` or `<lane>:<kind>=<selector>`, over the
 lanes `go`, `java`, `kotlin`, `js`, `python` and `dotnet`. A bare `auto` changes nothing, and neither
-does `<lane>:auto` or `<lane>:<kind>=auto` on its own, for any lane and any kind. Today only the Go
-library entry points read a clause. Any other clause that asks for something, for another lane, for
-the Go lane as a whole or for its mains and handlers, stops the run before it analyses anything: `lane java does not
-accept entry-point overrides yet`. A bare `none` names every lane, so it binds the lane the scan runs
+does `<lane>:auto` or `<lane>:<kind>=auto` on its own, for any lane and any kind. The Go library entry
+points read every clause. The JavaScript lane reads `!` clauses that remove an entry point it inferred
+from `package.json` scripts: `!js:bin=bin:<name>` takes out a binary a script runs, and
+`!js:bin=npm:<package>/<file>` or `!js:script=npm:<package>/<file>` takes out the file a binary or a
+script starts. A `package_not_loaded` clear that holds only because of a removal carries it on the
+report as an assumption, and on a JavaScript report `entrypoints[]` records what the lane inferred,
+what stands and the `!` selectors that removed something. A `!` selector, with a kind or without,
+must start with `npm:` or `bin:`, since a bare path names no script entry point and would never
+match; it stops the run. A first-party module is always an entry point, so `js:module`
+clauses, and `js:` clauses that add or say `none`, stop the run. Any other clause
+that asks for something, for another lane, for the Go lane as a whole or for its mains and handlers,
+stops the run before it analyses anything: `lane java does not accept entry-point overrides yet`. A bare `none` names every lane, so it binds the lane the scan runs
 and must be one that can drop all of its roots; on a Go scan it stops the run and asks for
 `go:library=none`, and on a scan of a language the lanes above do not cover it changes nothing, and a `go:library` clause
 on a scan of another language is read by no lane. The check of the value runs before the repository is
@@ -74,7 +98,9 @@ assumptions:
 - no `plugin.Open` loads code at run time. A reachable one is declared as `plugin_load`. In a build
   with cgo off it loads nothing, and is declared as `plugin_load:cgo_off`: a `not_exploitable` row
   beside it says in its detail that it holds for `CGO_ENABLED=0` and that a build with cgo on was
-  not checked. On a platform that has no plugins nothing is declared;
+  not checked. With cgo on, a `not_exploitable` row resting on the build importing none of the
+  advisory's vulnerable packages carries the assumption that plugins are separate builds and were
+  not assessed. On a platform that has no plugins nothing is declared;
 - the analyzed program has the same packages and build configuration as the one govulncheck loads.
 
 A build with cgo off compiles none of its cgo files. Each one is read for calls into the advisory's
@@ -98,7 +124,8 @@ and a limit it does list is not the reason the analysis did not run.
 | Reason | What was missing |
 |---|---|
 | `analysis_did_not_run` | A step the verdict rests on failed or did not run. The scan-level `partiality` notes name the step; when the step failed outright, the row's detail also carries the redacted error. |
-| `package_version_unresolved` | The package's installed version was not resolved, so nothing establishes which code the build carries. |
+| `package_version_unresolved` | The package's installed version was not resolved, so nothing establishes which code the build carries. A Go module your `replace` directive sends to a fork or a local directory has no release version, and the fork's own version string is never compared with the advisory's affected versions. The row's detail names the replacement, why the advisory was not judged on that code, and what would settle it. |
+| `own_release_version_unknown` | The advisory is on your repository's own code, and the release version of this checkout was not established, so nothing places it inside or outside the advisory's affected versions. For a Go module the version is read from a full semver tag on the checked-out commit itself (`sub/v1.2.3` for a module in directory `sub`), so it is known only when the scan runs on a tagged release commit with its tags fetched (`fetch-tags: true` on `actions/checkout`). A pull request's merge commit, or any untagged commit, has no release version. A Go project with no release version can still be placed when the advisory names the commit that fixed it and the checkout's history contains that commit; a shallow checkout (the `actions/checkout` default) cannot show whether it does, so the row says so and names the remedy, `fetch-depth: 0`. It can also be placed by the highest release tag in the checked-out commit's history: when every affected range closed at or before that release, the row is `not_exploitable` with the assumption named in its evidence, that the advisory's fix was not reverted between that tag and the checked-out commit. A release in the history only clears a row, and never places the commit inside a range; it does not clear one whose advisory names a fix commit that the complete history lacks. A shallow checkout without tags (the `actions/checkout` default) has no release in its history; `fetch-depth: 0` with `fetch-tags: true` supplies them. Other ecosystems read it from a version the manifest states outright. Other limits the scan lists may still apply once the version is known. |
 | `advisory_symbol_absent` | The advisory names no vulnerable symbol, so there was nothing to search for. |
 | `vulnerable_symbol_unresolved` | The advisory names vulnerable symbols, and not every one was located in the affected package and searched. |
 | `advisory_unknown_to_analyzer` | The analyzer reported nothing about the advisory at all. |
@@ -208,11 +235,12 @@ Findings are sorted most-actionable first, and every projection keeps that order
 ## The Go toolchain your repository builds with
 
 For a Go standard-library advisory, the question is about the Go **you** build with, which is not
-necessarily the Go the scanner analyzes with. The scan resolves your toolchain as one fact, from the
-first source that yields a usable version:
+necessarily the Go the scanner analyzes with. The scan resolves your toolchain as one fact. Steps 1
+and 2 are tried in order, and the first that yields a usable version is taken. When that is not a
+declaration, step 3 can raise step 2's minimum, or supply one when step 2 yields none:
 
-1. **Your declaration** — `-subject-go-version` on the CLI (for example `go1.21.3`), or the
-   `ASSAY_SUBJECT_GO_VERSION` environment variable. Exact.
+1. **Your declaration** — `-subject-go-version` on the CLI (for example `go1.21.3`), the
+   `ASSAY_SUBJECT_GO_VERSION` environment variable, or the Action input `subject-go-version`. Exact.
 2. **Your `go.mod` `go` line** — a **minimum**, not an exact version. Every go command from 1.21 on
    refuses to build your module with an older Go, whatever `GOTOOLCHAIN` says. A go command before
    1.21 does not enforce the `go` line, so `go 1.17` may have been built by go1.16.5. The `go` line
@@ -222,10 +250,19 @@ first source that yields a usable version:
    `toolchain` line. Such a `go` line is left out.
 
    A `toolchain` line raises the minimum to at least go1.21.0, because no older go command can read
-   your `go.mod`. Its own version is not a minimum: under `GOTOOLCHAIN=local` or a pinned
-   `GOTOOLCHAIN` the go command ignores it, and `actions/setup-go` sets `GOTOOLCHAIN=local`. With
-   `go 1.21.0` and `toolchain go1.22.5`, the minimum is go1.21.0.
-3. Otherwise, unresolved.
+   your `go.mod`.
+3. **Your `go.mod` `toolchain` line**, when it names a full release (`toolchain go1.22.5`) above the
+   minimum from step 2, or when step 2 yields none — a **minimum that rests on an assumption**.
+   Under `GOTOOLCHAIN=auto`, the go command's default, the build switches to that release or newer,
+   so it cannot run anything older. Under `GOTOOLCHAIN=local` or a pinned `GOTOOLCHAIN` the go
+   command ignores the line, and `actions/setup-go` sets `GOTOOLCHAIN=local`. An advisory cleared
+   only because of this line is reported `not_exploitable` with the assumption named in its
+   evidence: the build runs under `GOTOOLCHAIN=auto`, so on the toolchain line's release or newer.
+   Declare `subject-go-version` when that does not hold for your build; a declaration replaces the
+   assumption. With `go 1.21.0` and `toolchain go1.22.5`, the minimum is go1.22.5 under the
+   assumption and go1.21.0 without it. Under a `go.work`, its own lines are read in place of the
+   module's.
+4. Otherwise, unresolved.
 
 A declaration below your own `go.mod` floor is discarded in favor of the floor, because a module
 cannot build with a Go older than its directives require. A stale `subject-go-version` therefore
@@ -256,8 +293,9 @@ toolchain. What to know:
 
 - **Findings appear that a scan under the scanner's Go does not show.** A repository on an older Go
   has standard-library vulnerabilities a newer Go does not have.
-- **It needs an exact toolchain.** `go.mod` floors are not enough. The Action has no input for the
-  declaration, so set `ASSAY_SUBJECT_GO_VERSION` in the `env:` of the step that runs the Action.
+- **It needs an exact toolchain.** `go.mod` floors are not enough. In the Action, set the input
+  `subject-go-version` (for example `go1.22.5`); an `ASSAY_SUBJECT_GO_VERSION` in the `env:` of the
+  step that runs the Action also works, and the input wins when both are set.
   Without an exact toolchain the analysis runs under the scanner's, and that is not an error.
 - **It never fails the scan.** If the toolchain can't be downloaded or can't load your module, the
   analysis falls back to the scanner's toolchain and the advisory stays `undetermined`. The report
@@ -298,7 +336,7 @@ under conditions the job does not reproduce:
 | The build's explicit profile selection in `-P` syntax: its `-P` list together with `settings.xml` `<activeProfiles>` (for example `release,!docs`, or `,` for none) | `-subject-maven-profiles` | `ASSAY_SUBJECT_MAVEN_PROFILES` |
 
 The flag wins over the environment variable. The Action has no inputs for these; set the variables in
-the `env:` of the step that runs it, as for `ASSAY_SUBJECT_GO_VERSION`. With `-build-graph auto`, a
+the `env:` of the step that runs it. With `-build-graph auto`, a
 stated profile selection is passed to Maven as `-P`, and stating one for a Gradle build fails the run.
 With a graph file, the file must record the same statements.
 

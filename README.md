@@ -82,6 +82,12 @@ Two more scopes are conditional on inputs this Quickstart does not set: `state-r
 GitHub issues a read-only token whatever you declare, and every write surface skips itself; the
 job summary still lands.
 
+An advisory against your repository's own Go module is placed by the module's release tags. The
+`actions/checkout` default fetches one commit and no tags, so on that checkout such a row stays
+`undetermined` (`own_release_version_unknown`). Set `fetch-depth: 0` and `fetch-tags: true` on the
+checkout step to resolve it; the
+[operator guide](docs/operator-guide.md#undetermined-reasons) says how the tags are read.
+
 A JavaScript scan reads its dependencies' code by default: it fetches each package the lockfile
 pins and reads it only once it matches the lockfile's integrity hash. The Action keeps those
 packages in a cache keyed on your lockfiles, so an unchanged lock fetches them again only where it
@@ -170,7 +176,8 @@ Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-
 against a filesystem corpus, and `-subject-java-version` /
 `-subject-maven-profiles` to state the JVM and Maven profile selection your build uses (env
 `ASSAY_SUBJECT_JAVA_VERSION`, `ASSAY_SUBJECT_MAVEN_PROFILES`). `-subject-go-version` (env
-`ASSAY_SUBJECT_GO_VERSION`) states the target's exact Go toolchain; without it the scan reads the
+`ASSAY_SUBJECT_GO_VERSION`, Action input `subject-go-version`) states the target's exact Go
+toolchain; without it the scan reads the
 target's `go.mod`, and takes a release CI observed only when `ASSAY_TRUST_OBSERVED_GO=true`
 ([operator guide](docs/operator-guide.md)).
 
@@ -245,8 +252,8 @@ Set `scan-timeout` (for example `30m`; on the command line, the `-scan-timeout` 
 scan. Analysis stops early enough to publish the report, and every advisory the scan did not reach is
 reported as not assessed, never as safe; the report headline says the scan was cut short. Set it
 below the job's `timeout-minutes`, leaving room for the steps that run before the scan, including the
-Action's own setup, so the scan ends itself first. With no `scan-timeout` there is no limit, but a job timeout or cancellation still
-stops analysis and gives the scan a few seconds to publish what it assessed. The Action's
+Action's own setup, so the scan ends itself first. The Action defaults `scan-timeout` to `15m`; `0` sets no limit, on the command line too, which has no limit unless
+one is set. Either way, a job timeout or cancellation still stops analysis and gives the scan a few seconds to publish what it assessed. The Action's
 `scan-truncated` output is `true` when either happened.
 
 ## Advisory corpus

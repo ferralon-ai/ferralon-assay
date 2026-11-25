@@ -1,6 +1,10 @@
 package report
 
 import (
+	"bytes"
+	"encoding/json"
+	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -29,6 +33,7 @@ type Builder struct {
 	baseline      *BaselineRef
 	priority      func(Advisory) *Priority
 	entrypoints   []plugin.ResolvedLibraryEntrypoints
+	entryRoots    []plugin.EntryRootRecord
 }
 
 // NewBuilder starts a Report for the given scanned subject. CommitSHA in provenance
@@ -202,6 +207,20 @@ func (b *Builder) WithLibraryEntrypoints(es ...plugin.ResolvedLibraryEntrypoints
 	return b
 }
 
+// WithEntryRoots records the entrypoints[] records the lanes resolved, which beside the library
+// set carry what the lane inferred and what the caller denied. Every distinct record offered is
+// kept, in order: a lane's fresh record and the one a stored report carried may state different
+// sets, and the one that states the library set's own stands (see entrypointRecordsWith), so the
+// two fields cannot disagree.
+func (b *Builder) WithEntryRoots(rs ...plugin.EntryRootRecord) *Builder {
+	for _, r := range rs {
+		if !slices.ContainsFunc(b.entryRoots, func(x plugin.EntryRootRecord) bool { return reflect.DeepEqual(x, r) }) {
+			b.entryRoots = append(b.entryRoots, r)
+		}
+	}
+	return b
+}
+
 // WithBaseline sets the inherited-baseline pointer (PR-adjacent inherit / diff).
 func (b *Builder) WithBaseline(ref BaselineRef) *Builder {
 	b.baseline = &ref
@@ -330,7 +349,7 @@ func (b *Builder) Build() Report {
 		Provenance:         prov,
 		Baseline:           b.baseline,
 		LibraryEntrypoints: entrypoints,
-		Entrypoints:        entrypointRecords(entrypoints),
+		Entrypoints:        entrypointRecordsWith(entrypoints, b.entryRoots),
 	}
 }
 
@@ -468,6 +487,85 @@ func entrypointRecords(sets []plugin.ResolvedLibraryEntrypoints) []plugin.EntryR
 	}
 	sortRecordsByLane(records)
 	return records
+}
+
+// entrypointRecordsWith is entrypointRecords, with a lane's record from roots in place of the one
+// derived from the library set when it states that same set: the first record of the lane whose
+// bare form matches adds what it inferred, what the caller denied and, read as an application, the
+// mains it rests on. A record of another set (an inherited one beside a fresh library set) is
+// dropped rather than allowed to drift from library_entrypoints. A lane with a record in roots and no library set states the first of them as
+// it is, or the first that lists what the lane inferred, under the same statement, when the first lists none: the lane records its entry points on assessments that judged no refutation, and
+// library_entrypoints holds only the sets a refutation rested on.
+func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plugin.EntryRootRecord) []plugin.EntryRootRecord {
+	records := entrypointRecords(sets)
+	for i, rec := range records {
+		for _, r := range roots {
+			bare := r
+			bare.Inferred, bare.Denied = nil, nil
+			if r.Source == plugin.LibraryEntrypointsSourceMains {
+				// library_entrypoints states the library set alone: the mains an application reading
+				// rests on are the record's to add, like Inferred.
+				bare.Effective = maps.Clone(r.Effective)
+				delete(bare.Effective, plugin.EntryKindMain)
+			}
+			if r.Lane == rec.Lane && sameJSON(bare, rec) {
+				records[i] = r
+				break
+			}
+		}
+	}
+	haveSet := map[string]bool{}
+	for _, rec := range records {
+		haveSet[rec.Lane] = true
+	}
+	stated := map[string]int{}
+	for _, r := range roots {
+		if haveSet[r.Lane] {
+			continue
+		}
+		i, ok := stated[r.Lane]
+		switch {
+		case !ok:
+			stated[r.Lane] = len(records)
+			records = append(records, r)
+		case len(records[i].Inferred) == 0 && len(r.Inferred) > 0 && sameStatement(r.Lane, records[i].Input, r.Input):
+			// A record of a lane that read no closure reports no guess; one that did, under the same
+			// statement, says more. Another statement's record would put its Input on this report.
+			records[i] = r
+		}
+	}
+	sortRecordsByLane(records)
+	return records
+}
+
+// sameStatement reports whether two Inputs state one lane's entry-point override alike, however the
+// clauses are spelled or ordered. An Input that does not parse counts only as the same string.
+func sameStatement(lane, a, b string) bool {
+	if a == b {
+		return true
+	}
+	pa, errA := plugin.ParseEntryOverrides(a)
+	pb, errB := plugin.ParseEntryOverrides(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	oa, okA := pa[lane]
+	ob, okB := pb[lane]
+	return plugin.SameEntryOverride(statementOf(oa, okA), statementOf(ob, okB))
+}
+
+func statementOf(o plugin.EntryOverride, ok bool) *plugin.EntryOverride {
+	if !ok {
+		return nil
+	}
+	return &o
+}
+
+// sameJSON reports whether a and b serialize alike: an empty list and an absent one are one value.
+func sameJSON(a, b plugin.EntryRootRecord) bool {
+	x, errX := json.Marshal(a)
+	y, errY := json.Marshal(b)
+	return errX == nil && errY == nil && bytes.Equal(x, y)
 }
 
 func sortRecordsByLane(records []plugin.EntryRootRecord) {

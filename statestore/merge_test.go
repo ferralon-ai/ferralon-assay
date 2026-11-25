@@ -295,3 +295,45 @@ func TestMergeKeepsLibraryEntrypoints(t *testing.T) {
 		}
 	}
 }
+
+// A merged state keeps the later report's inferred and denied entry points beside its library set.
+func TestMergeKeepsInferredAndDeniedEntrypoints(t *testing.T) {
+	eps := []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!lib", Packages: []string{"example.com/app/api"}}}
+	rec, _ := plugin.EntryRootRecordOf(eps[0])
+	rec.Inferred = map[string][]string{
+		plugin.EntryKindLibrary: {"example.com/app/api", "example.com/app/lib"},
+		plugin.EntryKindMain:    {"example.com/app/cmd/app"},
+	}
+	rec.Denied = []string{"!lib"}
+	newer := report.NewBuilder(report.Subject{ResolvedCommit: "new"}).
+		WithLibraryEntrypoints(eps...).
+		WithEntryRoots(rec).
+		WithProvenance(report.Provenance{Timestamp: time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)}).
+		Build()
+
+	for name, out := range mergeOrders(newer) {
+		if !reflect.DeepEqual(out.Report.Entrypoints, []plugin.EntryRootRecord{rec}) {
+			t.Errorf("%s: entrypoints = %+v, want [%+v]", name, out.Report.Entrypoints, rec)
+		}
+	}
+}
+
+// A merged state keeps the later report's js record beside the go one.
+func TestMergeKeepsJSEntrypoints(t *testing.T) {
+	js := plugin.EntryRootRecord{
+		Lane: plugin.EntryLaneJS, Source: plugin.LibraryEntrypointsSourceDeclared, Input: "!js:bin=bin:storybook",
+		Effective: map[string][]string{plugin.EntryKindBin: {}, plugin.EntryKindScript: {"npm:tool/index.js"}},
+		Inferred:  map[string][]string{plugin.EntryKindBin: {"bin:storybook"}, plugin.EntryKindScript: {"npm:tool/index.js"}},
+		Denied:    []string{"!bin:storybook"},
+	}
+	newer := report.NewBuilder(report.Subject{ResolvedCommit: "new"}).
+		WithEntryRoots(js).
+		WithProvenance(report.Provenance{Timestamp: time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)}).
+		Build()
+
+	for name, out := range mergeOrders(newer) {
+		if !reflect.DeepEqual(out.Report.Entrypoints, []plugin.EntryRootRecord{js}) {
+			t.Errorf("%s: entrypoints = %+v, want [%+v]", name, out.Report.Entrypoints, js)
+		}
+	}
+}

@@ -549,9 +549,10 @@ declares partiality instead of hiding it. *Source:* `README.md:482`, `README.md:
 
 <a id="library-entrypoints"></a>**library entry points / library escape** — In Go, the packages code
 outside the build may import (`entrypoints` clause `go:library=`; `library-entrypoints` is its alias and
-takes `auto`, `none`, or a list with `!path` exclusions). When one of them reaches the advisory's
-vulnerable package, the refutation is withheld (`library_escape`) and the row is `undetermined` with
-`refutation_withheld`. *Source:* `docs/operator-guide.md:25`, `docs/capabilities/go.md:200`. *See also:*
+takes `auto`, `none`, or a list with `!path` exclusions). A bare `auto` on a fully loaded build of one
+module that ships a `main` package at its root or under `cmd/` reads it as an application and takes none; `go:library=.` reads it as a library.
+When one of them reaches the advisory's vulnerable package, the refutation is withheld
+(`library_escape`) and the row is `undetermined` with `refutation_withheld`. *Source:* `docs/operator-guide.md:25`, `docs/capabilities/go.md:200`. *See also:*
 [entrypoints](#entrypoints), [withhold](#withhold).
 
 <a id="link-to-console"></a>**`link-to-console` (Ferralon console)** — The only switch that decides
@@ -813,9 +814,15 @@ identity, revision and resolved commit (`subject.repo`, `subject.revision`,
 `subject.resolved_commit`). *Source:* `assessment/assessment.go:63`, `action.yml:218`,
 `README.md:199`. *See also:* [toolchain fact](#toolchain-fact).
 
+<a id="subject-go-version"></a>**`subject-go-version`** — Action input stating the exact Go release the
+subject builds with (CLI `-subject-go-version`, env `ASSAY_SUBJECT_GO_VERSION`); the input wins over a
+step-env value. It is the declaration source of the [toolchain fact](#toolchain-fact). *Source:*
+`action.yml:194`, `docs/operator-guide.md:214`. *See also:*
+[subject-toolchain-reachability](#subject-toolchain-reachability).
+
 <a id="subject-gowork"></a>**`subject-gowork`** — The `GOWORK` the subject's Go build runs under: `off`,
 `auto`, or the path of its `go.work`; the scan uses that `go.work`, never an ambient one. *Source:*
-`action.yml:194`, `docs/capabilities/go.md:47`. *See also:* [subject](#subject).
+`action.yml:203`, `docs/capabilities/go.md:47`. *See also:* [subject](#subject).
 
 <a id="subject-toolchain-reachability"></a>**`subject-toolchain-reachability`** — Setting, on by default, that,
 when the subject's toolchain resolved exactly, runs Go reachability under that Go release, so a
@@ -855,7 +862,7 @@ The paid tier that receives candidate paths for runtime confirmation. *Source:*
 [Prove](#prove), [service tier](#service-tier).
 
 <a id="toolchain-fact"></a>**toolchain fact (exact / minimum)** — The Go toolchain the scan resolves
-for the subject, from the first usable source: a declaration (`-subject-go-version`), exact; the
+for the subject, from the first usable source: a declaration ([subject-go-version](#subject-go-version)), exact; the
 `go.mod` `go` line under stated conditions, a minimum; otherwise unresolved. A trusted observed CI
 toolchain counts as exact. *Source:* `docs/operator-guide.md:171`, `docs/operator-guide.md:197`,
 `docs/operator-guide.md:238`. *See also:*

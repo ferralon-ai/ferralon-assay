@@ -96,7 +96,8 @@ func (s *ssaProgram) runTimeReason(name string) (string, bool) {
 }
 
 // statePluginScope says, in the detail of each refutation kept beside a limit that holds only
-// because the scanned build has cgo off, the build setting the refutation holds for.
+// because the scanned build has cgo off, the program view's among them, the build setting the
+// refutation holds for.
 // plugin_load:cgo_off: the program reaches plugin.Open, which loads nothing with cgo off.
 // cgo:files_dropped: the build left out cgo files, none of which was found to call into the
 // advisory's module. Either way the same program built with cgo on was not checked.
@@ -128,6 +129,39 @@ func statePluginScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
 	res.Refutations = slices.Clone(res.Refutations)
 	for i, r := range res.Refutations {
 		res.Refutations[i] = state(r)
+	}
+	if res.ProgramView != nil {
+		view := *res.ProgramView
+		view.Refutation = state(view.Refutation)
+		view.Refutations = slices.Clone(view.Refutations)
+		for i, r := range view.Refutations {
+			view.Refutations[i] = state(r)
+		}
+		res.ProgramView = &view
+	}
+	return res
+}
+
+// assumePluginsSeparate attaches plugin.AssumptionPluginsNotAssessed to each refutation resting on
+// the build importing none of the advisory's vulnerable packages, when the program reaches
+// plugin.Open in a build that can load plugins (plugin_load).
+func assumePluginsSeparate(res plugin.ReachabilityResult) plugin.ReachabilityResult {
+	if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonPluginLoad) {
+		return res
+	}
+	assume := func(r plugin.Refutation) plugin.Refutation {
+		if r.Basis == plugin.RefutationAnalyzerPackageNotImported && !slices.Contains(r.Assumptions, plugin.AssumptionPluginsNotAssessed) {
+			r.Assumptions = append(slices.Clone(r.Assumptions), plugin.AssumptionPluginsNotAssessed)
+		}
+		return r
+	}
+	if res.Refutation != nil {
+		assumed := assume(*res.Refutation)
+		res.Refutation = &assumed
+	}
+	res.Refutations = slices.Clone(res.Refutations)
+	for i, r := range res.Refutations {
+		res.Refutations[i] = assume(r)
 	}
 	return res
 }

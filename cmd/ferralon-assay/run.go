@@ -550,7 +550,7 @@ type runFlags struct {
 //
 // It is NOT the line between the scanner and every third party. A default scan already contacts
 // https://vuln.go.dev on every run — the Go analyzer's reachability stage runs govulncheck with no
-// -db flag, so it resolves golang.org/x/vuln's default database uncached
+// -db flag by default, so it resolves golang.org/x/vuln's default database uncached
 // (internal/plugin/goanalysis/reach.go) — and proxy.golang.org when it resolves the subject's module graph.
 // README.md ("Network egress") is the authoritative enumeration.
 //

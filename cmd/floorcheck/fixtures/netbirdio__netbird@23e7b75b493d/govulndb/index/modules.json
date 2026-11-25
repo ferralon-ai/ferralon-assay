@@ -1,0 +1,12 @@
+[
+  {
+    "path": "github.com/gopacket/gopacket",
+    "vulns": [
+      {
+        "id": "GO-2026-6963",
+        "modified": "2026-11-23T20:04:10Z",
+        "fixed": "1.7.2"
+      }
+    ]
+  }
+]

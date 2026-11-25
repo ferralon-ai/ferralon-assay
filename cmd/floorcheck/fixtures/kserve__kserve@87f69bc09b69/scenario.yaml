@@ -10,4 +10,5 @@ build:
 intel:
   policy: floor-fixture
   advisories: { path: intel/advisories/manifest.json, sha256: "ee19b794d93090945572ff7287902fedeb89d0ca4ea339116823cdba0c5a6151" }
+  govulndb: { path: govulndb, sha256: "77f55b3e14829bd61cb14ae86cb866484b9cb0070f0187ff5ec3c490070bb073" }
   provenance: corpus-92d72057330c

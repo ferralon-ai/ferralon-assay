@@ -70,6 +70,9 @@ type ScenarioIntel struct {
 	Corpus     *PinnedFile `yaml:"corpus,omitempty"`
 	Signals    *PinnedFile `yaml:"signals,omitempty"`
 	Advisories *PinnedFile `yaml:"advisories,omitempty"`
+	// GoVulnDB pins a fixture-local govulncheck database directory (go lane only), relative to the
+	// fixture and inside it, by its tree digest (treeDigest). The scan reads it instead of vuln.go.dev.
+	GoVulnDB   *PinnedFile `yaml:"govulndb,omitempty"`
 	Provenance string      `yaml:"provenance,omitempty"`
 }
 
@@ -164,6 +167,9 @@ type Fixture struct {
 	// AdvisoryIDs are the identifiers an advisories directory holds: the advisories the scan must
 	// assess. Empty for a corpus bundle.
 	AdvisoryIDs []string
+	// GoVulnDBPath is the verified govulncheck database directory the scan reads (absolute), or "" for
+	// govulncheck's default.
+	GoVulnDBPath string
 }
 
 // loadError is a fixture that cannot be compared: the kind is the incomplete kind it reports.
@@ -263,7 +269,10 @@ func (s Scenario) validate() error {
 	if err := s.Build.validate(s.Lang); err != nil {
 		return err
 	}
-	for _, p := range []*PinnedFile{s.Intel.Corpus, s.Intel.Signals, s.Intel.Advisories} {
+	if s.Intel.GoVulnDB != nil && s.Lang != "go" {
+		return fmt.Errorf("intel.govulndb belongs to the go lane, not %s", s.Lang)
+	}
+	for _, p := range []*PinnedFile{s.Intel.Corpus, s.Intel.Signals, s.Intel.Advisories, s.Intel.GoVulnDB} {
 		if p != nil && !sha256Hex.MatchString(p.SHA256) {
 			return fmt.Errorf("intel file %s: sha256 %q is not 64 lowercase hex", p.Path, p.SHA256)
 		}
@@ -452,6 +461,13 @@ func (fx *Fixture) verifyIntel(floorRoot string) error {
 			return unverified("intel.signals: %w", err)
 		}
 		fx.SignalsPath = p
+	}
+	if in.GoVulnDB != nil {
+		p, err := verifyGoVulnDB(fx.Dir, *in.GoVulnDB)
+		if err != nil {
+			return unverified("intel.govulndb: %w", err)
+		}
+		fx.GoVulnDBPath = p
 	}
 	return nil
 }

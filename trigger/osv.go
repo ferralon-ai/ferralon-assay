@@ -23,7 +23,7 @@
 // THAT IS A CLAIM ABOUT THIS PACKAGE, NOT ABOUT THE TOOL. Every run mode — baseline
 // and PR-inherit at their shipped defaults included — also contacts
 // https://vuln.go.dev: the Go analyzer's reachability stage runs govulncheck with no
-// -db flag (internal/plugin/goanalysis/reach.go), so it resolves golang.org/x/vuln's default
+// -db flag by default (internal/plugin/goanalysis/reach.go), so it resolves golang.org/x/vuln's default
 // vulnerability database, uncached, on every run, and the module paths it looks up are
 // visible to that host. Resolving the subject's module graph likewise contacts
 // proxy.golang.org. Neither is configurable from the Action.

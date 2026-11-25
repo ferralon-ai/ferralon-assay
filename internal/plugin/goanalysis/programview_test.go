@@ -308,9 +308,9 @@ func TestProgramView_SecondModuleOwnScope(t *testing.T) {
 		"cmd/tool/main_plan9.go": "package main\n\nimport \"example.com/vulnmod\"\n\nfunc init() { vulnmod.Bad() }\n",
 	}
 	first := vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}
-	second := vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/xmod", Version: "v0.0.0", Package: "example.com/xmod"}}}
+	second := vulnFinding{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/xmod", Version: "v0.2.0", Package: "example.com/xmod"}}}
 	out := `{"finding":{"osv":"GO-1","trace":[{"module":"example.com/vulnmod","version":"v0.0.0","package":"example.com/vulnmod"}]}}` + "\n" +
-		`{"finding":{"osv":"GO-1","trace":[{"module":"example.com/xmod","version":"v0.0.0","package":"example.com/xmod"}]}}`
+		`{"finding":{"osv":"GO-1","trace":[{"module":"example.com/xmod","version":"v0.2.0","package":"example.com/xmod"}]}}`
 	defer func(prev func(context.Context, string, []string, []string) ([]byte, error)) { programStream = prev }(programStream)
 	stream := out
 	programStream = func(context.Context, string, []string, []string) ([]byte, error) { return []byte(stream), nil }
@@ -321,18 +321,23 @@ func TestProgramView_SecondModuleOwnScope(t *testing.T) {
 		want        bool
 		wantScope   bool
 		notImported bool // the program run matches the second module but finds no package of it imported
+		unmatched   bool // only the library run matches the second module
 	}{
 		{name: "second module not called", want: true},
 		{name: "second module imported by a library package alone", want: true, notImported: true},
-		{"second module called from another platform's file", map[string]string{"cmd/tool/x_windows.go": "package main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, true, true, false},
-		{"second module called behind a build tag", map[string]string{"cmd/tool/x_tag.go": "//go:build sometag\n\npackage main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, true, true, false},
-		{"second module called from a file the build left out for no build constraint", map[string]string{"_leftout/x.go": "package main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, false, false, false},
-		{"reflection reaches the second module", nil, map[string][]string{"example.com/xmod": {"Bad"}}, false, false, false},
+		{name: "second module matched by the library run alone", want: true, notImported: true, unmatched: true},
+		{"second module called from another platform's file", map[string]string{"cmd/tool/x_windows.go": "package main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, true, true, false, false},
+		{"second module called behind a build tag", map[string]string{"cmd/tool/x_tag.go": "//go:build sometag\n\npackage main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, true, true, false, false},
+		{"second module called from a file the build left out for no build constraint", map[string]string{"_leftout/x.go": "package main\n\nimport \"example.com/xmod\"\n\nfunc init() { xmod.Bad() }\n"}, nil, false, false, false, false},
+		{"reflection reaches the second module", nil, map[string][]string{"example.com/xmod": {"Bad"}}, false, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stream = out
 			if tc.notImported {
-				stream = strings.Replace(out, `"version":"v0.0.0","package":"example.com/xmod"`, `"version":"v0.0.0"`, 1)
+				stream = strings.Replace(out, `"version":"v0.2.0","package":"example.com/xmod"`, `"version":"v0.2.0"`, 1)
+			}
+			if tc.unmatched {
+				stream = strings.SplitN(out, "\n", 2)[0]
 			}
 			files := map[string]string{}
 			for k, v := range base {
@@ -385,11 +390,18 @@ func TestProgramView_SecondModuleOwnScope(t *testing.T) {
 			}
 			r := v.Refutations[0]
 			if r.Package != "pkg:golang/example.com/xmod" || r.Basis != plugin.RefutationAnalyzerSymbolNotReached || len(r.Assumptions) > 0 ||
-				!strings.HasPrefix(r.Detail, "started from the main and init of cmd/tool only: govulncheck matched the advisory to example.com/xmod v") ||
+				!strings.HasPrefix(r.Detail, "started from the main and init of cmd/tool only: govulncheck ") ||
 				!strings.Contains(r.Detail, "tests excluded)") || strings.Contains(r.Detail, "example.com/vulnmod") {
 				t.Errorf("second module's refutation = %+v", r)
 			}
-			if got := strings.Contains(r.Detail, "a vulnerable package is not imported"); got != tc.notImported {
+			matched := "govulncheck matched the advisory to example.com/xmod v0.2.0 and found no call path"
+			if tc.unmatched {
+				matched = "govulncheck did not match the advisory to example.com/xmod; the library run matched it at v0.2.0 (GOOS="
+			}
+			if !strings.Contains(r.Detail, matched) {
+				t.Errorf("second module's detail %q does not state %q", r.Detail, matched)
+			}
+			if got := strings.Contains(r.Detail, "a vulnerable package is not imported"); !tc.unmatched && got != tc.notImported {
 				t.Errorf("second module's detail %q says no vulnerable package is imported: %v, want %v", r.Detail, got, tc.notImported)
 			}
 			if got := strings.Contains(r.Detail, "may call into example.com/xmod"); got != tc.wantScope {

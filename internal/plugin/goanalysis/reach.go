@@ -818,13 +818,6 @@ func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 // the modules matched: the version the first of matched states, whether a vulnerable package is
 // imported in the run that found imports, and the platform and build tags the run used.
 func moduleRefutationOf(matched, imports []vulnFinding, module string, env []string) *plugin.Refutation {
-	version := ""
-	for _, f := range matched {
-		if len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Version != "" {
-			version = f.Trace[0].Version
-			break
-		}
-	}
 	imported := slices.ContainsFunc(imports, func(f vulnFinding) bool {
 		return len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Package != ""
 	})
@@ -835,9 +828,24 @@ func moduleRefutationOf(matched, imports []vulnFinding, module string, env []str
 	return &plugin.Refutation{
 		Basis:   plugin.RefutationAnalyzerSymbolNotReached,
 		Package: "pkg:golang/" + module,
-		Detail: fmt.Sprintf("govulncheck matched the advisory to %s %s and found no call path to its vulnerable functions; %s (GOOS=%s GOARCH=%s, %s, tests excluded)",
-			module, version, use, envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH), tagsDetail(goflagsTags(env))),
+		Detail: fmt.Sprintf("govulncheck matched the advisory to %s %s and found no call path to its vulnerable functions; %s %s",
+			module, matchedVersion(matched, module), use, platformDetail(env)),
 	}
+}
+
+// matchedVersion is the first version findings state for module, or "".
+func matchedVersion(findings []vulnFinding, module string) string {
+	for _, f := range findings {
+		if len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Version != "" {
+			return f.Trace[0].Version
+		}
+	}
+	return ""
+}
+
+// platformDetail names the platform and build tags a run used.
+func platformDetail(env []string) string {
+	return fmt.Sprintf("(GOOS=%s GOARCH=%s, %s, tests excluded)", envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH), tagsDetail(goflagsTags(env)))
 }
 
 // tagsDetail names the build tags a run used.

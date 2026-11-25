@@ -2,6 +2,7 @@ package goanalysis
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -115,8 +116,13 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 			if !ok {
 				return nil
 			}
-			// Imports are the program run's: the detail speaks for the binaries alone.
-			r := moduleRefutationOf(slices.Concat(prog.findings, scanned.findings), prog.findings, m, env)
+			// The match and imports are the program run's. A module only the library run matched is
+			// stated as such, with that run's match.
+			r := moduleRefutationOf(prog.findings, prog.findings, m, env)
+			if !slices.Contains(findingModules(prog.findings), m) {
+				r.Detail = fmt.Sprintf("govulncheck did not match the advisory to %s; the library run matched it at %s %s",
+					m, matchedVersion(scanned.findings, m), platformDetail(env))
+			}
 			r.Basis = ruled.Refutation.Basis
 			r.Detail = started + r.Detail + scope
 			others = append(others, *r)

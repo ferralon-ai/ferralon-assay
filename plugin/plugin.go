@@ -280,12 +280,18 @@ const (
 	// run Go assembly, which the analyzer does not read, so what that assembly calls is unknown.
 	// The Go lane declares it in place of the base when a left-out file links assembly.
 	PartialReasonExcludedFilesAssembly = PartialReasonExcludedFiles + ":assembly"
-	// PartialReasonExcludedFilesLinkname localises excluded_files: a file the build left out binds a
-	// symbol by //go:linkname, which the analyzer does not resolve against the link.
+	// PartialReasonExcludedFilesLinkname localises excluded_files: a file the build left out reaches a
+	// //go:linkname directive the analyzer cannot follow (malformed, or naming a symbol it cannot
+	// find), or one that binds a symbol of a package the advisory counts, so the link may stand in
+	// for code the analyzer did not read.
 	PartialReasonExcludedFilesLinkname = PartialReasonExcludedFiles + ":linkname"
 	// PartialReasonExcludedFilesCgoInclude localises excluded_files: a file the build left out
 	// includes C headers through cgo, whose code the analyzer does not read.
 	PartialReasonExcludedFilesCgoInclude = PartialReasonExcludedFiles + ":cgo_include"
+	// PartialReasonExcludedFilesUnresolvedName localises excluded_files: a file the build left out
+	// uses a name the analyzer cannot resolve to a declaration it reads (a cgo name, a dot import, a
+	// name a sibling file or a source outside the module cache may declare), so what it calls is unknown.
+	PartialReasonExcludedFilesUnresolvedName = PartialReasonExcludedFiles + ":unresolved_name"
 	// PartialReasonExcludedFilesBuildConstraint localises excluded_files: every file the build left out
 	// that may call into the module was left out only by its build constraints (GOOS or GOARCH in the
 	// file name or a //go:build line) and the analyzer traced it to a possible call, with no other

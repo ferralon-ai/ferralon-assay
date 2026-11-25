@@ -145,6 +145,7 @@ func TestResolveVersions_Strict(t *testing.T) {
 	}{
 		{name: "install over the whole tree", files: map[string]string{"Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY . /app\nRUN npm install\n"}, annotation: AnnotationInstallHonoursLock},
 		{name: "inactive install surface", files: map[string]string{"scripts/setup.js": "const { execSync } = require('child_process')\nexecSync('npm install express@4.19.2', { stdio: 'inherit' })\n"}, annotation: plugin.AnnotationInstallSurfaceInactive},
+		{name: "install into a copied build output", files: map[string]string{"Dockerfile": "FROM docker.io/node:lts-alpine\nENV HOST=0.0.0.0\nWORKDIR /app\nRUN addgroup --system api && \\\n    adduser --system -G api api\nCOPY dist/api api\nRUN chown -R api:api .\nRUN npm install --prefix api\n"}, annotation: AnnotationBuildOutputInstall},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			files := map[string]string{"package-lock.json": lock, "package.json": pkg}

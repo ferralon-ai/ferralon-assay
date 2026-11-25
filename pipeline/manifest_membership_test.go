@@ -246,3 +246,39 @@ func TestResolveManifestMembership_JavaBuildGraph(t *testing.T) {
 		}
 	})
 }
+
+// strictRecorder is a plugin that records the Strict of each version read it is asked for.
+type strictRecorder struct {
+	membershipStub
+	seen *[]bool
+}
+
+func (s strictRecorder) ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+	*s.seen = append(*s.seen, req.Strict)
+	return s.membershipStub.ResolveDependencyVersions(ctx, req)
+}
+
+// TestResolveVersions_ForwardsStrict: strict mode reaches the lane on every version read the
+// pipeline makes, so a lane can withhold an answer that rests on an assumption.
+func TestResolveVersions_ForwardsStrict(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(map[bool]string{false: "practical", true: "strict"}[strict], func(t *testing.T) {
+			var seen []bool
+			p := strictRecorder{membershipStub{lang: "python", exhaustive: true}, &seen}
+
+			resolveManifestMembership(context.Background(), p, "/build", "python", []PackageKey{{Ecosystem: "pypi", Name: "aiohttp"}}, strict)
+			if len(seen) != 1 || seen[0] != strict {
+				t.Errorf("manifest membership read Strict = %v, want [%v]", seen, strict)
+			}
+
+			seen = nil
+			if _, _, err := (codebaseInventory{plugin: p, strict: strict}).resolveDependencyVersion(
+				context.Background(), "/build", GoWorkspace{}, "python", "", "aiohttp", "", ToolchainFact{}); err != nil {
+				t.Fatal(err)
+			}
+			if len(seen) != 1 || seen[0] != strict {
+				t.Errorf("inventory version read Strict = %v, want [%v]", seen, strict)
+			}
+		})
+	}
+}

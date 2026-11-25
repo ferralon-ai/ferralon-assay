@@ -44,8 +44,11 @@ func TestResultPerModule(t *testing.T) {
 		{"two modules, path order", []vulnFinding{at(b, ""), at(a, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false},
 		{"two modules, another platform's file calls the second", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b},
 			map[string]string{"main_windows.go": "package main\n\nimport \"example.com/bmod\"\n\nfunc init() { bmod.Bad() }\n"}, true},
-		{"two modules, a linkname file of another platform calls the second", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil,
+		// The linkname binds the second module, so it withholds that module's refutation alone.
+		{"two modules, a linkname file of another platform calls the second", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, nil,
 			map[string]string{"main_windows.go": "package main\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/bmod\"\n)\n\n//go:linkname x example.com/bmod.Bad\nfunc x()\n\nfunc init() { bmod.Bad(); x() }\n"}, false},
+		{"two modules, a linkname file of another platform binds the first", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", []string{"pkg:golang/" + b},
+			map[string]string{"main_windows.go": "package main\n\nimport (\n\t_ \"unsafe\"\n\n\t_ \"example.com/amod\"\n)\n\n//go:linkname x example.com/amod.Bad\nfunc x()\n\nfunc init() { x() }\n"}, false},
 		{"two modules, only the second's package imported", []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: a, Version: "v0.0.0"}}}, at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false},
 		{"two modules, a symbol finding in the first", []vulnFinding{at(a, "Bad"), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false},
 		{"two modules, a symbol finding in the second", []vulnFinding{at(a, ""), at(b, "Bad")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false},

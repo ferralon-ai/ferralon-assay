@@ -1023,6 +1023,11 @@ func TestReadModDirectives(t *testing.T) {
 		"go.work":  "go 1.23.0\n\ntoolchain go1.23.4\n\nuse ./m\n",
 		"m/go.mod": "module example.com/m\n\ngo 1.22.0\n",
 	})
+	broken := writeTree(t, map[string]string{"go.mod": "module example.com/m\n\ngo 1.22.0\n\nnotadirective (\n"})
+	brokenWork := writeTree(t, map[string]string{
+		"go.work":  "go 1.23.0\n\nnotadirective (\n",
+		"m/go.mod": "module example.com/m\n\ngo 1.22.0\n",
+	})
 	none := t.TempDir()
 	env := func(gowork string) []string {
 		return append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=", "GOWORK="+gowork)
@@ -1038,6 +1043,9 @@ func TestReadModDirectives(t *testing.T) {
 		{"workspace", filepath.Join(work, "m"), env(filepath.Join(work, "go.work")), modDirectives{read: true, goLines: []string{"go1.22.0", "go1.23.0"}, toolchains: []string{"go1.23.4"}}},
 		{"workspace off", filepath.Join(work, "m"), env("off"), modDirectives{read: true, goLines: []string{"go1.22.0"}}},
 		{"no go.mod", none, env("off"), modDirectives{}},
+		{"unparsable go.mod", broken, env("off"), modDirectives{}},
+		{"unparsable go.work", filepath.Join(brokenWork, "m"), env(filepath.Join(brokenWork, "go.work")), modDirectives{}},
+		{"unreadable go.work", filepath.Join(work, "m"), env(filepath.Join(work, "missing.work")), modDirectives{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

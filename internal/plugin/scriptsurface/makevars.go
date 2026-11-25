@@ -14,12 +14,13 @@ var (
 	makeIncludeRE = regexp.MustCompile(`^(?:-|s)?include\s`)
 	// makeCondRE opens a conditional block, whose assignments make may skip.
 	makeCondRE = regexp.MustCompile(`^(?:ifdef|ifndef|ifeq|ifneq)(?:\s|\(|$)`)
-	// makeRunRE finds a make run in any text, by path or through $MAKE, in a shell line or a
-	// one-line list-form argv (["make", "-e"]); its group is the rest of that command.
-	makeRunRE = regexp.MustCompile(`(?:^|[\s;&|(\x60"'\[,/])(?:g?make|\$\(MAKE\)|\$\{MAKE\}|\$MAKE\b)['"]?(?:[\s,]([^;&|\n]*)|$)`)
-	// makeListRunRE finds a list-form make argv that may span lines; its group is the rest of
-	// the list.
-	makeListRunRE = regexp.MustCompile(`['"](?:[^'"\s]*/)?g?make['"]\s*,([^\])]*)`)
+	// makeRunRE finds a make run in any text, by path, under a Windows name (make.exe,
+	// mingw32-make) or through $MAKE, in a shell line or a one-line list-form argv
+	// (["make", "-e"]); its group is the rest of that command.
+	makeRunRE = regexp.MustCompile(`(?:^|[\s;&|(\x60"'\[,/\\])(?:(?:g|[A-Za-z0-9_]+-)?make(?:\.exe)?|\$\(MAKE\)|\$\{MAKE\}|\$MAKE\b)['"]?(?:[\s,]([^;&|\n]*)|$)`)
+	// makeListStartRE opens a list-form make argv, which may span lines; makeListRest reads
+	// the rest of it.
+	makeListStartRE = regexp.MustCompile(`['"](?:[^'"\s]*[/\\])?(?:g|[A-Za-z0-9_]+-)?make(?:\.exe)?['"]\s*,`)
 	// makeArgSetRE is a variable a make run sets on its command line, which no makefile
 	// assignment overrides.
 	makeArgSetRE = regexp.MustCompile(`(?:^|[\s,\[])['"]?([A-Za-z_][A-Za-z0-9_]*)\s*(?:::?=|:?=|\+=|\?=|!=)`)
@@ -188,15 +189,45 @@ func (v *Veto) noteMakeOverrides(src string) {
 		v.makeSet[makeAll] = true
 	}
 	src = strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(src)
-	runs := append(makeRunRE.FindAllStringSubmatch(src, -1), makeListRunRE.FindAllStringSubmatch(src, -1)...)
-	for _, m := range runs {
-		if makeEnvFlagRE.MatchString(m[1]) {
+	var runs []string
+	for _, m := range makeRunRE.FindAllStringSubmatch(src, -1) {
+		runs = append(runs, m[1])
+	}
+	for _, loc := range makeListStartRE.FindAllStringIndex(src, -1) {
+		runs = append(runs, makeListRest(src[loc[1]:]))
+	}
+	for _, run := range runs {
+		if makeEnvFlagRE.MatchString(run) {
 			v.makeSet[makeAll] = true
 		}
-		for _, a := range makeArgSetRE.FindAllStringSubmatch(m[1], -1) {
+		for _, a := range makeArgSetRE.FindAllStringSubmatch(run, -1) {
 			v.makeSet[a[1]] = true
 		}
 	}
+}
+
+// makeListRest returns the rest of a list-form argv: the text up to the bracket that closes
+// the list, past nested calls and brackets and over quoted strings, or all of s when none does.
+func makeListRest(s string) string {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '"', '\'', '`':
+			for i++; i < len(s) && s[i] != c; i++ {
+				if s[i] == '\\' {
+					i++
+				}
+			}
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				return s[:i]
+			}
+			depth--
+		}
+	}
+	return s
 }
 
 // makeProgram resolves a command's first word when it is a reference to a variable the

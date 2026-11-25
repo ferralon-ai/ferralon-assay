@@ -85,8 +85,8 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		return plugin.DependencyInventory{}, fmt.Errorf("jsanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	launch := LaunchDigest(req.BuildDir)
 	roots, rootsRead := discoverProjectRoots(req.BuildDir)
+	launch := launchDigest(req.BuildDir, len(roots) > 0 || !rootsRead)
 	var (
 		allNodes  []plugin.DependencyNode
 		allEdges  []plugin.DependencyEdge

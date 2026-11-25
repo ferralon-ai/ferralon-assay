@@ -2,6 +2,8 @@ package jsanalysis
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -90,6 +92,10 @@ func TestResolveInventoryReportsLaunchDigest(t *testing.T) {
 			"package-lock.json": `{"name": "app", "lockfileVersion": 3, "packages": {"": {"name": "app", "version": "1.0.0"}, "node_modules/left-pad": {"version": "1.4.0"}}}`,
 		},
 		"no lockfile": {"package.json": `{"name": "app", "version": "1.0.0", "scripts": {"start": "node server.js"}}`},
+		"lockfile, no package.json": {
+			"package-lock.json": `{"name": "app", "lockfileVersion": 3, "packages": {"": {"name": "app", "version": "1.0.0"}, "node_modules/left-pad": {"version": "1.4.0"}}}`,
+			"Dockerfile":        "FROM node:20\nCMD [\"node\", \"server.js\"]\n",
+		},
 		// No project root (root discovery skips dot-directories), but a launch text the lane reads.
 		"no project root": {".github/actions/x/package.json": `{"scripts": {"build": "node -r foo/register x.js"}}`},
 	} {
@@ -101,6 +107,60 @@ func TestResolveInventoryReportsLaunchDigest(t *testing.T) {
 			}
 			if want := LaunchDigest(dir); want == "" || inv.LaunchDigest != want {
 				t.Fatalf("LaunchDigest = %q, want %q", inv.LaunchDigest, want)
+			}
+		})
+	}
+}
+
+// TestLaunchDigestFollowsTheLane: wherever a launch edit turns the lane's clear of a package into
+// a load, the digest moves with it, so PR inherit cannot keep the stale clear.
+func TestLaunchDigestFollowsTheLane(t *testing.T) {
+	const app = "const used = require('used');\nused.run();\n"
+	const purl = "pkg:npm/idle@1.0.0"
+	pkgs := func() []*depPkg {
+		return []*depPkg{closurePkg("used", map[string]string{"index.js": "exports.run = function run() {};\n"}), closurePkg("idle", nil)}
+	}
+	cases := []struct {
+		name       string
+		base, head map[string]string
+		noManifest bool
+	}{
+		{
+			name: "an extensionless file a script names",
+			base: map[string]string{"index.js": app, "server": "// nothing\n", "package.json": `{"name":"app","version":"1.0.0","scripts":{"start":"node ./server"}}`},
+			head: map[string]string{"index.js": app, "server": "require('idle');\n", "package.json": `{"name":"app","version":"1.0.0","scripts":{"start":"node ./server"}}`},
+		},
+		{
+			name: "an extensionless file a named file names",
+			base: map[string]string{"index.js": app, "server": "exec ./worker\n", "worker": "// nothing\n", "package.json": `{"name":"app","version":"1.0.0","scripts":{"start":"sh ./server"}}`},
+			head: map[string]string{"index.js": app, "server": "exec ./worker\n", "worker": "node -r idle index.js\n", "package.json": `{"name":"app","version":"1.0.0","scripts":{"start":"sh ./server"}}`},
+		},
+		{
+			name:       "a Dockerfile in a lockfile-only tree",
+			base:       map[string]string{"index.js": app, "Dockerfile": "FROM node:22\nCMD [\"node\",\"index.js\"]\n"},
+			head:       map[string]string{"index.js": app, "Dockerfile": "FROM node:22\nCMD [\"node\",\"-r\",\"idle\",\"index.js\"]\n"},
+			noManifest: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mk := func(files map[string]string) *depFixture {
+				f := newDepFixture(t, files, pkgs()...)
+				if tc.noManifest {
+					if err := os.Remove(filepath.Join(f.dir, "package.json")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return f
+			}
+			base, head := mk(tc.base), mk(tc.head)
+			_, lb := closureOf(t, base)
+			_, lh := closureOf(t, head)
+			if !lb.refutes(purl) || lh.refutes(purl) {
+				t.Fatalf("fixture: base clears idle = %v (vetoes %q), head clears it = %v (vetoes %q); want true, false", lb.refutes(purl), lb.Vetoes, lh.refutes(purl), lh.Vetoes)
+			}
+			if db, dh := LaunchDigest(base.dir), LaunchDigest(head.dir); db == "" || db == dh {
+				t.Errorf("digest base = %q, head = %q; want nonempty and different", db, dh)
 			}
 		})
 	}

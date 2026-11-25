@@ -384,7 +384,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// The baseline's rows were reached under its entry-point statement; under another they are
 	// assessed again, not inherited.
 	entryChanged := restated(baseline, req.AssessOptions)
-	// Its js rows were reached from the baseline's package.json scripts and bin; under others they
+	// Its js rows were reached from the baseline's JS launch surface; under another they
 	// are assessed again, not inherited.
 	launchChanged := relaunched(baseline.SBOM, req.PRSBOM)
 	cut := 0
@@ -597,9 +597,9 @@ func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
 	return jsRestated(stored, opts)
 }
 
-// relaunched reports whether the head's first-party package.json scripts or bin differ from the
-// ones the stored SBOM was resolved from. A stored SBOM written before the digest was recorded has
-// none, so it differs from any head that has a package.json.
+// relaunched reports whether the head's JS launch surface (jsanalysis.LaunchDigest) differs from
+// the one the stored SBOM was resolved from. A stored SBOM written before the digest was recorded
+// has none, so it differs from any head with a JS project.
 func relaunched(stored, head report.SBOM) bool {
 	return stored.JSLaunchDigest != head.JSLaunchDigest
 }

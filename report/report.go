@@ -276,7 +276,8 @@ type SBOM struct {
 	// lists, every launch file (container, CI, process-manager, shell and env files) and every
 	// interpreter-line file. That surface adds js entry points without changing any
 	// package, so a PR whose digest differs from its baseline's assesses its js rows again
-	// rather than inheriting them. Empty when the tree has no first-party package.json, or for
+	// rather than inheriting them. Empty when the tree has no first-party package.json and no
+	// lockfile the JS lane reads, or for
 	// an SBOM written before the digest was recorded.
 	JSLaunchDigest string `json:"js_launch_digest,omitempty"`
 }

@@ -234,8 +234,9 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 	b.AddPackages(sbom.Packages...)
 	b.SetRelationships(sbom.Relationships)
 	b.SetGoBuildList(sbom)
-	// The launch surface is read from this commit's tree, so it is this build's even when the
-	// packages are the prior's.
+	// The launch digest is this commit's, from this run's inventory, even when the packages are
+	// the prior's. A cut-short inventory carries none, which differs from any JS baseline's and
+	// so never inherits.
 	b.SetJSLaunchDigest(report.SBOM{JSLaunchDigest: launch})
 	b.AddPartiality(invNotes...)
 	mods := goModulesOf(sbom, invNotes)
@@ -386,8 +387,8 @@ type PRInheritResult struct {
 // work-set advisory the baseline holds no usable row for (none, or a scan_cut_short one),
 // which would otherwise have none.
 // Slow path: at least one package changed, the entry-point statement differs from the one the
-// baseline's refutations rest on, or a first-party package.json's scripts or bin differ from the
-// baseline's → re-run S1–S6 for the advisories whose package changed, every one under a restated
+// baseline's refutations rest on, or the JS launch surface (jsanalysis.LaunchDigest) differs from
+// the baseline's → re-run S1–S6 for the advisories whose package changed, every one under a restated
 // statement and every npm one under a changed launch surface, and merge those findings over the
 // inherited baseline findings.
 //

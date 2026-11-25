@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/packages"
@@ -21,7 +22,8 @@ func TestLofAsm_Read(t *testing.T) {
 	const asmAMD64 = "#ifdef GOAMD64_v3\n#define hasAVX2\n#endif\n"
 	for _, tc := range []struct {
 		name string
-		// files are the package directory's files; a .s file is one of its assembly files.
+		// files are the package directory's files; a .s file is one of its assembly files. @DIR@
+		// in a file stands for the package directory's absolute path.
 		files map[string]string
 		cgo   bool
 		// gone adds an assembly file that does not exist.
@@ -78,6 +80,8 @@ func TestLofAsm_Read(t *testing.T) {
 			text: []string{"f"}, refs: [][2]string{{"", "g"}}},
 		{name: "the package's header named like the toolchain's", files: map[string]string{"a.s": "#include \"textflag.h\"\nTEXT ·f(SB),NOSPLIT,$0\n\tRET\n", "textflag.h": textflag},
 			text: []string{"f"}, opaque: true},
+		{name: "a header by absolute path outside the toolchain", files: map[string]string{"a.s": "#include \"@DIR@/h.h\"\nTEXT ·f(SB),0,$0\n\tRET\n", "h.h": "#define CALLH CALL ·h(SB)\n"},
+			text: []string{"f"}, refs: [][2]string{{"", "h"}}, opaque: true},
 		{name: "the package's header without a directive", files: map[string]string{"a.s": "#include \"h.h\"\nTEXT ·f(SB),0,$0\n\tRET\n", "h.h": "// nothing\n"},
 			text: []string{"f"}},
 		{name: "the toolchain's stack maps", files: map[string]string{"a.s": "#include \"funcdata.h\"\nTEXT ·f(SB),0,$0\n\tGO_ARGS\n\tNO_LOCAL_POINTERS\n\tFUNCDATA $1, no_pointers_stackmap(SB)\n\tRET\n"},
@@ -152,7 +156,7 @@ func TestLofAsm_Read(t *testing.T) {
 			p := &lofPkg{path: "m/p", dir: dir}
 			for _, n := range slices.Sorted(maps.Keys(tc.files)) {
 				full := filepath.Join(dir, n)
-				if err := os.WriteFile(full, []byte(tc.files[n]), 0o644); err != nil {
+				if err := os.WriteFile(full, []byte(strings.ReplaceAll(tc.files[n], "@DIR@", filepath.ToSlash(dir))), 0o644); err != nil {
 					t.Fatal(err)
 				}
 				switch {

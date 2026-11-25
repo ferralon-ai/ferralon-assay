@@ -870,23 +870,18 @@ func evidenceResult(findings []vulnFinding, cg plugin.CallGraphResult, env []str
 // matched. An advisory spanning several modules refutes the first in path order; resultPerModule
 // refutes the others, and the gate matches each against the packages the advisory names.
 func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
-	var module, version string
-	for _, f := range findings {
-		if len(f.Trace) == 0 {
-			continue
-		}
-		fr := f.Trace[0]
-		if fr.Module == "" {
-			continue
-		}
-		if module == "" || fr.Module < module {
-			module, version = fr.Module, fr.Version
-		}
-	}
-	if module == "" {
+	modules := findingModules(findings)
+	if len(modules) == 0 {
 		return nil
 	}
-	imported := slices.ContainsFunc(findings, func(f vulnFinding) bool {
+	return moduleRefutationOf(findings, findings, modules[0], env)
+}
+
+// moduleRefutationOf states govulncheck's module-level evidence as a refutation of module, one of
+// the modules matched: the version the first of matched states, whether a vulnerable package is
+// imported in the run that found imports, and the platform and build tags the run used.
+func moduleRefutationOf(matched, imports []vulnFinding, module string, env []string) *plugin.Refutation {
+	imported := slices.ContainsFunc(imports, func(f vulnFinding) bool {
 		return len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Package != ""
 	})
 	use := "a vulnerable package is not imported"
@@ -896,9 +891,24 @@ func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 	return &plugin.Refutation{
 		Basis:   plugin.RefutationAnalyzerSymbolNotReached,
 		Package: "pkg:golang/" + module,
-		Detail: fmt.Sprintf("govulncheck matched the advisory to %s %s and found no call path to its vulnerable functions; %s (GOOS=%s GOARCH=%s, %s, tests excluded)",
-			module, version, use, envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH), tagsDetail(goflagsTags(env))),
+		Detail: fmt.Sprintf("govulncheck matched the advisory to %s %s and found no call path to its vulnerable functions; %s %s",
+			module, matchedVersion(matched, module), use, platformDetail(env)),
 	}
+}
+
+// matchedVersion is the first version findings state for module, or "".
+func matchedVersion(findings []vulnFinding, module string) string {
+	for _, f := range findings {
+		if len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Version != "" {
+			return f.Trace[0].Version
+		}
+	}
+	return ""
+}
+
+// platformDetail names the platform and build tags a run used.
+func platformDetail(env []string) string {
+	return fmt.Sprintf("(GOOS=%s GOARCH=%s, %s, tests excluded)", envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH), tagsDetail(goflagsTags(env)))
 }
 
 // tagsDetail names the build tags a run used.

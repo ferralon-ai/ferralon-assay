@@ -104,7 +104,7 @@ func TestResultPerModule(t *testing.T) {
 }
 
 // TestStatePluginScope_OtherModules: beside plugin_load:cgo_off every refutation the result holds
-// states the cgo scope, the first module's or not, and the program view's too, so a binary-scoped
+// states the cgo scope, the first module's or not, and each of the program view's too, so a binary-scoped
 // refutation is never less qualified than the library's; the input's list and view are left as they were.
 func TestStatePluginScope_OtherModules(t *testing.T) {
 	other := []plugin.Refutation{
@@ -125,7 +125,8 @@ func TestStatePluginScope_OtherModules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			view := &plugin.ProgramView{Module: "example.com/m", Binaries: []string{"."}, Refutation: plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/a", Detail: "no call path"}}
+			view := &plugin.ProgramView{Module: "example.com/m", Binaries: []string{"."}, Refutation: plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/a", Detail: "no call path"},
+				Refutations: []plugin.Refutation{{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/b", Detail: "no call path"}}}
 			in := plugin.ReachabilityResult{Partiality: plugin.Partial(tc.reasons...), Refutation: tc.first, Refutations: slices.Clone(other), ProgramView: view}
 			if tc.reasons == nil {
 				in.Partiality = plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonCgoFilesDropped, Package: "pkg:golang/example.com/cgomod"}}}
@@ -144,7 +145,10 @@ func TestStatePluginScope_OtherModules(t *testing.T) {
 			if got.ProgramView == nil || got.ProgramView.Refutation.Detail != tc.want[0] {
 				t.Errorf("program view = %+v, want its detail %q", got.ProgramView, tc.want[0])
 			}
-			if view.Refutation.Detail != "no call path" {
+			if len(got.ProgramView.Refutations) != 1 || got.ProgramView.Refutations[0].Detail != tc.want[0] {
+				t.Errorf("program view refutations = %+v, want each detail %q", got.ProgramView.Refutations, tc.want[0])
+			}
+			if view.Refutation.Detail != "no call path" || view.Refutations[0].Detail != "no call path" {
 				t.Error("the input program view was changed in place")
 			}
 			if (got.Refutation == nil) != (tc.first == nil) {

@@ -3545,10 +3545,11 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 	if sink != "" {
-		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, GoWork: goWork.File, Sinks: []string{sink}, DependencyCache: depCache})
+		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, GoWork: goWork.File, Sinks: taintSinks(sink, reachOut.Paths), DependencyCache: depCache})
 		if err != nil {
 			return err
 		}
+		taint = taintOntoReachPaths(taint, sink, reachOut.Paths)
 		td := taintDiscovery{SchemaVersion: "tegron.taint.v1", Sink: sink, Result: taint}
 		if _, err := PutArtifact(store, c, s.Name(), artifact.TypeTaint, "taint (discovery, path-presence)", td); err != nil {
 			return err
@@ -3707,6 +3708,80 @@ type taintDiscovery struct {
 	SchemaVersion string             `json:"schema_version"`
 	Sink          string             `json:"sink"`
 	Result        plugin.TaintResult `json:"result"`
+}
+
+// taintFramePrecisionNote qualifies a taint path that taintOntoReachPaths built.
+const taintFramePrecisionNote = "a path whose taint was found at a call before the sink is taint up to that call and call-path presence from it to the sink: no tainted value was followed into the sink itself"
+
+// taintSinks is what the taint op is asked about for sink: the sink itself, then every frame
+// before the sink of the reachability paths. A lane that follows values only through the code
+// it builds never sees a value arrive at a sink inside a dependency, so the call that hands the
+// value to the dependency is the last place it can answer.
+func taintSinks(sink string, paths []plugin.ReachPath) []string {
+	out := []string{sink}
+	seen := map[string]bool{sink: true, "": true}
+	for _, p := range paths {
+		for _, f := range p.Trace[:max(len(p.Trace)-1, 0)] {
+			if !seen[f.SCIP] {
+				seen[f.SCIP] = true
+				out = append(out, f.SCIP)
+			}
+		}
+	}
+	return out
+}
+
+// taintOntoReachPaths is the taint result recorded for sink. A path the lane found to the sink
+// itself stands alone: the result then holds only those, as if nothing else had been asked. With
+// none, each path found to a frame of a reachability path becomes a path to that reachability
+// path's sink. Where a reachability path holds both the taint's ingress and, after it, the frame,
+// that is the path from the ingress on; else it is the taint's ingress followed by the first
+// reachability path with the frame, from the frame on. Such a path says less than one to the
+// sink, and the result's precision note says so. Paths keep the lane's order, each built once.
+func taintOntoReachPaths(res plugin.TaintResult, sink string, paths []plugin.ReachPath) plugin.TaintResult {
+	var direct, built []plugin.ReachPath
+	seen := map[string]bool{}
+	for _, tp := range res.Paths {
+		if tp.Sink.SCIP == sink {
+			direct = append(direct, tp)
+			continue
+		}
+		var held, joined []plugin.ReachPath
+		for _, p := range paths {
+			k := slices.IndexFunc(p.Trace[:max(len(p.Trace)-1, 0)], func(f plugin.Symbol) bool { return f.SCIP == tp.Sink.SCIP })
+			if k < 0 {
+				continue
+			}
+			to := p.Trace[len(p.Trace)-1]
+			if i := slices.IndexFunc(p.Trace[:k+1], func(f plugin.Symbol) bool { return f.SCIP == tp.Ingress.SCIP }); i >= 0 {
+				held = append(held, plugin.ReachPath{Sink: to, Ingress: tp.Ingress, Trace: slices.Clone(p.Trace[i:])})
+			} else if len(joined) == 0 {
+				joined = append(joined, plugin.ReachPath{Sink: to, Ingress: tp.Ingress, Trace: append([]plugin.Symbol{tp.Ingress}, p.Trace[k:]...)})
+			}
+		}
+		if len(held) == 0 {
+			held = joined
+		}
+		for _, bp := range held {
+			key := ""
+			for _, f := range bp.Trace {
+				key += f.SCIP + "\n"
+			}
+			if !seen[key] {
+				seen[key] = true
+				built = append(built, bp)
+			}
+		}
+	}
+	res.Paths = direct
+	if len(direct) == 0 && len(built) > 0 {
+		res.Paths = built
+		if res.PrecisionNote != "" {
+			res.PrecisionNote += "; "
+		}
+		res.PrecisionNote += taintFramePrecisionNote
+	}
+	return res
 }
 
 // resolvedSinks returns every resolved sink SCIP id from the upstream vulnerable-symbol artifact,

@@ -431,6 +431,9 @@ type ResolveSymbolsRequest struct {
 type ResolveVersionsRequest struct {
 	BuildDir   string `json:"build_dir"`
 	Coordinate string `json:"coordinate"` // e.g. "com.fasterxml.jackson.core:jackson-databind"
+	// Strict asks for strict mode, as on CallGraphRequest: the result rests on no assumption the lane
+	// names in an Annotation, and the lane declares a limit in its place.
+	Strict bool `json:"strict,omitempty"`
 }
 
 // ResolvedDependency is one declared dependency coordinate with its resolved version.

@@ -844,8 +844,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	})
 	b.AddPackages(prior.SBOM.Packages...)
 	// CVE-watch re-resolves no dependencies; the prior whole-graph SBOM (packages AND
-	// relationships) is reused verbatim, so the stored inventory does not flatten
-	// across scheduled watches.
+	// relationships, the Go build list and the JS launch digest) is reused verbatim, so the
+	// stored inventory does not flatten across scheduled watches and still describes one tree.
 	b.SetRelationships(prior.SBOM.Relationships)
 	b.SetGoBuildList(prior.SBOM)
 	b.SetJSLaunchDigest(prior.SBOM)

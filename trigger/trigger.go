@@ -312,9 +312,10 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 }
 
 // PRInheritRequest configures a PR-adjacent run. It diffs the PR's resolved SBOM
-// against the stored baseline; if the dependency set is unchanged it inherits the
-// baseline Report (the fast path — no re-analysis), otherwise it re-analyzes the
-// affected slice (the advisories touching changed packages). Either way the result
+// against the stored baseline; if the dependency set and the JS launch digest are
+// unchanged it inherits the baseline Report (the fast path — no re-analysis), otherwise
+// it re-analyzes the affected slice (the advisories touching changed packages, and every
+// npm row when the launch digest moved). Either way the result
 // is returned to the caller and the stored baseline is left untouched.
 type PRInheritRequest struct {
 	// Subject is the PR head's neutral identity.

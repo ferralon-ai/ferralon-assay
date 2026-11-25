@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jsanalysis"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -26,68 +27,6 @@ func launchTree(t *testing.T, files map[string]string) string {
 		}
 	}
 	return dir
-}
-
-// TestJSLaunchDigest: the digest moves with the scripts and bin of a first-party package.json and
-// with nothing else.
-func TestJSLaunchDigest(t *testing.T) {
-	const root = `{"name": "app", "version": "1.0.0", "scripts": {"start": "node server.js", "build": "tsc"}, "bin": {"app": "cli.js"}}`
-	base := map[string]string{"package.json": root}
-	with := func(over map[string]string) map[string]string {
-		m := map[string]string{}
-		for k, v := range base {
-			m[k] = v
-		}
-		for k, v := range over {
-			m[k] = v
-		}
-		return m
-	}
-	cases := []struct {
-		name  string
-		files map[string]string
-		same  bool
-	}{
-		{"a script command changed", with(map[string]string{"package.json": `{"name": "app", "version": "1.0.0", "scripts": {"start": "node other.js", "build": "tsc"}, "bin": {"app": "cli.js"}}`}), false},
-		{"a script added", with(map[string]string{"package.json": `{"name": "app", "version": "1.0.0", "scripts": {"start": "node server.js", "build": "tsc", "postinstall": "node setup.js"}, "bin": {"app": "cli.js"}}`}), false},
-		{"a bin target changed", with(map[string]string{"package.json": `{"name": "app", "version": "1.0.0", "scripts": {"start": "node server.js", "build": "tsc"}, "bin": {"app": "bin/cli.js"}}`}), false},
-		{"bin as a string", with(map[string]string{"package.json": `{"name": "app", "version": "1.0.0", "scripts": {"start": "node server.js", "build": "tsc"}, "bin": "cli.js"}`}), false},
-		{"a workspace member's script changed", with(map[string]string{"packages/web/package.json": `{"scripts": {"start": "vite"}}`}), false},
-		{"a first-party package.json moved", map[string]string{"sub/package.json": root}, false},
-		{"unparsable package.json", with(map[string]string{"package.json": `{"scripts": {`}), false},
-		{"keys reordered and reformatted", with(map[string]string{"package.json": "{\n  \"bin\": {\"app\": \"cli.js\"},\n  \"scripts\": {\"build\": \"tsc\", \"start\": \"node server.js\"},\n  \"version\": \"1.0.0\", \"name\": \"app\"\n}"}), true},
-		{"a non-launch field changed", with(map[string]string{"package.json": `{"name": "app", "version": "2.0.0", "dependencies": {"left-pad": "^1.3.0"}, "scripts": {"start": "node server.js", "build": "tsc"}, "bin": {"app": "cli.js"}}`}), true},
-		{"a node_modules package.json", with(map[string]string{"node_modules/left-pad/package.json": `{"scripts": {"install": "node evil.js"}}`}), true},
-		{"a dot-directory package.json", with(map[string]string{".cache/x/package.json": `{"scripts": {"start": "x"}}`}), true},
-		{"a file that is not package.json", with(map[string]string{"server.js": "console.log(1)"}), true},
-	}
-	want := jsLaunchDigest(launchTree(t, base))
-	if want == "" {
-		t.Fatal("digest of a tree with a package.json is empty")
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := jsLaunchDigest(launchTree(t, tc.files))
-			if (got == want) != tc.same {
-				t.Errorf("digest equal to the base tree's = %v, want %v", got == want, tc.same)
-			}
-		})
-	}
-	t.Run("no package.json", func(t *testing.T) {
-		if got := jsLaunchDigest(launchTree(t, map[string]string{"go.mod": "module m\n"})); got != "" {
-			t.Errorf("digest = %q, want empty", got)
-		}
-	})
-	t.Run("only a node_modules package.json", func(t *testing.T) {
-		if got := jsLaunchDigest(launchTree(t, map[string]string{"node_modules/x/package.json": `{"scripts": {"a": "b"}}`})); got != "" {
-			t.Errorf("digest = %q, want empty", got)
-		}
-	})
-	t.Run("no dir", func(t *testing.T) {
-		if got := jsLaunchDigest(""); got != "" {
-			t.Errorf("digest = %q, want empty", got)
-		}
-	})
 }
 
 // TestRelaunched_PRInherit: tracker#896. A PR that edits only package.json scripts or bin leaves
@@ -242,7 +181,48 @@ func TestBaselineRecordsJSLaunchDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildBaselineReport: %v", err)
 	}
-	if want := jsLaunchDigest(dir); want == "" || rep.SBOM.JSLaunchDigest != want {
+	if want := jsanalysis.LaunchDigest(dir); want == "" || rep.SBOM.JSLaunchDigest != want {
 		t.Fatalf("baseline js_launch_digest = %q, want %q", rep.SBOM.JSLaunchDigest, want)
+	}
+}
+
+// TestRelaunched: a baseline written before the digest was recorded carries none, so any head that
+// has one differs from it and its first PR re-analyzes rather than inheriting.
+func TestRelaunched(t *testing.T) {
+	for _, tc := range []struct {
+		stored, head string
+		want         bool
+	}{
+		{"", "d", true},
+		{"d", "", true},
+		{"d", "e", true},
+		{"d", "d", false},
+		{"", "", false},
+	} {
+		if got := relaunched(report.SBOM{JSLaunchDigest: tc.stored}, report.SBOM{JSLaunchDigest: tc.head}); got != tc.want {
+			t.Errorf("relaunched(%q, %q) = %v, want %v", tc.stored, tc.head, got, tc.want)
+		}
+	}
+}
+
+// TestResolveSBOMCarriesJSLaunchDigest: the PR head's SBOM, which the PR-inherit decision diffs,
+// carries the digest the plugin reported for the head tree.
+func TestResolveSBOMCarriesJSLaunchDigest(t *testing.T) {
+	dir := launchTree(t, map[string]string{
+		"package.json":      `{"name": "app", "version": "1.0.0", "scripts": {"start": "node server.js"}}`,
+		"package-lock.json": `{"name": "app", "lockfileVersion": 3, "packages": {"": {"name": "app", "version": "1.0.0"}, "node_modules/left-pad": {"version": "1.4.0"}}}`,
+	})
+	sbom, _, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
+		Codebase: assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: []pipeline.AssessOption{
+			pipeline.WithCheckout(fixedCheckout{dir: dir, lang: "js"}),
+			pipeline.WithPlugin(multiCopyJSPlugin{inventory: plugin.Complete()}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResolveSBOM: %v", err)
+	}
+	if want := jsanalysis.LaunchDigest(dir); want == "" || sbom.JSLaunchDigest != want {
+		t.Fatalf("js_launch_digest = %q, want %q", sbom.JSLaunchDigest, want)
 	}
 }

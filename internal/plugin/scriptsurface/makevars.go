@@ -214,7 +214,15 @@ func makeListRest(s string) string {
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; c {
 		case '#':
+			// A # inside a word (this.#x, $#, ${#) is no comment. An opener inside a comment
+			// still counts, so a skipped # never lets a later closer end the list early.
+			if i > 0 && s[i-1] != ' ' && s[i-1] != '\t' && s[i-1] != '\n' {
+				continue
+			}
 			for i++; i < len(s) && s[i] != '\n'; i++ {
+				if s[i] == '(' || s[i] == '[' || s[i] == '{' {
+					depth++
+				}
 			}
 		case '"', '\'', '`':
 			for i++; i < len(s) && s[i] != c; i++ {

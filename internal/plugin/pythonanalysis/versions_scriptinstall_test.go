@@ -251,6 +251,7 @@ func TestResolveVersions_MakeVariableInstaller(t *testing.T) {
 		{"multi-line list-form make -e after a call", "PIP = pip\n" + recipe, map[string]string{"build.py": "import os, subprocess\nsubprocess.run([\n    \"make\",\n    f\"-j{os.cpu_count()}\",\n    \"-e\",\n    \"install\",\n])\n"}, false},
 		{"multi-line list-form make sets the variable after a call", "PIP = pip\n" + recipe, map[string]string{"build.py": "import os, subprocess\nsubprocess.run([\n    \"make\",\n    \"-j\", str(os.cpu_count()),\n    \"PIP=venv/bin/pip\",\n])\n"}, false},
 		{"multi-line list-form make -e after a bracket in an argument", "PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run([\"make\",\n    \"MSG=(ci]\",\n    \"-e\"])\n"}, false},
+		{"multi-line list-form make -e after a comment with a bracket", "PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run([\n    \"make\",  # 1) build\n    \"-e\",\n])\n"}, false},
 		{"multi-line list-form make run ends at its list", "PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run([\n    \"make\",\n    \"install\",\n])\nprint(\"-e\", \"DEBUG=1\")\n"}, true},
 		{"make.exe -e", "PIP = pip\n" + recipe, map[string]string{"build.ps1": "make.exe -e install\n"}, false},
 		{"mingw32-make -e", "PIP = pip\n" + recipe, map[string]string{"build.bat": "mingw32-make -e install\n"}, false},

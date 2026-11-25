@@ -207,11 +207,15 @@ func (v *Veto) noteMakeOverrides(src string) {
 }
 
 // makeListRest returns the rest of a list-form argv: the text up to the bracket that closes
-// the list, past nested calls and brackets and over quoted strings, or all of s when none does.
+// the list, past nested calls and brackets and over quoted strings and # comments, or all of s
+// when none does.
 func makeListRest(s string) string {
 	depth := 0
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; c {
+		case '#':
+			for i++; i < len(s) && s[i] != '\n'; i++ {
+			}
 		case '"', '\'', '`':
 			for i++; i < len(s) && s[i] != c; i++ {
 				if s[i] == '\\' {

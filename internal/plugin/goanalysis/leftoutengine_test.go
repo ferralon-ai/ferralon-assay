@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,6 +27,8 @@ type lofResult struct {
 	reasons  []string
 	engine   *lofEngine
 	facts    map[string]*lofFacts
+	// vulnerable holds the refuted module's vulnerable packages: the targets a link counts on.
+	vulnerable []string
 }
 
 // declaresExcluded reports whether reasons declare excluded_files or a localisation of it.
@@ -105,7 +108,7 @@ func lofRunCtx(t *testing.T, base context.Context, dir, module string, symbols m
 		}
 		facts[path] = f
 	}
-	return lofResult{withheld: withheld, reasons: res.Partiality.Reasons, engine: e, facts: facts}
+	return lofResult{withheld: withheld, reasons: res.Partiality.Reasons, engine: e, facts: facts, vulnerable: vulnerable}
 }
 
 // TestLeftOutEngine_Constructs: each way code the build left out can run code of a module, and each
@@ -217,6 +220,22 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		{"a left-out bodyless function's body is pushed by linkname from a function that calls the symbol", merge(x(vulnOnly, "func pushed()\n\nfunc init() { pushed(); vuln.Safe() }\n"), map[string]string{
 			"lib/push.go": "package lib\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname push example.com/m.pushed\nfunc push() { vuln.Bad() }\n",
 		}), badFunc, true, "", false},
+		// plug is in the vulnerable module and not loaded; lib.Stub is loaded and bodyless.
+		{"a left-out file links a package that pushes by linkname onto a loaded bodyless function from a function that calls the symbol", merge(x("\t_ \"example.com/v/plug\"\n"+libOnly, "func init() { lib.Stub() }\n"), map[string]string{
+			"lib/stub.go":     "package lib\n\nfunc Stub()\n",
+			"_v/plug/plug.go": "package plug\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl example.com/m/lib.Stub\nfunc impl() { vuln.Bad() }\n",
+		}), badFunc, true, "", false},
+		{"a left-out file links a package that pushes by linkname onto a loaded bodyless function from a function that does not reach the symbol", merge(x("\t_ \"example.com/v/plug\"\n"+libOnly, "func init() { lib.Stub() }\n"), map[string]string{
+			"lib/stub.go":     "package lib\n\nfunc Stub()\n",
+			"_v/plug/plug.go": "package plug\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/v/vuln\"\n)\n\n//go:linkname impl example.com/m/lib.Stub\nfunc impl() { vuln.Safe() }\n",
+		}), badFunc, false, "", false},
+		// The build loads neither vuln nor anything importing it; lib pushes the body of vuln.Pushed.
+		{"a left-out file calls a bodyless function of the unloaded vulnerable package whose body a loaded package pushes", map[string]string{
+			"main.go":         "package main\n\nfunc main() {}\n",
+			"lib/lib.go":      "package lib\n\nimport _ \"unsafe\"\n\n//go:linkname push example.com/v/vuln.Pushed\nfunc push() {}\n",
+			"_v/vuln/stub.go": "package vuln\n\nfunc Pushed()\n",
+			"x.go":            off("package main\n\nimport \"example.com/v/vuln\"\n\nfunc init() { vuln.Pushed() }\n"),
+		}, badFunc, true, lofLinkname, false},
 		{"a left-out function pulls by linkname a symbol nothing declares", x("\t_ \"unsafe\"\n\t_ \"example.com/v/vuln\"",
 			"//go:linkname pulled example.com/v/vuln.Nowhere\nfunc pulled()\n\nfunc init() { pulled() }\n"), nil, true, lofLinkname, false},
 		// The linker takes the dynamic import only when no Go code or assembly defines the symbol.
@@ -1216,11 +1235,39 @@ func TestLeftOutEngine_StandardLibrary(t *testing.T) {
 	}
 }
 
+// TestLofWalk_Link: a //go:linkname raised inside the toolchain's own packages fails closed for a
+// standard-library refutation only; one raised elsewhere names its target for the row to decide.
+func TestLofWalk_Link(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		std    bool
+		fcStd  []string
+		linkTo []string
+	}{
+		{"a link raised in a standard-library package", true, []string{lofLinkname}, nil},
+		{"a link raised in a module package", false, nil, []string{"example.com/v/vuln"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			k := &lofWalk{out: newLofClosure()}
+			k.link(&lofPkg{path: "example.com/m/lib", std: tc.std}, "example.com/v/vuln")
+			if !slices.Equal(k.out.fcStd, tc.fcStd) || len(k.out.fc) > 0 {
+				t.Errorf("fails closed on %v, standard library only on %v; want %v only for the standard library", k.out.fc, k.out.fcStd, tc.fcStd)
+			}
+			if got := slices.Sorted(maps.Keys(k.out.linkTo)); !slices.Equal(got, tc.linkTo) {
+				t.Errorf("link targets = %v, want %v", got, tc.linkTo)
+			}
+		})
+	}
+}
+
 // lofFileWith returns a left-out file whose closure, or link walk, fails closed on item. A
-// //go:linkname fails closed on its target, which the reasons check holds to a counting package.
+// well-formed //go:linkname counts as a linkname item only when it binds a vulnerable package.
 func lofFileWith(r lofResult, item string) string {
+	linksVulnerable := func(f *lofFacts) bool {
+		return slices.ContainsFunc(f.LinkTo, func(id int32) bool { return slices.Contains(r.vulnerable, r.engine.Strs[id]) })
+	}
 	for path, f := range r.facts {
-		if slices.Contains(f.FC, item) || slices.Contains(f.FCStd, item) || slices.Contains(f.LinkFC, item) || item == lofLinkname && len(f.LinkTo) > 0 {
+		if slices.Contains(f.FC, item) || slices.Contains(f.FCStd, item) || slices.Contains(f.LinkFC, item) || item == lofLinkname && linksVulnerable(f) {
 			return path
 		}
 	}

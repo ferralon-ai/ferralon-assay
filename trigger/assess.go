@@ -1631,7 +1631,8 @@ var outsideBuildExempt = map[string]bool{
 	plugin.PartialReasonReflectiveCall: true,
 	// The module graph does not depend on GOOS, GOARCH or build tags, and the module search reads
 	// every .go file whatever its build constraints. The assembly, linkname targets and C a left-out
-	// file reaches call only Go code compiled into the build, which comes from a listed module.
+	// file reaches call only Go code compiled into the build, which comes from a listed module. A name
+	// it cannot resolve is its own package's, an import's or C's, so it too reaches only that code.
 	plugin.PartialReasonExcludedFiles:                true,
 	plugin.PartialReasonExcludedFilesAssembly:        true,
 	plugin.PartialReasonExcludedFilesLinkname:        true,

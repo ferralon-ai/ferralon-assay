@@ -39,19 +39,20 @@ func TestResultPerModule(t *testing.T) {
 		beside   []string
 		extra    map[string]string
 		scoped   bool
+		withheld string // the limit a withheld module brings to the result, when one is
 	}{
-		{"one module", []vulnFinding{at(a, "")}, map[string][]string{a: {"Bad"}}, "pkg:golang/" + a, nil, nil, false},
-		{"two modules, path order", []vulnFinding{at(b, ""), at(a, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false},
+		{"one module", []vulnFinding{at(a, "")}, map[string][]string{a: {"Bad"}}, "pkg:golang/" + a, nil, nil, false, ""},
+		{"two modules, path order", []vulnFinding{at(b, ""), at(a, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false, ""},
 		{"two modules, another platform's file calls the second", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b},
-			map[string]string{"main_windows.go": "package main\n\nimport \"example.com/bmod\"\n\nfunc init() { bmod.Bad() }\n"}, true},
+			map[string]string{"main_windows.go": "package main\n\nimport \"example.com/bmod\"\n\nfunc init() { bmod.Bad() }\n"}, true, ""},
 		// The linkname binds the second module, so it withholds that module's refutation alone.
 		{"two modules, a linkname file of another platform calls the second", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, nil,
-			map[string]string{"main_windows.go": "package main\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/bmod\"\n)\n\n//go:linkname x example.com/bmod.Bad\nfunc x()\n\nfunc init() { bmod.Bad(); x() }\n"}, false},
+			map[string]string{"main_windows.go": "package main\n\nimport (\n\t_ \"unsafe\"\n\n\t\"example.com/bmod\"\n)\n\n//go:linkname x example.com/bmod.Bad\nfunc x()\n\nfunc init() { bmod.Bad(); x() }\n"}, false, plugin.PartialReasonExcludedFilesLinkname},
 		{"two modules, a linkname file of another platform binds the first", []vulnFinding{at(a, ""), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", []string{"pkg:golang/" + b},
-			map[string]string{"main_windows.go": "package main\n\nimport (\n\t_ \"unsafe\"\n\n\t_ \"example.com/amod\"\n)\n\n//go:linkname x example.com/amod.Bad\nfunc x()\n\nfunc init() { x() }\n"}, false},
-		{"two modules, only the second's package imported", []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: a, Version: "v0.0.0"}}}, at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false},
-		{"two modules, a symbol finding in the first", []vulnFinding{at(a, "Bad"), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false},
-		{"two modules, a symbol finding in the second", []vulnFinding{at(a, ""), at(b, "Bad")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false},
+			map[string]string{"main_windows.go": "package main\n\nimport (\n\t_ \"unsafe\"\n\n\t_ \"example.com/amod\"\n)\n\n//go:linkname x example.com/amod.Bad\nfunc x()\n\nfunc init() { x() }\n"}, false, plugin.PartialReasonExcludedFilesLinkname},
+		{"two modules, only the second's package imported", []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: a, Version: "v0.0.0"}}}, at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "pkg:golang/" + a, []string{"pkg:golang/" + b}, nil, false, ""},
+		{"two modules, a symbol finding in the first", []vulnFinding{at(a, "Bad"), at(b, "")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false, ""},
+		{"two modules, a symbol finding in the second", []vulnFinding{at(a, ""), at(b, "Bad")}, map[string][]string{a: {"Bad"}, b: {"Bad"}}, "", nil, nil, false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -94,6 +95,9 @@ func TestResultPerModule(t *testing.T) {
 				if want := tt.findings[0].Trace[0].Package != "" || tt.findings[0].Trace[0].Module != a; imported != want {
 					t.Errorf("the first module's refutation says its package is imported = %v, want %v (detail %q)", imported, want, res.Refutation.Detail)
 				}
+			}
+			if tt.withheld != "" && (!slices.Contains(res.Partiality.Reasons, tt.withheld) || res.Partiality.Complete) {
+				t.Errorf("result does not declare %s: %+v", tt.withheld, res.Partiality)
 			}
 			const scope = plugin.PartialReasonExcludedFilesBuildConstraint
 			if declared := slices.Contains(res.Partiality.Reasons, scope); declared != tt.scoped || declared && res.Partiality.Complete {

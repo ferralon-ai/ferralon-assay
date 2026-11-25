@@ -1256,7 +1256,8 @@ func (k *lofWalk) link(p *lofPkg, target string) {
 // touch links what compiling f links: the packages it imports, whose initializers run, and the
 // targets of its //go:linkname directives. A malformed //go:linkname directive fails closed, and so
 // does a cgo file's #include: the walk reads neither the link's symbol binding nor C. A well-formed
-// one names its target (link).
+// one names its target (link), and a local function with a body pushes it there, so the walk
+// follows that body as the target's, whether or not the build loaded the target.
 func (k *lofWalk) touch(f *lofFile) {
 	if k.touched[f] {
 		return
@@ -1278,6 +1279,11 @@ func (k *lofWalk) touch(f *lofFile) {
 	sort.Strings(locals)
 	for _, l := range locals {
 		k.remote(f.pkg, f.links[l])
+		for _, d := range f.decls {
+			if fn, ok := d.node.(*ast.FuncDecl); ok && d.recv == "" && d.name == l && fn.Body != nil {
+				k.push(d)
+			}
+		}
 	}
 }
 
@@ -1618,8 +1624,8 @@ func (k *lofWalk) remote(from *lofPkg, remote string) {
 // bodyless resolves a function declared without a body: a //go:linkname pull names its body (an
 // edge touch follows), the host provides it (//go:wasmimport: foreign code, a dynamic call), its
 // package's assembly or a push from another package provides it, or the compiler expands it inline.
-// Assembly and a push fail closed, as does anything else: assembly is not read, so it may call any
-// function value, and a push binds through the link.
+// Assembly fails closed, as does anything else unresolved: assembly is not read, so it may call any
+// function value. A push is followed through the pushing body and names p as its target (link).
 func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 	p := d.file.pkg
 	if d.file.links[d.name] != "" {

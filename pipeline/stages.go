@@ -2956,10 +2956,17 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	}
 	// A disputed row cannot be re-cleared here: a version-axis disqualification needs a resolved
 	// version, and fixCommitClears refuses any.
+	// fixCommitAbsent records that the complete history lacks the commit the advisory names as its
+	// fix. A release tag in that history then cannot be read as carrying the fix.
+	var fixCommitAbsent bool
 	if !disqualified {
 		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) {
 			cleared, unanswered := fixCommitClears(rngs, rangeKnown, axis.Versions, others,
-				func() historyAnswer { return headContainsCommit(ctx, buildDir, commit) },
+				func() historyAnswer {
+					a := headContainsCommit(ctx, buildDir, commit)
+					fixCommitAbsent = a == historyLacks
+					return a
+				},
 				func(lower string) bool {
 					return rangeEnteredBeforeFix(ctx, buildDir, rootGoModule(store, c.ID, buildDir), commit, lower)
 				})
@@ -2972,7 +2979,7 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 			}
 		}
 	}
-	if !disqualified && !s.strict && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) {
+	if !disqualified && !s.strict && !fixCommitAbsent && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) {
 		if mod := rootGoModule(store, c.ID, buildDir); mod != "" {
 			var tag string
 			if ancestorReleaseClears(rngs, rangeKnown, axis.Versions, others, func() (string, bool) {

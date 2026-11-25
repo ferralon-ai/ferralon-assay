@@ -87,12 +87,15 @@ func withoutLoad(ctx context.Context, res plugin.ReachabilityResult, buildDir st
 		return res
 	}
 	key := append(loadCacheKey(ctx, buildDir), "entryroots", string(stmt))
+	if strictFrom(ctx) {
+		key = append(key, "strict")
+	}
 	b, err := runCached(ctx, "entryroots", key, func() ([]byte, error) {
 		loaded, err := load()
 		if err != nil {
 			return nil, err
 		}
-		return json.Marshal(resolveEntrypoints(loaded.Packages, entry, buildDir).disclosure(loaded.Packages, buildDir))
+		return json.Marshal(resolveEntrypoints(loaded.Packages, entry, buildDir, strictFrom(ctx)).disclosure(loaded.Packages, buildDir))
 	})
 	if err != nil {
 		return res

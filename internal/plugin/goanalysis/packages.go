@@ -92,7 +92,8 @@ type LoadResult struct {
 }
 
 // modDirectives are the go and toolchain lines, as written, of the go.mod and go.work files the go
-// command resolves in a directory. read is false when it named no go.mod or a file did not parse.
+// command resolves in a directory. read is false when it named no go.mod, GOFLAGS sets -modfile, or a
+// file could not be read or parsed.
 type modDirectives struct {
 	read       bool
 	goLines    []string
@@ -102,18 +103,23 @@ type modDirectives struct {
 // readModDirectives reads the go and toolchain lines of the go.mod and go.work the go command in
 // buildDir resolves under env.
 func readModDirectives(ctx context.Context, buildDir string, env []string) modDirectives {
-	cmd := exec.CommandContext(ctx, "go", "env", "GOMOD", "GOWORK")
+	cmd := exec.CommandContext(ctx, "go", "env", "GOMOD", "GOWORK", "GOFLAGS")
 	cmd.Dir, cmd.Env = buildDir, env
 	out, err := cmd.Output()
 	if err != nil {
 		return modDirectives{}
 	}
-	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	if len(lines) != 2 {
+	// One line per variable; an empty GOFLAGS is an empty last line.
+	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(lines) != 3 {
 		return modDirectives{}
 	}
 	gomod, gowork := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
 	if gomod == "" || gomod == os.DevNull {
+		return modDirectives{}
+	}
+	// -modfile makes the go command read another file in place of the go.mod GOMOD names.
+	if strings.Contains(lines[2], "-modfile") {
 		return modDirectives{}
 	}
 	d := modDirectives{read: true}
@@ -149,10 +155,13 @@ func readModDirectives(ctx context.Context, buildDir string, env []string) modDi
 }
 
 // releaseBound is what is established about the Go release a build compiles under: exactly release,
-// or, when exact is false, release or any later one.
+// or, when exact is false, release or any later one. It decides the goN.M build tags a build
+// satisfies (excludes). std, when not nil, is the release whose standard library source the build is
+// taken to compile against, which backs the absence of a standard library symbol.
 type releaseBound struct {
 	release goRelease
 	exact   bool
+	std     *goRelease
 }
 
 // buildRelease returns what is established about the Go release the build compiles under, or nil
@@ -160,15 +169,18 @@ type releaseBound struct {
 // and names the same minor, which alone decides the goN.M build tags a build satisfies. With no
 // subject toolchain stated, the load's release is taken as the build's when it satisfies the
 // subject's binding floor and no go.mod or go.work toolchain line names another release
-// (runningIsBuild). Otherwise the binding floor, when the caller holds one, bounds it from below.
+// (runningIsBuild) for its standard library only: a CI toolchain at the floor still decides the
+// goN.M tags of the build's own files, so the binding floor bounds those. Otherwise the binding floor,
+// when the caller holds one, bounds the release from below.
 func (l *LoadResult) buildRelease() *releaseBound {
 	loaded, okLoaded := parseGoRelease(l.goVersion)
 	build, okBuild := parseGoRelease(l.buildGoVersion)
 	if okLoaded && okBuild && build.major == loaded.major && build.minor == loaded.minor {
-		return &releaseBound{release: loaded, exact: true}
+		return &releaseBound{release: loaded, exact: true, std: &loaded}
 	}
 	if okLoaded && l.buildGoVersion == "" && l.runningIsBuild(loaded) {
-		return &releaseBound{release: loaded, exact: true}
+		floor, _ := parseGoRelease(l.buildGoFloor)
+		return &releaseBound{release: floor, std: &loaded}
 	}
 	if floor, ok := parseGoRelease(l.buildGoFloor); ok {
 		return &releaseBound{release: floor}

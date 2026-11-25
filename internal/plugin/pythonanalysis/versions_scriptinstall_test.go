@@ -254,7 +254,7 @@ func TestResolveVersions_MakeVariableInstaller(t *testing.T) {
 		{"multi-line list-form make -e after a comment with a bracket", "PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run([\n    \"make\",  # 1) build\n    \"-e\",\n])\n"}, false},
 		{"multi-line list-form make -e after a private member call", "PIP = pip\n" + recipe, map[string]string{"build.js": "spawnSync('make', [\n  ...this.#args({\n    a: 1}),\n  '-e',\n]);\n"}, false},
 		{"list-form make -e after a multi-line private member call", "PIP = pip\n" + recipe, map[string]string{"build.js": "execFileSync('make', this.#base(\n  opts).concat(['-e']));\n"}, false},
-		{"multi-line list-form make run ends at its list","PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run([\n    \"make\",\n    \"install\",\n])\nprint(\"-e\", \"DEBUG=1\")\n"}, true},
+		{"multi-line list-form make run ends at its list", "PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run([\n    \"make\",\n    \"install\",\n])\nprint(\"-e\", \"DEBUG=1\")\n"}, true},
 		{"make.exe -e", "PIP = pip\n" + recipe, map[string]string{"build.ps1": "make.exe -e install\n"}, false},
 		{"mingw32-make -e", "PIP = pip\n" + recipe, map[string]string{"build.bat": "mingw32-make -e install\n"}, false},
 		{"$MAKE -e", "PIP = pip\n" + recipe, map[string]string{"install.sh": "MAKE=make\n$MAKE -e install\n"}, false},

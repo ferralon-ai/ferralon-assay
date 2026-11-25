@@ -212,26 +212,36 @@ func (v *Veto) noteMakeOverrides(src string) {
 
 // makeListRest returns the rest of a list-form argv: the text up to the bracket that closes
 // the list, past nested calls and brackets and over quoted strings, or all of s when none
-// does. Outside strings a list argv holds only names, calls, brackets, commas, spreads and
-// whitespace; any other byte may open a comment or construct in some language that leaves
+// does. Outside strings a list argv holds only names, calls, matched brackets, commas,
+// spreads and whitespace; any other byte, a mismatched closer, a (* or a backslash in a
+// backtick string (raw in some languages) may open a comment or construct that leaves
 // where the list ends unknown, so it reports unsure and the caller fails closed.
 func makeListRest(s string) (rest string, unsure bool) {
-	depth := 0
+	var open []byte
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; c {
 		case '"', '\'', '`':
 			for i++; i < len(s) && s[i] != c; i++ {
 				if s[i] == '\\' {
+					if c == '`' {
+						return s[:i], true
+					}
 					i++
 				}
 			}
 		case '(', '[', '{':
-			depth++
+			if c == '(' && i+1 < len(s) && s[i+1] == '*' {
+				return s[:i], true
+			}
+			open = append(open, c)
 		case ')', ']', '}':
-			if depth == 0 {
+			if len(open) == 0 {
 				return s[:i], false
 			}
-			depth--
+			if open[len(open)-1] != "([{"[strings.IndexByte(")]}", c)] {
+				return s[:i], true
+			}
+			open = open[:len(open)-1]
 		default:
 			if !isMakeListArgvByte(c) {
 				return s[:i], true

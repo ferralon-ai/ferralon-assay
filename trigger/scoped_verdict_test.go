@@ -16,7 +16,8 @@ import (
 // statement for it names the binary as its product, and SARIF carries the scope. A program view of
 // another package, or none, adds nothing, and neither row kind carries one past a did-not-run limit,
 // which holds a library not_exploitable back too. A candidate whose recorded path enters at the binary
-// carries none either; one entering elsewhere still does.
+// carries none either, as does one whose entry id names its package ambiguously (an alias receiver's
+// package-qualified name in the descriptor); one entering elsewhere, another module included, still does.
 func TestFinding_ScopedVerdict(t *testing.T) {
 	view := func(pkg string) *plugin.ProgramView {
 		return &plugin.ProgramView{
@@ -59,6 +60,10 @@ func TestFinding_ScopedVerdict(t *testing.T) {
 		}}
 		return fx
 	}
+	// scip is an entry recorded by its SCIP id alone, in module mod.
+	scip := func(mod, id string) plugin.Symbol {
+		return plugin.Symbol{Name: "M", SCIP: "scip-go gomod " + mod + " v1.0.0 " + id}
+	}
 	ingressOnly := entering(sym("example.com/m/api", "Serve"))
 	ingressOnly.reach.Paths[0].Ingress = sym("example.com/m/cmd/tool", "main")
 	noEntry := entering(plugin.Symbol{})
@@ -79,6 +84,9 @@ func TestFinding_ScopedVerdict(t *testing.T) {
 		{"a reachable candidate whose path enters at the binary", entering(sym("example.com/m/cmd/tool", "main")), report.VerdictReachableCandidate, "", false},
 		{"a reachable candidate whose ingress is the binary", ingressOnly, report.VerdictReachableCandidate, "", false},
 		{"a reachable candidate whose path enters in a library package", entering(sym("example.com/m/api", "Serve")), report.VerdictReachableCandidate, "", true},
+		{"a reachable candidate whose path enters at an alias receiver's method in the binary", entering(scip("example.com/m", "example.com/m/cmd/tool/example.com/m/cmd/tool.A#M().")), report.VerdictReachableCandidate, "", false},
+		{"a reachable candidate whose path enters at a method of the binary's own type", entering(scip("example.com/m", "example.com/m/cmd/tool/handler#M().")), report.VerdictReachableCandidate, "", false},
+		{"a reachable candidate whose path enters in another module", entering(scip("gopkg.in/yaml.v3", "gopkg.in/yaml.v3/Decoder#Decode().")), report.VerdictReachableCandidate, "", true},
 		{"a reachable candidate whose entry id cannot be read", entering(plugin.Symbol{Name: "main", SCIP: "garbled"}), report.VerdictReachableCandidate, "", false},
 		{"a reachable candidate whose path records no entry", noEntry, report.VerdictReachableCandidate, "", false},
 	} {

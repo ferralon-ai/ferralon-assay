@@ -177,7 +177,9 @@ func entersBinary(store artifact.Store, assessmentID string, view *plugin.Progra
 
 // symbolPackage is the import path of the package a symbol belongs to. The Go lane records only the
 // SCIP id, so it is read from the id's last field, "<pkgPath>/<descriptor>" (a descriptor holds no
-// slash); Package is used when the lane set it. It refuses an id that does not have that shape.
+// slash); Package is used when the lane set it. It refuses an id that does not have that shape,
+// including one whose descriptor holds a '.' before its terminal suffix: Go names hold none, so the
+// descriptor carries package-qualified type text, whose own slashes would put the boundary inside it.
 func symbolPackage(s plugin.Symbol) (string, bool) {
 	if s.Package != "" {
 		return s.Package, true
@@ -190,7 +192,25 @@ func symbolPackage(s plugin.Symbol) (string, bool) {
 	if slash <= 0 || slash == len(fields[4])-1 {
 		return "", false
 	}
+	if !plainDescriptor(fields[4][slash+1:]) {
+		return "", false
+	}
 	return fields[4][:slash], true
+}
+
+// plainDescriptor reports whether d is a descriptor the Go lane emits for a named object: a name, or
+// "<recv>#<name>", ending in its terminal suffix ("().", "#" or "."), with no '.' before that suffix.
+func plainDescriptor(d string) bool {
+	var core string
+	switch {
+	case strings.HasSuffix(d, "()."):
+		core = strings.TrimSuffix(d, "().")
+	case strings.HasSuffix(d, "#"), strings.HasSuffix(d, "."):
+		core = d[:len(d)-1]
+	default:
+		return false
+	}
+	return core != "" && !strings.Contains(core, ".")
 }
 
 // vettedSymbols reports whether the advisory's symbol set is complete enough for an absence of the

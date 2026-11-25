@@ -50,6 +50,8 @@ type AssessConfig struct {
 	SubjectGoVersion string
 	CIGoVersion      string
 	TrustCIGoVersion bool
+	// Strict withholds every clearance that rests on an assumption. See WithStrict.
+	Strict bool
 	// SubjectGoWork is the caller's statement of the GOWORK the subject's Go build runs under. See
 	// WithSubjectGoWork.
 	SubjectGoWork string
@@ -148,6 +150,12 @@ func WithSubjectToolchain(declared, observed string, trustObserved bool) AssessO
 	}
 }
 
+// WithStrict selects strict mode: no clearance may rest on an assumption. Practical mode, the
+// default, may clear a row under an assumption only when the row names it.
+func WithStrict(strict bool) AssessOption {
+	return func(c *AssessConfig) { c.Strict = strict }
+}
+
 // WithSubjectGoWork states the GOWORK the subject's Go build runs under: "off", or the path of its
 // go.work, relative to the checkout root unless absolute. Unstated, the build runs under the go.work
 // the go command finds from the module, searched no higher than its repository. Never pass the
@@ -211,7 +219,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 	}
 	stages := []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, strict: cfg.Strict, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
 		maliciousPresence{},
 		disqualificationDiscovery{src: cfg.Source, plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability},
 	}
@@ -252,7 +260,7 @@ func SBOMStages(opts ...AssessOption) []Stage {
 	}
 	return []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, strict: cfg.Strict, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
 	}
 }
 
@@ -959,6 +967,8 @@ type codebaseInventory struct {
 	subjectGoVersion string
 	ciGoVersion      string
 	trustCIGoVersion bool
+	// strict withholds the toolchain floor that rests on an assumption (ToolchainCandidates.Strict).
+	strict bool
 	// subjectGoWork is the caller's statement of the GOWORK the subject's build runs under: "off", a
 	// go.work path relative to the checkout root, or "" to take the go.work the go command finds.
 	// See ResolveGoWorkspace.
@@ -1303,6 +1313,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			ToolchainDirective: toolchainDirective,
 			GoDirective:        goDirective,
 			BazelWorkspace:     s.memo.bazelWorkspaceAbove(buildDir),
+			Strict:             s.strict,
 		}
 		toolchain = ResolveToolchain(cands)
 		if !cands.BazelWorkspace {
@@ -2722,6 +2733,43 @@ func extractVersionAxis(store artifact.Store, caseID string) (versionAxis, bool)
 	return versionAxis{}, false
 }
 
+// assumedToolchainFloor returns the toolchain fact's assumption when a version-axis disqualification
+// needs the assumed floor: the same inputs with every toolchain version read at the floor without
+// the assumption (StrictVersion, or none) no longer disqualify on the version axis. "" when the fact
+// carries no assumption or the floor without it already disqualifies.
+//
+// The toolchain's versions are found by value. Only the toolchain fact writes a go-prefixed version
+// to the inventory; a module version is "v"-prefixed and never equals one.
+func assumedToolchainFloor(store artifact.Store, caseID string, rngs []affectedRange, rangeKnown bool, axis versionAxis, axisKnown bool, others []presentRanges, symbol string, symbolKnown bool) string {
+	tc, ok := Toolchain(store, caseID)
+	if !ok || tc.Assumption == "" {
+		return ""
+	}
+	strictVersions := func(vs []string) []string {
+		out := make([]string, 0, len(vs))
+		for _, v := range vs {
+			switch {
+			case v != tc.Version:
+				out = append(out, v)
+			case tc.StrictVersion != "":
+				out = append(out, tc.StrictVersion)
+			}
+		}
+		return out
+	}
+	strictAxis := versionAxis{Versions: strictVersions(axis.Versions), Complete: axis.Complete}
+	strictOthers := make([]presentRanges, len(others))
+	for i, o := range others {
+		o.Versions = strictVersions(o.Versions)
+		strictOthers[i] = o
+	}
+	d, r, _ := disqualifyEvery(rngs, rangeKnown, strictAxis, axisKnown && len(strictAxis.Versions) > 0, strictOthers, symbol, symbolKnown)
+	if d && r == ReasonVersionNotInRange {
+		return ""
+	}
+	return tc.Assumption
+}
+
 // extractAlsoPresent joins each other affected package the inventory recorded to its ranges on the
 // normalized advisory. A package the advisory no longer names keeps no ranges, which keeps the axis open.
 // The toolchain package's ranges lose their lower bounds when the toolchain version is only a floor,
@@ -2871,6 +2919,11 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 
 	others := extractAlsoPresent(store, c.ID)
 	disqualified, reason, assumptions := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown)
+	if disqualified && reason == ReasonVersionNotInRange {
+		if line := assumedToolchainFloor(store, c.ID, rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown); line != "" {
+			assumptions = append(assumptions, line)
+		}
+	}
 	res := DisqualResult{Disqualified: disqualified, Reason: reason, Assumptions: assumptions}
 	if disqualified && reason == ReasonVersionNotInRange {
 		dispute, note, aliasAssumptions := s.rangeDispute(ctx, c, store, buildDir, goWork.File, axis, rngs, others)

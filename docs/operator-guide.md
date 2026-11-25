@@ -235,8 +235,9 @@ Findings are sorted most-actionable first, and every projection keeps that order
 ## The Go toolchain your repository builds with
 
 For a Go standard-library advisory, the question is about the Go **you** build with, which is not
-necessarily the Go the scanner analyzes with. The scan resolves your toolchain as one fact, from the
-first source that yields a usable version:
+necessarily the Go the scanner analyzes with. The scan resolves your toolchain as one fact. Steps 1
+and 2 are tried in order, and the first that yields a usable version is taken. When that is not a
+declaration, step 3 can raise step 2's minimum, or supply one when step 2 yields none:
 
 1. **Your declaration** — `-subject-go-version` on the CLI (for example `go1.21.3`), the
    `ASSAY_SUBJECT_GO_VERSION` environment variable, or the Action input `subject-go-version`. Exact.
@@ -249,10 +250,19 @@ first source that yields a usable version:
    `toolchain` line. Such a `go` line is left out.
 
    A `toolchain` line raises the minimum to at least go1.21.0, because no older go command can read
-   your `go.mod`. Its own version is not a minimum: under `GOTOOLCHAIN=local` or a pinned
-   `GOTOOLCHAIN` the go command ignores it, and `actions/setup-go` sets `GOTOOLCHAIN=local`. With
-   `go 1.21.0` and `toolchain go1.22.5`, the minimum is go1.21.0.
-3. Otherwise, unresolved.
+   your `go.mod`.
+3. **Your `go.mod` `toolchain` line**, when it names a full release (`toolchain go1.22.5`) above the
+   minimum from step 2, or when step 2 yields none — a **minimum that rests on an assumption**.
+   Under `GOTOOLCHAIN=auto`, the go command's default, the build switches to that release or newer,
+   so it cannot run anything older. Under `GOTOOLCHAIN=local` or a pinned `GOTOOLCHAIN` the go
+   command ignores the line, and `actions/setup-go` sets `GOTOOLCHAIN=local`. An advisory cleared
+   only because of this line is reported `not_exploitable` with the assumption named in its
+   evidence: the build runs under `GOTOOLCHAIN=auto`, so on the toolchain line's release or newer.
+   Declare `subject-go-version` when that does not hold for your build; a declaration replaces the
+   assumption. With `go 1.21.0` and `toolchain go1.22.5`, the minimum is go1.22.5 under the
+   assumption and go1.21.0 without it. Under a `go.work`, its own lines are read in place of the
+   module's.
+4. Otherwise, unresolved.
 
 A declaration below your own `go.mod` floor is discarded in favor of the floor, because a module
 cannot build with a Go older than its directives require. A stale `subject-go-version` therefore

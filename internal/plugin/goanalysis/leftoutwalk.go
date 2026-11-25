@@ -147,9 +147,12 @@ type lofPkg struct {
 	inits   []*lofDecl
 	exports []*lofDecl
 	imports []string
-	// asm is set when some build the refutation describes compiles an assembly file of the
-	// package.
-	asm bool
+	// asmFiles holds the package's assembly files some build the refutation describes compiles;
+	// foreign its other source files go/build may compile into it (C and its kin, .S and .sx, SWIG
+	// interfaces, .syso objects), whose build constraints are read only when asked (lofWorld.asmOf).
+	asmFiles []string
+	foreign  []string
+	asmRead  *lofAsm
 }
 
 // lofFile is one parsed Go file of a lofPkg.
@@ -403,7 +406,8 @@ func (w *lofWorld) pkgVariant(path, name string) *lofPkg {
 
 // parse reads p's directory: its Go files (for a loaded package, only those the build left out),
 // excluding test files, files another package clause names, files excluded from every build the
-// refutation describes, and files proved never to compile; and whether it has assembly.
+// refutation describes, and files proved never to compile; and its assembly and other non-Go
+// source.
 func (w *lofWorld) parse(p *lofPkg) {
 	ents, err := os.ReadDir(p.dir)
 	if err != nil {
@@ -427,6 +431,9 @@ func (w *lofWorld) parse(p *lofPkg) {
 		switch {
 		case strings.HasSuffix(n, ".s"):
 			asmFiles = append(asmFiles, full)
+			continue
+		case lofForeignExt[filepath.Ext(n)]:
+			p.foreign = append(p.foreign, full)
 			continue
 		case !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") || compiled[full] || w.dropped[full]:
 			continue
@@ -473,7 +480,7 @@ func (w *lofWorld) parse(p *lofPkg) {
 			continue
 		}
 		if !w.excluded(x) {
-			p.asm = true
+			p.asmFiles = append(p.asmFiles, full)
 		}
 	}
 	slices.Sort(p.imports)
@@ -1633,7 +1640,7 @@ func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 		return
 	}
 	found := false
-	if p.asm {
+	if len(p.asmFiles) > 0 {
 		k.fail(p, lofAssembly)
 		k.out.dyn = true
 		found = true

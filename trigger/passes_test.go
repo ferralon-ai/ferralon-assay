@@ -978,6 +978,9 @@ type failFirstPlugin struct {
 }
 
 func (p failFirstPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	if req.MatchOnly {
+		return p.refutingGoPlugin.Reachability(ctx, req)
+	}
 	if p.calls.Add(1) == 1 {
 		return plugin.ReachabilityResult{}, errors.New("plugin crashed")
 	}

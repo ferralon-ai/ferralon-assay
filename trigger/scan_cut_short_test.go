@@ -55,7 +55,7 @@ type stoppingPlugin struct {
 	mode            stopMode
 	// failAt, when set, is an advisory whose Reachability call errors, so its assessment fails.
 	failAt string
-	// calls, when set, records the advisory of each Reachability call in order.
+	// calls, when set, records the advisory of each analysis (non-MatchOnly) Reachability call in order.
 	calls *callLog
 }
 

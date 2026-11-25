@@ -52,13 +52,19 @@ func assessWithin(analysis context.Context, areq assessment.Request, opts ...pip
 // returned, the inventory is declared unresolved instead, so the Report is still built and every
 // advisory still gets its row.
 func inventoryWithin(analysis context.Context, codebase assessment.CodebaseRef, opts ...pipeline.AssessOption) (plugin.DependencyInventory, string, error) {
+	inv, language, _, err := inventoryAtWithin(analysis, codebase, opts...)
+	return inv, language, err
+}
+
+// inventoryAtWithin is inventoryWithin, also returning the build root the inventory was resolved at.
+func inventoryAtWithin(analysis context.Context, codebase assessment.CodebaseRef, opts ...pipeline.AssessOption) (plugin.DependencyInventory, string, string, error) {
 	start := time.Now()
-	inv, language, _, err := pipeline.ResolveCodebaseInventory(analysis, codebase, "", opts...)
+	inv, language, dir, err := pipeline.ResolveCodebaseInventory(analysis, codebase, "", opts...)
 	if analysis.Err() != nil {
-		return plugin.DependencyInventory{Partiality: plugin.Partial(report.ReasonScanCutShort)}, language, nil
+		return plugin.DependencyInventory{Partiality: plugin.Partial(report.ReasonScanCutShort)}, language, "", nil
 	}
 	observePhase(analysis, "inventory", start)
-	return inv, language, err
+	return inv, language, dir, err
 }
 
 // cutShortFinding is the row for an advisory the scan stopped before assessing. Like

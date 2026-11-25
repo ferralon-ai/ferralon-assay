@@ -444,7 +444,7 @@ var mavenPlugins = map[string]map[string]bool{
 	"org.jacoco:jacoco-maven-plugin":                            nil,
 	"org.springframework.boot:spring-boot-maven-plugin":         nil,
 	"com.google.cloud.tools:jib-maven-plugin":                   nil,
-	"io.fabric8:docker-maven-plugin":                            nil,
+	"io.fabric8:docker-maven-plugin":                            fabric8Goals,
 	"org.openapitools:openapi-generator-maven-plugin":           nil,
 	"org.apache.rat:apache-rat-plugin":                          nil,
 	"org.hjug.refactorfirst.plugin:refactor-first-maven-plugin": nil,
@@ -460,8 +460,9 @@ var mavenSourceDirs = setOf("directory", "warSourceDirectory", "classesDirectory
 
 // mavenIncomplete lists what keeps a Maven graph from being Complete: a POM the reactor does not
 // read; a build extension; a bound execution of a plugin or goal off mavenPlugins; dependency
-// plugin configuration naming artifacts outside the tree; and a resource or source directory
-// outside the checkout or in a local repository.
+// plugin configuration naming artifacts outside the tree; an assembly or docker-maven-plugin image
+// built from what the graph does not list; and a resource or source directory outside the checkout
+// or in a local repository.
 func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []reactorProject, effective []effectiveProject) ([]string, error) {
 	var reasons []string
 	orphans, err := mavenOrphanPOMs(dir, outputs, reactor)
@@ -566,6 +567,11 @@ func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []r
 				}
 				for _, d := range configValues(ex.Configuration.Inner, mavenSourceDirs) {
 					inside(key+" directory", d)
+				}
+				if key == "io.fabric8:docker-maven-plugin" {
+					if why := fabric8Unlisted(dir, base, repos, p, pl, ex); why != "" {
+						reasons = append(reasons, who+": "+key+" execution "+ex.ID+": "+why)
+					}
 				}
 			}
 		}

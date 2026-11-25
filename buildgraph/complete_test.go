@@ -206,8 +206,8 @@ func TestGradleIncomplete(t *testing.T) {
 
 func TestMavenIncomplete(t *testing.T) {
 	const pom = `<project><groupId>com.example</groupId><artifactId>app</artifactId></project>`
-	effective := func(version, build string) string {
-		return `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>` + version + `</version><build>` + build + `</build></project>`
+	effective := func(version, properties, build string) string {
+		return `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>` + version + `</version><properties>` + properties + `</properties><build>` + build + `</build></project>`
 	}
 	plugin := func(coord, body string) string {
 		g, a, _ := strings.Cut(coord, ":")
@@ -236,6 +236,15 @@ func TestMavenIncomplete(t *testing.T) {
 		return `<fileSets><fileSet><directory>` + dir + `</directory></fileSet></fileSets>`
 	}
 	const copyEntry = "maven-dependency-plugin execution agent"
+	// fabric8 binds the docker-maven-plugin goal at package with one image, example/app, built as image
+	// says, under the build directories in builds.
+	fabric8 := func(builds, goal, image string) string {
+		return builds + plugin("io.fabric8:docker-maven-plugin", exec("image", "package", goal)+`<configuration><images><image><name>example/app</name>`+image+`</image></images></configuration>`)
+	}
+	inline := func(body string) string {
+		return `<build><from>eclipse-temurin:21-jre</from><assembly><inline>` + body + `</inline></assembly></build>`
+	}
+	const f8 = "docker-maven-plugin execution image: image example/app "
 	item := func(coord, version, typ, classifier string) string {
 		g, a, _ := strings.Cut(coord, ":")
 		return `<artifactItem><groupId>` + g + `</groupId><artifactId>` + a + `</artifactId><version>` + version + `</version><type>` + typ + `</type><classifier>` + classifier + `</classifier></artifactItem>`
@@ -250,6 +259,8 @@ func TestMavenIncomplete(t *testing.T) {
 		reactor string // the module's POM; "" is the root's
 		repo    bool   // the graph holds an artifact from a local repository at .m2/repository
 		version string // the effective POM's version; "" is 1.0
+		// properties are the effective POM's properties.
+		properties string
 		// unlisted and targets are the module's Unlisted and UnlistedTargets, as unlistedInPOM
 		// records them.
 		unlisted []string
@@ -296,6 +307,30 @@ func TestMavenIncomplete(t *testing.T) {
 		{name: "copy goal of another plugin beside resolved items", build: plugin("org.codehaus.mojo:build-helper-maven-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.h2database:h2"}}, want: "build-helper-maven-plugin:copy (execution agent)"},
 		{name: "fabric8 docker build, run and push", build: plugin("io.fabric8:docker-maven-plugin", exec("image", "package", "build", "push")+`<configuration><images><image><name>example/app</name></image></images></configuration>`)},
 		{name: "fabric8 docker start and stop around the integration tests", build: plugin("io.fabric8:docker-maven-plugin", `<executions><execution><id>start</id><phase>pre-integration-test</phase><goals><goal>start</goal></goals></execution><execution><id>stop</id><phase>post-integration-test</phase><goals><goal>stop</goal></goals></execution></executions>`)},
+		{name: "fabric8 inline assembly reading build output and the checkout", build: fabric8(dirs, "build", inline(fileSet("$ROOT/target/lib")+`<files><file><source>src/main/etc/app.yml</source></file></files><dependencySets><dependencySet><scope>runtime</scope></dependencySet></dependencySets>`))},
+		{name: "fabric8 inline file source outside", build: fabric8(dirs, "build", inline(`<files><file><source>/opt/agent.jar</source></file></files>`)), want: f8 + "assembly inline reads /opt/agent.jar, outside the checkout"},
+		{name: "fabric8 inline fileSet outside", build: fabric8(dirs, "build", inline(fileSet("/opt/agent"))), want: f8 + "assembly inline reads /opt/agent, outside the checkout"},
+		{name: "fabric8 inline repositories", build: fabric8(dirs, "build", inline(`<repositories><repository><outputDirectory>repo</outputDirectory></repository></repositories>`)), want: f8 + "assembly inline has repositories"},
+		{name: "fabric8 inline dependencySet that unpacks", build: fabric8(dirs, "build", inline(`<dependencySets><dependencySet><unpack>true</unpack></dependencySet></dependencySets>`)), want: f8 + "assembly inline has a dependencySet that unpacks"},
+		{name: "fabric8 inline in an assemblies list", build: fabric8(dirs, "build", `<build><assemblies><assembly><name>maven</name></assembly><assembly><name>agent</name><inline><files><file><source>/opt/agent.jar</source></file></files></inline></assembly></assemblies></build>`), want: f8 + "assembly inline reads /opt/agent.jar, outside the checkout"},
+		{name: "fabric8 assembly descriptor outside", build: fabric8(dirs, "build", `<build><assembly><descriptor>/opt/dist.xml</descriptor></assembly></build>`), want: f8 + "assembly sets descriptor"},
+		{name: "fabric8 assembly descriptorRef artifact", build: fabric8(dirs, "build", `<build><assembly><descriptorRef>artifact</descriptorRef></assembly></build>`)},
+		{name: "fabric8 assembly descriptorRef artifact-with-dependencies", build: fabric8(dirs, "build", `<build><assembly><descriptorRef>artifact-with-dependencies</descriptorRef></assembly></build>`)},
+		{name: "fabric8 assembly descriptorRef artifact-with-dependencies over a build directory outside", build: fabric8(`<directory>/opt/build</directory>`, "build", `<build><assembly><descriptorRef>artifact-with-dependencies</descriptorRef></assembly></build>`), want: f8 + "assembly descriptorRef artifact-with-dependencies reads /opt/build, outside the checkout"},
+		{name: "fabric8 assembly descriptorRef project", build: fabric8(dirs, "build", `<build><assembly><descriptorRef>project</descriptorRef></assembly></build>`), want: f8 + "assembly uses descriptorRef project"},
+		{name: "fabric8 Dockerfile", build: fabric8(dirs, "build", `<build><dockerFile>/opt/Dockerfile</dockerFile></build>`), want: f8 + "sets dockerFile,"},
+		{name: "fabric8 Dockerfile directory", build: fabric8(dirs, "build", `<build><dockerFileDir>src/main/docker</dockerFileDir></build>`), want: f8 + "sets dockerFileDir"},
+		{name: "fabric8 contextDir", build: fabric8(dirs, "build", `<build><contextDir>/opt/ctx</contextDir></build>`), want: f8 + "sets contextDir"},
+		{name: "fabric8 image archive", build: fabric8(dirs, "build", `<build><dockerArchive>/opt/image.tar</dockerArchive></build>`), want: f8 + "sets dockerArchive"},
+		{name: "fabric8 commands run in the image", build: fabric8(dirs, "build", `<build><from>alpine</from><runCmds><run>wget -O /app/agent.jar https://example.com/agent.jar</run></runCmds></build>`), want: f8 + "sets runCmds"},
+		{name: "fabric8 image configured outside the POM", build: fabric8(dirs, "build", `<external><type>properties</type></external>`), want: f8 + "sets external"},
+		{name: "fabric8 images from properties", build: dirs + plugin("io.fabric8:docker-maven-plugin", exec("image", "package", "build")+`<configuration><imagePropertyConfiguration>override</imagePropertyConfiguration></configuration>`), want: "docker-maven-plugin execution image: sets imagePropertyConfiguration"},
+		{name: "fabric8 images from a POM property", properties: `<docker.imagePropertyConfiguration>override</docker.imagePropertyConfiguration>`, build: fabric8(dirs, "build", ""), want: "docker-maven-plugin execution image: sets docker.imagePropertyConfiguration"},
+		{name: "fabric8 Dockerfile in the execution configuration", build: dirs + plugin("io.fabric8:docker-maven-plugin", `<executions><execution><id>image</id><phase>package</phase><goals><goal>build</goal></goals><configuration><images><image><name>example/app</name><build><dockerFile>Dockerfile</dockerFile></build></image></images></configuration></execution></executions>`), want: f8 + "sets dockerFile,"},
+		{name: "fabric8 with no image beside a Dockerfile", files: map[string]string{"Dockerfile": "FROM alpine\nADD https://example.com/agent.jar /app/\n"}, build: dirs + plugin("io.fabric8:docker-maven-plugin", exec("image", "package", "build")), want: "docker-maven-plugin execution image: configures no image, so it builds the module's Dockerfile"},
+		{name: "fabric8 copy goal", build: fabric8(dirs, "copy", ""), want: "docker-maven-plugin:copy (execution image)"},
+		{name: "fabric8 source goal", build: fabric8(dirs, "source", ""), want: "docker-maven-plugin:source (execution image)"},
+		{name: "fabric8 save goal", build: fabric8(dirs, "save", ""), want: "docker-maven-plugin:save (execution image)"},
 		{name: "plugin named like fabric8 under another group", build: plugin("com.acme:docker-maven-plugin", exec("image", "package", "build")), want: "com.acme:docker-maven-plugin execution image is not a plugin"},
 		{name: "unknown plugin", build: plugin("com.acme:fetch-maven-plugin", exec("fetch", "package", "fetch")), want: "com.acme:fetch-maven-plugin execution fetch is not a plugin"},
 		{name: "dependency copy with every item resolved", build: plugin("org.apache.maven.plugins:maven-dependency-plugin", exec("agent", "package", "copy")), unlisted: []string{copyEntry}, targets: map[string][]string{copyEntry: {"com.h2database:h2"}}},
@@ -387,7 +422,7 @@ func TestMavenIncomplete(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			eff, err := parseEffectivePOM([]byte(effective(version, strings.ReplaceAll(tc.build, "$ROOT", dir))))
+			eff, err := parseEffectivePOM([]byte(effective(version, tc.properties, strings.ReplaceAll(tc.build, "$ROOT", dir))))
 			if err != nil {
 				t.Fatal(err)
 			}

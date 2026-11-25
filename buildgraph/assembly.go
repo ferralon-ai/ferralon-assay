@@ -72,31 +72,38 @@ func assemblyUnlisted(dir, base string, repos []string, p effectiveProject, pl e
 	if err := xml.Unmarshal([]byte("<c>"+cfg.Inner+"</c>"), &d); err != nil || len(d.Descriptors) == 0 {
 		return "has no descriptor this can read"
 	}
-	vars := map[string]string{
-		"basedir":                       base,
-		"project.basedir":               base,
-		"project.build.directory":       strings.TrimSpace(p.Build.Directory),
-		"project.build.outputDirectory": strings.TrimSpace(p.Build.OutputDirectory),
-		"project.version":               strings.TrimSpace(p.Version),
-	}
+	vars := assemblyVars(base, p)
 	for _, desc := range d.Descriptors {
 		file, ok := assemblyPath(desc, base, vars)
 		if !ok || !within(dir, file) {
 			return "descriptor " + strings.TrimSpace(desc) + " is not a file in the checkout"
 		}
-		if why := assemblyDescriptorUnlisted(dir, base, repos, file, vars); why != "" {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			return "descriptor " + strings.TrimSpace(desc) + " cannot be read"
+		}
+		if why := assemblyDescriptorUnlisted(dir, base, repos, b, vars); why != "" {
 			return "descriptor " + strings.TrimSpace(desc) + " " + why
 		}
 	}
 	return ""
 }
 
-// assemblyDescriptorUnlisted is assemblyUnlisted's check of the descriptor at file.
-func assemblyDescriptorUnlisted(dir, base string, repos []string, file string, vars map[string]string) string {
-	b, err := os.ReadFile(file)
-	if err != nil {
-		return "cannot be read"
+// assemblyVars are the properties a descriptor path may interpolate: the module's basedir, build
+// directories and version.
+func assemblyVars(base string, p effectiveProject) map[string]string {
+	return map[string]string{
+		"basedir":                       base,
+		"project.basedir":               base,
+		"project.build.directory":       strings.TrimSpace(p.Build.Directory),
+		"project.build.outputDirectory": strings.TrimSpace(p.Build.OutputDirectory),
+		"project.version":               strings.TrimSpace(p.Version),
 	}
+}
+
+// assemblyDescriptorUnlisted is the check of one assembly descriptor b, read from a file in the
+// checkout by assemblyUnlisted, or written inline or built into the plugin for fabric8Unlisted.
+func assemblyDescriptorUnlisted(dir, base string, repos []string, b []byte, vars map[string]string) string {
 	var top xmlChildren
 	var desc assemblyDescriptor
 	if xml.Unmarshal(b, &top) != nil || xml.Unmarshal(b, &desc) != nil {
@@ -207,3 +214,120 @@ func assemblyPath(raw, base string, vars map[string]string) (string, bool) {
 }
 
 var assemblyVar = regexp.MustCompile(`\$\{[^}]*\}`)
+
+// fabric8Goals are the io.fabric8:docker-maven-plugin goals fabric8Unlisted can bound: build makes
+// the images it checks, push and tag name them, start, stop and remove run and drop containers, and
+// help prints usage. copy copies files out of a container onto the host, source attaches the build
+// archive as an artifact, and save writes an image to an archive; they are left out.
+var fabric8Goals = setOf("build", "push", "start", "stop", "remove", "tag", "help")
+
+// fabric8BuildOpaque are the elements of a docker-maven-plugin image build that make the image from
+// what this does not read: a Dockerfile, its directory or the context sent with it (whose ADD, COPY
+// and RUN lines run unread), an image archive, and commands run in the image.
+var fabric8BuildOpaque = []string{"dockerFile", "dockerFileDir", "contextDir", "dockerArchive", "runCmds"}
+
+// fabric8DescriptorRefs are the docker-maven-plugin built-in assembly descriptors fabric8Unlisted
+// bounds, as the plugin (0.46.0) ships them less namespaces and comments: the project's own
+// artifact, and with it its runtime dependencies and the classpath file the build may write. Each
+// is checked as a descriptor in the checkout is. The rest are left out: project reads the whole
+// module directory, hawt-app what another plugin wrote.
+var fabric8DescriptorRefs = map[string]string{
+	"artifact": `<assembly><id>artifact</id><dependencySets><dependencySet><useProjectArtifact>true</useProjectArtifact>` +
+		`<includes><include>${project.groupId}:${project.artifactId}</include></includes>` +
+		`<outputFileNameMapping>${project.build.finalName}.${artifact.extension}</outputFileNameMapping></dependencySet></dependencySets></assembly>`,
+	"artifact-with-dependencies": `<assembly><id>artifact-with-dependencies</id><includeBaseDirectory>false</includeBaseDirectory>` +
+		`<dependencySets><dependencySet><useProjectArtifact>true</useProjectArtifact>` +
+		`<includes><include>${project.groupId}:${project.artifactId}</include></includes>` +
+		`<outputFileNameMapping>${project.build.finalName}.${artifact.extension}</outputFileNameMapping></dependencySet>` +
+		`<dependencySet><useProjectArtifact>false</useProjectArtifact><scope>runtime</scope><fileMode>0644</fileMode></dependencySet></dependencySets>` +
+		`<fileSets><fileSet><includes><include>classpath</include></includes><directory>${project.build.directory}/</directory>` +
+		`<outputDirectory>.</outputDirectory><fileMode>0644</fileMode></fileSet></fileSets></assembly>`,
+}
+
+// fabric8Unlisted returns why a bound io.fabric8:docker-maven-plugin execution may put into an image
+// what the graph does not list, or "" when it cannot: no image is configured from properties or
+// outside the POM, none is built from a Dockerfile, an archive or commands run in it, and every
+// image assembly is written inline or is one of fabric8DescriptorRefs, holding only what
+// assemblyDescriptorUnlisted bounds. The image's base layer is outside the graph, as jib's is.
+// mavenIncomplete checks the goals against fabric8Goals.
+func fabric8Unlisted(dir, base string, repos []string, p effectiveProject, pl effectivePlugin, ex effectiveExecution) string {
+	if p.Properties.has("docker.imagePropertyConfiguration") {
+		return "sets docker.imagePropertyConfiguration, which configures images from properties"
+	}
+	vars := assemblyVars(base, p)
+	images := 0
+	for _, c := range []xmlChildren{ex.Configuration, pl.Configuration} {
+		if c.has("imagePropertyConfiguration") {
+			return "sets imagePropertyConfiguration, which configures images from properties"
+		}
+		var cfg struct {
+			Images []struct {
+				Name     string       `xml:"name"`
+				External *xmlChildren `xml:"external"`
+				Build    xmlChildren  `xml:"build"`
+			} `xml:"images>image"`
+		}
+		if xml.Unmarshal([]byte("<c>"+c.Inner+"</c>"), &cfg) != nil {
+			return "has a configuration this cannot parse"
+		}
+		images += len(cfg.Images)
+		for _, img := range cfg.Images {
+			name := strings.TrimSpace(img.Name)
+			if img.External != nil {
+				return "image " + name + " sets external, which configures it outside the POM"
+			}
+			for _, e := range fabric8BuildOpaque {
+				if img.Build.has(e) {
+					return "image " + name + " sets " + e + ", which builds from what the graph does not read"
+				}
+			}
+			var b struct {
+				Assembly   []xmlChildren `xml:"assembly"`
+				Assemblies []xmlChildren `xml:"assemblies>assembly"`
+			}
+			if xml.Unmarshal([]byte("<b>"+img.Build.Inner+"</b>"), &b) != nil {
+				return "image " + name + " has a build this cannot parse"
+			}
+			for _, a := range append(b.Assembly, b.Assemblies...) {
+				if why := fabric8AssemblyUnlisted(dir, base, repos, a, vars); why != "" {
+					return "image " + name + " assembly " + why
+				}
+			}
+		}
+	}
+	// With no image configured, the plugin builds the Dockerfile beside the module's POM.
+	if _, err := os.Lstat(filepath.Join(base, "Dockerfile")); images == 0 && err == nil {
+		return "configures no image, so it builds the module's Dockerfile"
+	}
+	return ""
+}
+
+// fabric8AssemblyUnlisted is fabric8Unlisted's check of one image assembly a.
+func fabric8AssemblyUnlisted(dir, base string, repos []string, a xmlChildren, vars map[string]string) string {
+	if a.has("descriptor") {
+		return "sets descriptor, which this does not read"
+	}
+	var d struct {
+		Ref    string       `xml:"descriptorRef"`
+		Inline *xmlChildren `xml:"inline"`
+	}
+	if xml.Unmarshal([]byte("<a>"+a.Inner+"</a>"), &d) != nil {
+		return "cannot be parsed"
+	}
+	if a.has("descriptorRef") {
+		ref := strings.TrimSpace(d.Ref)
+		desc, ok := fabric8DescriptorRefs[ref]
+		if !ok {
+			return "uses descriptorRef " + ref + ", which this does not bound"
+		}
+		if why := assemblyDescriptorUnlisted(dir, base, repos, []byte(desc), vars); why != "" {
+			return "descriptorRef " + ref + " " + why
+		}
+	}
+	if d.Inline != nil {
+		if why := assemblyDescriptorUnlisted(dir, base, repos, []byte("<inline>"+d.Inline.Inner+"</inline>"), vars); why != "" {
+			return "inline " + why
+		}
+	}
+	return ""
+}

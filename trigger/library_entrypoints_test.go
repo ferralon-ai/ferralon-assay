@@ -210,6 +210,27 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 	// A head pass over a changed package set that resolved a record and no set.
 	movedLib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceAuto, Input: "auto", Packages: []string{"example.com/target/lib", "example.com/target/new"}}
 	moved := recordOf(movedLib)
+	// Read as an application, every mains set states the same empty library set, so only the stored
+	// record names the mains the stored refutations searched from.
+	mainsLib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceMains, Input: "auto", Packages: []string{}}
+	mainsOf := func(mains ...string) plugin.EntryRootRecord {
+		rec := recordOf(mainsLib)
+		rec.Effective[plugin.EntryKindMain] = mains
+		return rec
+	}
+	storedMains, headMains := mainsOf("example.com/target/cmd/app"), mainsOf("example.com/target/cmd/app", "example.com/target/cmd/newtool")
+	// storedPair is the stored report's go set and record; a zero lib means it stored no set.
+	type storedPair struct {
+		lib plugin.ResolvedLibraryEntrypoints
+		rec plugin.EntryRootRecord
+	}
+	held := storedPair{storedLib, stored}
+	storedSets := func() []plugin.ResolvedLibraryEntrypoints {
+		if held.lib.Ecosystem == "" {
+			return nil
+		}
+		return []plugin.ResolvedLibraryEntrypoints{held.lib}
+	}
 	options := func(t *testing.T, lib *plugin.ResolvedLibraryEntrypoints, roots *plugin.EntryRootRecord) []pipeline.AssessOption {
 		return []pipeline.AssessOption{
 			pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, wiringGoMod), lang: "go"}),
@@ -221,8 +242,8 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 	}
 	pr := func(t *testing.T, sbom func(*report.Report) report.SBOM, lib *plugin.ResolvedLibraryEntrypoints, roots *plugin.EntryRootRecord) *report.Report {
 		store, baseline := groundedBaseline()
-		baseline.LibraryEntrypoints = []plugin.ResolvedLibraryEntrypoints{storedLib}
-		baseline.Entrypoints = []plugin.EntryRootRecord{stored}
+		baseline.LibraryEntrypoints = storedSets()
+		baseline.Entrypoints = []plugin.EntryRootRecord{held.rec}
 		res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
 			Subject:       Subject{Repo: "r", ResolvedCommit: "pr-sha"},
 			Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
@@ -240,8 +261,8 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 	}
 	cveWatch := func(t *testing.T, lib *plugin.ResolvedLibraryEntrypoints, roots *plugin.EntryRootRecord) *report.Report {
 		store, _ := seedBaseline(t)
-		store.state.Report.LibraryEntrypoints = []plugin.ResolvedLibraryEntrypoints{storedLib}
-		store.state.Report.Entrypoints = []plugin.EntryRootRecord{stored}
+		store.state.Report.LibraryEntrypoints = storedSets()
+		store.state.Report.Entrypoints = []plugin.EntryRootRecord{held.rec}
 		store.state.Cursor = ""
 		osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: wiringAdvisory.ID, Package: wiringPkg}}}}
 		res, err := RunCVEWatch(context.Background(), store, osv, CVEWatchRequest{
@@ -257,12 +278,16 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 		}
 		return res.Report
 	}
+	mainsHeld := &storedPair{mainsLib, storedMains}
+	// A stored report that judged no go refutation holds a record and no set.
+	noSetHeld := &storedPair{rec: storedMains}
 	cases := []struct {
-		name string
-		run  func(t *testing.T) *report.Report
-		want plugin.EntryRootRecord
+		name   string
+		stored *storedPair
+		run    func(t *testing.T) *report.Report
+		want   plugin.EntryRootRecord
 	}{
-		{"baseline", func(t *testing.T) *report.Report {
+		{"baseline", nil, func(t *testing.T) *report.Report {
 			rep, err := buildBaselineReport(context.Background(), BaselineRequest{
 				Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
 				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
@@ -274,19 +299,33 @@ func TestEntryRoots_EveryRunMode(t *testing.T) {
 			}
 			return rep
 		}, head},
-		{"PR re-analysis, head resolved", func(t *testing.T) *report.Report { return pr(t, bumped, &headLib, &head) }, head},
-		{"PR re-analysis, head resolved none", func(t *testing.T) *report.Report { return pr(t, bumped, nil, nil) }, stored},
-		{"PR re-analysis, head resolved a set but no record", func(t *testing.T) *report.Report { return pr(t, bumped, &headLib, nil) },
+		{"PR re-analysis, head resolved", nil, func(t *testing.T) *report.Report { return pr(t, bumped, &headLib, &head) }, head},
+		{"PR re-analysis, head resolved none", nil, func(t *testing.T) *report.Report { return pr(t, bumped, nil, nil) }, stored},
+		{"PR re-analysis, head resolved a set but no record", nil, func(t *testing.T) *report.Report { return pr(t, bumped, &headLib, nil) },
 			func() plugin.EntryRootRecord { r, _ := plugin.EntryRootRecordOf(headLib); return r }()},
-		{"PR re-analysis, head resolved a record but no set", func(t *testing.T) *report.Report { return pr(t, bumped, nil, &moved) }, stored},
-		{"PR inherit fast path", func(t *testing.T) *report.Report {
+		{"PR re-analysis, head resolved a record but no set", nil, func(t *testing.T) *report.Report { return pr(t, bumped, nil, &moved) }, stored},
+		{"PR inherit fast path", nil, func(t *testing.T) *report.Report {
 			return pr(t, func(b *report.Report) report.SBOM { return b.SBOM }, &headLib, &head)
 		}, stored},
-		{"CVE-watch, pass resolved", func(t *testing.T) *report.Report { return cveWatch(t, &headLib, &head) }, head},
-		{"CVE-watch, pass resolved none", func(t *testing.T) *report.Report { return cveWatch(t, nil, nil) }, stored},
+		{"CVE-watch, pass resolved", nil, func(t *testing.T) *report.Report { return cveWatch(t, &headLib, &head) }, head},
+		{"CVE-watch, pass resolved none", nil, func(t *testing.T) *report.Report { return cveWatch(t, nil, nil) }, stored},
+		{"PR re-analysis, application, head resolved a record but no set", mainsHeld,
+			func(t *testing.T) *report.Report { return pr(t, bumped, nil, &headMains) }, storedMains},
+		{"CVE-watch, application, pass resolved a record but no set", mainsHeld,
+			func(t *testing.T) *report.Report { return cveWatch(t, nil, &headMains) }, storedMains},
+		{"PR re-analysis, application, neither side resolved a set", noSetHeld,
+			func(t *testing.T) *report.Report { return pr(t, bumped, nil, &headMains) }, headMains},
+		{"CVE-watch, application, neither side resolved a set", noSetHeld,
+			func(t *testing.T) *report.Report { return cveWatch(t, nil, &headMains) }, headMains},
+		{"CVE-watch, application, pass resolved", mainsHeld,
+			func(t *testing.T) *report.Report { return cveWatch(t, &mainsLib, &headMains) }, headMains},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			held = storedPair{storedLib, stored}
+			if tc.stored != nil {
+				held = *tc.stored
+			}
 			r := tc.run(t)
 			if len(r.Entrypoints) != 1 || !reflect.DeepEqual(r.Entrypoints[0], tc.want) {
 				t.Errorf("entrypoints = %+v, want [%+v]", r.Entrypoints, tc.want)

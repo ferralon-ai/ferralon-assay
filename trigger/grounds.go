@@ -647,6 +647,31 @@ func entryRoots(store artifact.Store, assessmentID string) []plugin.EntryRootRec
 	return []plugin.EntryRootRecord{*reach.EntryRoots}
 }
 
+// headEntryRoots is the head's records less any of a lane whose library set the report keeps from
+// the stored report: that lane's record must come from the report its set does, and a mains record
+// matches any mains set, so a head record offered first would name mains the stored refutations
+// never searched from.
+func headEntryRoots(head []plugin.EntryRootRecord, headSets, storedSets []plugin.ResolvedLibraryEntrypoints) []plugin.EntryRootRecord {
+	lanes := func(sets []plugin.ResolvedLibraryEntrypoints) map[string]bool {
+		m := map[string]bool{}
+		for _, s := range sets {
+			if rec, ok := plugin.EntryRootRecordOf(s); ok {
+				m[rec.Lane] = true
+			}
+		}
+		return m
+	}
+	fresh, stored := lanes(headSets), lanes(storedSets)
+	var out []plugin.EntryRootRecord
+	for _, r := range head {
+		if stored[r.Lane] && !fresh[r.Lane] {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // reachabilityResult reads the reachability stage's result off its artifact.
 func reachabilityResult(store artifact.Store, assessmentID string) (plugin.ReachabilityResult, bool) {
 	rec, ok, err := pipeline.Reachability(store, assessmentID)

@@ -476,7 +476,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	// The head's entry points for each ecosystem this pass resolved them on, else the baseline's,
 	// which the inherited refutations rest on.
 	b.WithLibraryEntrypoints(entrypoints...)
-	b.WithEntryRoots(entryRecords...)
+	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, baseline.LibraryEntrypoints)...)
 	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
 	b.WithEntryRoots(baseline.Entrypoints...)
 	b.AddPartiality(req.WorkSetLimits...)
@@ -947,7 +947,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.AddPartiality(withoutCutShortCount(prior.Partiality)...)
 	b.AddPartiality(notes...)
 	b.WithLibraryEntrypoints(entrypoints...)
-	b.WithEntryRoots(entryRecords...)
+	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, prior.LibraryEntrypoints)...)
 	b.WithLibraryEntrypoints(prior.LibraryEntrypoints...)
 	b.WithEntryRoots(prior.Entrypoints...)
 	if note, ok := recountCutShort(rows, prior.Partiality, ownStop(analysis, cut)); ok {

@@ -84,9 +84,14 @@ func TestProgramView(t *testing.T) {
 	scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{vuln}}}, vulnID: "GO-1"}
 
 	// The whole of Reachability's reconciliation, once: the library view is withheld and the program
-	// view stands beside it.
+	// view stands beside it. Library mode is declared: with nothing declared the build, which ships
+	// cmd/tool, is read as an application and the library view's refutation stands.
 	stream(module, nil)
-	res, err := reconciledResult(ctx, scanned, dir, env, loaded, plugin.LibraryEntrypoints{})
+	library, err := plugin.ParseLibraryEntrypoints(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := reconciledResult(ctx, scanned, dir, env, loaded, library)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -458,11 +458,11 @@ func unsearchedCaller(pkgs []*packages.Package, entry entrypoints, module string
 // govulncheck searches only the calls the build's own packages make. A value an entry point hands its
 // importer (a function, an interface value, a struct carrying either, through a result, an exported
 // var or field, or an embedded type) can still run the module's code once the importer calls it, and
-// that call is outside the search, whether or not the build also has a main package. So when any
-// entry point reaches one of the refuted module's packages that count (countingPackages), or the
-// entry points or their reach are unknown, the result declares library_escape instead. A refutation
-// that stands only because the caller declared a package no entry point carries that declaration
-// as an assumption. A withhold the incomplete load contributes to declares tool_failure beside it.
+// that call is outside the search. So when any entry point reaches one of the refuted module's
+// packages that count (countingPackages), or the entry points or their reach are unknown, the result
+// declares library_escape instead. A refutation that stands only because the caller declared a
+// package no entry point, or because the build was read as an application (entrypoints.mains), carries
+// that as an assumption. A withhold the incomplete load contributes to declares tool_failure beside it.
 func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, entry entrypoints) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
@@ -538,6 +538,10 @@ type entrypoints struct {
 	tightened []*packages.Package
 	// matched holds each declared path, "!" kept on an exclusion, that matched a package.
 	matched map[string]bool
+	// mains are the build's application mains (applicationMains) when they alone are the entry
+	// points: auto with nothing declared, on a complete load of a build that ships one. Every package
+	// auto would otherwise take is then in auto.
+	mains []*packages.Package
 }
 
 // autoExcludedElements are the path elements below the module path that put a package outside auto's
@@ -545,7 +549,9 @@ type entrypoints struct {
 var autoExcludedElements = []string{"cmd", "example", "examples", "test", "tests", "testdata"}
 
 // resolveEntrypoints resolves the caller's statement against the build's packages. Auto's entry
-// points are the importable packages (importable) outside autoExcludedElements. A declared path is
+// points are the importable packages (importable) outside autoExcludedElements; with nothing declared,
+// a complete load of a build that ships an application main (applicationMains) is read as an
+// application instead, and auto takes no package: the mains are the entry points. A declared path is
 // matched against the package's directory relative to decl.Base, or buildDir when that is empty,
 // and counts as matched only when it covers an importable package. A package whose directory cannot
 // be placed there keeps auto's answer, and is an entry point under a path list.
@@ -586,7 +592,51 @@ func resolveEntrypoints(pkgs []*packages.Package, decl plugin.LibraryEntrypoints
 			e.tightened = append(e.tightened, p)
 		}
 	}
+	// The known packages of a partial run are not excused here: the reading holds for the whole run,
+	// so it must not turn on which advisory's search went partial.
+	if !decl.Declared() && !incompleteLoad(pkgs, nil) {
+		if mains := applicationMains(pkgs); len(mains) > 0 {
+			e.mains = mains
+			e.auto, e.pkgs = append(e.auto, e.pkgs...), nil
+		}
+	}
 	return e
+}
+
+// applicationMains returns the shipped mains (shippedMains) that read a build as an application: a
+// main at its module's root or under its cmd directory, in a build of one main module. A main
+// elsewhere (a benchmark, an interop client, a profiling tool, a generator under internal, hack or
+// tools) ships beside a library as often as beside a program, so it leaves the library reading in
+// place. So does a workspace of several main modules, where a library module may sit beside a tool's.
+// Unlike shippedMains, which the program view can afford to widen, every main counted here makes a
+// refutation easier to keep.
+func applicationMains(pkgs []*packages.Package) []*packages.Package {
+	if !oneMainModule(pkgs) {
+		return nil
+	}
+	var mains []*packages.Package
+	for _, p := range shippedMains(pkgs) {
+		rel := strings.TrimPrefix(strings.TrimPrefix(p.PkgPath, p.Module.Path), "/")
+		if rel == "" || rel == "cmd" || strings.HasPrefix(rel, "cmd/") {
+			mains = append(mains, p)
+		}
+	}
+	return mains
+}
+
+// oneMainModule reports whether every package of pkgs in a main module is in the same one.
+func oneMainModule(pkgs []*packages.Package) bool {
+	main := ""
+	for _, p := range pkgs {
+		switch {
+		case p.Module == nil || !p.Module.Main:
+		case main == "":
+			main = p.Module.Path
+		case p.Module.Path != main:
+			return false
+		}
+	}
+	return true
 }
 
 // isEntrypoint reports whether an importable package in dir is an entry point. auto is auto's answer.
@@ -658,8 +708,11 @@ func (e entrypoints) record() *plugin.ResolvedLibraryEntrypoints {
 		Packages:  pkgPaths(e.pkgs),
 		Unmatched: e.unmatchedIncludes(),
 	}
-	if e.decl.Declared() {
+	switch {
+	case e.decl.Declared():
 		rec.Source = plugin.LibraryEntrypointsSourceDeclared
+	case len(e.mains) > 0:
+		rec.Source = plugin.LibraryEntrypointsSourceMains
 	}
 	for _, x := range e.decl.Exclude {
 		if !e.matched["!"+x] {
@@ -670,7 +723,8 @@ func (e entrypoints) record() *plugin.ResolvedLibraryEntrypoints {
 }
 
 // assumption states the declaration a refutation rests on: that code outside the build imports none of
-// left, the packages outside the entry points that reach module.
+// left, the packages outside the entry points that reach module. Read as an application, it names the
+// reading, how many mains it rests on, and the statement that reads the build as a library instead.
 func (e entrypoints) assumption(left []*packages.Package, incomplete bool, module string) string {
 	names := pkgPaths(left)
 	if len(names) > 5 {
@@ -683,6 +737,14 @@ func (e entrypoints) assumption(left []*packages.Package, incomplete bool, modul
 	verb := "reach"
 	if incomplete {
 		verb = "may reach (the load is incomplete)"
+	}
+	if len(e.mains) > 0 {
+		noun := "main packages"
+		if len(e.mains) == 1 {
+			noun = "main package"
+		}
+		return fmt.Sprintf("library-entrypoints %q: treated as an application: %d %s; no code outside the build imports %s, which %s %s; library mode: go:library=.",
+			e.decl.String(), len(e.mains), noun, strings.Join(names, ", "), verb, target)
 	}
 	return fmt.Sprintf("library-entrypoints %q: no code outside the build imports %s, which %s %s",
 		e.decl.String(), strings.Join(names, ", "), verb, target)

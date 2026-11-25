@@ -35,6 +35,12 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 		imports:  map[string][]string{"stdlib": {"encoding/xml"}},
 	}
 	const module = "which reach example.com/vulnmod"
+	// app is a build that ships a program: a main under cmd/ that imports pkg/x.
+	app := map[string]string{
+		"cmd/app/main.go": "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+		"pkg/x/x.go":      reaches("x"),
+	}
+	const appAssumption = `library-entrypoints "auto": treated as an application: 1 main package; no code outside the build imports example.com/m/pkg/x, which reach example.com/vulnmod; library mode: go:library=.`
 	cases := []struct {
 		name       string
 		input      string
@@ -84,10 +90,65 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 		{"an exclusion of a path the build does not hold", "!pkg/nope", map[string]string{
 			"pkg/api/api.go": clean("api"),
 		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/api"}, []string{"!pkg/nope"}},
+		{"auto, a build with no main whose library under cmd reaches the module", "auto", map[string]string{
+			"cmd/tool/flags/flags.go": reaches("flags"),
+			"pkg/api/api.go":          clean("api"),
+		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/api"}, nil},
 		{"auto, a library under cmd reaches the module", "auto", map[string]string{
 			"cmd/tool/flags/flags.go": reaches("flags"),
 			"cmd/tool/main.go":        "package main\n\nimport \"example.com/m/cmd/tool/flags\"\n\nfunc main() { _ = flags.Get() }\n",
-		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceAuto, []string{}, nil},
+		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, an application whose library package reaches the module", "auto", app,
+			moduleFinding, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"nothing stated, an application whose library package reaches the module", "", app,
+			moduleFinding, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, an application with two mains", "auto", merge(app, map[string]string{
+			"cmd/gen/main.go": "package main\n\nfunc main() {}\n",
+		}), moduleFinding, false, `treated as an application: 2 main packages; no code outside the build imports example.com/m/pkg/x, ` + module,
+			plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, an application whose library packages do not reach the module", "auto", map[string]string{
+			"cmd/app/main.go": "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":      clean("x"),
+		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, a main at the module root", "auto", map[string]string{
+			"main.go":    "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+			"pkg/x/x.go": reaches("x"),
+		}, moduleFinding, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		// grpc's shape: a library whose only mains are benchmark and interop programs. They ship
+		// beside the library, not as the product, so the build stays a library.
+		{"auto, mains only under benchmark and interop", "auto", map[string]string{
+			"benchmark/worker/main.go": "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+			"interop/client/main.go":   "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":               reaches("x"),
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}, nil},
+		{"auto, a main only under internal", "auto", map[string]string{
+			"internal/gen/main.go": "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":           reaches("x"),
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}, nil},
+		{"auto, a main only under examples", "auto", map[string]string{
+			"examples/demo/main.go": "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+			"pkg/x/x.go":            reaches("x"),
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}, nil},
+		{"the whole tree as library, an application", ".", app,
+			moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"a path list naming the reaching package, an application", "pkg/x", app,
+			moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"auto plus a path, an application", "auto,pkg/x", app,
+			moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"auto plus a path to another package, an application", "auto,pkg/y", merge(app, map[string]string{
+			"pkg/y/y.go": clean("y"),
+		}), moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x", "example.com/m/pkg/y"}, nil},
+		{"an exclusion of another package, an application", "!pkg/y", merge(app, map[string]string{
+			"pkg/y/y.go": clean("y"),
+		}), moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"none, an application", "none", app,
+			moduleFinding, false, `library-entrypoints "none": no code outside the build imports example.com/m/pkg/x, ` + module,
+			plugin.LibraryEntrypointsSourceDeclared, []string{}, nil},
+		{"auto, an application whose load does not type-check", "auto", map[string]string{
+			"cmd/app/main.go": "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":      reaches("x"),
+			"pkg/y/y.go":      "package y\n\nvar N int = \"x\"\n",
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x", "example.com/m/pkg/y"}, nil},
 		{"auto, an example reaches the module", "auto", map[string]string{
 			"examples/basic/basic.go": reaches("basic"),
 		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceAuto, []string{}, nil},
@@ -317,6 +378,54 @@ func TestWithholdForLibraryEscape_IncompleteLoad(t *testing.T) {
 			}
 			if failed := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure); failed != tc.failed {
 				t.Errorf("tool_failure declared = %v, want %v (partiality %+v)", failed, tc.failed, res.Partiality)
+			}
+		})
+	}
+}
+
+// TestApplicationMains: only a shipped main at its module's root or under cmd reads a build as an
+// application, and only in a build of one main module: a go.work library module beside a tool
+// module stays a library even though the tool's main sits under cmd. LoadProgram's roots come from
+// one module today, so the workspace case is built by hand.
+func TestApplicationMains(t *testing.T) {
+	pkg := func(path, module string, main bool) *packages.Package {
+		p := &packages.Package{PkgPath: path, Name: "lib", GoFiles: []string{"f.go"}, Module: &packages.Module{Path: module, Main: true}}
+		if main {
+			p.Name = "main"
+		}
+		return p
+	}
+	const m = "example.com/m"
+	for _, tc := range []struct {
+		name string
+		pkgs []*packages.Package
+		want []string
+	}{
+		{"root and cmd mains", []*packages.Package{
+			pkg(m, m, true), pkg(m+"/cmd", m, true), pkg(m+"/cmd/app", m, true), pkg(m+"/pkg/x", m, false),
+		}, []string{m, m + "/cmd", m + "/cmd/app"}},
+		{"grpc's shape: benchmark and interop mains", []*packages.Package{
+			pkg(m+"/benchmark/worker", m, true), pkg(m+"/interop/client", m, true), pkg(m+"/pkg/x", m, false),
+		}, nil},
+		{"generators and tools", []*packages.Package{
+			pkg(m+"/internal/gen", m, true), pkg(m+"/hack/tool", m, true), pkg(m+"/tools/lint", m, true),
+			pkg(m+"/profiling/p", m, true), pkg(m+"/cmdline", m, true),
+		}, nil},
+		{"a cmd main under examples", []*packages.Package{pkg(m+"/examples/cmd/demo", m, true)}, nil},
+		{"a library module beside a tool module", []*packages.Package{
+			pkg(m+"/x", m, false), pkg(m+"/tools/cmd/t", m+"/tools", true),
+		}, nil},
+		{"a dependency beside the main module", []*packages.Package{
+			pkg(m+"/cmd/app", m, true), {PkgPath: "example.com/dep", Name: "dep", GoFiles: []string{"f.go"}, Module: &packages.Module{Path: "example.com/dep"}},
+		}, []string{m + "/cmd/app"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, p := range applicationMains(tc.pkgs) {
+				got = append(got, p.PkgPath)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("applicationMains = %q, want %q", got, tc.want)
 			}
 		})
 	}

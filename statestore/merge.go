@@ -171,6 +171,9 @@ func mergeReports(base, mine *report.Report) *report.Report {
 		WithLibraryEntrypoints(primary.LibraryEntrypoints...).
 		WithEntryRoots(primary.Entrypoints...).
 		WithProvenance(prov)
+	if primary.Mode != nil {
+		b.WithMode(*primary.Mode)
+	}
 	if primary.Baseline != nil {
 		b.WithBaseline(*primary.Baseline)
 	}

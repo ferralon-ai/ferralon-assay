@@ -156,6 +156,15 @@ func WithStrict(strict bool) AssessOption {
 	return func(c *AssessConfig) { c.Strict = strict }
 }
 
+// StrictOf reports whether a run assessed with opts is in strict mode.
+func StrictOf(opts ...AssessOption) bool {
+	var cfg AssessConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return cfg.Strict
+}
+
 // WithSubjectGoWork states the GOWORK the subject's Go build runs under: "off", or the path of its
 // go.work, relative to the checkout root unless absolute. Unstated, the build runs under the go.work
 // the go command finds from the module, searched no higher than its repository. Never pass the

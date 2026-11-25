@@ -1218,6 +1218,14 @@ type Report struct {
 	// failed and the scan fell back to reading none, the cause. Set on every JavaScript scan;
 	// nil for every other language.
 	DependencyCode *DependencyCode `json:"dependency_code,omitempty"`
+	// Mode records the strictness the run adjudicated under and which statement decided it. Every
+	// Report a run builds carries it; one stored before the field existed has none and reads as
+	// practical (ModeOf). Additive and omitted when absent (§11).
+	Mode *Mode `json:"mode,omitempty"`
+	// RunAssumptions is the run-level block of what the scan took as given about the build, derived
+	// from the Report's own fields (AssumptionsOf) when the run publishes. Additive and omitted
+	// when absent (§11).
+	RunAssumptions *RunAssumptions `json:"run_assumptions,omitempty"`
 }
 
 // SetAdvisories replaces the findings of a built Report, ordered as Build orders them.

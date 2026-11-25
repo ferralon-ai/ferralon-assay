@@ -353,3 +353,39 @@ func TestMergeKeepsJSLaunchDigest(t *testing.T) {
 		}
 	}
 }
+
+// A merged state keeps the mode of the report it stores, never the other side's: an older strict
+// report must not make a newer report without a mode read as strict.
+func TestMergeKeepsStoredReportMode(t *testing.T) {
+	strict := report.Mode{Strictness: report.StrictnessStrict, Source: report.ModeSourceInput}
+	ts := time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)
+	newer := func(m *report.Mode) report.Report {
+		b := report.NewBuilder(report.Subject{ResolvedCommit: "new"}).WithProvenance(report.Provenance{Timestamp: ts})
+		if m != nil {
+			b = b.WithMode(*m)
+		}
+		return b.Build()
+	}
+	t.Run("newer carries a mode", func(t *testing.T) {
+		for name, out := range mergeOrders(newer(&strict)) {
+			if out.Report.Mode == nil || *out.Report.Mode != strict {
+				t.Errorf("%s: mode = %+v, want %+v", name, out.Report.Mode, strict)
+			}
+		}
+	})
+	t.Run("newer carries none, older strict", func(t *testing.T) {
+		n := newer(nil)
+		older := report.NewBuilder(report.Subject{ResolvedCommit: "old"}).
+			WithMode(strict).
+			WithProvenance(report.Provenance{Timestamp: ts.Add(-time.Hour)}).
+			Build()
+		for name, out := range map[string]*State{
+			"newer committed": Merge(&State{Report: &n, CommitSHA: "x"}, &State{Report: &older}),
+			"newer retrying":  Merge(&State{Report: &older, CommitSHA: "x"}, &State{Report: &n}),
+		} {
+			if out.Report.Mode != nil || out.Report.ModeOf() != report.StrictnessPractical {
+				t.Errorf("%s: mode = %+v, want none (practical)", name, out.Report.Mode)
+			}
+		}
+	})
+}

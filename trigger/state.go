@@ -197,6 +197,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	b.SetRelationships(baseline.SBOM.Relationships)
 	b.SetGoBuildList(baseline.SBOM)
 	b.SetJSLaunchDigest(baseline.SBOM)
+	b.WithMode(runMode(req.AssessOptions, req.ModeSource))
 	// A baseline row a fresh row stands in for (a scan_cut_short row unrowedAdvisories skipped) is
 	// dropped. The head's inventory limits apply to the inherited rows as to fresh ones: a package
 	// the head could not inventory may be installed where the baseline's analysis never looked.
@@ -453,6 +454,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	b.SetRelationships(req.PRSBOM.Relationships)
 	b.SetGoBuildList(req.PRSBOM)
 	b.SetJSLaunchDigest(req.PRSBOM)
+	b.WithMode(runMode(req.AssessOptions, req.ModeSource))
 
 	var rows []report.AdvisoryFinding
 	for i := range baseline.Advisories {
@@ -580,7 +582,13 @@ func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *repo
 // with no js record reads as auto. A scan of another language states the default for js, so a
 // stored js record that removed something reads as restated: the rows were reached under a removal
 // this run does not state.
+//
+// A stored Report whose strictness (Report.ModeOf) differs from the run's reads as restated too: its
+// rows were reached under another mode, so none stands.
 func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
+	if stored.ModeOf() != modeStrictness(opts) {
+		return true
+	}
 	was := plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}
 	for _, r := range stored.LibraryEntrypoints {
 		if r.Ecosystem != "golang" {
@@ -849,6 +857,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.SetRelationships(prior.SBOM.Relationships)
 	b.SetGoBuildList(prior.SBOM)
 	b.SetJSLaunchDigest(prior.SBOM)
+	b.WithMode(runMode(req.AssessOptions, req.ModeSource))
 
 	// A fresh row replaces the prior rows of its own instance. Under a retried cut row's key, which
 	// holds only cut rows, that is all of them (the parent's and its siblings', which siblings

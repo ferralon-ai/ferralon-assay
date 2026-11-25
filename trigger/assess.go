@@ -1512,6 +1512,7 @@ var refutationWithheldReasons = map[string]bool{
 	plugin.PartialReasonExcludedFilesAssembly:        true,
 	plugin.PartialReasonExcludedFilesLinkname:        true,
 	plugin.PartialReasonExcludedFilesCgoInclude:      true,
+	plugin.PartialReasonExcludedFilesUnresolvedName:  true,
 	plugin.PartialReasonExcludedFilesBuildConstraint: true,
 	plugin.PartialReasonUnsearchedMethods:            true,
 	plugin.PartialReasonLibraryEscape:                true,
@@ -1635,6 +1636,7 @@ var outsideBuildExempt = map[string]bool{
 	plugin.PartialReasonExcludedFilesAssembly:        true,
 	plugin.PartialReasonExcludedFilesLinkname:        true,
 	plugin.PartialReasonExcludedFilesCgoInclude:      true,
+	plugin.PartialReasonExcludedFilesUnresolvedName:  true,
 	plugin.PartialReasonExcludedFilesBuildConstraint: true,
 }
 

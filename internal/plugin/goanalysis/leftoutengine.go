@@ -858,9 +858,10 @@ func (row *lofRow) countsWhy(path string) (counts bool, reasons []string, failed
 // lofAnnotations maps the fail-closed items the gate names to the reason a withheld refutation
 // declares for them.
 var lofAnnotations = map[string]string{
-	lofAssembly:   plugin.PartialReasonExcludedFilesAssembly,
-	lofLinkname:   plugin.PartialReasonExcludedFilesLinkname,
-	lofCgoInclude: plugin.PartialReasonExcludedFilesCgoInclude,
+	lofAssembly:       plugin.PartialReasonExcludedFilesAssembly,
+	lofLinkname:       plugin.PartialReasonExcludedFilesLinkname,
+	lofCgoInclude:     plugin.PartialReasonExcludedFilesCgoInclude,
+	lofUnresolvedName: plugin.PartialReasonExcludedFilesUnresolvedName,
 }
 
 // lofEngineFailures holds the fail-closed items that mark a failure of the engine's own steps rather

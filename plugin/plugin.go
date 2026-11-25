@@ -286,6 +286,10 @@ const (
 	// PartialReasonExcludedFilesCgoInclude localises excluded_files: a file the build left out
 	// includes C headers through cgo, whose code the analyzer does not read.
 	PartialReasonExcludedFilesCgoInclude = PartialReasonExcludedFiles + ":cgo_include"
+	// PartialReasonExcludedFilesUnresolvedName localises excluded_files: a file the build left out
+	// uses a name the analyzer cannot resolve to a declaration it reads (a cgo name, a dot import, a
+	// name a sibling file or a source outside the module cache may declare), so what it calls is unknown.
+	PartialReasonExcludedFilesUnresolvedName = PartialReasonExcludedFiles + ":unresolved_name"
 	// PartialReasonExcludedFilesBuildConstraint localises excluded_files: every file the build left out
 	// that may call into the module was left out only by its build constraints (GOOS or GOARCH in the
 	// file name or a //go:build line) and the analyzer traced it to a possible call, with no other

@@ -520,12 +520,12 @@ func TestFinding_GoGovulncheckEvidence(t *testing.T) {
 			wantReason: report.ReasonRefutationWithheld,
 		},
 		{
-			name: "a left-out file's assembly, linkname or C include withheld the refutation",
+			name: "a left-out file's assembly, linkname, C include or unresolved name withheld the refutation",
 			mutate: func(fx *groundsFixture) {
 				fx.reach.Refutation = nil
 				fx.footprint = []string{
 					plugin.PartialReasonExcludedFilesAssembly, plugin.PartialReasonExcludedFilesLinkname,
-					plugin.PartialReasonExcludedFilesCgoInclude,
+					plugin.PartialReasonExcludedFilesCgoInclude, plugin.PartialReasonExcludedFilesUnresolvedName,
 				}
 			},
 			wantReason: report.ReasonRefutationWithheld,

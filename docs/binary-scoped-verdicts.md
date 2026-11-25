@@ -111,7 +111,14 @@ and the OpenVEX projector emits no scoped statement for it even when validation 
   out, for this scoped verdict only. They are held back by the same limits as a library view's
   refutation of another module, and they never ground the row's own verdict. The scoped verdict's
   detail states each module ruled out beside it, by either view, with that module's own grounds and
-  platform scope. The row also passes the gate every
+  platform scope. A module the advisory names that the build selects but the binaries compile no
+  package of counts as ruled out too, for this scoped verdict only: the program view records the
+  modules holding a package in the import closure of the shipped mains, as loaded for one GOOS and
+  GOARCH with the build's tags and no tests, and a module path none of them holds or lies under has
+  no code in these binaries in that build context. The detail states it as "no package of the module
+  is compiled into these binaries", with that context. A view that does not record those modules
+  (an incomplete load, or a package outside the standard library with no module) rules out none
+  this way. The row also passes the gate every
   `not_exploitable` passes: no toolchain axis left undetermined and no did-not-run limit counting for
   the package, other than the library-entry withholds the program view answers. A `reachable_candidate`
   row is held to it too, though its own verdict never reaches that gate.

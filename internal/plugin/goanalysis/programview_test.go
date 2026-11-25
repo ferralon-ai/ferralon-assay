@@ -97,6 +97,10 @@ func TestProgramView(t *testing.T) {
 		v.Refutation.Package != "pkg:golang/example.com/vulnmod" || !strings.Contains(v.Refutation.Detail, "cmd/tool only") {
 		t.Fatalf("program view = %+v, want cmd/tool's refutation of example.com/vulnmod", v)
 	}
+	// Only pkg/lib imports vulnmod; the shipped main does not, so no package of it is compiled in.
+	if v := res.ProgramView; !slices.Equal(v.CompiledModules, []string{"example.com/m"}) || !strings.HasPrefix(v.CompiledFor, "GOOS=") || strings.ContainsAny(v.CompiledFor, "()") {
+		t.Errorf("compiled modules = %q under %q, want the main module alone under the load's platform", v.CompiledModules, v.CompiledFor)
+	}
 
 	g, err := reconcileCallGraph(ctx, dir, nil, loaded)
 	if err != nil {
@@ -408,5 +412,33 @@ func TestProgramView_SecondModuleOwnScope(t *testing.T) {
 				t.Errorf("second module's detail %q states its platform scope: %v, want %v", r.Detail, got, tc.wantScope)
 			}
 		})
+	}
+}
+
+// TestCompiledModules: the modules of the packages the mains import, directly or not, and no other
+// loaded package's; the standard library has no module and adds none, and a package outside it
+// with no module leaves the set unknown.
+func TestCompiledModules(t *testing.T) {
+	pkg := func(path, mod string, imports ...*packages.Package) *packages.Package {
+		p := &packages.Package{PkgPath: path, Imports: map[string]*packages.Package{}}
+		if mod != "" {
+			p.Module = &packages.Module{Path: mod}
+		}
+		for _, i := range imports {
+			p.Imports[i.PkgPath] = i
+		}
+		return p
+	}
+	fmtPkg := pkg("fmt", "")
+	deep := pkg("example.com/deep/x", "example.com/deep", fmtPkg)
+	lib := pkg("example.com/lib/y", "example.com/lib", deep, fmtPkg)
+	main := pkg("example.com/m/cmd/a", "example.com/m", lib)
+	other := pkg("example.com/m/cmd/b", "example.com/m", fmtPkg)
+	_ = pkg("example.com/unused/z", "example.com/unused")
+	if got := compiledModules([]*packages.Package{main, other}); !slices.Equal(got, []string{"example.com/deep", "example.com/lib", "example.com/m"}) {
+		t.Errorf("compiled modules = %q, want the mains' import closure", got)
+	}
+	if got := compiledModules([]*packages.Package{pkg("example.com/m/cmd/c", "example.com/m", pkg("example.com/nomod/w", ""))}); got != nil {
+		t.Errorf("compiled modules = %q, want none for a package outside the standard library without a module", got)
 	}
 }

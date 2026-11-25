@@ -355,11 +355,14 @@ func netNotReached() groundsFixture {
 // does not refute, or beside a view refutation a did-not-run limit holds back, gets none, as does one
 // whose view refutation of its module is unnamed or of another basis. The scoped verdict states each
 // module refuted beside it, by either view. The row keeps the library view's verdict either way, and
-// the view's refutations never ground it.
+// the view's refutations never ground it. A view that states the modules compiled into the binaries,
+// and the build context it loaded them under, rules out a module none of them holds or lies under,
+// for the scoped verdict alone, and the detail says so.
 func TestFinding_ScopedVerdictTwoModules(t *testing.T) {
 	const (
 		net  = "pkg:golang/golang.org/x/net"
 		text = "pkg:golang/golang.org/x/text"
+		plat = "GOOS=linux GOARCH=amd64, default build tags, tests excluded"
 	)
 	refute := func(pkg, detail string) plugin.Refutation {
 		return plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: pkg, Detail: detail}
@@ -376,8 +379,11 @@ func TestFinding_ScopedVerdictTwoModules(t *testing.T) {
 		scoped      []artifact.ScopedPartialityFlag
 		row         report.Verdict
 		reason      string
-		want        string // the scoped verdict's detail; "" = none
-		also        string // the module refuted beside it, as the detail states it
+		want        string   // the scoped verdict's detail; "" = none
+		also        string   // the module refuted beside it, as the detail states it
+		compiled    []string // the view's compiled modules
+		compiledFor string
+		notCompiled string // the module the detail states no package of is compiled in
 	}{
 		{name: "the other module not ruled out", row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld},
 		{name: "the library view rules the other module out", textRefuted: true, row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld, want: "net view", also: "golang.org/x/text: no call path ("},
@@ -399,6 +405,27 @@ func TestFinding_ScopedVerdictTwoModules(t *testing.T) {
 			scoped: []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonExcludedFiles, Package: "pkg:golang/example.com/m", Targets: []string{text}}},
 			row:    report.VerdictUndetermined, reason: report.ReasonRefutationWithheld,
 		},
+		{
+			name: "the other module has no package compiled into the binaries", compiled: []string{"example.com/m", "golang.org/x/net"}, compiledFor: plat,
+			row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld, want: "net view",
+			notCompiled: "golang.org/x/text: no package of the module is compiled into these binaries (" + plat + ")",
+		},
+		{
+			name: "the other module compiled into the binaries", compiled: []string{"example.com/m", "golang.org/x/net", "golang.org/x/text"}, compiledFor: plat,
+			row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld,
+		},
+		{
+			name: "the other module compiled in another case", compiled: []string{"example.com/m", "golang.org/x/net", "golang.org/X/Text"}, compiledFor: plat,
+			row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld,
+		},
+		{
+			name: "a module under the other module compiled", compiled: []string{"example.com/m", "golang.org/x/net", "golang.org/x/text/sub"}, compiledFor: plat,
+			row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld,
+		},
+		{
+			name: "compiled modules without their build context", compiled: []string{"example.com/m", "golang.org/x/net"},
+			row: report.VerdictUndetermined, reason: report.ReasonRefutationWithheld,
+		},
 	} {
 		fx := netNotReached()
 		if tc.pkg != nil {
@@ -410,7 +437,8 @@ func TestFinding_ScopedVerdictTwoModules(t *testing.T) {
 		fx.footprint = []string{plugin.PartialReasonLibraryEscape}
 		fx.scoped = tc.scoped
 		fx.affected = []string{net, text}
-		fx.reach.ProgramView = &plugin.ProgramView{Module: "example.com/m", Binaries: []string{"cmd/tool"}, Refutation: refute(net, "net view")}
+		fx.reach.ProgramView = &plugin.ProgramView{Module: "example.com/m", Binaries: []string{"cmd/tool"}, Refutation: refute(net, "net view"),
+			CompiledModules: tc.compiled, CompiledFor: tc.compiledFor}
 		if tc.viewText {
 			fx.reach.ProgramView.Refutations = []plugin.Refutation{refute(text, "text view")}
 		}
@@ -435,8 +463,11 @@ func TestFinding_ScopedVerdictTwoModules(t *testing.T) {
 			t.Errorf("%s: scoped verdicts = %+v, want one unreachable not_exploitable stating %q", tc.name, f.ScopedVerdicts, tc.want)
 			continue
 		}
-		if detail := f.ScopedVerdicts[0].Evidence.Detail; !strings.Contains(detail, "; also "+tc.also) {
+		if detail := f.ScopedVerdicts[0].Evidence.Detail; tc.also != "" && !strings.Contains(detail, "; also "+tc.also) {
 			t.Errorf("%s: scoped detail = %q, want it to state %q beside it", tc.name, detail, tc.also)
+		}
+		if detail := f.ScopedVerdicts[0].Evidence.Detail; tc.notCompiled != "" && !strings.HasSuffix(detail, "; "+tc.notCompiled) {
+			t.Errorf("%s: scoped detail = %q, want it to state %q", tc.name, detail, tc.notCompiled)
 		}
 	}
 }

@@ -149,12 +149,15 @@ func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Packa
 	// The view's refutations of the advisory's other modules stand beside this row's scoped verdict
 	// alone, held back as the library view's are (standingBeside); the row's own verdict never reads them.
 	beside := append(refutedBeside(store, assessmentID, reach), standingBeside(store, assessmentID, slices.Delete(slices.Clone(refuted), own, own+1))...)
-	purls := pipeline.AdvisoryPackagePURLs(store, assessmentID)
+	purls, absent := notCompiledIn(pipeline.AdvisoryPackagePURLs(store, assessmentID), view)
 	if namesOtherPackage(purls, admitted, mods, beside) || entersBinary(store, assessmentID, view) {
 		return nil
 	}
 	detail, _, _ := withRefutedBeside(fmt.Sprintf("%s: %s (%s)", label, refuted[own].Detail, refuted[own].Basis),
 		verdict.BasisSymbolUnreachable, nil, purls, admitted, mods, beside)
+	for _, m := range absent {
+		detail += fmt.Sprintf("; %s: no package of the module is compiled into these binaries (%s)", m, view.CompiledFor)
+	}
 	return []report.ScopedVerdict{{
 		Verdict: report.VerdictNotExploitable,
 		Scope:   report.Scope{Kind: report.ScopeBinaries, Targets: slices.Clone(view.Binaries), Module: view.Module},
@@ -163,6 +166,35 @@ func scopedVerdicts(store artifact.Store, assessmentID string, pkg *report.Packa
 			Detail: detail,
 		},
 	}}
+}
+
+// notCompiledIn splits the advisory's package URLs into those the binaries' scoped verdict must
+// still answer, and the Go module paths among them the view shows have no package compiled into
+// the binaries: a path with a dotted first element that no module in view.CompiledModules holds or
+// lies under, compared ignoring case. It moves nothing when the view does not state the compiled
+// modules, so a view without them grounds the verdict as before.
+func notCompiledIn(purls []string, view *plugin.ProgramView) ([]string, []string) {
+	if len(view.CompiledModules) == 0 || view.CompiledFor == "" {
+		return purls, nil
+	}
+	compiled := goModules{}
+	for _, m := range view.CompiledModules {
+		compiled[m] = true
+	}
+	var kept, absent []string
+	for _, p := range purls {
+		key, ok := purlKey(p)
+		first, _, _ := strings.Cut(key.name, "/")
+		if !ok || key.typ != "golang" || !strings.Contains(first, ".") || compiled.holdsFold(key.name) ||
+			slices.ContainsFunc(view.CompiledModules, func(m string) bool { return goModules{key.name: true}.holdsFold(m) }) {
+			kept = append(kept, p)
+			continue
+		}
+		if !slices.Contains(absent, key.name) {
+			absent = append(absent, key.name)
+		}
+	}
+	return kept, absent
 }
 
 // entersBinary reports whether a reach or taint path the row records starts in the main package of

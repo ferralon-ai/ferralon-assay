@@ -1,11 +1,15 @@
 package goanalysis
 
 import (
+	"go/token"
+	"go/types"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 )
 
 func TestLofAsm_Read(t *testing.T) {
@@ -13,8 +17,10 @@ func TestLofAsm_Read(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// files are the package directory's files; a .s file is one of its assembly files.
-		files  map[string]string
-		cgo    bool
+		files map[string]string
+		cgo   bool
+		// gone adds an assembly file that does not exist.
+		gone   bool
 		text   []string
 		refs   [][2]string
 		opaque bool
@@ -58,9 +64,12 @@ func TestLofAsm_Read(t *testing.T) {
 		{name: "another package's body", files: map[string]string{"a.s": "TEXT m∕q·F(SB),0,$0\n\tRET\n"}},
 		{name: "a comment and a string", files: map[string]string{"a.s": "// CALL ·x(SB)\nTEXT ·f(SB),0,$0\n\tRET\n/* CALL libc_y(SB) */\n#include \"textflag.h\" // \"·z\"\n"},
 			text: []string{"f"}},
+		{name: "a file that cannot be read", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tRET\n"}, gone: true,
+			text: []string{"f"}, opaque: true},
 		{name: "text the assembler cannot read", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tMOVQ $\"x, AX\n"},
 			opaque: true},
-		{name: "a .syso object", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tRET\n", "x_amd64.syso": "\x7fELF"},
+		// go/build links a .syso without reading a build constraint from it.
+		{name: "a .syso object", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tRET\n", "x_amd64.syso": "//go:build ignore\n"},
 			opaque: true},
 		{name: "a .S file", files: map[string]string{"a.s": "TEXT ·f(SB),0,$0\n\tRET\n", "x.S": "TEXT ·g(SB),0,$0\n\tRET\n"},
 			opaque: true},
@@ -92,6 +101,9 @@ func TestLofAsm_Read(t *testing.T) {
 					p.foreign = append(p.foreign, full)
 				}
 			}
+			if tc.gone {
+				p.asmFiles = append(p.asmFiles, filepath.Join(dir, "gone.s"))
+			}
 			if tc.cgo {
 				p.files = []*lofFile{{pkg: p, cgo: true}}
 			}
@@ -105,6 +117,84 @@ func TestLofAsm_Read(t *testing.T) {
 			}
 			if !slices.Equal(a.refs, tc.refs) {
 				t.Errorf("refs = %v, want %v", a.refs, tc.refs)
+			}
+		})
+	}
+}
+
+func TestLofWalk_Asm(t *testing.T) {
+	loaded := func(path, name string, funcs ...string) *lofPkg {
+		tp := types.NewPackage(path, name)
+		for _, f := range funcs {
+			tp.Scope().Insert(types.NewFunc(token.NoPos, tp, f, types.NewSignatureType(nil, nil, nil, nil, nil, false)))
+		}
+		return &lofPkg{path: path, std: !slices.Contains([]string{"m/q"}, path), loaded: &packages.Package{Types: tp}}
+	}
+	const head = "TEXT ·f(SB),0,$0\n"
+	for _, tc := range []struct {
+		name string
+		asm  string
+		// fn is the bodyless function followed; "f" when empty.
+		fn     string
+		std    bool
+		fc     []string
+		fcStd  []string
+		asmTo  []string
+		pushed []string
+	}{
+		{name: "a call in its own package", asm: head + "\tCALL ·g(SB)\n\tRET\n", asmTo: []string{"m/p"}, pushed: []string{"g"}},
+		{name: "an assembly-only helper", asm: head + "\tJMP ·h(SB)\nTEXT ·h(SB),0,$0\n\tRET\n", asmTo: []string{"m/p"}},
+		{name: "a name nothing declares", asm: head + "\tCALL ·nope(SB)\n\tRET\n", fc: []string{lofAssembly}, asmTo: []string{"m/p"}},
+		{name: "a standard-library function", asm: head + "\tCALL runtime·entersyscall(SB)\n\tRET\n", asmTo: []string{"m/p", "runtime"}},
+		{name: "a standard-library symbol nothing declares", asm: head + "\tCALL runtime·load_g(SB)\n\tRET\n", fcStd: []string{lofAssembly}, asmTo: []string{"m/p"}},
+		{name: "a dotless module's function", asm: head + "\tCALL m∕q·F(SB)\n\tRET\n", asmTo: []string{"m/p", "m/q"}},
+		{name: "a dotless module's symbol nothing declares", asm: head + "\tCALL m∕q·Nope(SB)\n\tRET\n", fc: []string{lofAssembly}, asmTo: []string{"m/p"}},
+		{name: "a package that cannot be found", asm: head + "\tCALL m∕gone·F(SB)\n\tRET\n", fc: []string{lofUnresolvedImport}, asmTo: []string{"m/p"}},
+		{name: "a function its assembly does not define", asm: head + "\tRET\n", fn: "g", fc: []string{lofAssembly}},
+		{name: "a C symbol", asm: head + "\tJMP libc_x(SB)\n", fc: []string{lofAssembly}},
+		{name: "a compiler-made name", asm: head + "\tCALL ·g.func1(SB)\n\tRET\n", fc: []string{lofAssembly}},
+		{name: "a missing header", asm: "#include \"missing.h\"\n" + head + "\tRET\n", fc: []string{lofAssembly}},
+		{name: "a standard-library package's assembly", asm: head + "\tCALL ·g(SB)\n\tRET\n", std: true, fcStd: []string{lofAssembly}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			full := filepath.Join(dir, "a.s")
+			if err := os.WriteFile(full, []byte(tc.asm), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			p := &lofPkg{path: "m/p", dir: dir, std: tc.std, asmFiles: []string{full}, decls: map[string][]*lofDecl{}}
+			for _, n := range []string{"f", "g"} {
+				p.decls[n] = []*lofDecl{{name: n}}
+			}
+			w := &lofWorld{excluded: ignored, pkgs: map[string]*lofPkg{
+				"runtime": loaded("runtime", "runtime", "entersyscall"),
+				"m/q":     loaded("m/q", "q", "F"),
+				"m/gone":  {path: "m/gone", missing: lofUnresolvedImport},
+			}}
+			k := &lofWalk{w: w, out: newLofClosure(), epoch: 1, entered: map[*lofPkg]bool{}, touched: map[*lofFile]bool{}}
+			fn := tc.fn
+			if fn == "" {
+				fn = "f"
+			}
+			k.asm(p, fn)
+			if !slices.Equal(k.out.fc, tc.fc) || !slices.Equal(k.out.fcStd, tc.fcStd) {
+				t.Errorf("fails closed on %v, standard library only on %v; want %v and %v", k.out.fc, k.out.fcStd, tc.fc, tc.fcStd)
+			}
+			if got := slices.Sorted(maps.Keys(k.out.asmTo)); !slices.Equal(got, tc.asmTo) {
+				t.Errorf("assembly targets = %v, want %v", got, tc.asmTo)
+			}
+			var pushed []string
+			for _, d := range k.queue {
+				pushed = append(pushed, d.name)
+			}
+			if !slices.Equal(pushed, tc.pushed) {
+				t.Errorf("pushed %v, want %v", pushed, tc.pushed)
+			}
+			if !k.out.dyn {
+				t.Error("assembly is not a dynamic call")
+			}
+			if narrowed := len(tc.asmTo) > 0; k.out.sink != narrowed {
+				t.Errorf("sink = %v, want %v", k.out.sink, narrowed)
 			}
 		})
 	}

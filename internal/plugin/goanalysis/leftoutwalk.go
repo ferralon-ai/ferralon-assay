@@ -239,6 +239,9 @@ type lofClosure struct {
 	// linkTo holds the packages a //go:linkname the closure binds outside the toolchain's own
 	// packages names: the package a pull reads its body from, or the one a push gives a body to.
 	linkTo map[string]bool
+	// asmTo holds the packages whose assembly the closure follows (lofWalk.asm) and the packages
+	// that assembly names.
+	asmTo map[string]bool
 	// unres holds the bare identifiers no declaration has, and unresQ the qualified references to a
 	// standard-library package that no declaration of it has.
 	unres  []lofRef
@@ -251,12 +254,12 @@ type lofClosure struct {
 }
 
 func newLofClosure() *lofClosure {
-	return &lofClosure{funcs: map[*types.Func]bool{}, inits: map[*types.Package]bool{}, types: map[*types.TypeName]bool{}, methods: map[string]bool{}, src: map[[2]string]bool{}, linkTo: map[string]bool{}}
+	return &lofClosure{funcs: map[*types.Func]bool{}, inits: map[*types.Package]bool{}, types: map[*types.TypeName]bool{}, methods: map[string]bool{}, src: map[[2]string]bool{}, linkTo: map[string]bool{}, asmTo: map[string]bool{}}
 }
 
 func (c *lofClosure) clone() *lofClosure {
 	cp := *c
-	cp.funcs, cp.inits, cp.types, cp.methods, cp.src, cp.linkTo = maps.Clone(c.funcs), maps.Clone(c.inits), maps.Clone(c.types), maps.Clone(c.methods), maps.Clone(c.src), maps.Clone(c.linkTo)
+	cp.funcs, cp.inits, cp.types, cp.methods, cp.src, cp.linkTo, cp.asmTo = maps.Clone(c.funcs), maps.Clone(c.inits), maps.Clone(c.types), maps.Clone(c.methods), maps.Clone(c.src), maps.Clone(c.linkTo), maps.Clone(c.asmTo)
 	cp.newMeth, cp.fc, cp.fcStd, cp.unres, cp.unresQ = slices.Clone(c.newMeth), slices.Clone(c.fc), slices.Clone(c.fcStd), slices.Clone(c.unres), slices.Clone(c.unresQ)
 	return &cp
 }
@@ -1641,8 +1644,7 @@ func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 	}
 	found := false
 	if len(p.asmFiles) > 0 {
-		k.fail(p, lofAssembly)
-		k.out.dyn = true
+		k.asm(p, d.name)
 		found = true
 	}
 	sym := p.path + "." + d.name
@@ -1655,6 +1657,47 @@ func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 	}
 	if !found && !k.w.intrinsic(sym) {
 		k.fail(p, lofBodyless)
+	}
+}
+
+// asm follows the assembly of package p, which may give its bodyless function name a body. When
+// p's assembly defines name (TEXT) and the walk can follow everything it names (lofAsm.opaque),
+// each Go symbol it names is followed like a call: in p, or in the package it names, whose path
+// the closure keeps for the row to decide, as link does. Assembly may still call any function
+// value or method it is handed, so it is a dynamic call that may carry a value into loaded code.
+// Otherwise, and inside the toolchain's own packages, assembly fails closed, as fail does; so does
+// a symbol it names that no declaration has, except one its own package's assembly defines, or
+// one of the toolchain's own packages, which fails closed for a standard-library refutation only.
+func (k *lofWalk) asm(p *lofPkg, name string) {
+	k.out.dyn = true
+	a := k.w.asmOf(p)
+	if p.std || a.opaque || !a.text[name] {
+		k.fail(p, lofAssembly)
+		return
+	}
+	k.out.sink = true
+	k.out.asmTo[p.path] = true
+	for _, r := range a.refs {
+		path, sym := r[0], r[1]
+		if path == "" {
+			if !k.resolveIn(p, sym) && !a.defs[sym] {
+				k.fail(p, lofAssembly)
+			}
+			continue
+		}
+		q := k.w.pkg(path)
+		k.enter(q)
+		if q.missing != "" {
+			continue
+		}
+		switch {
+		case k.resolveIn(q, sym):
+			k.out.asmTo[path] = true
+		case q.std:
+			k.out.failStd(lofAssembly)
+		default:
+			k.fail(p, lofAssembly)
+		}
 	}
 }
 

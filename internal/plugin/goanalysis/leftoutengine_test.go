@@ -142,6 +142,14 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 	// um is a package the build does not load, whose method calls the symbol.
 	um := map[string]string{"_v/um/um.go": "package um\n\nimport \"example.com/v/vuln\"\n\ntype T struct{}\n\nfunc (*T) Run() { vuln.Bad() }\n\nfunc Nop() {}\n"}
 	libOnly := "\t\"example.com/m/lib\""
+	// dotless is the dotless module w, whose package w/lib the build does not load, with Call's body.
+	dotless := func(body string) map[string]string {
+		return map[string]string{
+			"go.mod":        "module example.com/m\n\ngo 1.22.0\n\nrequire (\n\texample.com/v v0.0.0\n\tw v0.0.0\n)\n\nreplace (\n\texample.com/v => ./_v\n\tw => ./_w\n)\n",
+			"_w/go.mod":     "module w\n\ngo 1.22\n",
+			"_w/lib/lib.go": "package lib\n\nimport \"example.com/v/vuln\"\n\nfunc Call() { " + body + " }\n",
+		}
+	}
 	bad := map[string][]string{"example.com/v/vuln": {"Bad", "T.Bad", "P.Bad", "Variadic"}}
 	badFunc := map[string][]string{"example.com/v/vuln": {"Bad"}}
 	cases := []struct {
@@ -273,6 +281,47 @@ func TestLeftOutEngine_Constructs(t *testing.T) {
 		// asm
 		{"a left-out bodyless function's package has assembly", merge(x(vulnOnly, "func asm()\n\nfunc init() { asm(); vuln.Safe() }\n"), map[string]string{
 			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tRET\n",
+		}), badFunc, false, "", false},
+		{"a left-out bodyless function's assembly calls a C symbol", merge(x(vulnOnly, "func asm()\n\nfunc init() { asm(); vuln.Safe() }\n"), map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL puts(SB)\n\tRET\n",
+		}), badFunc, true, lofAssembly, false},
+		{"a left-out bodyless function's assembly includes a header nowhere to be found", merge(x(vulnOnly, "func asm()\n\nfunc init() { asm(); vuln.Safe() }\n"), map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\n#include \"missing.h\"\n\nTEXT ·asm(SB),0,$0\n\tRET\n",
+		}), badFunc, true, lofAssembly, false},
+		{"a left-out bodyless function's assembly runs while the symbol's address is taken", merge(x(libOnly, "func asm()\n\nfunc init() { lib.Install(); asm() }\n"), hook, map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tRET\n",
+		}), badFunc, true, "", false},
+		{"a left-out init installs the symbol's address and calls nothing dynamic", merge(x(libOnly, "func init() { lib.Install() }\n"), hook), badFunc, false, "", false},
+		{"a left-out file calls a bodyless function of the vulnerable package whose assembly calls the symbol", merge(x(vulnOnly, "func init() { vuln.Stub() }\n"), map[string]string{
+			"_v/vuln/stub.go": off("package vuln\n\nfunc Stub()\n"),
+			"_v/vuln/stub.s":  "//go:build lofalt\n\nTEXT ·Stub(SB),0,$0\n\tCALL ·Bad(SB)\n\tRET\n",
+		}), badFunc, true, lofAssembly, false},
+		{"a left-out file calls a bodyless function whose assembly calls a Go function that calls the symbol", merge(x("\t\"example.com/v/am\"", "func init() { am.Run() }\n"), map[string]string{
+			"_v/am/am.go":     "package am\n\nfunc Run()\n",
+			"_v/am/am.s":      "TEXT ·Run(SB),0,$0\n\tCALL ·helper(SB)\n\tRET\n",
+			"_v/am/helper.go": "package am\n\nimport \"example.com/v/vuln\"\n\nfunc helper() { vuln.Bad() }\n",
+		}), badFunc, true, "", false},
+		{"a left-out file calls a bodyless function whose assembly calls a Go function that calls another", merge(x("\t\"example.com/v/am\"", "func init() { am.Run() }\n"), map[string]string{
+			"_v/am/am.go":     "package am\n\nfunc Run()\n",
+			"_v/am/am.s":      "TEXT ·Run(SB),0,$0\n\tCALL ·helper(SB)\n\tRET\n",
+			"_v/am/helper.go": "package am\n\nimport \"example.com/v/vuln\"\n\nfunc helper() { vuln.Safe() }\n",
+		}), badFunc, false, "", false},
+		// A dotless module path is one assembly can name: w∕lib·Call is w/lib.Call.
+		{"a left-out bodyless function's assembly calls a function of a dotless module that calls the symbol", merge(x("\t_ \"w/lib\"", "func asm()\n\nfunc init() { asm() }\n"), dotless("vuln.Bad()"), map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL w∕lib·Call(SB)\n\tRET\n",
+		}), badFunc, true, "", false},
+		{"a left-out bodyless function's assembly calls a function of a dotless module that calls another", merge(x("\t_ \"w/lib\"", "func asm()\n\nfunc init() { asm() }\n"), dotless("vuln.Safe()"), map[string]string{
+			"x_lofalt.s": "//go:build lofalt\n\nTEXT ·asm(SB),0,$0\n\tCALL w∕lib·Call(SB)\n\tRET\n",
+		}), badFunc, false, "", false},
+		{"a left-out file calls a bodyless function of a package with a system object", merge(x("\t\"example.com/v/am\"", "func init() { am.Run() }\n"), map[string]string{
+			"_v/am/am.go":         "package am\n\nfunc Run()\n",
+			"_v/am/am.s":          "TEXT ·Run(SB),0,$0\n\tRET\n",
+			"_v/am/am_amd64.syso": "\x7fELF",
+		}), badFunc, true, lofAssembly, false},
+		{"a left-out file calls a bodyless function of a cgo package with C source", merge(x("\t\"example.com/v/am\"", "func init() { am.Run() }\n"), map[string]string{
+			"_v/am/am.go": "package am\n\nimport \"C\"\n\nfunc Run()\n",
+			"_v/am/am.s":  "TEXT ·Run(SB),0,$0\n\tRET\n",
+			"_v/am/am.c":  "void run(void) {}\n",
 		}), badFunc, true, lofAssembly, false},
 		{"a left-out bodyless function has no body anywhere", x(vulnOnly, "func asm()\n\nfunc init() { asm(); vuln.Safe() }\n"), nil, true, lofBodyless, false},
 		{"a left-out bodyless function's package has assembly no build compiles", merge(x(vulnOnly, "func asm()\n\nfunc init() { asm(); vuln.Safe() }\n"), map[string]string{
@@ -1313,11 +1362,12 @@ func TestLofWalk_Link(t *testing.T) {
 // lofFileWith returns a left-out file whose closure, or link walk, fails closed on item. A
 // well-formed //go:linkname counts as a linkname item only when it binds a vulnerable package.
 func lofFileWith(r lofResult, item string) string {
-	linksVulnerable := func(f *lofFacts) bool {
-		return slices.ContainsFunc(f.LinkTo, func(id int32) bool { return slices.Contains(r.vulnerable, r.engine.Strs[id]) })
+	vulnerable := func(ids []int32) bool {
+		return slices.ContainsFunc(ids, func(id int32) bool { return slices.Contains(r.vulnerable, r.engine.Strs[id]) })
 	}
 	for path, f := range r.facts {
-		if slices.Contains(f.FC, item) || slices.Contains(f.FCStd, item) || slices.Contains(f.LinkFC, item) || item == lofLinkname && linksVulnerable(f) {
+		if slices.Contains(f.FC, item) || slices.Contains(f.FCStd, item) || slices.Contains(f.LinkFC, item) ||
+			item == lofLinkname && vulnerable(f.LinkTo) || item == lofAssembly && vulnerable(f.AsmTo) {
 			return path
 		}
 	}

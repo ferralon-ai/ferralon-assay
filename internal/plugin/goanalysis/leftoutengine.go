@@ -105,8 +105,9 @@ type lofNode struct {
 // (string ids); Src the source functions it walks (package path, "F" or "T.M"). Novel is set when
 // one of the file's loaded roots lies outside G0's CHA-round or final slice. Links holds the
 // packages the build did not load that the file can link (string ids), with LinkFC what that walk
-// fails closed on. LinkTo holds the packages the closure's //go:linkname directives bind (string
-// ids; lofClosure.linkTo).
+// fails closed on. LinkTo holds the packages the closure's //go:linkname directives bind, and AsmTo
+// the packages whose assembly it follows or that assembly names (string ids; lofClosure.linkTo,
+// lofClosure.asmTo).
 type lofFacts struct {
 	FC, FCStd                []string
 	Funcs, TypeMeth, NewMeth []int32
@@ -118,6 +119,7 @@ type lofFacts struct {
 	Links                    []int32
 	LinkFC                   []string
 	LinkTo                   []int32
+	AsmTo                    []int32
 }
 
 // lofCandidate is a left-out file and the package it belongs to.
@@ -416,6 +418,10 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *rele
 			f.LinkTo = append(f.LinkTo, in.id(ip))
 		}
 		slices.Sort(f.LinkTo)
+		for ip := range cl.asmTo {
+			f.AsmTo = append(f.AsmTo, in.id(ip))
+		}
+		slices.Sort(f.AsmTo)
 		for m := range cl.methods {
 			f.Methods = append(f.Methods, in.id(m))
 		}
@@ -824,6 +830,9 @@ func (row *lofRow) countsWhy(path string) (counts bool, reasons []string, failed
 	}
 	if slices.ContainsFunc(f.LinkTo, func(id int32) bool { return row.inPkg(e.Strs[id]) }) && !slices.Contains(fc, lofLinkname) {
 		fc = append(slices.Clone(fc), lofLinkname)
+	}
+	if slices.ContainsFunc(f.AsmTo, func(id int32) bool { return row.inPkg(e.Strs[id]) }) && !slices.Contains(fc, lofAssembly) {
+		fc = append(slices.Clone(fc), lofAssembly)
 	}
 	if len(fc) > 0 || (row.stdlib && e.FailStd != "") {
 		return true, lofAnnotated(fc), lofFailed(fc), false

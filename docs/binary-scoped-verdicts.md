@@ -7,7 +7,8 @@ advisory's vulnerable code run?":
   points. This is the analysis the row's verdict reports
   ([GO-LIBRARY-ESCAPE](capabilities/go.md#go-library-escape)). Declared library mode
   (`go:library=.`) takes every importable package, because almost any repository can be imported.
-  With nothing declared, a fully loaded build that ships a `main` package is read as an application:
+  With nothing declared, a fully loaded build of one module that ships a `main` package at the
+  module's root or under its `cmd` directory is read as an application:
   no library package is an entry point for `library_escape` or `unsearched_methods`, and a
   `not_exploitable` that rests on that carries it as an assumption. The search itself still roots
   every package's exported API.

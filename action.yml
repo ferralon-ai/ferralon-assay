@@ -214,7 +214,8 @@ inputs:
   entrypoints:
     description: >-
       Which entry points your build's analysis starts from, per language. Empty or 'auto' infers
-      them; for Go, a build that ships a main package and loads fully is read as an application, with
+      them; for Go, a build of one module that ships a main package at its module root or under
+      its cmd directory, and loads fully, is read as an application, with
       no library entry points, and "go:library=." reads it as a library instead. A clause names its language: "go:library=none" says the build ships programs only,
       "go:library=pkg/api, !go:library=pkg/api/internal" nominates the Go packages code outside the
       build may import, and a '!' entry takes one out. Clauses are separated by commas or whitespace,
@@ -234,8 +235,9 @@ inputs:
     description: >-
       The alias for entrypoints "go:library=...". Which of your packages code outside this build may
       import, and so call past your build's own entry points. 'auto' infers them (today Go only; a
-      package under cmd/, examples/ or a test directory is not one, and a build that ships a main
-      package and loads fully is read as an application, with none; '.' reads it as a library), 'none' says the build ships programs only, and a list of paths relative
+      package under cmd/, examples/ or a test directory is not one, and a build of one module that
+      ships a main package at its module root or under its cmd directory, and loads fully, is read as
+      an application, with none; '.' reads it as a library), 'none' says the build ships programs only, and a list of paths relative
       to the repository root nominates them, e.g. "pkg/api, !pkg/api/internal"; a '!path' entry takes a path
       out, and a list of '!path' entries alone keeps 'auto' for the rest. A not_exploitable verdict
       that holds only because of what you declared, or because the build was read as an application,

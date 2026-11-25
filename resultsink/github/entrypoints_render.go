@@ -57,7 +57,7 @@ func entrypointLines(r report.Report) []string {
 		}
 		if entryOverridden(e) {
 			// A kind the record does not report as analysed is outside the override's reach (the go
-			// lane infers its mains but reports only the library set), so it is not "changed".
+			// lane, under an override, reports only its library set), so it is not "changed".
 			for _, k := range slices.Sorted(maps.Keys(e.Inferred)) {
 				if eff, ok := e.Effective[k]; ok && !slices.Equal(e.Inferred[k], eff) {
 					b.WriteString("; inferred before the override: " + entrypointKind(k, e.Inferred[k]))

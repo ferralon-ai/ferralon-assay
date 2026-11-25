@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"reflect"
 	"slices"
 	"sort"
@@ -490,9 +491,9 @@ func entrypointRecords(sets []plugin.ResolvedLibraryEntrypoints) []plugin.EntryR
 
 // entrypointRecordsWith is entrypointRecords, with a lane's record from roots in place of the one
 // derived from the library set when it states that same set: the first record of the lane whose
-// bare form matches adds what it inferred and what the caller denied. A record of another set (an
-// inherited one beside a fresh library set) is dropped rather than allowed to drift from
-// library_entrypoints. A lane with a record in roots and no library set states the first of them as
+// bare form matches adds what it inferred, what the caller denied and, read as an application, the
+// mains it rests on. A record of another set (an inherited one beside a fresh library set) is
+// dropped rather than allowed to drift from library_entrypoints. A lane with a record in roots and no library set states the first of them as
 // it is, or the first that lists what the lane inferred, under the same statement, when the first lists none: the lane records its entry points on assessments that judged no refutation, and
 // library_entrypoints holds only the sets a refutation rested on.
 func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plugin.EntryRootRecord) []plugin.EntryRootRecord {
@@ -501,6 +502,12 @@ func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plu
 		for _, r := range roots {
 			bare := r
 			bare.Inferred, bare.Denied = nil, nil
+			if r.Lane == plugin.EntryLaneGo {
+				// library_entrypoints states the library set alone: the mains an application reading
+				// rests on are the record's to add, like Inferred.
+				bare.Effective = maps.Clone(r.Effective)
+				delete(bare.Effective, plugin.EntryKindMain)
+			}
 			if r.Lane == rec.Lane && sameJSON(bare, rec) {
 				records[i] = r
 				break

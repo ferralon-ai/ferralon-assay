@@ -145,7 +145,14 @@ func newVulnDBSource(src string) (vulnDBSource, error) {
 			return io.ReadAll(resp.Body)
 		}, nil
 	}
-	root := strings.TrimPrefix(src, "file://")
+	root := src
+	if strings.HasPrefix(src, "file://") {
+		u, err := url.Parse(src)
+		if err != nil {
+			return nil, err
+		}
+		root = u.Path
+	}
 	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("%s is neither an http(s) URL nor a database directory", src)
 	}

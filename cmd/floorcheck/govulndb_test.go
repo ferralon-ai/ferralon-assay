@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -156,7 +157,16 @@ func TestVerifyGoVulnDB(t *testing.T) {
 	fixture := t.TempDir()
 	writeTree(t, fixture, map[string]string{"govulndb/index/db.json": db["index/db.json"],
 		"govulndb/index/modules.json": db["index/modules.json"], "govulndb/index/vulns.json": db["index/vulns.json"],
-		"nodb/index/db.json": `{}`})
+		"nodb/index/db.json":     `{}`,
+		"linkfile/index/db.json": db["index/db.json"], "linkfile/index/modules.json": db["index/modules.json"]})
+	outside := t.TempDir()
+	writeTree(t, outside, db)
+	if err := os.Symlink(outside, filepath.Join(fixture, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(fixture, "govulndb", "index", "vulns.json"), filepath.Join(fixture, "linkfile", "index", "vulns.json")); err != nil {
+		t.Fatal(err)
+	}
 	pin, err := treeDigest(filepath.Join(fixture, "govulndb"))
 	if err != nil {
 		t.Fatal(err)
@@ -170,6 +180,9 @@ func TestVerifyGoVulnDB(t *testing.T) {
 		{name: "digest differs", pf: PinnedFile{Path: "govulndb", SHA256: strings.Repeat("0", 64)}, wantErr: "tree digest"},
 		{name: "not a database", pf: PinnedFile{Path: "nodb", SHA256: pin}, wantErr: "not a govulncheck database"},
 		{name: "outside the fixture", pf: PinnedFile{Path: "../x", SHA256: pin}, wantErr: "leaves its directory"},
+		{name: "absolute", pf: PinnedFile{Path: filepath.Join(fixture, "govulndb"), SHA256: pin}, wantErr: "is absolute"},
+		{name: "symlinked out of the fixture", pf: PinnedFile{Path: "escape", SHA256: pin}, wantErr: "resolves outside"},
+		{name: "symlinked file inside", pf: PinnedFile{Path: "linkfile", SHA256: pin}, wantErr: "not a regular file"},
 		{name: "absent", pf: PinnedFile{Path: "missing", SHA256: pin}, wantErr: "no such file"},
 	}
 	for _, tt := range tests {
@@ -245,5 +258,19 @@ func TestScenarioGoVulnDBLane(t *testing.T) {
 		Intel: ScenarioIntel{Policy: "p", GoVulnDB: &PinnedFile{Path: "govulndb", SHA256: strings.Repeat("a", 64)}}}
 	if err := s.validate(); err == nil || !strings.Contains(err.Error(), "go lane") {
 		t.Errorf("validate = %v, want the go-lane refusal", err)
+	}
+}
+
+// TestNewVulnDBSourceFileURL pins that a file:// source is percent-decoded, so a directory whose
+// path needs escaping is read as the directory.
+func TestNewVulnDBSourceFileURL(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "a b")
+	writeTree(t, dir, map[string]string{"index/db.json": `{}`})
+	src, err := newVulnDBSource((&url.URL{Scheme: "file", Path: dir}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src(context.Background(), "index/db.json"); err != nil {
+		t.Errorf("read index/db.json: %v", err)
 	}
 }

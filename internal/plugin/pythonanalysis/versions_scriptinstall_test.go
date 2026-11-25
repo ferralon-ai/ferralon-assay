@@ -240,6 +240,16 @@ func TestResolveVersions_MakeVariableInstaller(t *testing.T) {
 		{"make --eval", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make --eval='PIP=uv' install\n"}, false},
 		{"list-form make -e", "PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run([\"make\", \"-e\", \"install\"])\n"}, false},
 		{"list-form make sets the variable", "PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run([\"make\",\"install\",\"PIP=uv\"])\n"}, false},
+		{"reassignment after an endef with a comment", "PIP = pip\ndefine HELP\nx\nendef # help\nPIP = python -m pip\n" + recipe, nil, false},
+		{"make -e clustered with -j4", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make -ej4 install\n"}, false},
+		{"make -e on a continued line", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make \\\n  -e install\n"}, false},
+		{"make sets the variable on a continued line", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make install \\\n  PIP=uv\n"}, false},
+		{"multi-line list-form make -e", "PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run([\n    \"make\",\n    \"-e\",\n    \"install\",\n])\n"}, false},
+		{"multi-line list-form make sets the variable", "PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run(\n    [\"make\", \"install\",\n     \"PIP=uv\"]\n)\n"}, false},
+		{"/usr/bin/make -e", "PIP = pip\n" + recipe, map[string]string{"install.sh": "/usr/bin/make -e install\n"}, false},
+		{"/usr/bin/make sets the variable", "PIP = pip\n" + recipe, map[string]string{"install.sh": "/usr/bin/make install PIP=uv\n"}, false},
+		{"$MAKE -e", "PIP = pip\n" + recipe, map[string]string{"install.sh": "MAKE=make\n$MAKE -e install\n"}, false},
+		{"quoted $MAKE -e", "PIP = pip\n" + recipe, map[string]string{"install.sh": "MAKE=make\n\"$MAKE\" -e install\n"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -14,15 +14,18 @@ var (
 	makeIncludeRE = regexp.MustCompile(`^(?:-|s)?include\s`)
 	// makeCondRE opens a conditional block, whose assignments make may skip.
 	makeCondRE = regexp.MustCompile(`^(?:ifdef|ifndef|ifeq|ifneq)(?:\s|\(|$)`)
-	// makeRunRE finds a make run in any text, in a shell line or a list-form argv
-	// (["make", "-e"]); its group is the rest of that command.
-	makeRunRE = regexp.MustCompile(`(?:^|[\s;&|(\x60"'\[,])(?:g?make|\$\(MAKE\)|\$\{MAKE\})['"]?(?:[\s,]([^;&|\n]*)|$)`)
+	// makeRunRE finds a make run in any text, by path or through $MAKE, in a shell line or a
+	// one-line list-form argv (["make", "-e"]); its group is the rest of that command.
+	makeRunRE = regexp.MustCompile(`(?:^|[\s;&|(\x60"'\[,/])(?:g?make|\$\(MAKE\)|\$\{MAKE\}|\$MAKE\b)['"]?(?:[\s,]([^;&|\n]*)|$)`)
+	// makeListRunRE finds a list-form make argv that may span lines; its group is the rest of
+	// the list.
+	makeListRunRE = regexp.MustCompile(`['"](?:[^'"\s]*/)?g?make['"]\s*,([^\])]*)`)
 	// makeArgSetRE is a variable a make run sets on its command line, which no makefile
 	// assignment overrides.
 	makeArgSetRE = regexp.MustCompile(`(?:^|[\s,\[])['"]?([A-Za-z_][A-Za-z0-9_]*)\s*(?:::?=|:?=|\+=|\?=|!=)`)
 	// makeEnvFlagRE is make's -e, under any abbreviation of --environment-overrides, and its
 	// --eval/-E, which may assign anything: either overrides every makefile assignment.
-	makeEnvFlagRE = regexp.MustCompile(`(?:^|[\s,'"\[])(?:--e[A-Za-z-]*|-[A-Za-z]*[eE][A-Za-z]*)(?:[=\s,'"\]]|$)`)
+	makeEnvFlagRE = regexp.MustCompile(`(?:^|[\s,'"\[])(?:--e|-[A-Za-z]*[eE])`)
 	// makeFlagsRE names a variable through which a run's flags and overrides reach make.
 	makeFlagsRE = regexp.MustCompile(`\b(?:GNU)?MAKE(?:FLAGS|OVERRIDES)\b`)
 )
@@ -48,7 +51,7 @@ func makePrograms(src string, program func(string) (string, bool)) map[string]st
 	conditional := 0
 	for _, line := range makeLogicalLines(src) {
 		if define {
-			define = strings.TrimSpace(line) != "endef"
+			define = strings.TrimSpace(stripMakeComment(line)) != "endef"
 			continue
 		}
 		if strings.HasPrefix(line, "\t") {
@@ -184,7 +187,9 @@ func (v *Veto) noteMakeOverrides(src string) {
 	if makeFlagsRE.MatchString(src) {
 		v.makeSet[makeAll] = true
 	}
-	for _, m := range makeRunRE.FindAllStringSubmatch(src, -1) {
+	src = strings.NewReplacer("\\\r\n", " ", "\\\n", " ").Replace(src)
+	runs := append(makeRunRE.FindAllStringSubmatch(src, -1), makeListRunRE.FindAllStringSubmatch(src, -1)...)
+	for _, m := range runs {
 		if makeEnvFlagRE.MatchString(m[1]) {
 			v.makeSet[makeAll] = true
 		}

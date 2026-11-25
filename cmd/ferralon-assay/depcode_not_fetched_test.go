@@ -145,7 +145,7 @@ func TestCVEWatchRefusedTokenThenServing(t *testing.T) {
 		t.Fatalf("refused run left reassess %+v", dep)
 	}
 	summary := tier0Summary(t, res.Report, run)
-	for _, want := range []string{"registry.npmjs.org", "refused the token this run sent", "curation proxy", "last assessed on a run that did not read all the npm dependency code"} {
+	for _, want := range []string{"registry.npmjs.org", "refused the token this run sent", "curation proxy", "last assessed on a run that did not read all the dependency code the lockfile pins"} {
 		if !strings.Contains(summary, want) {
 			t.Errorf("refused run's job summary lacks %q", want)
 		}

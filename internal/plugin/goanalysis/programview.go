@@ -2,6 +2,7 @@ package goanalysis
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -95,19 +96,6 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 	if ruled.Refutation == nil {
 		return nil
 	}
-	// The run found no call into any module, but the refutation names the first alone; every other
-	// module the advisory was matched to is ruled out by the same checks, or the view is empty. A
-	// module ruled out only for the scanned platform adds its scope to the view's detail.
-	var scopes []string
-	for _, m := range findingModules(slices.Concat(scanned.findings, prog.findings)) {
-		if other := "pkg:golang/" + m; other != library.Package {
-			scope, ok := programRulesOut(ctx, ruled, run, other, scanned, loaded, g, buildDir, env)
-			if !ok {
-				return nil
-			}
-			scopes = append(scopes, scope)
-		}
-	}
 	module := mains[0].Module.Path
 	binaries := make([]string, len(mains))
 	for i, m := range mains {
@@ -116,17 +104,41 @@ func programView(ctx context.Context, res, evidence plugin.ReachabilityResult, s
 			binaries[i] = rel
 		}
 	}
+	started := "started from the main and init of " + strings.Join(binaries, ", ") + " only: "
+	// The run found no call into any module, but the refutation names the first alone; every other
+	// module the advisory was matched to is ruled out by the same checks, or the view is empty. Each
+	// gets its own refutation, stated as the first is, and a module ruled out only for the scanned
+	// platform adds its scope to its own detail.
+	var others []plugin.Refutation
+	for _, m := range findingModules(slices.Concat(scanned.findings, prog.findings)) {
+		if other := "pkg:golang/" + m; other != library.Package {
+			scope, ok := programRulesOut(ctx, ruled, run, other, scanned, loaded, g, buildDir, env)
+			if !ok {
+				return nil
+			}
+			// The match and imports are the program run's. A module only the library run matched is
+			// stated as such, with that run's match.
+			r := moduleRefutationOf(prog.findings, prog.findings, m, env)
+			if !slices.Contains(findingModules(prog.findings), m) {
+				r.Detail = fmt.Sprintf("govulncheck did not match the advisory to %s; the library run matched it at %s %s",
+					m, matchedVersion(scanned.findings, m), platformDetail(env))
+			}
+			r.Basis = ruled.Refutation.Basis
+			r.Detail = started + r.Detail + scope
+			others = append(others, *r)
+		}
+	}
 	refutation := *ruled.Refutation
-	refutation.Detail = "started from the main and init of " + strings.Join(binaries, ", ") + " only: " + refutation.Detail + strings.Join(scopes, "")
+	refutation.Detail = started + refutation.Detail
 	refutation.Assumptions = nil
-	return &plugin.ProgramView{Module: module, Binaries: binaries, Refutation: refutation}
+	return &plugin.ProgramView{Module: module, Binaries: binaries, Refutation: refutation, Refutations: others}
 }
 
 // programRulesOut reports whether the program view's checks hold for module, another module the
 // advisory was matched to than the one ruled refutes: the run declares no limit that says a step did
 // not run for it, and neither a file the build left out nor a call reflection makes may reach it.
 // When the left-out-file check keeps the refutation only for the scanned platform, it returns the
-// scope that check stated, for the view's detail to carry; any other change to the refutation does
+// scope that check stated, for the module's own refutation to carry; any other change to the refutation does
 // not rule the module out. run is the program run's partiality before those checks ran for the
 // refuted module: a scope they kept the refutation with is that module's, not a step the run left
 // undone for this one.

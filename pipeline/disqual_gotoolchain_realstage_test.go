@@ -15,6 +15,7 @@ package pipeline
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -24,7 +25,7 @@ import (
 // runRealGoToolchainAxis runs advisory_intake → codebase_inventory → disqualification_discovery with
 // nothing seeded between them, and returns the toolchain fact the inventory stage produced, the
 // resolved_version it wrote, and the discovery verdict the version axis reached.
-func runRealGoToolchainAxis(t *testing.T, vulnID, goMod, declared, observed string, trustObserved bool, plug goManifestPlugin) (ToolchainFact, string, DisqualResult) {
+func runRealGoToolchainAxis(t *testing.T, vulnID, goMod, declared, observed string, trustObserved, strict bool, plug goManifestPlugin) (ToolchainFact, string, DisqualResult) {
 	t.Helper()
 	buildDir := writeGoModFixture(t, goMod)
 	store := artifact.NewMemStore()
@@ -46,6 +47,7 @@ func runRealGoToolchainAxis(t *testing.T, vulnID, goMod, declared, observed stri
 		subjectGoVersion: declared,
 		ciGoVersion:      observed,
 		trustCIGoVersion: trustObserved,
+		strict:           strict,
 	}
 	if err := stage.Run(context.Background(), c, store); err != nil {
 		t.Fatalf("codebase_inventory: %v", err)
@@ -75,6 +77,7 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 		declared string
 		observed string
 		trust    bool
+		strict   bool
 		// pinBuild replaces the toolchain the build's environment resolves (reported only when the
 		// directives do not bound it) with buildToolchain; "" stands for one that is not established.
 		pinBuild       bool
@@ -84,6 +87,8 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 		wantDisqual    bool
 		wantReason     string
 		wantRationale  string
+		// wantAssumption is the assumption the disqualification must name; "" means it names none.
+		wantAssumption string
 	}{
 		{
 			// CVE-2023-39325 is fixed go1.20.10 on the 1.20.x branch AND go1.21.3 on mainline. A
@@ -110,10 +115,10 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			wantRationale: "a floor below a fix proves nothing about the true toolchain",
 		},
 		{
-			// The toolchain line's version never reaches the axis: under GOTOOLCHAIN=local or a
-			// pinned GOTOOLCHAIN the go command ignores it. Its presence does: no go command before
-			// 1.21 parses the file, so the go line is raised to go1.21.0, inside the 1.21 range.
-			name:          "a toolchain line's version does not reach the axis; the go1.21.0 floor it implies does",
+			// A toolchain line below the floor adds no assumed floor. Its presence still raises the
+			// floor: no go command before 1.21 parses the file, so the go line is raised to go1.21.0,
+			// inside the 1.21 range.
+			name:          "a toolchain line below the floor does not reach the axis; the go1.21.0 floor it implies does",
 			vulnID:        "CVE-2023-39325",
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
 			wantFact:      ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
@@ -123,17 +128,50 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			wantRationale: "go1.21.0 is inside the 1.21 range",
 		},
 		{
-			// ferralon-ai/tracker#609. CVE-2024-24790 is affected below go1.22.4 on the 1.22 branch.
-			// The build may run go1.21.x under GOTOOLCHAIN=local, so the go1.22.5 toolchain line
-			// proves nothing; the go1.21.0 floor is inside the 1.21 branch range.
-			name:          "a toolchain line past the fix does not disqualify a go line inside the range",
+			// ferralon-ai/tracker#609, strict. CVE-2024-24790 is affected below go1.22.4 on the 1.22
+			// branch. The build may run go1.21.x under GOTOOLCHAIN=local, so the go1.22.5 toolchain
+			// line proves nothing; the go1.21.0 floor is inside the 1.21 branch range.
+			name:          "strict: a toolchain line past the fix does not disqualify a go line inside the range",
 			vulnID:        "CVE-2024-24790",
 			goMod:         "module example.com/target\n\ngo 1.21.0\n\ntoolchain go1.22.5\n",
+			strict:        true,
 			wantFact:      ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
 			wantVersion:   "go1.21.0",
 			wantDisqual:   false,
 			wantReason:    ReasonInsufficient,
 			wantRationale: "a GOTOOLCHAIN=local build of go1.21.0 is affected; the toolchain line is not a floor",
+		},
+		{
+			// The same go.mod in practical mode: under GOTOOLCHAIN=auto the build runs go1.22.5 or
+			// newer, past the 1.22 branch fix, and the clearance names that assumption.
+			name:   "practical: a toolchain line past the fix disqualifies under the named assumption",
+			vulnID: "CVE-2024-24790",
+			goMod:  "module example.com/target\n\ngo 1.21.0\n\ntoolchain go1.22.5\n",
+			wantFact: ToolchainFact{
+				Version: "go1.22.5", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective,
+				Assumption:    "the build runs under GOTOOLCHAIN=auto, so on the toolchain line's go1.22.5 or newer",
+				StrictVersion: "go1.21.0",
+			},
+			wantVersion:    "go1.22.5",
+			wantDisqual:    true,
+			wantReason:     ReasonVersionNotInRange,
+			wantRationale:  "the assumed go1.22.5 floor is past every branch fix",
+			wantAssumption: "the build runs under GOTOOLCHAIN=auto, so on the toolchain line's go1.22.5 or newer",
+		},
+		{
+			// The strict floor already disqualifies, so the clearance rests on no assumption.
+			name:   "practical: a clearance the go line alone proves names no assumption",
+			vulnID: "CVE-2023-39325",
+			goMod:  "module example.com/target\n\ngo 1.22.0\n\ntoolchain go1.23.4\n",
+			wantFact: ToolchainFact{
+				Version: "go1.23.4", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective,
+				Assumption:    "the build runs under GOTOOLCHAIN=auto, so on the toolchain line's go1.23.4 or newer",
+				StrictVersion: "go1.22.0",
+			},
+			wantVersion:   "go1.23.4",
+			wantDisqual:   true,
+			wantReason:    ReasonVersionNotInRange,
+			wantRationale: "go1.22.0 is past every branch fix without the toolchain line",
 		},
 		{
 			// The same go.mod with the build declared: the declaration is kept, not refuted by the
@@ -422,7 +460,7 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fact, ver, res := runRealGoToolchainAxis(t, tc.vulnID, tc.goMod, tc.declared, tc.observed, tc.trust,
+			fact, ver, res := runRealGoToolchainAxis(t, tc.vulnID, tc.goMod, tc.declared, tc.observed, tc.trust, tc.strict,
 				goManifestPlugin{pinBuildToolchain: tc.pinBuild, buildToolchain: tc.buildToolchain})
 			if fact != tc.wantFact {
 				t.Errorf("toolchain fact = %+v, want %+v", fact, tc.wantFact)
@@ -433,6 +471,18 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			if res.Disqualified != tc.wantDisqual || res.Reason != tc.wantReason {
 				t.Errorf("disqualification = %+v, want {Disqualified:%v Reason:%q} (%s)",
 					res, tc.wantDisqual, tc.wantReason, tc.wantRationale)
+			}
+			var named []string
+			for _, a := range res.Assumptions {
+				if strings.Contains(a, "GOTOOLCHAIN=auto") {
+					named = append(named, a)
+				}
+			}
+			switch {
+			case tc.wantAssumption == "" && len(named) > 0:
+				t.Errorf("assumptions = %q, want none naming the toolchain line", named)
+			case tc.wantAssumption != "" && (len(named) != 1 || named[0] != tc.wantAssumption):
+				t.Errorf("assumptions = %q, want exactly %q", res.Assumptions, tc.wantAssumption)
 			}
 		})
 	}

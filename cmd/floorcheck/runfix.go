@@ -501,7 +501,7 @@ func runOne(ctx context.Context, o runOptions, name string, sr scanRunner) (Fixt
 		}
 		defer log.Close()
 		req := scanRequest{Scanner: o.scanner, Args: scanArgs(fx, target, outDir, o.scanTimeout),
-			Env: scanEnv(os.Environ(), fx.Scenario.Build, filepath.Dir(o.scanner)), OutDir: outDir, Log: log}
+			Env: fixtureScanEnv(os.Environ(), fx, filepath.Dir(o.scanner)), OutDir: outDir, Log: log}
 		var notes []string
 		if fx.Scenario.Lang == "go" {
 			// A failed warm-up is left for the scan to report: it names what it could not resolve. Its
@@ -592,6 +592,16 @@ var scanEnvAllowed = []string{
 	"NVM_DIR", "PYENV_ROOT",
 	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
 	"SSL_CERT_FILE", "SSL_CERT_DIR",
+}
+
+// fixtureScanEnv is a fixture's scan environment: scanEnv under its build, and its pinned govulncheck
+// database, when it has one, as ASSAY_GO_VULN_DB.
+func fixtureScanEnv(base []string, fx Fixture, scannerDir string) []string {
+	env := scanEnv(base, fx.Scenario.Build, scannerDir)
+	if fx.GoVulnDBPath != "" {
+		env = append(env, goVulnDBEnv+"="+fileURL(fx.GoVulnDBPath))
+	}
+	return env
 }
 
 // scanEnv is the scanner's environment: an allow-listed slice of the caller's, the scanner's GitHub

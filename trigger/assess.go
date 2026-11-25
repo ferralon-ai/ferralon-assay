@@ -140,11 +140,14 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck),
 			},
 		}
-		// A version placed outside only under an assumption about a pseudo-version's ancestry is
-		// not proven out of scope: it is refuted under that stated assumption.
+		// A version placed outside only under an assumption (a pseudo-version's ancestry, the
+		// toolchain line under GOTOOLCHAIN=auto, or a release in the scanned history whose fixes
+		// were not reverted) is not proven out of scope: it is refuted under the stated assumptions.
 		if len(res.Assumptions) > 0 {
 			f.Verdict = report.VerdictNotExploitable
-			f.Evidence.Detail = versionOutsideAssumingDetail + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck)
+			if res.Reason == pipeline.ReasonVersionNotInRange {
+				f.Evidence.Detail = versionOutsideAssumingDetail + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck)
+			}
 			f.Evidence.Assumptions = res.Assumptions
 		}
 	case hasCandidate(store, assessmentID):
@@ -636,19 +639,27 @@ func priorityFor(adv report.Advisory, sig *intel.Signals, claims *intel.Claims) 
 func rankWith(b *report.Builder, sig *intel.Signals, workSet []assessment.VulnRef, src pipeline.AdvisorySource) {
 	claims := new(intel.Claims)
 	if sig != nil {
-		ids := make([]string, 0, len(workSet))
-		for _, v := range workSet {
-			ids = append(ids, v.ID)
-		}
-		// An id whose record does not resolve still claims itself.
-		pipeline.LookupEach(src, ids, func(id string, facts pipeline.AdvisoryFacts, _ bool) {
-			claims.Add(id, facts.Aliases...)
-		})
+		claimWorkSet(claims, workSet, src)
 		for _, f := range b.Build().Advisories {
 			claims.Add(f.Advisory.ID, f.Advisory.Aliases...)
 		}
 	}
 	b.WithPriority(func(adv report.Advisory) *report.Priority { return priorityFor(adv, sig, claims) })
+}
+
+// claimWorkSet adds every advisory in workSet to claims by its id and the aliases src lists for
+// it, and returns those aliases by id. An id whose record does not resolve still claims itself.
+func claimWorkSet(claims *intel.Claims, workSet []assessment.VulnRef, src pipeline.AdvisorySource) map[string][]string {
+	ids := make([]string, 0, len(workSet))
+	for _, v := range workSet {
+		ids = append(ids, v.ID)
+	}
+	aliases := make(map[string][]string, len(ids))
+	pipeline.LookupEach(src, ids, func(id string, facts pipeline.AdvisoryFacts, _ bool) {
+		claims.Add(id, facts.Aliases...)
+		aliases[id] = facts.Aliases
+	})
+	return aliases
 }
 
 // withSignals records, on the provenance p a run is about to hand its Builder, which signals file
@@ -1073,7 +1084,7 @@ func shortDigest(d string) string {
 // function cannot name has no standing to claim grounds it cannot describe.
 func disqualBasis(reason string) verdict.NonExploitableBasis {
 	switch reason {
-	case pipeline.ReasonVersionNotInRange, pipeline.ReasonFixCommitInHistory:
+	case pipeline.ReasonVersionNotInRange, pipeline.ReasonFixCommitInHistory, pipeline.ReasonAncestorReleaseOutsideRange:
 		return verdict.BasisVersionNotAffected
 	case pipeline.ReasonSymbolAbsent:
 		return verdict.BasisSymbolAbsent
@@ -1087,8 +1098,8 @@ func disqualBasis(reason string) verdict.NonExploitableBasis {
 }
 
 // versionOutsideAssumingDetail is the detail of a version-axis refute that holds only under the
-// row's stated assumptions about a pseudo-version's ancestry.
-const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumption about a pseudo-version's ancestry"
+// row's stated assumptions, which its evidence lists.
+const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumptions"
 
 // disqualDetail renders the customer-visible grounds for a disqualification. Each reason code
 // gets its own arm: the version and symbol axes record an adjudicated comparison that cleared
@@ -1102,6 +1113,8 @@ func disqualDetail(reason string) string {
 		return "resolved dependency version is outside the advisory's affected range"
 	case pipeline.ReasonFixCommitInHistory:
 		return "the commit the advisory names as its fix is in the scanned commit's history, and every range the advisory affects the project's own package by ends at a fixed version"
+	case pipeline.ReasonAncestorReleaseOutsideRange:
+		return "the project's highest release tag in the scanned commit's history is at or past the fixed version of every range the advisory affects the project's own package by, under the stated assumptions"
 	case pipeline.ReasonSymbolAbsent:
 		return "the vulnerable symbol is absent from the built artifact"
 	case pipeline.ReasonAdvisoryEcosystemMismatch:

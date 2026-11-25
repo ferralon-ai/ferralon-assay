@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -74,13 +75,23 @@ func cutShortFinding(adv assessment.VulnRef) report.AdvisoryFinding {
 // cutShortCountSep separates a cut-short note's count from the stop's cause.
 const cutShortCountSep = " advisories were not assessed: "
 
+// carriedSentence matches the sentence a cut-short note appends when advisories were carried from
+// the previous run, so the stop's cause can be read back without it.
+var carriedSentence = regexp.MustCompile(`\. \d+ advisor(?:y|ies) carried from the previous run (?:was|were) assessed first\.$`)
+
 // cutShortNote is the one scan-level disclosure for a Report holding cut rows of its total
-// unassessed. Its detail carries the stop's cause, which names how to give the scan more time.
-func cutShortNote(cut, total int, cause string) report.PartialityNote {
-	return report.PartialityNote{
-		Reason: report.ReasonScanCutShort,
-		Detail: fmt.Sprintf("%d of %d%s%s", cut, total, cutShortCountSep, cause),
+// unassessed. Its detail carries the stop's cause, which names how to give the scan more time,
+// and, when carried is positive, how many advisories from the previous run's cut rows the scan
+// assessed first.
+func cutShortNote(cut, total int, cause string, carried int) report.PartialityNote {
+	detail := fmt.Sprintf("%d of %d%s%s", cut, total, cutShortCountSep, cause)
+	switch {
+	case carried == 1:
+		detail += ". 1 advisory carried from the previous run was assessed first."
+	case carried > 1:
+		detail += fmt.Sprintf(". %d advisories carried from the previous run were assessed first.", carried)
 	}
+	return report.PartialityNote{Reason: report.ReasonScanCutShort, Detail: detail}
 }
 
 // stopCause is the cause of a stopped analysis, as a cut-short note states it.
@@ -121,13 +132,13 @@ func recountCutShort(rows []report.AdvisoryFinding, carried []report.PartialityN
 	}
 	for _, n := range carried {
 		if _, c, ok := strings.Cut(n.Detail, cutShortCountSep); cause == "" && ok && n.Reason == report.ReasonScanCutShort {
-			cause = c
+			cause = carriedSentence.ReplaceAllString(c, "")
 		}
 	}
 	if cause == "" {
 		cause = "an earlier scan was cut short"
 	}
-	return cutShortNote(cut, len(rows), cause), true
+	return cutShortNote(cut, len(rows), cause, 0), true
 }
 
 // priorSBOMNote discloses a baseline Report whose SBOM is the one stored before it, because the

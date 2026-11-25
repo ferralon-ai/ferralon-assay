@@ -121,7 +121,35 @@ func newScriptSpec(installs pipInstalls, poetry poetryInstalls, tooling map[stri
 		RunBinds:    laneRunBinds,
 		ReadRegular: readRegular,
 		Absent:      absent,
+		Program:     makePipProgram,
 	}
+}
+
+// makeWhichRE is a make variable's value that runs which on one name, in backticks or through
+// make's shell function.
+var makeWhichRE = regexp.MustCompile("^(?:`\\s*which\\s+([^\\s`]+)\\s*`|\\$\\(shell\\s+which\\s+([^\\s()]+)\\s*\\))$")
+
+// makePipProgram reads a make variable's value as the pip it runs: `which pipN`, or one word,
+// optionally quoted, whose base is a pip head, run by name, by an absolute path, or from a
+// path that starts with an expansion. A relative path may name a file the build holds, and
+// anything else (a pip with arguments, python -m pip) is not a pip program.
+func makePipProgram(value string) (string, bool) {
+	v := strings.TrimSpace(value)
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+		v = v[1 : len(v)-1]
+	}
+	if m := makeWhichRE.FindStringSubmatch(v); m != nil {
+		name := m[1] + m[2]
+		return name, pipHeadRE.MatchString(name)
+	}
+	if v == "" || strings.ContainsAny(v, " \t`;&|<>'\"\\*?[") {
+		return "", false
+	}
+	if strings.Contains(v, "/") && !strings.HasPrefix(v, "/") && !strings.HasPrefix(v, "$") {
+		return "", false
+	}
+	base := v[strings.LastIndex(v, "/")+1:]
+	return base, pipHeadRE.MatchString(base)
 }
 
 // pipInstall is how one allowed pip install -r installs a requirements file.

@@ -388,6 +388,10 @@ type CallGraphRequest struct {
 	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
 	// build. A lane that reads dependency code reads it only from there; empty, none is read.
 	DependencyCache string `json:"dependency_cache,omitempty"`
+	// Strict asks for strict mode: the lane declares a limit wherever practical mode would rest the
+	// answer on an assumption it names in an Annotation. Additive on the wire: a lane that makes no
+	// such assumption ignores it.
+	Strict bool `json:"strict,omitempty"`
 }
 
 // FindIngressesRequest carries the buildable module to scan for entry points.
@@ -572,6 +576,8 @@ type ReachabilityRequest struct {
 	// Go toolchain's standard library: the lane matches the toolchain against the one it scanned
 	// with, not the build's.
 	MatchOutsideToolchain bool `json:"match_outside_toolchain,omitempty"`
+	// Strict asks for strict mode, as on CallGraphRequest.
+	Strict bool `json:"strict,omitempty"`
 }
 
 // --- result payloads ---
@@ -679,6 +685,9 @@ type CallGraphResult struct {
 	// Targets. A frame missing from Escaped runs only as one of Roots or through the Edges and
 	// Targets that reach it.
 	Escaped []Symbol `json:"escaped,omitempty"`
+	// Annotations are the assumptions the result rests on (AnnotationAssumptionPrefix reasons). A
+	// Strict request's result rests on none: the lane declares a limit in their place.
+	Annotations []Annotation `json:"annotations,omitempty"`
 }
 
 // UnresolvedCall is one call or load the lane declined to connect.
@@ -766,6 +775,10 @@ type ReachabilityResult struct {
 	// database matched VulnID against a module version the build uses. A run that covered only part
 	// of the build still reports a match, and says it was partial in Partiality.
 	AnalyzerMatched bool `json:"analyzer_matched,omitempty"`
+	// Annotations are the assumptions the result rests on, its call graph's among them
+	// (AnnotationAssumptionPrefix reasons). A Strict request's result rests on none: the lane
+	// declares a limit in their place.
+	Annotations []Annotation `json:"annotations,omitempty"`
 }
 
 // ProgramView is the program view's ruling on one advisory: its refutation, and the shipped binaries
@@ -926,6 +939,8 @@ type ComputeTaintRequest struct {
 	// DependencyCache is a store of lock-pinned dependency tarballs the host verified for this
 	// build. A lane that reads dependency code reads it only from there; empty, none is read.
 	DependencyCache string `json:"dependency_cache,omitempty"`
+	// Strict asks for strict mode, as on CallGraphRequest.
+	Strict bool `json:"strict,omitempty"`
 }
 
 // TaintResult is ComputeTaint's response: the source→sink graph paths found.

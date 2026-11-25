@@ -26,7 +26,7 @@ const pyTaintPrecisionNote = "call-graph path presence: an ingress→sink path e
 // reaching ingress declares no_known_ingress (UNKNOWN, never "not tainted"). A load
 // failure is a hard error (inv.4).
 func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
+	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir, Strict: req.Strict})
 	if err != nil {
 		return plugin.TaintResult{}, err
 	}

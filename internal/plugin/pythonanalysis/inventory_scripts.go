@@ -147,7 +147,7 @@ func relScope(root, p string) string {
 // through every symlink, inside the build.
 func scriptInventory(req plugin.ResolveInventoryRequest, have map[string]bool) []plugin.DependencyNode {
 	var runs []scriptRun
-	scanSurfaces(req.BuildDir, &runs)
+	scanSurfaces(req.BuildDir, &runs, nil)
 	realRoot, rootErr := filepath.EvalSymlinks(req.BuildDir)
 	seen := map[string]bool{}
 	var nodes []plugin.DependencyNode

@@ -11,7 +11,7 @@ import (
 // TestDisqualDetailReadsBackToItsBasis holds report's copy of the disqualification detail lines in
 // step with disqualDetail: report.Upgrade backfills a stored empty-basis intake disqualification from
 // its detail, so every intake line this package writes must read back as the basis disqualBasis
-// records for the same reason, and no version or symbol line may read back as any basis, with or without the source attribution appended to it.
+// records for the same reason, and no version or symbol line may read back as any basis, with or without the source attribution or cross-check note appended to it.
 func TestDisqualDetailReadsBackToItsBasis(t *testing.T) {
 	src := &pipeline.RefuteSource{Advisory: "GO-2021-0001", Record: "sha256:0123456789abcdef", Feed: "osv", BuiltIn: true}
 	for _, reason := range []string{
@@ -22,7 +22,7 @@ func TestDisqualDetailReadsBackToItsBasis(t *testing.T) {
 		pipeline.ReasonNoManifestEntry,
 		"an_axis_nobody_named",
 	} {
-		for _, detail := range []string{disqualDetail(reason), disqualDetail(reason) + refuteAttribution(src)} {
+		for _, detail := range []string{disqualDetail(reason), disqualDetail(reason) + refuteAttribution(src), disqualDetail(reason) + refuteAttribution(src) + crossCheckNote("govulncheck's database could not be consulted: build failed")} {
 			want := disqualBasis(reason)
 			if reason == pipeline.ReasonVersionNotInRange || reason == pipeline.ReasonFixCommitInHistory || reason == pipeline.ReasonSymbolAbsent {
 				// These always carried their basis; a stored one without it is refused, not backfilled.
@@ -64,5 +64,17 @@ func TestDisqualFixCommitInHistory(t *testing.T) {
 				t.Errorf("detail = %q, want %q", got, tc.detail)
 			}
 		})
+	}
+}
+
+// TestCrossCheckNote: a version clear the analyzer's database could not cross-check says so after its
+// attribution; a cross-checked clear adds nothing.
+func TestCrossCheckNote(t *testing.T) {
+	if got := crossCheckNote(""); got != "" {
+		t.Errorf("crossCheckNote(\"\") = %q, want empty", got)
+	}
+	const note = "govulncheck's database could not be consulted over the whole build: tool_failure:govulncheck_partial_run"
+	if got, want := crossCheckNote(note), "; not cross-checked: "+note; got != want {
+		t.Errorf("crossCheckNote = %q, want %q", got, want)
 	}
 }

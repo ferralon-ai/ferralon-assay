@@ -47,8 +47,13 @@ type loadClosure struct {
 	Assumptions []string `json:"assumptions,omitempty"`
 	// hiddenLoaded are the packages with unread code in the closure.
 	hiddenLoaded []plugin.ScopedReason
-	// Roots are the inferred entry points other than first-party modules.
+	// Roots are the entry points other than first-party modules that stand: the inferred ones less
+	// those an override removed.
 	Roots []plugin.EntryRoot `json:"roots,omitempty"`
+	// Entry is the lane's record of the inferred roots, for the report; Removed names the roots an
+	// override took out, which the closure does not hold.
+	Entry   *plugin.EntryRootRecord `json:"entry,omitempty"`
+	Removed []string                `json:"removed,omitempty"`
 
 	modules map[string]bool
 }
@@ -83,6 +88,8 @@ type loadRecord struct {
 	// scripted are the read packages that run an install script.
 	scripted []scriptedPackage
 	vetoes   map[string]bool
+	// entry follows the inferred entry points and the override on them; nil follows none.
+	entry *entryTrack
 }
 
 // hiddenBound is what the unread code of a package is taken to load. known is false when the
@@ -260,6 +267,9 @@ func (lr *loadRecord) close(prog *program, g, aug *graphBuild, baseRoots []strin
 	roots, rooted := inferScriptRoots(prog, entries, lr)
 	for _, r := range roots {
 		lc.Roots = append(lc.Roots, r.EntryRoot)
+	}
+	if lr.entry != nil {
+		lc.Entry, lc.Removed = lr.entry.record(), lr.entry.removedNames()
 	}
 	for _, e := range rooted {
 		loads(e)
@@ -950,6 +960,11 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]scr
 	var rooted []*depEntry
 	seen := map[scriptRoot]bool{}
 	add := func(r scriptRoot, e *depEntry) {
+		// The override removes a root here, before it roots anything: Loaded is the closure of
+		// what stays.
+		if lr.entry.deny(r.EntryRoot) {
+			return
+		}
 		rooted = append(rooted, e)
 		if r.module != "" && !seen[r] {
 			seen[r] = true
@@ -1025,15 +1040,20 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]scr
 					add(r, b.e)
 					continue
 				}
+				// A bin the caller removed raises none of the vetoes its own file would.
 				if b.rel == "" {
-					lr.veto(true, "script binary "+name+" of package "+b.e.name+" names no file in its package.json")
+					if !lr.entry.deny(r.EntryRoot) {
+						lr.veto(true, "script binary "+name+" of package "+b.e.name+" names no file in its package.json")
+					}
 					add(r, b.e)
 					continue
 				}
 				target := path.Clean(b.rel)
 				m, ok := b.pkg.modules[target]
 				if !ok {
-					lr.veto(true, "script binary "+name+" of package "+b.e.name+" is not a source file the lane parses")
+					if !lr.entry.deny(r.EntryRoot) {
+						lr.veto(true, "script binary "+name+" of package "+b.e.name+" is not a source file the lane parses")
+					}
 					add(r, b.e)
 					continue
 				}

@@ -83,6 +83,11 @@ func TestGoModulesOf(t *testing.T) {
 		return []report.PartialityNote{{Ecosystem: eco, Reason: "tool_failure:lockfile_ambiguous"}}
 	}
 	all := goModules{"example.com/app": true, "golang.org/x/net": true, "example.com/a": true, "example.com/fork": true}
+	nested := func(path string, targets ...string) report.PartialityNote {
+		return report.PartialityNote{Ecosystem: "Go", Reason: plugin.PartialReasonNestedModule, Path: path, Targets: targets}
+	}
+	withNested := goModules{"example.com/app": true, "golang.org/x/net": true, "example.com/a": true, "example.com/fork": true,
+		"example.com/tools": true, "example.com/gen": true}
 	tests := []struct {
 		name   string
 		sbom   report.SBOM
@@ -93,6 +98,14 @@ func TestGoModulesOf(t *testing.T) {
 		{"another ecosystem's limit", buildList, limit("npm"), all},
 		{"a Go limit", buildList, limit("Go"), nil},
 		{"a scan-wide limit", buildList, limit(""), nil},
+		{"a nested module naming itself and what it requires", buildList,
+			[]report.PartialityNote{nested("tools", "pkg:golang/example.com/tools", "pkg:golang/example.com/gen")}, withNested},
+		{"a nested module with no targets", buildList, []report.PartialityNote{nested("tools")}, nil},
+		{"a nested-module walk that did not finish", buildList, []report.PartialityNote{nested("")}, nil},
+		{"a nested module with a target that is not a Go package", buildList,
+			[]report.PartialityNote{nested("tools", "pkg:golang/example.com/tools", "pkg:npm/gen")}, nil},
+		{"a nested module beside another Go limit", buildList,
+			append(limit("Go"), nested("tools", "pkg:golang/example.com/tools")), nil},
 		{"no build-list source (go.mod alone, or a report written before it was recorded)", report.SBOM{Packages: pkgs}, nil, nil},
 		{"a build list with no main module", report.SBOM{GoBuildList: plugin.BuildListGoModGraph, Packages: pkgs}, nil, nil},
 		{"a workspace's other main modules", report.SBOM{GoBuildList: plugin.BuildListGoModGraph, GoMainModule: "example.com/app", GoWorkspaceModules: []string{"example.com/lib"}, Packages: pkgs}, nil,

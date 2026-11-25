@@ -187,9 +187,11 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 	// defers, or skips it BEFORE any Assessment is constructed. Band is read here and only
 	// here; the admitted slice is plain VulnRefs with band stripped, so band never crosses
 	// the S1 seam into a pipeline/verdict struct (inv.5). Fail-open: an absent band admits.
-	// The same gate orders the loop by the run's EPSS/KEV signals (KEV-listed, then EPSS
-	// descending, then the rest in input order), so a scan that stops early has assessed the
-	// likeliest-exploited advisories first; with no signals the order is the input's.
+	// The same gate orders the loop: by band, then the advisories the stored report holds a
+	// scan_cut_short row for, then by the run's EPSS/KEV signals (KEV-listed, then EPSS
+	// descending, then the rest in input order), so a scan that stops early has retried what the
+	// last one left and then assessed the likeliest-exploited advisories; with no signals or prior
+	// the order is the input's.
 	var prior *statestore.State
 	if readPrior != nil {
 		var err error
@@ -271,6 +273,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		b.AddFinding(f)
 		b.WithLibraryEntrypoints(libraryEntrypoints(st, assessmentID)...)
+		b.WithEntryRoots(entryRoots(st, assessmentID)...)
 		if note, ok := limitNoteFor(f); ok {
 			b.AddPartiality(note)
 		}

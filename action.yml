@@ -217,11 +217,14 @@ inputs:
       them. A clause names its language: "go:library=none" says the build ships programs only,
       "go:library=pkg/api, !go:library=pkg/api/internal" nominates the Go packages code outside the
       build may import, and a '!' entry takes one out. Clauses are separated by commas or whitespace,
-      and any number may name one language. Today only the Go library entry points take a clause that
-      asks for something: any other clause that does stops the run before it analyses anything, with
-      the reason, and a clause that says 'auto' changes nothing. A scan of another language ignores
-      a go:library clause. A not_exploitable verdict that holds only because of what you declared
-      carries that on the report as an assumption. library-entrypoints is the alias for go:library=;
+      and any number may name one language. The Go library entry points take any clause, and the
+      JavaScript lane takes '!' clauses that remove a script binary or script file it inferred from
+      package.json, e.g. "!js:bin=bin:storybook". Any other clause that asks for something stops the
+      run before it analyses anything, with the reason, and a clause that says 'auto' changes nothing.
+      A scan of another language ignores a clause for go or js that the lane would accept; a clause
+      no lane can honour (a js allow, 'none' or js:module clause, for one) stops the run on any scan.
+      A not_exploitable verdict that holds only because of what you declared carries that on the
+      report as an assumption. library-entrypoints is the alias for go:library=;
       give both only when they say the same thing.
     required: false
     default: ""
@@ -355,8 +358,9 @@ inputs:
       precedence over advisory-corpus-repo, whose fetch step is then skipped entirely. The corpus
       supplies advisory facts; it does not change which advisories the scan evaluates. Findings are
       ranked by EPSS/KEV from the signals.json at the directory's root when it has one, and
-      assessed in that order (KEV-listed first, then by EPSS), so a scan cut short by scan-timeout
-      has assessed the likeliest-exploited first; they carry no priority, and keep the work set's
+      assessed in that order (KEV-listed first, then by EPSS), after any advisories the previous run
+      in the state repo cut short (within each admission band), so a scan cut short by scan-timeout has assessed the
+      likeliest-exploited first; they carry no priority, and keep the work set's
       order, when it has none; nothing is fetched or verified for it. Empty (default) = no
       corpus.
     required: false

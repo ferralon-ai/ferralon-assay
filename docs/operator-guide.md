@@ -39,14 +39,30 @@ analyses anything, naming both. A value you pass is handed to Assay and read as 
 fetches one and looks for no configuration file. When one of the packages reaches the advisory's
 vulnerable package, the row is `undetermined` with `refutation_withheld`. A `not_exploitable` that
 holds only because of what you declared carries that declaration on the report as an assumption, and
-the Report lists the sets under `library_entrypoints`.
+the Report lists the sets under `library_entrypoints`. On every Go report whose packages loaded,
+`entrypoints[]` also records the library packages Assay treats as callable from outside the build
+(`effective`, which a refutation is judged against), what it inferred with nothing declared
+(`inferred`: the importable library packages and the build's `main` packages) and the `!` selectors
+that took a library package out (`denied`), so you can read the guess before you override it. The
+search roots every `main`'s `main` and `init` and the exported API of every package `./...` matches,
+`!`-denied packages included, so `entrypoints` narrows or extends only the library packages a
+refutation is judged against and never a main; a partial run searches only the roots its limit
+names.
 
 `entrypoints` takes clauses of the form `<lane>:<selector>` or `<lane>:<kind>=<selector>`, over the
 lanes `go`, `java`, `kotlin`, `js`, `python` and `dotnet`. A bare `auto` changes nothing, and neither
-does `<lane>:auto` or `<lane>:<kind>=auto` on its own, for any lane and any kind. Today only the Go
-library entry points read a clause. Any other clause that asks for something, for another lane, for
-the Go lane as a whole or for its mains and handlers, stops the run before it analyses anything: `lane java does not
-accept entry-point overrides yet`. A bare `none` names every lane, so it binds the lane the scan runs
+does `<lane>:auto` or `<lane>:<kind>=auto` on its own, for any lane and any kind. The Go library entry
+points read every clause. The JavaScript lane reads `!` clauses that remove an entry point it inferred
+from `package.json` scripts: `!js:bin=bin:<name>` takes out a binary a script runs, and
+`!js:bin=npm:<package>/<file>` or `!js:script=npm:<package>/<file>` takes out the file a binary or a
+script starts. A `package_not_loaded` clear that holds only because of a removal carries it on the
+report as an assumption, and on a JavaScript report `entrypoints[]` records what the lane inferred,
+what stands and the `!` selectors that removed something. A `!` selector, with a kind or without,
+must start with `npm:` or `bin:`, since a bare path names no script entry point and would never
+match; it stops the run. A first-party module is always an entry point, so `js:module`
+clauses, and `js:` clauses that add or say `none`, stop the run. Any other clause
+that asks for something, for another lane, for the Go lane as a whole or for its mains and handlers,
+stops the run before it analyses anything: `lane java does not accept entry-point overrides yet`. A bare `none` names every lane, so it binds the lane the scan runs
 and must be one that can drop all of its roots; on a Go scan it stops the run and asks for
 `go:library=none`, and on a scan of a language the lanes above do not cover it changes nothing, and a `go:library` clause
 on a scan of another language is read by no lane. The check of the value runs before the repository is
@@ -74,7 +90,9 @@ assumptions:
 - no `plugin.Open` loads code at run time. A reachable one is declared as `plugin_load`. In a build
   with cgo off it loads nothing, and is declared as `plugin_load:cgo_off`: a `not_exploitable` row
   beside it says in its detail that it holds for `CGO_ENABLED=0` and that a build with cgo on was
-  not checked. On a platform that has no plugins nothing is declared;
+  not checked. With cgo on, a `not_exploitable` row resting on the build importing none of the
+  advisory's vulnerable packages carries the assumption that plugins are separate builds and were
+  not assessed. On a platform that has no plugins nothing is declared;
 - the analyzed program has the same packages and build configuration as the one govulncheck loads.
 
 A build with cgo off compiles none of its cgo files. Each one is read for calls into the advisory's
@@ -98,7 +116,8 @@ and a limit it does list is not the reason the analysis did not run.
 | Reason | What was missing |
 |---|---|
 | `analysis_did_not_run` | A step the verdict rests on failed or did not run. The scan-level `partiality` notes name the step; when the step failed outright, the row's detail also carries the redacted error. |
-| `package_version_unresolved` | The package's installed version was not resolved, so nothing establishes which code the build carries. |
+| `package_version_unresolved` | The package's installed version was not resolved, so nothing establishes which code the build carries. A Go module your `replace` directive sends to a fork or a local directory has no release version, and the fork's own version string is never compared with the advisory's affected versions. The row's detail names the replacement, why the advisory was not judged on that code, and what would settle it. |
+| `own_release_version_unknown` | The advisory is on your repository's own code, and the release version of this checkout was not established, so nothing places it inside or outside the advisory's affected versions. For a Go module the version is read from a full semver tag on the checked-out commit itself (`sub/v1.2.3` for a module in directory `sub`), so it is known only when the scan runs on a tagged release commit with its tags fetched (`fetch-tags: true` on `actions/checkout`). A pull request's merge commit, or any untagged commit, has no release version. A Go project with no release version can still be placed when the advisory names the commit that fixed it and the checkout's history contains that commit; a shallow checkout (the `actions/checkout` default) cannot show whether it does, so the row says so and names the remedy, `fetch-depth: 0`. Other ecosystems read it from a version the manifest states outright. Other limits the scan lists may still apply once the version is known. |
 | `advisory_symbol_absent` | The advisory names no vulnerable symbol, so there was nothing to search for. |
 | `vulnerable_symbol_unresolved` | The advisory names vulnerable symbols, and not every one was located in the affected package and searched. |
 | `advisory_unknown_to_analyzer` | The analyzer reported nothing about the advisory at all. |

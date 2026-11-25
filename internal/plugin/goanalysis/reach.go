@@ -786,7 +786,8 @@ func isMain(p *packages.Package) bool {
 // for another GOOS or GOARCH, or behind a build tag, that may call into the advisory's vulnerable
 // packages in the refuted module (countingPackages) was never traced, so the refutation holds only
 // for builds that leave it out. The result then declares excluded_files instead, or the
-// localisations of it naming the assembly, //go:linkname or cgo #include the file reaches, and
+// localisations of it naming the assembly, //go:linkname, cgo #include or unresolved name the file
+// reaches, and
 // tool_failure beside it when the check withholds because one of its own steps failed. An advisory
 // that lists no vulnerable package in the module, or lists the module once with none, makes every
 // package of it count. When every such file is one that build constraints alone leave out and the

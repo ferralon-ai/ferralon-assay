@@ -90,6 +90,8 @@ func TestResolveInventoryReportsLaunchDigest(t *testing.T) {
 			"package-lock.json": `{"name": "app", "lockfileVersion": 3, "packages": {"": {"name": "app", "version": "1.0.0"}, "node_modules/left-pad": {"version": "1.4.0"}}}`,
 		},
 		"no lockfile": {"package.json": `{"name": "app", "version": "1.0.0", "scripts": {"start": "node server.js"}}`},
+		// No project root (root discovery skips dot-directories), but a launch text the lane reads.
+		"no project root": {".github/actions/x/package.json": `{"scripts": {"build": "node -r foo/register x.js"}}`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := writeProgram(t, files)

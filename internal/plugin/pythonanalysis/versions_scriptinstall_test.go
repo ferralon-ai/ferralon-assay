@@ -230,6 +230,16 @@ func TestResolveVersions_MakeVariableInstaller(t *testing.T) {
 		{"make -e", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make -e install\n"}, false},
 		{"MAKEFLAGS", "PIP = pip\n" + recipe, map[string]string{"install.sh": "export MAKEFLAGS=-e\nmake install\n"}, false},
 		{"make run sets another variable", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make install DEBUG=1\n"}, true},
+		{"assigned only inside ifndef", "ifndef PIP\nPIP = pip\nendif\n" + recipe, nil, false},
+		{"assigned only inside ifeq origin", "ifeq ($(origin PIP),undefined)\nPIP = pip\nendif\n" + recipe, nil, false},
+		{"global pip and a conditional reassignment", "PIP = pip\nifeq ($(CI),1)\nPIP = uv pip\nendif\n" + recipe, nil, false},
+		{"global pip after a closed conditional", "ifdef DEBUG\nX = 1\nelse\nX = 2\nendif\nPIP = pip\n" + recipe, nil, true},
+		{"assigned only for another target", "setup: PIP = pip\nsetup: install\n" + recipe, nil, false},
+		{"make --environment", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make --environment install\n"}, false},
+		{"make --env", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make --env install\n"}, false},
+		{"make --eval", "PIP = pip\n" + recipe, map[string]string{"install.sh": "make --eval='PIP=uv' install\n"}, false},
+		{"list-form make -e", "PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run([\"make\", \"-e\", \"install\"])\n"}, false},
+		{"list-form make sets the variable", "PIP = pip\n" + recipe, map[string]string{"build.py": "import subprocess\nsubprocess.run([\"make\",\"install\",\"PIP=uv\"])\n"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

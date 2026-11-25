@@ -12,13 +12,17 @@ var (
 	makeAssignRE  = regexp.MustCompile(`^((?:(?:override|export|private|unexport)\s+)*)([^\s:=#?+!]+)\s*(:::=|::=|:=|\?=|\+=|!=|=)\s*(.*)$`)
 	makeDefineRE  = regexp.MustCompile(`^(?:(?:override|export|private)\s+)*define\s+([^\s:=#?+!]+)`)
 	makeIncludeRE = regexp.MustCompile(`^(?:-|s)?include\s`)
-	// makeRunRE finds a make run in any text; its group is the rest of that command.
-	makeRunRE = regexp.MustCompile(`(?:^|[\s;&|(\x60"'])(?:g?make|\$\(MAKE\)|\$\{MAKE\})(?:\s([^;&|\n]*)|$)`)
+	// makeCondRE opens a conditional block, whose assignments make may skip.
+	makeCondRE = regexp.MustCompile(`^(?:ifdef|ifndef|ifeq|ifneq)(?:\s|\(|$)`)
+	// makeRunRE finds a make run in any text, in a shell line or a list-form argv
+	// (["make", "-e"]); its group is the rest of that command.
+	makeRunRE = regexp.MustCompile(`(?:^|[\s;&|(\x60"'\[,])(?:g?make|\$\(MAKE\)|\$\{MAKE\})['"]?(?:[\s,]([^;&|\n]*)|$)`)
 	// makeArgSetRE is a variable a make run sets on its command line, which no makefile
 	// assignment overrides.
-	makeArgSetRE = regexp.MustCompile(`(?:^|\s)['"]?([A-Za-z_][A-Za-z0-9_]*)\s*(?:::?=|:?=|\+=|\?=|!=)`)
-	// makeEnvFlagRE is make's -e: the environment overrides every makefile assignment.
-	makeEnvFlagRE = regexp.MustCompile(`(?:^|\s)(?:--environment-overrides|-[A-Za-z]*e[A-Za-z]*)(?:\s|$)`)
+	makeArgSetRE = regexp.MustCompile(`(?:^|[\s,\[])['"]?([A-Za-z_][A-Za-z0-9_]*)\s*(?:::?=|:?=|\+=|\?=|!=)`)
+	// makeEnvFlagRE is make's -e, under any abbreviation of --environment-overrides, and its
+	// --eval/-E, which may assign anything: either overrides every makefile assignment.
+	makeEnvFlagRE = regexp.MustCompile(`(?:^|[\s,'"\[])(?:--e[A-Za-z-]*|-[A-Za-z]*[eE][A-Za-z]*)(?:[=\s,'"\]]|$)`)
 	// makeFlagsRE names a variable through which a run's flags and overrides reach make.
 	makeFlagsRE = regexp.MustCompile(`\b(?:GNU)?MAKE(?:FLAGS|OVERRIDES)\b`)
 )
@@ -28,17 +32,20 @@ const makeAll = ""
 
 // makePrograms returns, for a makefile's text, each variable every assignment of which, global
 // or target-specific, Spec.Program reads as an installer program, mapped to that program. A
-// variable another makefile may assign (include), one a conditional, appending or shell
-// assignment, an override or define sets, or one this cannot tell from another (a computed
-// name, eval, a recipe prefix other than tab) maps to nothing, so its references stay
-// expansions.
+// variable another makefile may assign (include), one with no global assignment (the
+// environment sets it outside the targets that assign it), one a conditional, appending or
+// shell assignment, an assignment inside an ifdef/ifndef/ifeq/ifneq block, an override or
+// define sets, or one this cannot tell from another (a computed name, eval, a recipe prefix
+// other than tab) maps to nothing, so its references stay expansions.
 func makePrograms(src string, program func(string) (string, bool)) map[string]string {
 	values := map[string][]string{}
 	unbounded := map[string]bool{}
 	if strings.Contains(src, "$(eval") || strings.Contains(src, "${eval") || strings.Contains(src, ".RECIPEPREFIX") {
 		return nil
 	}
+	global := map[string]bool{}
 	var define bool
+	conditional := 0
 	for _, line := range makeLogicalLines(src) {
 		if define {
 			define = strings.TrimSpace(line) != "endef"
@@ -54,12 +61,20 @@ func makePrograms(src string, program func(string) (string, bool)) map[string]st
 		if makeIncludeRE.MatchString(s) {
 			return nil
 		}
+		switch {
+		case makeCondRE.MatchString(s):
+			conditional++
+			continue
+		case s == "endif" && conditional > 0:
+			conditional--
+			continue
+		}
 		if m := makeDefineRE.FindStringSubmatch(s); m != nil {
 			unbounded[m[1]] = true
 			define = true
 			continue
 		}
-		m := makeAssignment(s)
+		m, targeted := makeAssignment(s)
 		if m == nil {
 			continue
 		}
@@ -68,15 +83,16 @@ func makePrograms(src string, program func(string) (string, bool)) map[string]st
 			return nil
 		}
 		switch {
-		case strings.Contains(directives, "override"), op == "?=", op == "+=", op == "!=":
+		case strings.Contains(directives, "override"), op == "?=", op == "+=", op == "!=", conditional > 0:
 			unbounded[name] = true
 		default:
 			values[name] = append(values[name], value)
+			global[name] = global[name] || !targeted
 		}
 	}
 	out := map[string]string{}
 	for name, vals := range values {
-		if unbounded[name] {
+		if unbounded[name] || !global[name] {
 			continue
 		}
 		prog, ok := "", true
@@ -98,16 +114,16 @@ func makePrograms(src string, program func(string) (string, bool)) map[string]st
 }
 
 // makeAssignment matches a makefile line, comment and indent off, that assigns a variable:
-// globally, or after a rule's targets for those targets alone.
-func makeAssignment(s string) []string {
+// globally, or, targeted, after a rule's targets for those targets alone.
+func makeAssignment(s string) (m []string, targeted bool) {
 	if m := makeAssignRE.FindStringSubmatch(s); m != nil {
-		return m
+		return m, false
 	}
 	i := strings.IndexByte(s, ':')
 	if i < 0 {
-		return nil
+		return nil, false
 	}
-	return makeAssignRE.FindStringSubmatch(strings.TrimSpace(strings.TrimPrefix(s[i+1:], ":")))
+	return makeAssignRE.FindStringSubmatch(strings.TrimSpace(strings.TrimPrefix(s[i+1:], ":"))), true
 }
 
 // makeProgramAssignment reports whether a makefile line outside a recipe assigns a variable
@@ -117,7 +133,7 @@ func (v *Veto) makeProgramAssignment(line string) bool {
 	if v.makeVars == nil || strings.HasPrefix(line, "\t") {
 		return false
 	}
-	m := makeAssignment(strings.TrimSpace(stripMakeComment(line)))
+	m, _ := makeAssignment(strings.TrimSpace(stripMakeComment(line)))
 	if m == nil {
 		return false
 	}

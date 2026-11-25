@@ -105,8 +105,9 @@ type lofNode struct {
 // (string ids); Src the source functions it walks (package path, "F" or "T.M"). Novel is set when
 // one of the file's loaded roots lies outside G0's CHA-round or final slice. Links holds the
 // packages the build did not load that the file can link (string ids), with LinkFC what that walk
-// fails closed on. LinkTo holds the packages the closure's //go:linkname directives bind (string
-// ids; lofClosure.linkTo).
+// fails closed on. LinkTo holds the packages the closure's //go:linkname directives bind, and AsmTo
+// the packages whose assembly it follows or that assembly names (string ids; lofClosure.linkTo,
+// lofClosure.asmTo).
 type lofFacts struct {
 	FC, FCStd                []string
 	Funcs, TypeMeth, NewMeth []int32
@@ -118,6 +119,7 @@ type lofFacts struct {
 	Links                    []int32
 	LinkFC                   []string
 	LinkTo                   []int32
+	AsmTo                    []int32
 }
 
 // lofCandidate is a left-out file and the package it belongs to.
@@ -416,6 +418,10 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *rele
 			f.LinkTo = append(f.LinkTo, in.id(ip))
 		}
 		slices.Sort(f.LinkTo)
+		for ip := range cl.asmTo {
+			f.AsmTo = append(f.AsmTo, in.id(ip))
+		}
+		slices.Sort(f.AsmTo)
 		for m := range cl.methods {
 			f.Methods = append(f.Methods, in.id(m))
 		}
@@ -761,15 +767,17 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 
 // counts reports whether the left-out file at path may reach S. A file the engine does not hold, or
 // any file when the engine could not be built, counts. When the file counts because its closure
-// links assembly, binds a //go:linkname to one of S's packages or includes C (lofAnnotated), reasons holds the
-// excluded_files localisations naming them. failed is set when it counts because the engine itself
+// runs assembly it cannot follow, follows assembly of or naming one of S's packages, binds a
+// //go:linkname to one of them or includes C (lofAnnotated), reasons holds the excluded_files
+// localisations naming them. failed is set when it counts because the engine itself
 // failed: it could not be built, or the walk could not read or parse a file or ran out of budget
 // (lofFailed).
 //
 // Stage 0: when none of S's packages is loaded, the file counts only when it can link one of them
 // (lofWorld.links), or that walk fails closed: S executes only once linked.
 //
-// Stage 1: the file counts when its closure fails closed, or when one of these holds against R,
+// Stage 1: the file counts when its closure fails closed, follows assembly of or naming one of S's
+// packages, or binds a //go:linkname to one, or when one of these holds against R,
 // what reaches S in the graph the file is tested against:
 //
 //   - func-in-R: it reaches a loaded function in R;
@@ -824,6 +832,9 @@ func (row *lofRow) countsWhy(path string) (counts bool, reasons []string, failed
 	}
 	if slices.ContainsFunc(f.LinkTo, func(id int32) bool { return row.inPkg(e.Strs[id]) }) && !slices.Contains(fc, lofLinkname) {
 		fc = append(slices.Clone(fc), lofLinkname)
+	}
+	if slices.ContainsFunc(f.AsmTo, func(id int32) bool { return row.inPkg(e.Strs[id]) }) && !slices.Contains(fc, lofAssembly) {
+		fc = append(slices.Clone(fc), lofAssembly)
 	}
 	if len(fc) > 0 || (row.stdlib && e.FailStd != "") {
 		return true, lofAnnotated(fc), lofFailed(fc), false

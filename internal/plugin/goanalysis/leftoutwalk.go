@@ -147,9 +147,12 @@ type lofPkg struct {
 	inits   []*lofDecl
 	exports []*lofDecl
 	imports []string
-	// asm is set when some build the refutation describes compiles an assembly file of the
-	// package.
-	asm bool
+	// asmFiles holds the package's assembly files some build the refutation describes compiles;
+	// foreign its other source files go/build may compile into it (C and its kin, .S and .sx, SWIG
+	// interfaces, .syso objects), whose build constraints are read only when asked (lofWorld.asmOf).
+	asmFiles []string
+	foreign  []string
+	asmRead  *lofAsm
 }
 
 // lofFile is one parsed Go file of a lofPkg.
@@ -236,6 +239,11 @@ type lofClosure struct {
 	// linkTo holds the packages a //go:linkname the closure binds outside the toolchain's own
 	// packages names: the package a pull reads its body from, or the one a push gives a body to.
 	linkTo map[string]bool
+	// asmTo holds the packages whose assembly the closure follows (lofWalk.asm) and the packages
+	// that assembly names; asmSyms the symbols that assembly defines or names in its own package,
+	// as a //go:linkname names them, for lofWalk.asmLinked.
+	asmTo   map[string]bool
+	asmSyms []string
 	// unres holds the bare identifiers no declaration has, and unresQ the qualified references to a
 	// standard-library package that no declaration of it has.
 	unres  []lofRef
@@ -248,13 +256,13 @@ type lofClosure struct {
 }
 
 func newLofClosure() *lofClosure {
-	return &lofClosure{funcs: map[*types.Func]bool{}, inits: map[*types.Package]bool{}, types: map[*types.TypeName]bool{}, methods: map[string]bool{}, src: map[[2]string]bool{}, linkTo: map[string]bool{}}
+	return &lofClosure{funcs: map[*types.Func]bool{}, inits: map[*types.Package]bool{}, types: map[*types.TypeName]bool{}, methods: map[string]bool{}, src: map[[2]string]bool{}, linkTo: map[string]bool{}, asmTo: map[string]bool{}}
 }
 
 func (c *lofClosure) clone() *lofClosure {
 	cp := *c
-	cp.funcs, cp.inits, cp.types, cp.methods, cp.src, cp.linkTo = maps.Clone(c.funcs), maps.Clone(c.inits), maps.Clone(c.types), maps.Clone(c.methods), maps.Clone(c.src), maps.Clone(c.linkTo)
-	cp.newMeth, cp.fc, cp.fcStd, cp.unres, cp.unresQ = slices.Clone(c.newMeth), slices.Clone(c.fc), slices.Clone(c.fcStd), slices.Clone(c.unres), slices.Clone(c.unresQ)
+	cp.funcs, cp.inits, cp.types, cp.methods, cp.src, cp.linkTo, cp.asmTo = maps.Clone(c.funcs), maps.Clone(c.inits), maps.Clone(c.types), maps.Clone(c.methods), maps.Clone(c.src), maps.Clone(c.linkTo), maps.Clone(c.asmTo)
+	cp.newMeth, cp.fc, cp.fcStd, cp.unres, cp.unresQ, cp.asmSyms = slices.Clone(c.newMeth), slices.Clone(c.fc), slices.Clone(c.fcStd), slices.Clone(c.unres), slices.Clone(c.unresQ), slices.Clone(c.asmSyms)
 	return &cp
 }
 
@@ -403,7 +411,8 @@ func (w *lofWorld) pkgVariant(path, name string) *lofPkg {
 
 // parse reads p's directory: its Go files (for a loaded package, only those the build left out),
 // excluding test files, files another package clause names, files excluded from every build the
-// refutation describes, and files proved never to compile; and whether it has assembly.
+// refutation describes, and files proved never to compile; and its assembly and other non-Go
+// source.
 func (w *lofWorld) parse(p *lofPkg) {
 	ents, err := os.ReadDir(p.dir)
 	if err != nil {
@@ -427,6 +436,9 @@ func (w *lofWorld) parse(p *lofPkg) {
 		switch {
 		case strings.HasSuffix(n, ".s"):
 			asmFiles = append(asmFiles, full)
+			continue
+		case lofForeignExt[filepath.Ext(n)]:
+			p.foreign = append(p.foreign, full)
 			continue
 		case !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") || compiled[full] || w.dropped[full]:
 			continue
@@ -473,7 +485,7 @@ func (w *lofWorld) parse(p *lofPkg) {
 			continue
 		}
 		if !w.excluded(x) {
-			p.asm = true
+			p.asmFiles = append(p.asmFiles, full)
 		}
 	}
 	slices.Sort(p.imports)
@@ -879,6 +891,7 @@ func (w *lofWorld) closure(path, pkgPath string) *lofClosure {
 	}
 	k.touch(file)
 	k.drain()
+	k.asmLinked()
 	if len(out.unres)+len(out.unresQ) == 0 || k.stopped {
 		return out
 	}
@@ -1335,7 +1348,7 @@ func (k *lofWalk) walk(d *lofDecl) {
 			}
 		}
 		k.out.src[[2]string{p.path, d.src}] = true
-		if n.Body == nil && d.recv == "" {
+		if n.Body == nil {
 			k.bodyless(d, n)
 		}
 	case *ast.TypeSpec:
@@ -1621,10 +1634,20 @@ func (k *lofWalk) remote(from *lofPkg, remote string) {
 // bodyless resolves a function declared without a body: a //go:linkname pull names its body (an
 // edge touch follows), the host provides it (//go:wasmimport: foreign code, a dynamic call), its
 // package's assembly or a push from another package provides it, or the compiler expands it inline.
-// Assembly fails closed, as does anything else unresolved: assembly is not read, so it may call any
-// function value. A push is followed through the pushing body and names p as its target (link).
+// The assembly is followed (asm); a push is followed through the pushing body and names p as its
+// target (link). Anything else unresolved fails closed. A method's body is its package's assembly
+// (the toolchain takes one only for an architecture without the register ABI), whose ·T·M the walk
+// does not follow, or nothing: it fails closed.
 func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 	p := d.file.pkg
+	if d.recv != "" {
+		if len(p.asmFiles) > 0 {
+			k.fail(p, lofAssembly)
+		} else {
+			k.fail(p, lofBodyless)
+		}
+		return
+	}
 	if d.file.links[d.name] != "" {
 		return
 	}
@@ -1633,9 +1656,8 @@ func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 		return
 	}
 	found := false
-	if p.asm {
-		k.fail(p, lofAssembly)
-		k.out.dyn = true
+	if len(p.asmFiles) > 0 {
+		k.asm(p, d.name)
 		found = true
 	}
 	sym := p.path + "." + d.name
@@ -1648,6 +1670,81 @@ func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 	}
 	if !found && !k.w.intrinsic(sym) {
 		k.fail(p, lofBodyless)
+	}
+}
+
+// asm follows the assembly of package p, which may give its bodyless function name a body. When
+// no other package's assembly can name p's symbols (lofAsmUnnameable), p's assembly defines name
+// (TEXT) and the walk can follow everything it names (lofAsm.opaque), each Go symbol it names is
+// followed like a call: in p, or in the package it names, whose path the closure keeps for the
+// row to decide, as link does. Assembly may still call any function value or method it is handed,
+// so it is a dynamic call that may carry a value into loaded code. Otherwise, and inside the
+// toolchain's own packages, assembly fails closed, as fail does; so does a symbol it names that no
+// declaration has, except one its own package's assembly defines, or one of the toolchain's own
+// packages, which fails closed for a standard-library refutation only. A symbol of p's the
+// assembly names, and one without a package it defines, may still take its body from a
+// //go:linkname elsewhere in the program (asmLinked).
+func (k *lofWalk) asm(p *lofPkg, name string) {
+	k.out.dyn = true
+	a := k.w.asmOf(p)
+	if p.std || !lofAsmUnnameable(p) || a.opaque || !a.text[name] {
+		k.fail(p, lofAssembly)
+		return
+	}
+	k.out.sink = true
+	k.out.asmTo[p.path] = true
+	for l := range a.locals {
+		k.out.asmSyms = append(k.out.asmSyms, l)
+	}
+	for _, r := range a.refs {
+		path, sym := r[0], r[1]
+		if path == "" {
+			if !strings.HasSuffix(sym, "<>") {
+				k.out.asmSyms = append(k.out.asmSyms, p.path+"."+sym)
+			}
+			if !k.resolveIn(p, sym) && !a.defs[sym] {
+				k.fail(p, lofAssembly)
+			}
+			continue
+		}
+		q := k.w.pkg(path)
+		k.enter(q)
+		if q.missing != "" {
+			continue
+		}
+		switch {
+		case k.resolveIn(q, sym):
+			k.out.asmTo[path] = true
+		case q.std:
+			k.out.failStd(lofAssembly)
+		default:
+			k.fail(p, lofAssembly)
+		}
+	}
+}
+
+// lofAsmUnnameable reports whether no other package's assembly can name a symbol of p, and so
+// give one of its functions a body: its import path holds a dot, which no assembler identifier
+// does (lofAsmIdentRune), and it is not a main package, whose symbols the toolchain names main.
+func lofAsmUnnameable(p *lofPkg) bool {
+	return p.name != "main" && strings.Contains(p.path, ".")
+}
+
+// asmLinked fails closed when a //go:linkname anywhere in the program, loaded or walked, names a
+// symbol the followed assembly defines or names in its own package (lofClosure.asmSyms): the
+// linker may keep the Go function the directive binds over the assembly's own definition, which
+// the walk then has not read. It runs once the walk is drained, when every package the walk
+// enters has recorded its directives.
+func (k *lofWalk) asmLinked() {
+	if len(k.out.asmSyms) == 0 {
+		return
+	}
+	k.w.readPushes()
+	for _, sym := range k.out.asmSyms {
+		if len(k.w.pushes[sym]) > 0 {
+			k.out.fail(lofAssembly)
+			return
+		}
 	}
 }
 

@@ -1256,8 +1256,9 @@ func (k *lofWalk) link(p *lofPkg, target string) {
 // touch links what compiling f links: the packages it imports, whose initializers run, and the
 // targets of its //go:linkname directives. A malformed //go:linkname directive fails closed, and so
 // does a cgo file's #include: the walk reads neither the link's symbol binding nor C. A well-formed
-// one names its target (link), and a local function with a body pushes it there, so the walk
-// follows that body as the target's, whether or not the build loaded the target.
+// one names its target (link), and the local name, which Go resolves in the whole package, may push
+// a body there, so the walk follows that local as the target's, whether or not the build loaded
+// either package.
 func (k *lofWalk) touch(f *lofFile) {
 	if k.touched[f] {
 		return
@@ -1279,11 +1280,7 @@ func (k *lofWalk) touch(f *lofFile) {
 	sort.Strings(locals)
 	for _, l := range locals {
 		k.remote(f.pkg, f.links[l])
-		for _, d := range f.decls {
-			if fn, ok := d.node.(*ast.FuncDecl); ok && d.recv == "" && d.name == l && fn.Body != nil {
-				k.push(d)
-			}
-		}
+		k.resolveIn(f.pkg, l)
 	}
 }
 

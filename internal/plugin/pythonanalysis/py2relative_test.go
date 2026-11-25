@@ -29,53 +29,64 @@ func py2Tree(extra map[string]string) map[string]string {
 // sibling import as a Python 2 implicit relative import and names that assumption in an
 // Annotation; strict mode leaves it unattributed and declares tool_failure, naming the import.
 func TestCallGraph_Py2RelativeImportStrictVersusPractical(t *testing.T) {
-	dir := writeTree(t, py2Tree(nil))
-	practical, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
-	if err != nil {
-		t.Fatalf("CallGraph: %v", err)
-	}
-	if hasReason(practical.Partiality, plugin.PartialReasonToolFailure) {
-		t.Errorf("practical: tool_failure declared (reasons %v, cause %q)", practical.Partiality.Reasons, practical.Partiality.Cause)
-	}
-	if len(practical.Annotations) != 1 {
-		t.Fatalf("practical: annotations = %+v, want one", practical.Annotations)
-	}
-	a := practical.Annotations[0]
-	if a.Reason != AnnotationPy2RelativeImport || a.Path != "pkg/views.py" || !strings.Contains(a.Detail, "import forms") || !strings.Contains(a.Detail, "Dockerfile") {
-		t.Errorf("practical: annotation = %+v", a)
-	}
+	for _, cached := range []bool{false, true} {
+		t.Run(map[bool]string{false: "uncached", true: "run cache"}[cached], func(t *testing.T) {
+			ctx := context.Background()
+			if cached {
+				ctx = cachedCtx(t)
+			}
+			dir := writeTree(t, py2Tree(nil))
+			practical, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			if hasReason(practical.Partiality, plugin.PartialReasonToolFailure) {
+				t.Errorf("practical: tool_failure declared (reasons %v, cause %q)", practical.Partiality.Reasons, practical.Partiality.Cause)
+			}
+			if len(practical.Annotations) != 1 {
+				t.Fatalf("practical: annotations = %+v, want one", practical.Annotations)
+			}
+			a := practical.Annotations[0]
+			if a.Reason != AnnotationPy2RelativeImport || a.Path != "pkg/views.py" || !strings.Contains(a.Detail, "import forms") || !strings.Contains(a.Detail, "Dockerfile") {
+				t.Errorf("practical: annotation = %+v", a)
+			}
 
-	strict, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir, Strict: true})
-	if err != nil {
-		t.Fatalf("CallGraph strict: %v", err)
-	}
-	if !hasReason(strict.Partiality, plugin.PartialReasonToolFailure) {
-		t.Errorf("strict: no tool_failure (reasons %v)", strict.Partiality.Reasons)
-	}
-	if len(strict.Annotations) != 0 {
-		t.Errorf("strict: annotations = %+v, want none", strict.Annotations)
-	}
-	for _, want := range []string{"import forms", "pkg/views.py", "Dockerfile", "Python 2"} {
-		if !strings.Contains(strict.Partiality.Cause, want) {
-			t.Errorf("strict: cause %q does not name %q", strict.Partiality.Cause, want)
-		}
-	}
-	if hasReason(practical.Partiality, plugin.PartialReasonToolFailure) {
-		t.Errorf("practical result changed after a strict call: %v", practical.Partiality.Reasons)
-	}
+			strict, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir, Strict: true})
+			if err != nil {
+				t.Fatalf("CallGraph strict: %v", err)
+			}
+			if !hasReason(strict.Partiality, plugin.PartialReasonToolFailure) {
+				t.Errorf("strict: no tool_failure (reasons %v)", strict.Partiality.Reasons)
+			}
+			if len(strict.Annotations) != 0 {
+				t.Errorf("strict: annotations = %+v, want none", strict.Annotations)
+			}
+			for _, want := range []string{"import forms", "pkg/views.py", "Dockerfile", "Python 2"} {
+				if !strings.Contains(strict.Partiality.Cause, want) {
+					t.Errorf("strict: cause %q does not name %q", strict.Partiality.Cause, want)
+				}
+			}
+			if hasReason(practical.Partiality, plugin.PartialReasonToolFailure) {
+				t.Errorf("practical result changed after a strict call: %v", practical.Partiality.Reasons)
+			}
 
-	reach := func(strict bool) plugin.ReachabilityResult {
-		r, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{"rest_framework.views.APIView"}, Strict: strict})
-		if err != nil {
-			t.Fatalf("Reachability strict=%v: %v", strict, err)
-		}
-		return r
-	}
-	if r := reach(false); len(r.Annotations) != 1 || r.Annotations[0] != a || hasReason(r.Partiality, plugin.PartialReasonToolFailure) {
-		t.Errorf("practical reachability: annotations %+v, reasons %v", r.Annotations, r.Partiality.Reasons)
-	}
-	if r := reach(true); len(r.Annotations) != 0 || !hasReason(r.Partiality, plugin.PartialReasonToolFailure) {
-		t.Errorf("strict reachability: annotations %+v, reasons %v", r.Annotations, r.Partiality.Reasons)
+			reach := func(strict bool) plugin.ReachabilityResult {
+				r, err := Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{"rest_framework.views.APIView"}, Strict: strict})
+				if err != nil {
+					t.Fatalf("Reachability strict=%v: %v", strict, err)
+				}
+				return r
+			}
+			if r := reach(false); len(r.Annotations) != 1 || r.Annotations[0] != a || hasReason(r.Partiality, plugin.PartialReasonToolFailure) {
+				t.Errorf("practical reachability: annotations %+v, reasons %v", r.Annotations, r.Partiality.Reasons)
+			}
+			if r := reach(true); len(r.Annotations) != 0 || !hasReason(r.Partiality, plugin.PartialReasonToolFailure) {
+				t.Errorf("strict reachability: annotations %+v, reasons %v", r.Annotations, r.Partiality.Reasons)
+			}
+			if again, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir}); err != nil || len(again.Annotations) != 1 || hasReason(again.Partiality, plugin.PartialReasonToolFailure) {
+				t.Errorf("practical call graph after strict calls: err %v, annotations %+v, reasons %v", err, again.Annotations, again.Partiality.Reasons)
+			}
+		})
 	}
 }
 

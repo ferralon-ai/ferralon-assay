@@ -1449,4 +1449,11 @@ func TestLofEngine_StdFromBound(t *testing.T) {
 	if fmt.Sprint(&releaseBound{release: loaded}) == fmt.Sprint(&releaseBound{release: loaded, std: &loaded}) {
 		t.Error("a bound without std shares a run cache key with one that has it")
 	}
+	if fmt.Sprint(&releaseBound{release: loaded}) == fmt.Sprint(&releaseBound{release: loaded, exact: true}) {
+		t.Error("a floor shares a run cache key with an exact bound on the same release")
+	}
+	floor, _ := parseGoRelease("go1.21.0")
+	if fmt.Sprint(&releaseBound{release: floor, std: &loaded}) == fmt.Sprint(&releaseBound{release: loaded, std: &loaded}) {
+		t.Error("bounds on different releases share a run cache key")
+	}
 }

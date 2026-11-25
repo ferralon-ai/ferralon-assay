@@ -133,6 +133,10 @@ func statePluginScope(res plugin.ReachabilityResult) plugin.ReachabilityResult {
 	if res.ProgramView != nil {
 		view := *res.ProgramView
 		view.Refutation = state(view.Refutation)
+		view.Refutations = slices.Clone(view.Refutations)
+		for i, r := range view.Refutations {
+			view.Refutations[i] = state(r)
+		}
 		res.ProgramView = &view
 	}
 	return res

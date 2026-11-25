@@ -3,6 +3,7 @@ package pythonanalysis
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/pep440"
@@ -25,13 +26,20 @@ type interpreterRange struct {
 	releases []int // admitted modelled releases
 	newer    bool  // admits a release newer than every modelled one
 	probes   []int // the probeReleases it admits
+	assumed  bool  // the build declares no interpreter: the range is assumedInterpreter
+}
+
+// mayBePython2 reports whether the build may run on Python 2: the range admits 2.7, or the
+// build declares no interpreter, so the assumed range bounds nothing it declared.
+func (r interpreterRange) mayBePython2() bool {
+	return r.assumed || slices.Contains(r.releases, 207)
 }
 
 // probeReleases are the releases newer than the tables that parseInterpreterRange tries.
 var probeReleases = []int{315, 316, 317, 318, 319, 320, 325, 330, 340, 400, 401, 500}
 
 // assumedInterpreter stands in when a build declares no interpreter: CPython 3.8 or later.
-var assumedInterpreter = interpreterRange{releases: releasesFrom(308), newer: true, probes: probeReleases}
+var assumedInterpreter = interpreterRange{releases: releasesFrom(308), newer: true, probes: probeReleases, assumed: true}
 
 // anyInterpreter stands in when a build declares an interpreter this lane cannot read: every
 // modelled release and every later one.

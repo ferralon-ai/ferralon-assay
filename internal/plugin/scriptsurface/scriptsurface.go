@@ -153,6 +153,11 @@ type Spec struct {
 	// inline code that removes or rewrites a bound file withholds as a command naming the file
 	// does. nil means the lane reads no inline code.
 	Code func(words []string) []string
+	// Program, when not nil, returns the installer a make variable's assigned value runs, and
+	// whether it is one the lane names. A makefile recipe command whose first word references
+	// a variable every assignment of which is one runs that installer (makePrograms), unless
+	// a make run anywhere in the build may set the variable itself. nil resolves none.
+	Program func(value string) (string, bool)
 }
 
 func (s Spec) complete() bool {
@@ -395,6 +400,12 @@ type Veto struct {
 	at           andAt
 	backstopping bool
 	file         string // the file Classify is reading
+	// makeVars are the installer programs the makefile being read assigns its variables
+	// (makePrograms); makeResolved are the variables a command was resolved through, and
+	// makeSet those a make run may set itself (noteMakeOverrides).
+	makeVars     map[string]string
+	makeResolved map[string]bool
+	makeSet      map[string]bool
 }
 
 // andAt is the && list a command is part of, and whether the rule follows its order.
@@ -422,7 +433,7 @@ type sampleRun struct {
 // whether version resolution reads the file at a path. spec decides the lane's installers.
 func New(root string, read func(string) bool, spec Spec) *Veto {
 	return &Veto{root: filepath.Clean(root), read: read, spec: spec, vetoed: map[string]bool{},
-		bound: map[string]bool{}, mentioned: map[string]bool{}}
+		bound: map[string]bool{}, mentioned: map[string]bool{}, makeResolved: map[string]bool{}, makeSet: map[string]bool{}}
 }
 
 // Classify wraps a buildtree.Candidates classifier: a script surface the rule withholds on, or
@@ -432,6 +443,7 @@ func (v *Veto) Classify(match func(path string, head []byte) (string, bool)) fun
 	return func(path string, head []byte) (string, bool) {
 		why, ok := "", false
 		v.file = path
+		v.noteMakeOverrides(string(head))
 		if _, surface := surfaceOf(path, head); surface {
 			why, ok = v.surface(path, head)
 		} else {
@@ -464,9 +476,21 @@ func (v *Veto) Rebound() bool {
 }
 
 // Withheld reports whether the rule withheld on any surface the walk classified, a command
-// may rewrite a file an allowed command binds to, or a sample hook is live: the build may
-// install a package no manifest or lock read here names. Call it after the walk.
-func (v *Veto) Withheld() bool { return len(v.vetoed) > 0 || v.Rebound() || v.samplesLive() }
+// may rewrite a file an allowed command binds to, a sample hook is live, or a make run may set
+// a variable a command was resolved through: the build may install a package no manifest or
+// lock read here names. Call it after the walk.
+func (v *Veto) Withheld() bool {
+	return len(v.vetoed) > 0 || v.Rebound() || v.samplesLive() || v.makeOverridden()
+}
+
+// WithheldAt returns the first surface, in path order, the rule withheld on, or "" when Withheld
+// holds for another of its reasons. Call it after the walk.
+func (v *Veto) WithheldAt() string {
+	if len(v.vetoed) == 0 {
+		return ""
+	}
+	return slices.Sorted(maps.Keys(v.vetoed))[0]
+}
 
 // samplesLive reports whether, once something in the build may reach a sample hook, the
 // sample hooks read as surfaces withhold: one of them withholds on its own, or a command in
@@ -901,6 +925,11 @@ func (v *Veto) classify(s surfaceType, path string, head []byte, scan bool) (str
 			return "script surface unreadable", true
 		}
 		src = string(data)
+		v.noteMakeOverrides(src)
+	}
+	if s.kind == kindMakefile && v.spec.Program != nil {
+		v.makeVars = makePrograms(src, v.spec.Program)
+		defer func() { v.makeVars = nil }()
 	}
 	if v.spec.Text != nil {
 		v.spec.Text(src)
@@ -1119,6 +1148,9 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			} else if inShell {
 				cur.mark, cur.wd = venvMark{}, su.dir
 			}
+			if lineKind == kindMakefile && v.makeProgramAssignment(line) {
+				continue
+			}
 			if lineKind == kindData && v.hasToken(valuedKey(line)) {
 				return "install key: " + strings.TrimSpace(line)
 			}
@@ -1220,10 +1252,11 @@ const maxRunDepth = 4
 // command applies the rule to one simple command run from cur, and returns why it withholds,
 // or "" when it does not.
 func (v *Veto) command(seg segment, cur cursor, depth int) string {
-	words := seg.words
-	if len(words) == 0 {
+	if len(seg.words) == 0 {
 		return ""
 	}
+	seg = v.makeProgram(seg)
+	words := seg.words
 	if depth == 0 {
 		if !seg.and || cur != v.last {
 			v.lists++

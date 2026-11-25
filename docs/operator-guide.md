@@ -125,7 +125,7 @@ and a limit it does list is not the reason the analysis did not run.
 |---|---|
 | `analysis_did_not_run` | A step the verdict rests on failed or did not run. The scan-level `partiality` notes name the step; when the step failed outright, the row's detail also carries the redacted error. |
 | `package_version_unresolved` | The package's installed version was not resolved, so nothing establishes which code the build carries. A Go module your `replace` directive sends to a fork or a local directory has no release version, and the fork's own version string is never compared with the advisory's affected versions. The row's detail names the replacement, why the advisory was not judged on that code, and what would settle it. |
-| `own_release_version_unknown` | The advisory is on your repository's own code, and the release version of this checkout was not established, so nothing places it inside or outside the advisory's affected versions. For a Go module the version is read from a full semver tag on the checked-out commit itself (`sub/v1.2.3` for a module in directory `sub`), so it is known only when the scan runs on a tagged release commit with its tags fetched (`fetch-tags: true` on `actions/checkout`). A pull request's merge commit, or any untagged commit, has no release version. A Go project with no release version can still be placed when the advisory names the commit that fixed it and the checkout's history contains that commit; a shallow checkout (the `actions/checkout` default) cannot show whether it does, so the row says so and names the remedy, `fetch-depth: 0`. Other ecosystems read it from a version the manifest states outright. Other limits the scan lists may still apply once the version is known. |
+| `own_release_version_unknown` | The advisory is on your repository's own code, and the release version of this checkout was not established, so nothing places it inside or outside the advisory's affected versions. For a Go module the version is read from a full semver tag on the checked-out commit itself (`sub/v1.2.3` for a module in directory `sub`), so it is known only when the scan runs on a tagged release commit with its tags fetched (`fetch-tags: true` on `actions/checkout`). A pull request's merge commit, or any untagged commit, has no release version. A Go project with no release version can still be placed when the advisory names the commit that fixed it and the checkout's history contains that commit; a shallow checkout (the `actions/checkout` default) cannot show whether it does, so the row says so and names the remedy, `fetch-depth: 0`. It can also be placed by the highest release tag in the checked-out commit's history: when every affected range closed at or before that release, the row is `not_exploitable` with the assumption named in its evidence, that the advisory's fix was not reverted between that tag and the checked-out commit. A release in the history only clears a row, and never places the commit inside a range; it does not clear one whose advisory names a fix commit that the complete history lacks. A shallow checkout without tags (the `actions/checkout` default) has no release in its history; `fetch-depth: 0` with `fetch-tags: true` supplies them. Other ecosystems read it from a version the manifest states outright. Other limits the scan lists may still apply once the version is known. |
 | `advisory_symbol_absent` | The advisory names no vulnerable symbol, so there was nothing to search for. |
 | `vulnerable_symbol_unresolved` | The advisory names vulnerable symbols, and not every one was located in the affected package and searched. |
 | `advisory_unknown_to_analyzer` | The analyzer reported nothing about the advisory at all. |
@@ -235,8 +235,9 @@ Findings are sorted most-actionable first, and every projection keeps that order
 ## The Go toolchain your repository builds with
 
 For a Go standard-library advisory, the question is about the Go **you** build with, which is not
-necessarily the Go the scanner analyzes with. The scan resolves your toolchain as one fact, from the
-first source that yields a usable version:
+necessarily the Go the scanner analyzes with. The scan resolves your toolchain as one fact. Steps 1
+and 2 are tried in order, and the first that yields a usable version is taken. When that is not a
+declaration, step 3 can raise step 2's minimum, or supply one when step 2 yields none:
 
 1. **Your declaration** — `-subject-go-version` on the CLI (for example `go1.21.3`), the
    `ASSAY_SUBJECT_GO_VERSION` environment variable, or the Action input `subject-go-version`. Exact.
@@ -249,10 +250,19 @@ first source that yields a usable version:
    `toolchain` line. Such a `go` line is left out.
 
    A `toolchain` line raises the minimum to at least go1.21.0, because no older go command can read
-   your `go.mod`. Its own version is not a minimum: under `GOTOOLCHAIN=local` or a pinned
-   `GOTOOLCHAIN` the go command ignores it, and `actions/setup-go` sets `GOTOOLCHAIN=local`. With
-   `go 1.21.0` and `toolchain go1.22.5`, the minimum is go1.21.0.
-3. Otherwise, unresolved.
+   your `go.mod`.
+3. **Your `go.mod` `toolchain` line**, when it names a full release (`toolchain go1.22.5`) above the
+   minimum from step 2, or when step 2 yields none — a **minimum that rests on an assumption**.
+   Under `GOTOOLCHAIN=auto`, the go command's default, the build switches to that release or newer,
+   so it cannot run anything older. Under `GOTOOLCHAIN=local` or a pinned `GOTOOLCHAIN` the go
+   command ignores the line, and `actions/setup-go` sets `GOTOOLCHAIN=local`. An advisory cleared
+   only because of this line is reported `not_exploitable` with the assumption named in its
+   evidence: the build runs under `GOTOOLCHAIN=auto`, so on the toolchain line's release or newer.
+   Declare `subject-go-version` when that does not hold for your build; a declaration replaces the
+   assumption. With `go 1.21.0` and `toolchain go1.22.5`, the minimum is go1.22.5 under the
+   assumption and go1.21.0 without it. Under a `go.work`, its own lines are read in place of the
+   module's.
+4. Otherwise, unresolved.
 
 A declaration below your own `go.mod` floor is discarded in favor of the floor, because a module
 cannot build with a Go older than its directives require. A stale `subject-go-version` therefore

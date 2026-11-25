@@ -131,6 +131,7 @@ func TestFinding_OutsideBuildLimits(t *testing.T) {
 		{"a left-out file links assembly", []string{plugin.PartialReasonExcludedFilesAssembly}, true, ""},
 		{"a left-out file binds a linkname", []string{plugin.PartialReasonExcludedFilesLinkname}, true, ""},
 		{"a left-out file includes C", []string{plugin.PartialReasonExcludedFilesCgoInclude}, true, ""},
+		{"a left-out file uses an unresolved name", []string{plugin.PartialReasonExcludedFilesUnresolvedName}, true, ""},
 		{"every exempt limit", []string{plugin.PartialReasonReflectiveCall, plugin.PartialReasonExcludedFiles}, true, ""},
 		{"a plugin load", []string{plugin.PartialReasonPluginLoad}, false, report.ReasonAnalysisDidNotRun},
 		{"a tool failure", []string{plugin.PartialReasonToolFailure}, false, report.ReasonAnalysisDidNotRun},

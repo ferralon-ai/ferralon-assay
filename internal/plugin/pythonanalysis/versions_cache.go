@@ -25,6 +25,8 @@ type surfacesSnapshot struct {
 	Unrecognised   string
 	Inactive       []scriptsurface.Site
 	ConfigNamed    bool
+	// UnreadAt is the first surface the walk could not read in full (scanSurfaces).
+	UnreadAt string
 }
 
 type pipInstallSnapshot struct {
@@ -104,9 +106,26 @@ func (s surfacesSnapshot) unpack() (manifests []string, unread, scriptWithheld b
 // results of its own, never a shared map or slice.
 func versionSurfacesCached(ctx context.Context, root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls, poetry poetryInstalls, tooling map[string]bool, unrecognised string, inactive []scriptsurface.Site, configNamed bool) {
 	snap, _ := cachedResult(ctx, "versurf", []string{root}, func() (surfacesSnapshot, error) {
-		return snapshotSurfaces(versionSurfaces(root)), nil
+		return surfacesSnapshotOf(root), nil
 	})
 	return snap.unpack()
+}
+
+// surfacesSnapshotOf scans the tree at root into the snapshot the run cache stores.
+func surfacesSnapshotOf(root string) surfacesSnapshot {
+	var at string
+	s := snapshotSurfaces(scanSurfaces(root, nil, &at))
+	s.UnreadAt = at
+	return s
+}
+
+// unreadSurfaceCached is the first surface under root the walk could not read in full, through
+// the run cache versionSurfacesCached shares, or "" when it read every surface it walked.
+func unreadSurfaceCached(ctx context.Context, root string) string {
+	snap, _ := cachedResult(ctx, "versurf", []string{root}, func() (surfacesSnapshot, error) {
+		return surfacesSnapshotOf(root), nil
+	})
+	return snap.UnreadAt
 }
 
 type copiesSnapshot struct {

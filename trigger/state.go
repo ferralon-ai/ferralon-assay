@@ -240,6 +240,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// The inherited refutations' assumptions rest on the baseline's entry points.
 	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
 	b.WithEntryRoots(baseline.Entrypoints...)
+	b.WithSubjectToolchain(baseline.SubjectToolchain)
 	b.WithProvenance(withSignals(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
 		AnalyzerVersion: analyzerOr(req.AnalyzerVersion),
@@ -380,6 +381,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	var notes []report.PartialityNote
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
 	var entryRecords []plugin.EntryRootRecord
+	var toolchains []*report.SubjectToolchain
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	// The baseline's rows were reached under its entry-point statement; under another they are
@@ -415,6 +417,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
 		entryRecords = append(entryRecords, entryRoots(st, assessmentID)...)
+		toolchains = append(toolchains, subjectToolchain(st, assessmentID))
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		// An undetermined toolchain advisory is keyed in like any other fresh finding, so it
@@ -486,6 +489,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, baseline.LibraryEntrypoints)...)
 	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
 	b.WithEntryRoots(baseline.Entrypoints...)
+	carryToolchain(b, toolchains, baseline)
 	b.AddPartiality(req.WorkSetLimits...)
 	if note, ok := recountCutShort(rows, baseline.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
@@ -714,6 +718,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	workSet := append([]assessment.VulnRef(nil), req.Advisories...)
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
 	var entryRecords []plugin.EntryRootRecord
+	var toolchains []*report.SubjectToolchain
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
@@ -814,6 +819,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
 		entryRecords = append(entryRecords, entryRoots(st, assessmentID)...)
+		toolchains = append(toolchains, subjectToolchain(st, assessmentID))
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
@@ -978,6 +984,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, prior.LibraryEntrypoints)...)
 	b.WithLibraryEntrypoints(prior.LibraryEntrypoints...)
 	b.WithEntryRoots(prior.Entrypoints...)
+	carryToolchain(b, toolchains, prior)
 	if note, ok := recountCutShort(rows, prior.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
 	}

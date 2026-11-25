@@ -1218,6 +1218,10 @@ type Report struct {
 	// failed and the scan fell back to reading none, the cause. Set on every JavaScript scan;
 	// nil for every other language.
 	DependencyCode *DependencyCode `json:"dependency_code,omitempty"`
+
+	// SubjectToolchain is the Go toolchain the run analysed the subject under, with where it came
+	// from. Absent for a run with no Go assessment and for a report written before the field existed.
+	SubjectToolchain *SubjectToolchain `json:"subject_toolchain,omitempty"`
 	// Mode records the strictness the run adjudicated under and which statement decided it. Every
 	// Report a run builds carries it; one stored before the field existed has none and reads as
 	// practical (ModeOf). Additive and omitted when absent (§11).

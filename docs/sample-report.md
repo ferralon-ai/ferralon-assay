@@ -28,13 +28,25 @@ as a plain-words label; the JSON below keeps the raw names. The mapping:
   },
   "run_assumptions": {
     "entrypoints": [
-      { "lane": "go", "stance": "application" }
+      {
+        "lane": "go",
+        "stance": "application",
+        "source": "mains",
+        "roots": [
+          { "kind": "main", "count": 1, "first": ["github.com/example/widget/cmd/widget"] }
+        ]
+      }
     ],
     "build": {
       "resolved_commit": "a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3",
-      "go_main_module": "github.com/example/widget"
-    }
+      "go_main_module": "github.com/example/widget",
+      "toolchain": { "version": "go1.22.4", "bound": "exact", "source": "ci_observed" }
+    },
+    "skipped_targets": [
+      { "kind": "module", "path": "tools/gen", "reason": "unsupported_phase1:nested_module" }
+    ]
   },
+  "subject_toolchain": { "version": "go1.22.4", "bound": "exact", "source": "ci_observed" },
   "subject": {
     "repo": "github.com/example/widget",
     "revision": "main",
@@ -142,17 +154,18 @@ already holds. It adds no fact of its own.
 
 | Field | Carries | Source in the report |
 |---|---|---|
-| `entrypoints[]` | Per entry-point lane, its `stance`: `application` (the lane read the build as an application and took its mains), `declared` (the entry points rest on the caller's declaration) or `library`. The sets are in `entrypoints`. | `entrypoints[].source` |
+| `entrypoints[]` | Per entry-point lane, its `stance`: `application` (the lane read the build as an application and took its mains), `declared` (the entry points rest on the caller's declaration) or `library`; its `source` (`auto`, `mains` or `declared`); and the entry points it analysed as `roots`, per kind a total `count` and the first five. The full sets are in `entrypoints`. | `entrypoints[].source`, `entrypoints[].effective` |
 | `build.resolved_commit` | The commit the scan built. | `subject.resolved_commit` |
 | `build.go_main_module`, `build.go_workspace_modules` | The Go main module and the go.work modules the build list was resolved for. | `sbom.go_main_module`, `sbom.go_workspace_modules` |
+| `build.toolchain` | The Go toolchain the run analysed the subject under: `version`, `bound` (`exact`, `minimum` or `none`) and the `source` that decided it (`subject_declared`, `ci_observed`, `build_resolved`, `toolchain_directive`, `go_directive` or `unresolved`). A practical-mode run that took the go.mod toolchain line as its floor adds `assumption` and the `strict_version` it falls back to. A run with no Go assessment states none. | `subject_toolchain` |
 | `build.build_graph_source` | Where a Java or Kotlin scan's dependency graph came from. | `build_graph.source` |
 | `build.dependency_code_source` | Where a JavaScript scan's dependency code came from. | `dependency_code.source` |
-| `skipped_targets[]` | Modules in the checkout the scan left out, each with its `path` and `reason`. | `partiality` notes with reason `unsupported_phase1:nested_module` |
+| `skipped_targets[]` | What the scan left out: a `module` the Go nested-module limit skipped (its `path`), or a `lane` no analyzer was installed for (its `detail` names the language). Each carries its `reason`. | `partiality` notes with reason `unsupported_phase1:nested_module` or `no_language_plugin` |
 
-Two parts have no source in the report and are not stated. The build toolchain (the Go version, the
-JDK) is not in `run_assumptions`: the report carries no run-level record of it to read from.
-`skipped_targets` covers only the Go nested-module limit; no other lane records a module it
-skipped.
+`subject_toolchain` is kept across a carry-forward: a run that assesses nothing on the Go lane keeps
+the stored report's value, and a run that does records what it established, including `unresolved`.
+Only Go has a run-level toolchain fact; the JDK and the Node, Python and .NET runtimes are not in the
+report, so they are not stated.
 
 ## Optional fields not shown above
 

@@ -2620,6 +2620,23 @@ func Toolchain(store artifact.Store, caseID string) (ToolchainFact, bool) {
 	return inv.Toolchain, true
 }
 
+// GoToolchain is Toolchain for a Go assessment only: ok is false for another language, whose
+// inventory carries the unresolved placeholder because the fact is Go-only, and when there is no
+// inventory artifact.
+func GoToolchain(store artifact.Store, caseID string) (ToolchainFact, bool) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return ToolchainFact{}, false
+	}
+	var inv struct {
+		Language string `json:"language"`
+	}
+	if json.Unmarshal(arts[0].Payload, &inv) != nil || inv.Language != "go" {
+		return ToolchainFact{}, false
+	}
+	return Toolchain(store, caseID)
+}
+
 // SubjectToolchainScanned reports whether reachability for this case actually ran under the
 // SUBJECT's Go toolchain. It is the licence a stdlib refutation-by-absence needs: only
 // when it is true is an empty path set evidence about the subject rather than about the analyzer.

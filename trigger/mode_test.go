@@ -33,6 +33,8 @@ func TestRunMode(t *testing.T) {
 
 // A stored baseline is inherited only by a run in the same mode; a baseline with no mode field reads
 // as practical.
+const storedToolchain = "go1.1.0"
+
 func TestInheritBlockedOnModeChange(t *testing.T) {
 	strict, practical := report.Mode{Strictness: report.StrictnessStrict}, report.Mode{Strictness: report.StrictnessPractical}
 	tests := []struct {
@@ -58,6 +60,7 @@ func TestInheritBlockedOnModeChange(t *testing.T) {
 			if tt.stored != nil {
 				b = b.WithMode(*tt.stored)
 			}
+			b = b.WithSubjectToolchain(&report.SubjectToolchain{Version: storedToolchain, Bound: "exact", Source: "ci_observed"})
 			baseline := b.Build()
 			fetches := 0
 			req := PRInheritRequest{
@@ -86,6 +89,19 @@ func TestInheritBlockedOnModeChange(t *testing.T) {
 			}
 			if got := res.Report.ModeOf(); got != want {
 				t.Errorf("published report mode = %s, want %s", got, want)
+			}
+			gotTC := res.Report.SubjectToolchain
+			if gotTC == nil {
+				t.Fatal("published report records no subject toolchain")
+			}
+			if tt.inherited && gotTC.Version != storedToolchain {
+				t.Errorf("inherited toolchain = %+v, want the stored %s", gotTC, storedToolchain)
+			}
+			if !tt.inherited && gotTC.Version == storedToolchain {
+				t.Errorf("re-analysed report kept the stored toolchain %+v over the one this run resolved", gotTC)
+			}
+			if a := res.Report.RunAssumptions; a != nil && a.Build.Toolchain != nil && *a.Build.Toolchain != *gotTC {
+				t.Errorf("run_assumptions toolchain %+v differs from subject_toolchain %+v", a.Build.Toolchain, gotTC)
 			}
 			if !tt.inherited && fetches == 0 {
 				t.Error("blocked inherit did not re-analyse the baseline's advisory")

@@ -356,6 +356,17 @@ func TestMergeKeepsJSLaunchDigest(t *testing.T) {
 
 // A merged state keeps the mode of the report it stores, never the other side's: an older strict
 // report must not make a newer report without a mode read as strict.
+func TestMergeKeepsSubjectToolchain(t *testing.T) {
+	ts := time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)
+	tc := &report.SubjectToolchain{Version: "go1.22.4", Bound: "exact", Source: "ci_observed"}
+	n := report.NewBuilder(report.Subject{ResolvedCommit: "new"}).WithSubjectToolchain(tc).WithProvenance(report.Provenance{Timestamp: ts}).Build()
+	for name, out := range mergeOrders(n) {
+		if out.Report.SubjectToolchain == nil || *out.Report.SubjectToolchain != *tc {
+			t.Errorf("%s: subject_toolchain = %+v, want %+v", name, out.Report.SubjectToolchain, tc)
+		}
+	}
+}
+
 func TestMergeKeepsStoredReportMode(t *testing.T) {
 	strict := report.Mode{Strictness: report.StrictnessStrict, Source: report.ModeSourceInput}
 	ts := time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)

@@ -282,6 +282,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 		b.AddFinding(f)
 		b.WithLibraryEntrypoints(libraryEntrypoints(st, assessmentID)...)
 		b.WithEntryRoots(entryRoots(st, assessmentID)...)
+		b.WithSubjectToolchain(subjectToolchain(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
 			b.AddPartiality(note)
 		}

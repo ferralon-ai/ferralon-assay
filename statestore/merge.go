@@ -174,6 +174,7 @@ func mergeReports(base, mine *report.Report) *report.Report {
 	if primary.Mode != nil {
 		b.WithMode(*primary.Mode)
 	}
+	b.WithSubjectToolchain(primary.SubjectToolchain)
 	if primary.Baseline != nil {
 		b.WithBaseline(*primary.Baseline)
 	}

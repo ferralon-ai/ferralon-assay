@@ -259,16 +259,25 @@ from the run's (a baseline with no `mode` field reads as practical):
 
 - `pr-inherit` analyses every advisory in the PR's work set again, including the instances under
   other Go major versions of the same module, and drops every baseline row outside the work set. If
-  a stop cut the work set short, the `scan_cut_short` note names the advisories left out.
+  a stop cut the work set short, a `scan_cut_short` note says the work set may be incomplete, and
+  each advisory the pass stopped before has its own `scan_cut_short` row.
 - `cve-watch` analyses every stored advisory again, and every stored row of an advisory it retries
   gives way to the new analysis. A row withheld as `dependency_not_fetched` carries no verdict and
-  is not retried, so it stays.
+  is not retried for the mode change. It stays until a run that records the dependency code it
+  fetched assesses it again, as under either mode.
 - When two runs store at once, the stored state keeps the later report's rows alone if their modes
   differ.
 
-Set `strictness` in `.github/ferralon.yml` rather than in a workflow's Action input, so the PR
-workflow and the scheduled `cve-watch` workflow run under the same mode. If they disagree, each run
-finds the other's baseline under another mode and analyses everything again.
+The report's description of the run is this run's alone too. `subject_toolchain`, the entry points
+and the partiality notes are not carried from a report of the other mode, so a run that finishes no
+Go assessment states no toolchain rather than the stored one. `cve-watch` keeps the stored SBOM,
+and with it the notes that describe that SBOM.
+
+Set `strictness` in `.github/ferralon.yml` rather than in a workflow's Action input, so the push,
+PR and scheduled `cve-watch` workflows run under the same mode. The push workflow's `baseline` and
+`cve-watch` both store state: if they disagree, each run finds the other's report under another
+mode and analyses everything again. A PR run only reads the baseline, so a PR workflow under
+another mode analyses its whole work set again on every run.
 
 ## The Go toolchain your repository builds with
 

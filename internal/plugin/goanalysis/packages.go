@@ -164,6 +164,15 @@ type releaseBound struct {
 	std     *goRelease
 }
 
+// String keys the run cache on the bound's values, std's included.
+func (b releaseBound) String() string {
+	std := "none"
+	if b.std != nil {
+		std = b.std.toolchain()
+	}
+	return fmt.Sprintf("%s exact=%t std=%s", b.release.toolchain(), b.exact, std)
+}
+
 // buildRelease returns what is established about the Go release the build compiles under, or nil
 // when nothing is. The load's release is the build's exactly when the subject's toolchain is known
 // and names the same minor, which alone decides the goN.M build tags a build satisfies. With no

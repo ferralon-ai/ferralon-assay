@@ -62,6 +62,7 @@ import (
 // (exhaustive.go) and no script surface may install a package outside them (unreadSurfaces),
 // so a coordinate absent from All is provably not installed; with no lockfile
 // (the declared-seed path) or any doubt it stays false and absence proves nothing.
+// Under req.Strict an answer that would carry an assumption Annotation is withheld instead.
 //
 // "plugin resolves, pipeline ranges" symmetry (matching Java): this op resolves only the
 // concrete installed literal version. Advisory RANGE matching (^ ~ || x-ranges, npm
@@ -97,6 +98,12 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 		all = append(all, info.deps...)
 	}
 	unread, scriptWithheld, unrecognised, inactive, lockAssumed, buildAssumed := installSurfaces(ctx, req.BuildDir, func() map[string]lockInfo { return parsed })
+	if req.Strict && (lockAssumed || buildAssumed || len(inactive) > 0) {
+		// An install the answer takes to honour the lockfile, or to be inactive, withholds in strict
+		// mode as an install the lane cannot read does.
+		unread, scriptWithheld = true, true
+		inactive, lockAssumed, buildAssumed = nil, false, false
+	}
 	parseFailed = parseFailed || unread
 
 	part := plugin.Complete()

@@ -58,7 +58,7 @@ func membershipEcosystem(language string) string {
 // packages is in the dependency set. It returns nil (no fact, fail open) unless every affected
 // package belongs to the plugin's ecosystem: an advisory that also names a package from another
 // ecosystem could reach this codebase through a dependency this plugin cannot see.
-func resolveManifestMembership(ctx context.Context, p plugin.LanguagePlugin, buildDir, language string, keys []PackageKey) *manifestMembership {
+func resolveManifestMembership(ctx context.Context, p plugin.LanguagePlugin, buildDir, language string, keys []PackageKey, strict bool) *manifestMembership {
 	eco := membershipEcosystem(language)
 	if p == nil || buildDir == "" || eco == "" || p.Language() != language || len(keys) == 0 {
 		return nil
@@ -72,7 +72,7 @@ func resolveManifestMembership(ctx context.Context, p plugin.LanguagePlugin, bui
 	}
 	exhaustive := true
 	for _, coord := range m.Coordinates {
-		vr, err := p.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: buildDir, Coordinate: coord})
+		vr, err := p.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: buildDir, Coordinate: coord, Strict: strict})
 		if err != nil {
 			return nil
 		}

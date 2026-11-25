@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifactcache"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -760,6 +761,9 @@ func callGraphWithOverride(ctx context.Context, buildDir string, store artifactc
 	}
 	if layout.buildAssumed {
 		lc.Assumptions = append(lc.Assumptions, buildOutputAssumption)
+	}
+	for _, a := range scriptsurface.Annotations(layout.inactive) {
+		lc.Assumptions = append(lc.Assumptions, a.Detail)
 	}
 	if strict {
 		lc.strict()

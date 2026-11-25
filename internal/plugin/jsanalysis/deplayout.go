@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/artifactcache"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -73,6 +74,9 @@ type depLayout struct {
 	// buildAssumed is set when the layout is complete only under buildOutputAssumption: the
 	// build runs an npm install into a build output the tree does not hold.
 	buildAssumed bool
+	// inactive are the install sites the layout is complete only on judging inactive: the
+	// build is taken not to run them.
+	inactive []scriptsurface.Site
 	// unplaced are the packages of a pnpm or yarn classic lock the lane could not place: never
 	// read, and never found by lookup.
 	unplaced []*depEntry
@@ -99,8 +103,8 @@ func (l *depLayout) entries() []*depEntry {
 // the locks read here, leaves the whole layout incomplete: neither names the packages it changes.
 func buildDepLayout(ctx context.Context, buildDir string) *depLayout {
 	l := &depLayout{byPath: map[string]*depEntry{}}
-	unread, _, _, _, lockAssumed, buildAssumed := installSurfaces(ctx, buildDir, func() map[string]lockInfo { return parsedLocks(buildDir) })
-	l.incomplete, l.lockAssumed, l.buildAssumed = unread, lockAssumed, buildAssumed
+	unread, _, _, inactive, lockAssumed, buildAssumed := installSurfaces(ctx, buildDir, func() map[string]lockInfo { return parsedLocks(buildDir) })
+	l.incomplete, l.inactive, l.lockAssumed, l.buildAssumed = unread, inactive, lockAssumed, buildAssumed
 	roots, read := discoverProjectRoots(buildDir)
 	if !read {
 		l.incomplete = true

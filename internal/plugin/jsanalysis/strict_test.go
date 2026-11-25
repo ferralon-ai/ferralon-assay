@@ -29,22 +29,29 @@ func TestReachability_Strict(t *testing.T) {
 		pkgs     []*depPkg
 		unread   []string
 		override string
-		// assumed is a fragment of the assumption practical names on its clear, "" for none.
-		assumed string
+		// assumed are fragments of the assumptions practical names on its clear.
+		assumed []string
 		// strictClears is whether strict still clears.
 		strictClears bool
 	}{
 		{name: "nothing loads it", first: map[string]string{"index.js": app}, pkgs: []*depPkg{usedWith(usedPlain), idle}, strictClears: true},
 		{name: "computed load in a loaded package", first: map[string]string{"index.js": app},
 			pkgs:    []*depPkg{usedWith("exports.make = function make(n) { require(n); return { go() {} }; };\n"), idle},
-			assumed: "computed module loads in used are assumed"},
+			assumed: []string{"computed module loads in used are assumed"}},
 		{name: "computed load in first-party code", first: map[string]string{"index.js": app + "module.exports = n => require(n);\n"},
-			pkgs: []*depPkg{usedWith(usedPlain), idle}, assumed: "computed module loads in first-party code are assumed"},
+			pkgs: []*depPkg{usedWith(usedPlain), idle}, assumed: []string{"computed module loads in first-party code are assumed"}},
 		{name: "unread loaded package", first: map[string]string{"index.js": app}, pkgs: []*depPkg{usedWith(usedPlain), idle}, unread: []string{"used"},
-			assumed: "the code of used, which is not read, is assumed"},
+			assumed: []string{"the code of used, which is not read, is assumed"}},
+		{name: "install step taken to be inactive", first: map[string]string{"index.js": app, "ci/steps.yml": "steps:\n  - command: npm install idle@2.0.0\n"},
+			pkgs: []*depPkg{usedWith(usedPlain), idle}, assumed: []string{"install commands found at ci/steps.yml"}},
+		{name: "Dockerfile install taken to be inactive", first: map[string]string{"index.js": app, "myDockerfile": "FROM node:20\nWORKDIR /app\nCOPY . .\nRUN npm ci && npm install idle@2.0.0\n"},
+			pkgs: []*depPkg{usedWith(usedPlain), idle}, assumed: []string{"install commands found at myDockerfile:4"}},
+		{name: "every inferred kind at once", first: map[string]string{"index.js": app + "module.exports = n => require(n);\n", "ci/steps.yml": "steps:\n  - command: npm install idle@2.0.0\n"},
+			pkgs: []*depPkg{usedWith(usedPlain), idle}, unread: []string{"used"},
+			assumed: []string{"computed module loads in first-party code are assumed", "the code of used, which is not read, is assumed", "install commands found at ci/steps.yml"}},
 		{name: "declared entry-point override", first: map[string]string{"index.js": app, "package.json": `{"name":"app","version":"1.0.0","scripts":{"start":"tool --serve"}}`},
 			pkgs:     []*depPkg{usedWith(usedPlain), idle, closurePkg("tool", map[string]string{"package.json": `{"name":"tool","version":"1.0.0","bin":{"tool":"bin/tool.js"}}`, "bin/tool.js": "require('idle');\n"})},
-			override: "!js:bin=bin:tool", assumed: "!js:bin=bin:tool", strictClears: true},
+			override: "!js:bin=bin:tool", assumed: []string{"!js:bin=bin:tool"}, strictClears: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newDepFixture(t, tc.first, tc.pkgs...)
@@ -68,11 +75,12 @@ func TestReachability_Strict(t *testing.T) {
 			if practical.Refutation == nil {
 				t.Fatalf("practical does not clear; partiality %+v", practical.Partiality)
 			}
-			named := slices.ContainsFunc(practical.Refutation.Assumptions, func(a string) bool { return tc.assumed != "" && strings.Contains(a, tc.assumed) })
-			if tc.assumed != "" && !named {
-				t.Errorf("practical assumptions %q do not name %q", practical.Refutation.Assumptions, tc.assumed)
+			for _, want := range tc.assumed {
+				if !slices.ContainsFunc(practical.Refutation.Assumptions, func(a string) bool { return strings.Contains(a, want) }) {
+					t.Errorf("practical assumptions %q do not name %q", practical.Refutation.Assumptions, want)
+				}
 			}
-			if tc.assumed == "" && len(practical.Refutation.Assumptions) != 0 {
+			if len(tc.assumed) == 0 && len(practical.Refutation.Assumptions) != 0 {
 				t.Errorf("practical assumptions = %q, want none", practical.Refutation.Assumptions)
 			}
 

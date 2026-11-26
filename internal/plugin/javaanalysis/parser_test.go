@@ -89,19 +89,205 @@ class Box<T extends Comparable<T>> extends Base implements Iface, Other {
 	}
 }
 
-func TestParseFile_AnnotationTypeDeclaresPartiality(t *testing.T) {
-	// An annotation type "@interface" is a construct this engine does not model
-	// (the '@' precedes the 'interface' keyword and its members use a different
-	// grammar). It must be flagged so the index declares partiality.
+const metaImports = `import java.lang.annotation.Retention;
+import java.lang.annotation.Target;
+import java.lang.annotation.Documented;
+import java.lang.annotation.Inherited;
+import java.lang.annotation.Repeatable;
+import jakarta.validation.Constraint;
+`
+
+func TestParseFile_AnnotationTypeBody(t *testing.T) {
+	// An annotation type is skipped (declared partiality) unless its body provably
+	// holds no executable code. Accepted bodies are an allow-list: element and
+	// constant declarations whose values are literals, class literals, enum
+	// constants, annotations, or arrays of those.
+	tests := []struct {
+		name        string
+		body        string
+		wantSkipped bool
+	}{
+		{"petclinic shape without the validator hook", `
+@Target({ElementType.FIELD, ElementType.METHOD, ElementType.PARAMETER})
+@Retention(RetentionPolicy.RUNTIME)
+@Documented
+public @interface PetAgeValidation {
+    String message() default "Pet age is invalid";
+    Class<?>[] groups() default {};
+    Class<? extends Payload>[] payload() default {};
+}`, false},
+		{"all meta-annotations", `
+@Documented @Inherited @Repeatable(Tags.class) @java.lang.annotation.Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.TYPE)
+@interface Tag { String value(); }`, false},
+		{"petclinic constraint shape is admitted at parse level", `
+@Target({ElementType.FIELD, ElementType.METHOD, ElementType.PARAMETER})
+@Retention(RetentionPolicy.RUNTIME)
+@Constraint(validatedBy = PetAgeValidator.class)
+@Documented
+public @interface PetAgeValidation {
+    String message() default "Pet age is invalid";
+    Class<?>[] groups() default {};
+}`, false},
+		{"empty body", `@interface Marker {}`, false},
+		{"stray semicolons", `@interface Marker { ; ; }`, false},
+		{"literals of every kind", `@interface A {
+    int i() default -1;
+    long l() default 1_000L;
+    double d() default 1.5e-3;
+    int h() default 0xE;
+    char c() default 'x';
+    boolean b() default true;
+    String s() default "a\"b";
+    String t() default """
+        block""";
+}`, false},
+		{"class literal and array class literal", `@interface A {
+    Class<?> c() default Object.class;
+    Class<?>[] cs() default {String.class, int[].class, java.util.Map.class};
+}`, false},
+		{"enum constants and trailing comma", `@interface A {
+    Level l() default Level.HIGH;
+    Level[] ls() default {Level.LOW, HIGH,};
+}`, false},
+		{"annotation values", `@interface A {
+    Inner a() default @Inner;
+    Inner b() default @Inner(x = 1, y = {"p", "q"});
+    Inner[] c() default {@Inner(2), @pkg.Inner};
+}`, false},
+		{"annotated and modified elements", `@interface A {
+    @AliasFor("value") String name() default "";
+    public abstract String other();
+}`, false},
+		{"literal constants", `@interface A {
+    int MAX = 5;
+    String NAME = "x";
+    Class<?> TYPE = Foo.class;
+    Level LEVEL = Level.HIGH;
+    public static final int[] XS = {1, 2};
+    Other O = @Other(1);
+}`, false},
+		{"element without default", `@interface A { String value(); }`, false},
+
+		{"nested class", `@interface A { String v(); class Holder { int x; } }`, true},
+		{"nested enum", `@interface A { enum Mode { ON, OFF } Mode m() default Mode.ON; }`, true},
+		{"nested interface", `@interface A { interface Callback { void run(); } }`, true},
+		{"nested record", `@interface A { record R(int x) {} }`, true},
+		{"nested annotation type", `@interface A { @interface B { String v(); } }`, true},
+		{"static initializer block", `@interface A { int X = 1; static { init(); } }`, true},
+		{"method with body", `@interface A { String v() { return ""; } }`, true},
+		{"constant from method invocation", `@interface A { int X = Foo.compute(); }`, true},
+		{"unqualified invocation constant", `@interface A { int X = compute(); }`, true},
+		{"default from method invocation", `@interface A { String v() default Foo.bar(); }`, true},
+		{"default is a code block", `@interface A { String[] v() default { foo(); }; }`, true},
+		{"new expression constant", `@interface A { Object O = new Object(); }`, true},
+		{"new array default", `@interface A { int[] v() default new int[] {1}; }`, true},
+		{"lambda constant", `@interface A { Runnable R = () -> {}; }`, true},
+		{"lambda without parens", `@interface A { Fn F = x -> x; }`, true},
+		{"binary expression constant", `@interface A { int X = 1 + 2; }`, true},
+		{"ternary default", `@interface A { int v() default B ? 1 : 2; }`, true},
+		{"invocation inside annotation value", `@interface A { Inner i() default @Inner(x = Foo.f()); }`, true},
+		{"element with parameters", `@interface A { String v(int x); }`, true},
+		{"multiple declarators", `@interface A { int X = 1, Y = 2; }`, true},
+		{"constant without initializer", `@interface A { int X; }`, true},
+		{"unbalanced braces", `@interface A { String v() default "x";`, true},
+		{"unbalanced array default", `@interface A { String[] v() default {"a"; }`, true},
+		{"eof inside header", `@interface A`, true},
+		{"header without body", `@interface A;`, true},
+		{"header is not a bare name", `@interface A; int X = 1; }`, true},
+		{"declaration missing its terminator", `@interface A { String v() default "x" int y = 1; }`, true},
+		{"element parens never close", `@interface A { String v(;; }`, true},
+		{"empty type and name", `@interface A { (); }`, true},
+		{"class as a type word", `@interface A { class X = 1; }`, true},
+		{"enum as a type word", `@interface A { enum X = 1; }`, true},
+		{"interface as a type word", `@interface A { interface X = 1; }`, true},
+		{"record as a type word", `@interface A { record X = 1; }`, true},
+		{"new as a type word", `@interface A { new X = 1; }`, true},
+		{"reserved word as a name", `@interface A { int new = 1; }`, true},
+		{"nested annotation type header", `@interface A { @interface String v(); }`, true},
+		{"annotation arguments run together", `@interface A { Inner i() default @Inner(1 2); }`, true},
+		{"array values run together", `@interface A { Level[] ls() default {A B}; }`, true},
+		{"new as a value", `@interface A { int X = new; }`, true},
+		{"new as a selected member", `@interface A { int X = Foo.new; }`, true},
+		{"negated name", `@interface A { int X = -Y; }`, true},
+		{"qualifier with no member", `@interface A { Foo.[] X = 1; }`, true},
+		{"generic with code", `@interface A { Map<String, Foo.bar()> m(); }`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pr := parseFile("package p;\n" + metaImports + tt.body + "\n")
+			if pr.skipped != tt.wantSkipped {
+				t.Errorf("skipped = %v, want %v", pr.skipped, tt.wantSkipped)
+			}
+			if got := declNames(pr, kindMethod); !tt.wantSkipped && len(got) != 0 {
+				t.Errorf("element names must stay out of decls, got methods %v", got)
+			}
+		})
+	}
+}
+
+func TestParseFile_AnnotationTypeBesideClass(t *testing.T) {
+	// The annotation type is consumed whole when inert, so the class around and
+	// after it parses exactly as it would without the annotation type.
+	srcs := map[string]string{
+		"annotation then class": `
+package p;
+@interface Marker { String v() default "x"; Class<?>[] g() default {}; }
+public class Service {
+    private int count;
+    public void run() { }
+}`,
+		"class then annotation": `
+package p;
+public class Service {
+    private int count;
+    public void run() { }
+}
+@interface Marker { String v() default "x"; }`,
+		"annotation nested in class": `
+package p;
+public class Service {
+    @interface Marker { String v() default "x"; }
+    private int count;
+    public void run() { }
+}`,
+	}
+	for name, src := range srcs {
+		t.Run(name, func(t *testing.T) {
+			pr := parseFile(src)
+			if pr.skipped {
+				t.Error("an inert annotation type must not mark the file skipped")
+			}
+			if !contains(declNames(pr, kindType), "Service") {
+				t.Errorf("expected type Service, got %v", declNames(pr, kindType))
+			}
+			if !contains(declNames(pr, kindMethod), "run") {
+				t.Errorf("expected method run, got %v", declNames(pr, kindMethod))
+			}
+			if !contains(declNames(pr, kindField), "count") {
+				t.Errorf("expected field count, got %v", declNames(pr, kindField))
+			}
+			if got := declNames(pr, kindType); contains(got, "Marker") {
+				t.Errorf("annotation type must not be a decl, got %v", got)
+			}
+		})
+	}
+}
+
+func TestParseFile_AnnotationTypeWithCodeBesideClass(t *testing.T) {
+	// A rejected annotation type declares partiality; the class parses as before.
 	src := `
 package p;
-public @interface MyAnno {
-    String value() default "x";
-}
-`
+@interface Marker { int X = Foo.compute(); }
+public class Service {
+    public void run() { }
+}`
 	pr := parseFile(src)
 	if !pr.skipped {
-		t.Error("expected an @interface annotation type to set skipped=true (declared partiality)")
+		t.Error("an annotation type holding a method invocation must declare partiality")
+	}
+	if !contains(declNames(pr, kindType), "Service") {
+		t.Errorf("expected type Service, got %v", declNames(pr, kindType))
 	}
 }
 
@@ -138,5 +324,84 @@ func TestStripJava_PreservesNewlines(t *testing.T) {
 	}
 	if strings.Contains(got, "comment") || strings.Contains(got, "multi") {
 		t.Errorf("stripJava left comment content: %q", got)
+	}
+}
+
+func TestParseFile_AnnotationTypeHeader(t *testing.T) {
+	// An annotation type is itself annotated, and a composed annotation carries the
+	// behaviour of its meta-annotations. The file is accepted only when every
+	// annotation on the type is a java.lang.annotation meta-annotation that
+	// resolves, by import or by qualified name, to that package.
+	tests := []struct {
+		name        string
+		src         string
+		wantSkipped bool
+	}{
+		{"imported Target and Retention", `package p;
+import java.lang.annotation.Target;
+import java.lang.annotation.Retention;
+@Target(ElementType.METHOD) @Retention(RetentionPolicy.RUNTIME) public @interface A { String v() default ""; }`, false},
+		{"each meta-annotation by import", `package p;
+import java.lang.annotation.Documented;
+import java.lang.annotation.Inherited;
+import java.lang.annotation.Repeatable;
+@Documented @Inherited @Repeatable(As.class) @interface A {}`, false},
+		{"fully qualified, no import", `package p;
+@java.lang.annotation.Target(java.lang.annotation.ElementType.METHOD) @interface A {}`, false},
+		{"no annotations", `package p; @interface A {}`, false},
+		{"modifiers only", `package p; public abstract static @interface A {}`, false},
+
+		{"composed route", `package p;
+import java.lang.annotation.Target;
+@Target(ElementType.METHOD) @GetMapping public @interface ApiGet { @AliasFor(annotation = GetMapping.class) String[] value() default {}; }`, true},
+		{"composed request mapping", `package p; @RequestMapping(method = RequestMethod.GET) @interface ApiGet {}`, true},
+		{"composed scheduled", `package p; @Scheduled(fixedRate = 1000) @interface Tick {}`, true},
+		{"composed event listener", `package p; @EventListener @interface OnThing {}`, true},
+		{"composed stereotype", `package p; @Component @interface UseCase {}`, true},
+		{"composed transactional", `package p; @Transactional @interface Tx {}`, true},
+		{"user-defined meta-annotation", `package p; @MyMeta @interface A {}`, true},
+		{"user-defined after a good one", `package p;
+import java.lang.annotation.Retention;
+@Retention(RetentionPolicy.RUNTIME) @MyMeta @interface A {}`, true},
+		{"simple name without import", `package p; @Target(ElementType.METHOD) @interface A {}`, true},
+		{"import of another package's Target", `package p;
+import com.acme.Target;
+@Target @interface A {}`, true},
+		{"wildcard of another package could supply Target", `package p;
+import com.acme.*;
+@Target(ElementType.METHOD) @interface A {}`, true},
+		{"static import of Target", `package p;
+import static com.acme.Marks.Target;
+@Target @interface A {}`, true},
+		{"qualified name in another package", `package p; @com.acme.Target @interface A {}`, true},
+		{"partially qualified name", `package p; @annotation.Target @interface A {}`, true},
+		{"imported name is not a meta-annotation", `package p;
+import java.lang.annotation.Native;
+@Native @interface A {}`, true},
+		{"qualified composed route", `package p; @org.springframework.web.bind.annotation.GetMapping @interface A {}`, true},
+		{"nested annotation type, simple name", `package p;
+import java.lang.annotation.Target;
+class K { @Target(ElementType.METHOD) @interface A {} }`, true},
+		{"nested annotation type, qualified name", `package p;
+class K { @java.lang.annotation.Target(ElementType.METHOD) @interface A {} }`, false},
+		{"meta-annotation argument holds code", `package p;
+import java.lang.annotation.Target;
+@Target(foo()) @interface A {}`, true},
+		{"qualified meta-annotation argument holds code", `package p; @java.lang.annotation.Target(foo()) @interface A {}`, true},
+		{"inside an open argument list", `package p;
+class K { void m() { make( @java.lang.annotation.Target @interface A {} ); } }`, true},
+		{"words that are not modifiers before the annotation", `package p;
+class K { Foo bar @java.lang.annotation.Target @interface A {} }`, true},
+		{"qualified name in the package but not a meta-annotation", `package p; @java.lang.annotation.Native @interface A {}`, true},
+		{"unclassified text before the annotation type", `package p;
+import java.lang.annotation.Target;
+K k = make() @Target @interface A {}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseFile(tt.src).skipped; got != tt.wantSkipped {
+				t.Errorf("skipped = %v, want %v", got, tt.wantSkipped)
+			}
+		})
 	}
 }

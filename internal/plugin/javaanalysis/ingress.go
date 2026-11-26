@@ -29,6 +29,9 @@ func findIngresses(ctx context.Context, req plugin.FindIngressesRequest, fp *fir
 	if err != nil {
 		return plugin.IngressResult{}, err
 	}
+	if !prog.skipped && !wildcardsClearOfDependencies(prog.wildcardClaims, req.BuildDir, opts...) {
+		prog.skipped = true
+	}
 
 	seen := map[string]bool{}
 	var ingresses []plugin.Ingress
@@ -142,7 +145,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		}
 		return plugin.SymbolResolutionResult{Partiality: part, Resolved: dep.resolved, Origins: dep.origins, Matched: dep.matched}, nil
 	}
-	return resolveFirstPartySymbols(ctx, req)
+	return resolveFirstPartySymbols(ctx, req, opts...)
 }
 
 // resolveFirstPartySymbols matches the advisory identifiers against the parsed
@@ -151,8 +154,8 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 // "fetch"); we match each wanted identifier against the symbol's display name, its
 // dotted suffixes, and its last-dot leaf. A no-match is an empty result, not an
 // error; a load failure is a hard error (inv.4).
-func resolveFirstPartySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
-	index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: req.BuildDir})
+func resolveFirstPartySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest, opts ...Option) (plugin.SymbolResolutionResult, error) {
+	index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: req.BuildDir}, opts...)
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
 	}

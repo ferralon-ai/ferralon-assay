@@ -702,7 +702,7 @@ public class Api {
 			name: "class after the annotation type keeps its chain",
 			src: `package com.acme;
 public @interface Ann {
-    String message() default "x";
+    Object value() default Foo.make();
 }
 class After {
     void run() { go(); }

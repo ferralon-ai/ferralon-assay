@@ -29,8 +29,11 @@ type program struct {
 	// isValid(2) the validator.constraint family roots, on the class or a first-party
 	// ancestor. See rootedConstraintValidator.
 	rootedValidators map[string]bool
-	readFailed       bool
-	skipped          bool
+	// firstPartyQualified maps the simple name of each main-source class declared once to
+	// its qualified name; validatedByRooted checks a validatedBy literal against it.
+	firstPartyQualified map[string]string
+	readFailed          bool
+	skipped             bool
 	// methodsByKey maps "name/arity" → the SCIP ids of every declared method with
 	// that simple name and arity. A single entry resolves unambiguously; multiple
 	// (or zero) entries mean the lexical callee cannot be soundly resolved.
@@ -49,6 +52,10 @@ type program struct {
 	// over the dependency/Kotlin classfiles. Foundation exposes only the type set; the overlay
 	// owns the sink marking + repository_synthesized_sink (edge-seam.md §4).
 	repositoryTypes map[string]bool
+	// wildcardClaims are the meta-annotation names admitted through
+	// "import java.lang.annotation.*;", pending the dependency-class check CallGraph makes
+	// once the dependency graph is open (wildcardClearOfDependencies).
+	wildcardClaims []wildcardClaim
 	// sourceClasses is the first-party source-lexical class model retained for the sink
 	// overlays (edge-seam.md §5): the #2 AOP and #4 SpEL classifiers read a symbol's
 	// declaring class here (its annotations, stereotypes, supers) — data not derivable
@@ -106,10 +113,13 @@ func loadProgram(buildDir string) (*program, error) {
 
 	prog := &program{methodsByKey: map[string][]string{}, concreteByKey: map[string][]string{}}
 	var srcClasses, mainClasses []sourceClass
+	var validatedBy []validatedClass
+	wc := newWildcardCheck()
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			prog.readFailed = true
+			wc.readFailed = true
 			continue
 		}
 		src := string(data)
@@ -117,6 +127,8 @@ func loadProgram(buildDir string) (*program, error) {
 		if pr.skipped {
 			prog.skipped = true
 		}
+		validatedBy = append(validatedBy, pr.validatedBy...)
+		wc.add(pr)
 		fp := fileParse{path: f, pkg: pr.pkg, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses}
 		prog.files = append(prog.files, fp)
 		for _, d := range pr.decls {
@@ -140,6 +152,11 @@ func loadProgram(buildDir string) (*program, error) {
 		}
 	}
 	prog.rootedValidators = rootConstraintValidators(buildDir, prog.files, mainClasses)
+	prog.firstPartyQualified = firstPartyQualifiedNames(mainClasses)
+	prog.wildcardClaims = wc.claims
+	if !wc.ok() || !validatedByRooted(prog, validatedBy) {
+		prog.skipped = true
+	}
 	prog.beanData = buildSourceBeanData(srcClasses)
 	// #6: legacy XML <bean> definitions under the build tree are an additive bean source
 	// (beanconfig.go). Their Satisfies is enriched with the first-party supertype map so
@@ -242,6 +259,9 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest, opts ...Option)
 	// depreach completeness account surfaces unopened dependencies through reachability
 	// partiality, never a fabricated edge (inv.5).
 	dg, _ := buildDependencyGraph(req.BuildDir, opts...)
+	if !prog.skipped && !wildcardClearOfDependencies(prog.wildcardClaims, dg) {
+		lexical.Partiality = withReasons(lexical.Partiality, []string{plugin.PartialReasonUnsupported})
+	}
 
 	// H2 seam (edge-seam.md §5): resolve the unresolved interface-dispatch call sites
 	// through the DI bean model and fold the resolved interface→impl edges into the

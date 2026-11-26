@@ -29,6 +29,7 @@ func TestAnalyzerMissing_PublishesUnsupportedReport(t *testing.T) {
 	t.Setenv("PATH", "")
 	t.Setenv("GITHUB_ACTIONS", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv(envStrictness, "")
 	args := os.Args
 	t.Cleanup(func() { os.Args = args })
 
@@ -80,6 +81,15 @@ func TestAnalyzerMissing_PublishesUnsupportedReport(t *testing.T) {
 			}
 			if rep.Subject.Revision != "main" || rep.Subject.ResolvedCommit != "abc123" {
 				t.Fatalf("subject = %+v, want the -revision / -commit labels", rep.Subject)
+			}
+			if want := (report.Mode{Strictness: report.StrictnessPractical, Source: report.ModeSourceDefault}); rep.Mode == nil || *rep.Mode != want {
+				t.Fatalf("mode = %+v, want %+v", rep.Mode, want)
+			}
+			if rep.RunAssumptions == nil || rep.RunAssumptions.Build.ResolvedCommit != "abc123" {
+				t.Fatalf("run_assumptions = %+v, want the build block stamped", rep.RunAssumptions)
+			}
+			if sk := rep.RunAssumptions.SkippedTargets; len(sk) != 1 || sk[0].Kind != report.SkippedLane || sk[0].Reason != plugin.PartialReasonNoPlugin || sk[0].Detail == "" {
+				t.Fatalf("skipped_targets = %+v, want the analyzer-missing lane", sk)
 			}
 			if len(rep.Partiality) != 1 {
 				t.Fatalf("partiality = %+v, want one note", rep.Partiality)

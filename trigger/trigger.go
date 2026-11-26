@@ -51,6 +51,10 @@ type BaselineRequest struct {
 	// AssessOptions are the pipeline seams (WithPlugin / WithCheckout) the Assess
 	// stages run with. Empty = the hermetic stub path.
 	AssessOptions []pipeline.AssessOption
+	// ModeSource is the report.ModeSource the run's strictness came from; "" records default for a
+	// practical run and input for a strict one. The strictness itself is the one AssessOptions select
+	// (pipeline.WithStrict).
+	ModeSource string
 	// Signals is the EPSS/KEV signals file the run was given; nil for none, in which case no
 	// finding carries a Priority. Ranking context only: it is applied after every verdict is final.
 	// A caller outside this module sets it with signals.Feed. The Report the run builds records
@@ -238,6 +242,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 	// the prior's. A cut-short inventory carries none, which differs from any JS baseline's and
 	// so never inherits.
 	b.SetJSLaunchDigest(report.SBOM{JSLaunchDigest: launch})
+	b.WithMode(runMode(req.AssessOptions, req.ModeSource))
 	b.AddPartiality(invNotes...)
 	mods := goModulesOf(sbom, invNotes)
 
@@ -278,6 +283,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 		b.AddFinding(f)
 		b.WithLibraryEntrypoints(libraryEntrypoints(st, assessmentID)...)
 		b.WithEntryRoots(entryRoots(st, assessmentID)...)
+		b.WithSubjectToolchain(subjectToolchain(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
 			b.AddPartiality(note)
 		}
@@ -347,6 +353,8 @@ type PRInheritRequest struct {
 	Cursor          string
 	// AssessOptions are the pipeline seams for any re-analysis.
 	AssessOptions []pipeline.AssessOption
+	// ModeSource mirrors BaselineRequest.ModeSource.
+	ModeSource string
 	// Signals mirrors BaselineRequest.Signals. Every row is ranked by it — inherited rows too, so
 	// none keeps a value from the signals file the baseline run read.
 	Signals *intel.Signals
@@ -467,6 +475,8 @@ type CVEWatchRequest struct {
 	AnalyzerVersion string
 	// AssessOptions are the pipeline seams for an earnest re-analysis.
 	AssessOptions []pipeline.AssessOption
+	// ModeSource mirrors BaselineRequest.ModeSource.
+	ModeSource string
 	// Signals mirrors PRInheritRequest.Signals.
 	Signals *intel.Signals
 	// Advisories is the run's work set. CVE-watch assesses only the newly-relevant advisories, but

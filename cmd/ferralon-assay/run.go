@@ -271,6 +271,8 @@ func publishResult(ctx context.Context, outDir string, rep *report.Report, intel
 	rep.Provenance.Timings = clock.timings()
 	rep.BuildGraph = graph.record()
 	deps.stamp(rep)
+	a := report.AssumptionsOf(*rep)
+	rep.RunAssumptions = &a
 	res, err := buildResult(rep)
 	if err != nil {
 		return err
@@ -489,6 +491,8 @@ type runConfig struct {
 	// analyzeRef is the resolved .github/ferralon.yml analyze.ref (empty on the default path),
 	// carried from acquireTarget so publishResult can gate delivery on the canonical ref.
 	analyzeRef string
+	// modeSource is where the run's strictness was stated, for the Report's mode.
+	modeSource string
 	// graph is the JVM scan's build graph; nil for every other language.
 	graph *jvmGraph
 	// deps is the JS scan's dependency code acquisition; nil for every other language.
@@ -526,6 +530,9 @@ type runFlags struct {
 	depNPMRCEnv      *string
 	depTimeout       *string
 	scanTimeoutRaw   *string
+	strictness       *string
+	repoStrictness   string      // the strictness key of .github/ferralon.yml; "" when none — set from the acquired target
+	resolvedMode     report.Mode // the run's strictness and its source — set by strictnessOption
 	depRun           *depCodeRun // set by dependencyCodeOption
 	resolvedFacts    string      // FactSource* — set by advisoryCorpusOption
 	resolvedCorpus   pipeline.CorpusInfo
@@ -620,6 +627,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		depUncredCache: fs.String("dependency-uncredentialed-cache", "", "a directory apart from -dependency-cache that only ever holds tarballs from a registry with no auth entry in the npm configuration, fetched without presenting a credential; each is linked into -dependency-cache, which the scan reads. A tarball from a registry with an auth entry is never written here, and one found here is removed. Set it to persist dependency tarballs where a credentialed one must not go. Overrides "+envDependencyUncredCache+" (default: unset, one directory)"),
 		depNPMRCEnv:    fs.String("dependency-npmrc-env", "", "comma-separated environment variables a .npmrc ${VAR} reference may read, beyond NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY, NODE_AUTH_TOKEN and NPM_TOKEN; any other reference reads as unset. Overrides "+envDependencyNPMRCEnv),
 		depTimeout:     fs.String("dependency-timeout", "", "how long dependency acquisition may run before the packages still pending are recorded unread. Overrides "+envDependencyTimeout+" (default: 15m)"),
+		strictness:     fs.String("strictness", "", "how the analysis treats an assumption it inferred: practical, which may clear a row under an assumption the row names, or strict, which clears no row that rests on an assumption it inferred. Overrides the strictness key of .github/ferralon.yml and "+envStrictness+" (default: practical)"),
 		scanTimeoutRaw: fs.String("scan-timeout", "", "how long the whole scan may run, counted from start. Analysis stops early enough to publish the report, and every advisory not yet assessed is reported as not assessed. 0 sets no limit. Overrides "+envScanTimeout+" (default: no limit)"),
 	}
 }
@@ -701,6 +709,11 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 		return workSet{}, err
 	}
 	acq.goToolchain = f.subjectGoToolchain()
+	mode, err := f.resolveMode()
+	if err != nil {
+		return workSet{}, err
+	}
+	acq.strict = mode.Strictness == report.StrictnessStrict
 	ws := selectWorkSet(ctx, acq, f.corpusReader, f.resolvedSource, f.resolvedPolicy, enabled, &trigger.HTTPOSVClient{})
 	if ctx.Err() != nil {
 		if len(ws.advisories) == 0 {
@@ -1137,7 +1150,11 @@ func stated(flagValue, envValue string) string {
 // baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
 // corpus, the subject Go toolchain, and the subject-toolchain reachability gate.
 func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption, language string) ([]pipeline.AssessOption, error) {
-	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
+	strictOpt, err := f.strictnessOption()
+	if err != nil {
+		return nil, err
+	}
+	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork()), strictOpt}
 	opt, err := f.advisoryCorpusOption()
 	if err != nil {
 		return nil, err
@@ -1170,7 +1187,11 @@ func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption, langu
 // corpus, the subject Go toolchain, and the subject-toolchain
 // reachability gate.
 func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption, language string) ([]pipeline.AssessOption, error) {
-	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
+	strictOpt, err := f.strictnessOption()
+	if err != nil {
+		return nil, err
+	}
+	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork()), strictOpt}
 	opt, err := f.advisoryCorpusOption()
 	if err != nil {
 		return nil, err
@@ -1248,11 +1269,15 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 	if err := f.checkEntrypoints(); err != nil {
 		return nil, err
 	}
+	if err := f.checkStrictness(); err != nil {
+		return nil, err
+	}
 	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	if err != nil {
 		return nil, err
 	}
 	acq.goWork = f.declaredGoWork()
+	f.repoStrictness = acq.cfgStrictness
 
 	store, err := f.sf.resolve()
 	if err != nil {
@@ -1302,6 +1327,7 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		outDir:        *f.outDir,
 		cleanup:       acq.cleanup,
 		analyzeRef:    acq.analyzeRef,
+		modeSource:    f.resolvedMode.Source,
 		graph:         acq.graph,
 		deps:          f.depRun.forLanguage(acq.language),
 	}, nil
@@ -1364,6 +1390,7 @@ func runPRInherit(args []string) error {
 	}
 
 	res, err := trigger.RunPRInherit(ctx, cfg.store, trigger.PRInheritRequest{
+		ModeSource:    cfg.modeSource,
 		Subject:       cfg.subject,
 		Codebase:      cfg.codebase,
 		PRSBOM:        prSBOM,
@@ -1515,6 +1542,7 @@ func runCVEWatch(args []string) error {
 // re-assessments make, so Hold consults it after them.
 func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchRequest {
 	return trigger.CVEWatchRequest{
+		ModeSource:      cfg.modeSource,
 		Subject:         cfg.subject,
 		Codebase:        cfg.codebase,
 		AssessOptions:   cfg.assessOptions,

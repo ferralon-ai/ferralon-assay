@@ -197,6 +197,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	b.SetRelationships(baseline.SBOM.Relationships)
 	b.SetGoBuildList(baseline.SBOM)
 	b.SetJSLaunchDigest(baseline.SBOM)
+	b.WithMode(runMode(req.AssessOptions, req.ModeSource))
 	// A baseline row a fresh row stands in for (a scan_cut_short row unrowedAdvisories skipped) is
 	// dropped. The head's inventory limits apply to the inherited rows as to fresh ones: a package
 	// the head could not inventory may be installed where the baseline's analysis never looked.
@@ -239,6 +240,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// The inherited refutations' assumptions rest on the baseline's entry points.
 	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
 	b.WithEntryRoots(baseline.Entrypoints...)
+	b.WithSubjectToolchain(baseline.SubjectToolchain)
 	b.WithProvenance(withSignals(report.Provenance{
 		CommitSHA:       req.Subject.ResolvedCommit,
 		AnalyzerVersion: analyzerOr(req.AnalyzerVersion),
@@ -379,11 +381,17 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	var notes []report.PartialityNote
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
 	var entryRecords []plugin.EntryRootRecord
+	var toolchains []*report.SubjectToolchain
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	// The baseline's rows were reached under its entry-point statement; under another they are
 	// assessed again, not inherited.
 	entryChanged := restated(baseline, req.AssessOptions)
+	// Under another strictness no baseline row stands: each advisory in the work set is assessed
+	// again with its sibling instances, as a baseline assesses it, and a baseline row the pass does
+	// not assess again is dropped.
+	remoded := baseline.ModeOf() != modeStrictness(req.AssessOptions)
+	var siblings []report.AdvisoryFinding
 	// Its js rows were reached from the baseline's JS launch surface; under another they
 	// are assessed again, not inherited.
 	launchChanged := relaunched(baseline.SBOM, req.PRSBOM)
@@ -414,8 +422,20 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
 		entryRecords = append(entryRecords, entryRoots(st, assessmentID)...)
+		toolchains = append(toolchains, subjectToolchain(st, assessmentID))
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
-		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits, pipeline.AdvisoryPackagePURLs(st, assessmentID))
+		mods := goModulesOf(req.PRSBOM, req.DiffLimits)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), req.DiffLimits, pipeline.AdvisoryPackagePURLs(st, assessmentID))
+		if remoded {
+			sibs, sibNotes := siblingInstanceFindings(analysis, areq, st, assessmentID, assessOpts, req.PRSBOM.Packages, mods, req.DiffLimits)
+			for _, sf := range sibs {
+				if sf.UndeterminedReason == report.ReasonScanCutShort {
+					cut++
+				}
+			}
+			siblings = append(siblings, sibs...)
+			notes = append(notes, sibNotes...)
+		}
 		// An undetermined toolchain advisory is keyed in like any other fresh finding, so it
 		// REPLACES the baseline's row below. It has to be harvested ahead of the two skips: a
 		// toolchain advisory carries no SBOM package, so `pkg == nil` would drop it and leave
@@ -453,11 +473,12 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	b.SetRelationships(req.PRSBOM.Relationships)
 	b.SetGoBuildList(req.PRSBOM)
 	b.SetJSLaunchDigest(req.PRSBOM)
+	b.WithMode(runMode(req.AssessOptions, req.ModeSource))
 
 	var rows []report.AdvisoryFinding
 	for i := range baseline.Advisories {
 		f := baseline.Advisories[i]
-		if supersededByFresh(f, freshIDs) {
+		if remoded || supersededByFresh(f, freshIDs) {
 			continue
 		}
 		key := f.Advisory.ID + "\x00" + f.Advisory.Source
@@ -471,21 +492,32 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 	for _, re := range reFindings {
 		rows = append(rows, re)
 	}
+	rows = append(rows, siblings...)
 	for _, f := range rows {
 		b.AddFinding(f)
 	}
+	// described is what the report carries from the baseline's description of its run. Under
+	// another strictness no baseline row stands, so none of it does: its notes describe the
+	// baseline's SBOM and rows, its entry points and toolchain the analysis behind those rows. The
+	// head inventory's own limits stand in for the baseline's.
+	described := baseline
+	if remoded {
+		described = otherModeRun(baseline, nil)
+		b.AddPartiality(req.DiffLimits...)
+	}
 	// Baseline limits apply to the findings inherited verbatim; the fresh notes apply
 	// to the re-analyzed slice. Build de-duplicates the union.
-	b.AddPartiality(withoutCutShortCount(baseline.Partiality)...)
+	b.AddPartiality(withoutCutShortCount(described.Partiality)...)
 	b.AddPartiality(notes...)
 	// The head's entry points for each ecosystem this pass resolved them on, else the baseline's,
 	// which the inherited refutations rest on.
 	b.WithLibraryEntrypoints(entrypoints...)
-	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, baseline.LibraryEntrypoints)...)
-	b.WithLibraryEntrypoints(baseline.LibraryEntrypoints...)
-	b.WithEntryRoots(baseline.Entrypoints...)
+	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, described.LibraryEntrypoints)...)
+	b.WithLibraryEntrypoints(described.LibraryEntrypoints...)
+	b.WithEntryRoots(described.Entrypoints...)
+	carryToolchain(b, toolchains, described)
 	b.AddPartiality(req.WorkSetLimits...)
-	if note, ok := recountCutShort(rows, baseline.Partiality, ownStop(analysis, cut)); ok {
+	if note, ok := recountCutShort(rows, described.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
 	}
 
@@ -580,7 +612,13 @@ func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *repo
 // with no js record reads as auto. A scan of another language states the default for js, so a
 // stored js record that removed something reads as restated: the rows were reached under a removal
 // this run does not state.
+//
+// A stored Report whose strictness (Report.ModeOf) differs from the run's reads as restated too: its
+// rows were reached under another mode, so none stands.
 func restated(stored *report.Report, opts []pipeline.AssessOption) bool {
+	if stored.ModeOf() != modeStrictness(opts) {
+		return true
+	}
 	was := plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsAuto}
 	for _, r := range stored.LibraryEntrypoints {
 		if r.Ecosystem != "golang" {
@@ -706,6 +744,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	workSet := append([]assessment.VulnRef(nil), req.Advisories...)
 	var entrypoints []plugin.ResolvedLibraryEntrypoints
 	var entryRecords []plugin.EntryRootRecord
+	var toolchains []*report.SubjectToolchain
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
 	cut := 0
@@ -726,6 +765,10 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	}
 	var todo []watched
 	cutKeys := cutOnlyKeys(prior)
+	// Under another strictness than the prior report's, every retried advisory is assessed with its
+	// sibling instances and all of its key's stored rows give way, whatever the retry's outcome: a
+	// stored sibling row was reached under the other mode.
+	remoded := prior.ModeOf() != modeStrictness(req.AssessOptions)
 	keyed := map[string]struct{}{}
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
@@ -743,7 +786,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		if _, ok := keyed[key]; ok {
 			continue
 		}
-		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, key, cutKeys[key]})
+		todo = append(todo, watched{assessment.VulnRef{ID: f.Advisory.ID, Source: f.Advisory.Source}, key, cutKeys[key] || remoded})
 		keyed[key] = struct{}{}
 	}
 	// Most likely exploited first, so a stop reaches the least likely last. A stable sort: with no
@@ -806,6 +849,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		entrypoints = append(entrypoints, libraryEntrypoints(st, assessmentID)...)
 		entryRecords = append(entryRecords, entryRoots(st, assessmentID)...)
+		toolchains = append(toolchains, subjectToolchain(st, assessmentID))
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes, pipeline.AdvisoryPackagePURLs(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
@@ -849,6 +893,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	b.SetRelationships(prior.SBOM.Relationships)
 	b.SetGoBuildList(prior.SBOM)
 	b.SetJSLaunchDigest(prior.SBOM)
+	b.WithMode(runMode(req.AssessOptions, req.ModeSource))
 
 	// A fresh row replaces the prior rows of its own instance. Under a retried cut row's key, which
 	// holds only cut rows, that is all of them (the parent's and its siblings', which siblings
@@ -873,7 +918,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		// A cut-only key's rows all give way, whatever the retry's outcome. A newly-relevant
 		// advisory's do once its sibling pass ran; a parent that stopped or failed before it
 		// replaces only its own row, as a retry's does.
-		fanned[w.key] = cutKeys[w.key] || fannedOut[w.key]
+		fanned[w.key] = remoded || cutKeys[w.key] || fannedOut[w.key]
 		instance[w.key] = packageInstance(adjudicated[w.key])
 	}
 	for key, re := range reFindings {
@@ -963,13 +1008,22 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	// for a stored tool_failure:dependency_code_unavailable too, even when this run read all the
 	// dependency code: the note covers every row the run that fell back reached, and this run
 	// replaces only the rows it assessed. Only a baseline, which rebuilds every row, drops it.
-	b.AddPartiality(withoutCutShortCount(prior.Partiality)...)
+	//
+	// Under another strictness only a dependency_not_fetched row of the prior report stands, and it
+	// carries no verdict, so the prior's description of its run is carried only where it describes
+	// what this report keeps: the stored SBOM, whose inventory limits still bound this pass's rows.
+	described := prior
+	if remoded {
+		described = otherModeRun(prior, describesStoredSBOM)
+	}
+	b.AddPartiality(withoutCutShortCount(described.Partiality)...)
 	b.AddPartiality(notes...)
 	b.WithLibraryEntrypoints(entrypoints...)
-	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, prior.LibraryEntrypoints)...)
-	b.WithLibraryEntrypoints(prior.LibraryEntrypoints...)
-	b.WithEntryRoots(prior.Entrypoints...)
-	if note, ok := recountCutShort(rows, prior.Partiality, ownStop(analysis, cut)); ok {
+	b.WithEntryRoots(headEntryRoots(entryRecords, entrypoints, described.LibraryEntrypoints)...)
+	b.WithLibraryEntrypoints(described.LibraryEntrypoints...)
+	b.WithEntryRoots(described.Entrypoints...)
+	carryToolchain(b, toolchains, described)
+	if note, ok := recountCutShort(rows, described.Partiality, ownStop(analysis, cut)); ok {
 		b.AddPartiality(note)
 	}
 	if cut > 0 || (req.Hold != nil && req.Hold(state.DepFetch)) {

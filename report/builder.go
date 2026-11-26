@@ -35,6 +35,8 @@ type Builder struct {
 	priority       func(Advisory) *Priority
 	entrypoints    []plugin.ResolvedLibraryEntrypoints
 	entryRoots     []plugin.EntryRootRecord
+	mode           *Mode
+	toolchain      *SubjectToolchain
 }
 
 // NewBuilder starts a Report for the given scanned subject. CommitSHA in provenance
@@ -229,6 +231,24 @@ func (b *Builder) WithEntryRoots(rs ...plugin.EntryRootRecord) *Builder {
 	return b
 }
 
+// WithMode records the strictness the run adjudicated under.
+func (b *Builder) WithMode(m Mode) *Builder {
+	b.mode = &m
+	return b
+}
+
+// WithSubjectToolchain records the toolchain the run analysed the subject under. The first fact
+// stays, resolved or not: a fact this run established, including "unresolved", outranks the stored
+// one a carry-forward offers after it, which describes another commit. nil is ignored.
+func (b *Builder) WithSubjectToolchain(t *SubjectToolchain) *Builder {
+	if t == nil || b.toolchain != nil {
+		return b
+	}
+	c := *t
+	b.toolchain = &c
+	return b
+}
+
 // WithBaseline sets the inherited-baseline pointer (PR-adjacent inherit / diff).
 func (b *Builder) WithBaseline(ref BaselineRef) *Builder {
 	b.baseline = &ref
@@ -359,6 +379,8 @@ func (b *Builder) Build() Report {
 		Baseline:           b.baseline,
 		LibraryEntrypoints: entrypoints,
 		Entrypoints:        entrypointRecordsWith(entrypoints, b.entryRoots),
+		Mode:               b.mode,
+		SubjectToolchain:   b.toolchain,
 	}
 }
 

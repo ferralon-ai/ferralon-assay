@@ -22,7 +22,10 @@ import (
 //   - a first-party func's result carries what every return statement returns, and a
 //     parameter what every caller passes it;
 //   - the router parameter of a closure handed to a scope method (chi's Route and
-//     Group) carries what that call's receiver does, joined with Route's pattern.
+//     Group) carries what that call's receiver does, joined with Route's pattern;
+//   - a router that is mounted (chi's Mount, a root router or a first-party func's
+//     result handed to it as the sub-router) carries its Mount receiver's prefixes
+//     joined with the constant Mount pattern, in place of the empty root prefix.
 //
 // Anything else — a non-constant group pattern, a router loaded from a variable,
 // field or global, a phi, a func that is used as a value as well as called, a
@@ -103,6 +106,9 @@ func (pr *prefixResolver) resolveCall(call *ssa.Call) prefixSet {
 	if r, name, recv, args := routerCall(call.Common()); r != nil {
 		switch {
 		case recv == nil && r.roots[name]:
+			if ps, mounted := pr.mountedPrefixes(call, map[ssa.Value]bool{}); mounted {
+				return ps
+			}
 			return prefixSet{prefixes: []string{""}, ok: true}
 		case recv != nil && r.groups[name]:
 			if len(args) == 0 {
@@ -122,6 +128,9 @@ func (pr *prefixResolver) resolveCall(call *ssa.Call) prefixSet {
 	if callee == nil || callee.Blocks == nil || callee.Signature.Results().Len() != 1 {
 		return unresolvedPrefix
 	}
+	if ps, mounted := pr.mountedPrefixes(call, map[ssa.Value]bool{}); mounted {
+		return ps
+	}
 	var sets []prefixSet
 	for _, b := range callee.Blocks {
 		if len(b.Instrs) == 0 {
@@ -132,6 +141,76 @@ func (pr *prefixResolver) resolveCall(call *ssa.Call) prefixSet {
 		}
 	}
 	return unionPrefixes(sets)
+}
+
+// mountedPrefixes resolves a router value v built in first-party code (a root
+// constructor's result, or a call of a first-party func returning one) that the code
+// mounts as a sub-router: chi's Mount(pattern, v) registers every route of v under
+// pattern, below the prefixes of Mount's receiver. It follows v through interface
+// conversions to the Mount call, and out of a func through its return statement to
+// every call site of the func (a call site that mounts nothing contributes the empty
+// prefix, the router's own). It reports false when v is mounted nowhere statically,
+// leaving the caller's root prefix; a Mount whose pattern is no constant is
+// unresolved, never a guessed prefix. seen guards a func that returns its own result.
+func (pr *prefixResolver) mountedPrefixes(v ssa.Value, seen map[ssa.Value]bool) (prefixSet, bool) {
+	if seen[v] {
+		return unresolvedPrefix, false
+	}
+	seen[v] = true
+	refs := v.Referrers()
+	if refs == nil {
+		return unresolvedPrefix, false
+	}
+	var sets []prefixSet
+	for _, ref := range *refs {
+		switch x := ref.(type) {
+		case *ssa.MakeInterface, *ssa.ChangeInterface, *ssa.ChangeType:
+			if ps, ok := pr.mountedPrefixes(x.(ssa.Value), seen); ok {
+				sets = append(sets, ps)
+			}
+		case ssa.CallInstruction:
+			r, name, recv, args := routerCall(x.Common())
+			if r == nil || recv == nil || name != "Mount" || len(args) != 2 || args[1] != v {
+				continue
+			}
+			pattern, ok := constString(args[0])
+			if !ok {
+				sets = append(sets, unresolvedPrefix)
+				continue
+			}
+			sets = append(sets, joinPrefixes(r, pr.resolve(recv), pattern))
+		case *ssa.Return:
+			sets = append(sets, pr.mountedAtCallSites(x.Parent(), seen)...)
+		}
+	}
+	if len(sets) == 0 {
+		return unresolvedPrefix, false
+	}
+	return unionPrefixes(sets), true
+}
+
+// mountedAtCallSites resolves the prefixes of the router fn returns at every call
+// site of fn, reporting nothing unless one of them mounts it. A func used as a value
+// anywhere is no direct call: nothing is reported.
+func (pr *prefixResolver) mountedAtCallSites(fn *ssa.Function, seen map[ssa.Value]bool) []prefixSet {
+	var sets []prefixSet
+	mounted := false
+	for _, instr := range pr.usesOf(fn) {
+		call, ok := instr.(*ssa.Call)
+		if !ok || call.Common().IsInvoke() || call.Common().Value != ssa.Value(fn) {
+			return nil
+		}
+		if ps, ok := pr.mountedPrefixes(call, seen); ok {
+			sets = append(sets, ps)
+			mounted = true
+		} else {
+			sets = append(sets, prefixSet{prefixes: []string{""}, ok: true})
+		}
+	}
+	if !mounted {
+		return nil
+	}
+	return sets
 }
 
 // resolveParam resolves a router parameter from every use of its function: each call

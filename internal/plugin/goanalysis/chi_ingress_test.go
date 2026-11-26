@@ -60,6 +60,9 @@ var chiForms = []struct {
 	{"With", "server#withForm().", "sinkWith"},
 	{"Mount", "mountedHandler#ServeHTTP().", "sinkMount"},
 	{"Mount sub-router", "server#mountSubForm().", "sinkMountSub"},
+	{"nested Mount", "server#mountNestedForm().", "sinkMountNested"},
+	{"Mount of a local router", "server#mountInlineForm().", "sinkMountInline"},
+	{"non-constant Mount pattern", "server#mountDynForm().", "sinkMountDyn"},
 	{"chi v1 path", "server#v1Form().", "sinkV1"},
 	{"nested Route in a named func", "server#nestedRouteForm().", "sinkNestedRoute"},
 	{"Route on a method value", "server#methodRouteForm().", "sinkMethodRoute"},
@@ -264,7 +267,7 @@ func TestChi_MethodSelectorIsPattern(t *testing.T) {
 // named func and a Group and on a With result, and a method value handed to Route.
 // A route on the root router, or directly in a Group (which adds no prefix), keeps its
 // own pattern, and so does one under a Route whose pattern is no constant — never a
-// guessed prefix.
+// guessed prefix. A Mount composes the same way as a Route.
 func TestChi_RoutePrefixIsComposed(t *testing.T) {
 	want := map[string]string{
 		"server#getForm().":         "/get/{id}",
@@ -273,6 +276,13 @@ func TestChi_RoutePrefixIsComposed(t *testing.T) {
 		"server#nestedRouteForm().": "/admin/users/{id}",
 		"server#methodRouteForm().": "/m/{id}",
 		"server#dynRouteForm().":    "/dyn",
+		// A Mount composes its constant pattern onto the sub-router's routes: a
+		// sub-router a func returns, two Mounts deep, one held in a variable, and a
+		// Mount whose pattern is no constant keeps the local pattern.
+		"server#mountSubForm().":    "/sub/{id}",
+		"server#mountNestedForm().": "/a/b/{id}",
+		"server#mountInlineForm().": "/inline/{id}",
+		"server#mountDynForm().":    "/{id}",
 	}
 	got := map[string][]string{}
 	for _, in := range chiIngresses(t) {

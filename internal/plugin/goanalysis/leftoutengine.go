@@ -380,11 +380,11 @@ func funcKey(f *types.Func) string {
 // G_T.
 func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) (*lofEngine, error) {
 	excluded := func(x constraint.Expr) bool { return ignored(x) || (release != nil && release.excludes(x)) }
-	var exact *goRelease
-	if release != nil && release.exact {
-		exact = &release.release
+	var std *goRelease
+	if release != nil {
+		std = release.std
 	}
-	goroot, failStd := lofToolchain(ctx, buildDir, env, exact)
+	goroot, failStd := lofToolchain(ctx, buildDir, env, std)
 	w := newLofWorld(ctx, pkgs, buildDir, env, excluded, goroot, time.Now().Add(lofBudgetTime))
 	w.modcache = lofModCache(ctx, buildDir, env)
 	in := &lofInterner{ids: map[string]int32{}}

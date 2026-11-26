@@ -35,6 +35,12 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 		imports:  map[string][]string{"stdlib": {"encoding/xml"}},
 	}
 	const module = "which reach example.com/vulnmod"
+	// app is a build that ships a program: a main under cmd/ that imports pkg/x.
+	app := map[string]string{
+		"cmd/app/main.go": "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+		"pkg/x/x.go":      reaches("x"),
+	}
+	const appAssumption = `library-entrypoints "auto": treated as an application: 1 main package; no code outside the build imports example.com/m/pkg/x, which reach example.com/vulnmod; library mode: go:library=.`
 	cases := []struct {
 		name       string
 		input      string
@@ -84,10 +90,65 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 		{"an exclusion of a path the build does not hold", "!pkg/nope", map[string]string{
 			"pkg/api/api.go": clean("api"),
 		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/api"}, []string{"!pkg/nope"}},
+		{"auto, a build with no main whose library under cmd reaches the module", "auto", map[string]string{
+			"cmd/tool/flags/flags.go": reaches("flags"),
+			"pkg/api/api.go":          clean("api"),
+		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/api"}, nil},
 		{"auto, a library under cmd reaches the module", "auto", map[string]string{
 			"cmd/tool/flags/flags.go": reaches("flags"),
 			"cmd/tool/main.go":        "package main\n\nimport \"example.com/m/cmd/tool/flags\"\n\nfunc main() { _ = flags.Get() }\n",
-		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceAuto, []string{}, nil},
+		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, an application whose library package reaches the module", "auto", app,
+			moduleFinding, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"nothing stated, an application whose library package reaches the module", "", app,
+			moduleFinding, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, an application with two mains", "auto", merge(app, map[string]string{
+			"cmd/gen/main.go": "package main\n\nfunc main() {}\n",
+		}), moduleFinding, false, `treated as an application: 2 main packages; no code outside the build imports example.com/m/pkg/x, ` + module,
+			plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, an application whose library packages do not reach the module", "auto", map[string]string{
+			"cmd/app/main.go": "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":      clean("x"),
+		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		{"auto, a main at the module root", "auto", map[string]string{
+			"main.go":    "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+			"pkg/x/x.go": reaches("x"),
+		}, moduleFinding, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}, nil},
+		// grpc's shape: a library whose only mains are benchmark and interop programs. They ship
+		// beside the library, not as the product, so the build stays a library.
+		{"auto, mains only under benchmark and interop", "auto", map[string]string{
+			"benchmark/worker/main.go": "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+			"interop/client/main.go":   "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":               reaches("x"),
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}, nil},
+		{"auto, a main only under internal", "auto", map[string]string{
+			"internal/gen/main.go": "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":           reaches("x"),
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}, nil},
+		{"auto, a main only under examples", "auto", map[string]string{
+			"examples/demo/main.go": "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+			"pkg/x/x.go":            reaches("x"),
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}, nil},
+		{"the whole tree as library, an application", ".", app,
+			moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"a path list naming the reaching package, an application", "pkg/x", app,
+			moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"auto plus a path, an application", "auto,pkg/x", app,
+			moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"auto plus a path to another package, an application", "auto,pkg/y", merge(app, map[string]string{
+			"pkg/y/y.go": clean("y"),
+		}), moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x", "example.com/m/pkg/y"}, nil},
+		{"an exclusion of another package, an application", "!pkg/y", merge(app, map[string]string{
+			"pkg/y/y.go": clean("y"),
+		}), moduleFinding, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}, nil},
+		{"none, an application", "none", app,
+			moduleFinding, false, `library-entrypoints "none": no code outside the build imports example.com/m/pkg/x, ` + module,
+			plugin.LibraryEntrypointsSourceDeclared, []string{}, nil},
+		{"auto, an application whose load does not type-check", "auto", map[string]string{
+			"cmd/app/main.go": "package main\n\nfunc main() {}\n",
+			"pkg/x/x.go":      reaches("x"),
+			"pkg/y/y.go":      "package y\n\nvar N int = \"x\"\n",
+		}, moduleFinding, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x", "example.com/m/pkg/y"}, nil},
 		{"auto, an example reaches the module", "auto", map[string]string{
 			"examples/basic/basic.go": reaches("basic"),
 		}, moduleFinding, false, "", plugin.LibraryEntrypointsSourceAuto, []string{}, nil},
@@ -182,7 +243,7 @@ func TestReconciledResult_LibraryEntrypoints(t *testing.T) {
 					t.Fatalf("ill-typed load: refutation %+v, partiality %+v, want it withheld as reflection:call", res.Refutation, res.Partiality)
 				}
 				escaped := withholdRefutation(context.Background(), plugin.ReachabilityResult{Refutation: moduleRefutation(tc.scanned.findings, env)},
-					tc.scanned, load.Packages, load.buildRelease(), dir, env, resolveEntrypoints(load.Packages, entry, dir))
+					tc.scanned, load.Packages, load.buildRelease(), dir, env, resolveEntrypoints(load.Packages, entry, dir, false))
 				res.Refutation, res.Partiality = escaped.Refutation, escaped.Partiality
 			}
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
@@ -268,7 +329,7 @@ func TestResolveEntrypoints_Placement(t *testing.T) {
 				t.Fatal(err)
 			}
 			decl.Base = tc.base
-			rec := resolveEntrypoints(tc.pkgs, decl, module).record()
+			rec := resolveEntrypoints(tc.pkgs, decl, module, false).record()
 			if !slices.Equal(rec.Packages, tc.entries) {
 				t.Errorf("entry points = %q, want %q", rec.Packages, tc.entries)
 			}
@@ -311,12 +372,126 @@ func TestWithholdForLibraryEscape_IncompleteLoad(t *testing.T) {
 				Partiality: plugin.Complete(),
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: "pkg:golang/example.com/vulnmod"},
 			}
-			res := withholdForLibraryEscape(refuted, scanned, load.Packages, resolveEntrypoints(load.Packages, entry, dir))
+			res := withholdForLibraryEscape(refuted, scanned, load.Packages, resolveEntrypoints(load.Packages, entry, dir, false))
 			if res.Refutation != nil || !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonLibraryEscape) {
 				t.Fatalf("result %+v, want the refutation withheld as library_escape", res)
 			}
 			if failed := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure); failed != tc.failed {
 				t.Errorf("tool_failure declared = %v, want %v (partiality %+v)", failed, tc.failed, res.Partiality)
+			}
+		})
+	}
+}
+
+// TestApplicationMains: only a shipped main at its module's root or under cmd reads a build as an
+// application, and only in a build of one main module: a go.work library module beside a tool
+// module stays a library even though the tool's main sits under cmd. LoadProgram's roots come from
+// one module today, so the workspace case is built by hand.
+func TestApplicationMains(t *testing.T) {
+	pkg := func(path, module string, main bool) *packages.Package {
+		p := &packages.Package{PkgPath: path, Name: "lib", GoFiles: []string{"f.go"}, Module: &packages.Module{Path: module, Main: true}}
+		if main {
+			p.Name = "main"
+		}
+		return p
+	}
+	const m = "example.com/m"
+	for _, tc := range []struct {
+		name string
+		pkgs []*packages.Package
+		want []string
+	}{
+		{"root and cmd mains", []*packages.Package{
+			pkg(m, m, true), pkg(m+"/cmd", m, true), pkg(m+"/cmd/app", m, true), pkg(m+"/pkg/x", m, false),
+		}, []string{m, m + "/cmd", m + "/cmd/app"}},
+		{"grpc's shape: benchmark and interop mains", []*packages.Package{
+			pkg(m+"/benchmark/worker", m, true), pkg(m+"/interop/client", m, true), pkg(m+"/pkg/x", m, false),
+		}, nil},
+		{"generators and tools", []*packages.Package{
+			pkg(m+"/internal/gen", m, true), pkg(m+"/hack/tool", m, true), pkg(m+"/tools/lint", m, true),
+			pkg(m+"/profiling/p", m, true), pkg(m+"/cmdline", m, true),
+		}, nil},
+		{"a cmd main under examples", []*packages.Package{pkg(m+"/examples/cmd/demo", m, true)}, nil},
+		{"a library module beside a tool module", []*packages.Package{
+			pkg(m+"/x", m, false), pkg(m+"/tools/cmd/t", m+"/tools", true),
+		}, nil},
+		{"a dependency beside the main module", []*packages.Package{
+			pkg(m+"/cmd/app", m, true), {PkgPath: "example.com/dep", Name: "dep", GoFiles: []string{"f.go"}, Module: &packages.Module{Path: "example.com/dep"}},
+		}, []string{m + "/cmd/app"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, p := range applicationMains(tc.pkgs) {
+				got = append(got, p.PkgPath)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("applicationMains = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A strict request reads auto as a library even where practical mode reads the build as an
+// application; a declaration applies in both modes.
+func TestReconciledResult_LibraryEntrypointsStrict(t *testing.T) {
+	files := map[string]string{
+		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
+		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Bad() {}\n",
+		"cmd/app/main.go":     "package main\n\nimport \"example.com/m/pkg/x\"\n\nfunc main() { _ = x.Get() }\n",
+		"pkg/x/x.go":          "package x\n\nimport \"example.com/vulnmod\"\n\nfunc Get() func() { return vulnmod.Bad }\n",
+	}
+	scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
+	const appAssumption = "treated as an application: 1 main package; no code outside the build imports example.com/m/pkg/x"
+	cases := []struct {
+		name       string
+		input      string
+		strict     bool
+		withheld   bool
+		assumption string
+		source     string
+		packages   []string
+	}{
+		{"auto, practical", "auto", false, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}},
+		{"auto, strict", "auto", true, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}},
+		{"nothing stated, practical", "", false, false, appAssumption, plugin.LibraryEntrypointsSourceMains, []string{}},
+		{"nothing stated, strict", "", true, true, "", plugin.LibraryEntrypointsSourceAuto, []string{"example.com/m/pkg/x"}},
+		{"none, practical", "none", false, false, `library-entrypoints "none": no code outside the build imports example.com/m/pkg/x`, plugin.LibraryEntrypointsSourceDeclared, []string{}},
+		{"none, strict", "none", true, false, `library-entrypoints "none": no code outside the build imports example.com/m/pkg/x`, plugin.LibraryEntrypointsSourceDeclared, []string{}},
+		{"the whole tree as library, practical", ".", false, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}},
+		{"the whole tree as library, strict", ".", true, true, "", plugin.LibraryEntrypointsSourceDeclared, []string{"example.com/m/pkg/x"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, err := plugin.ParseLibraryEntrypoints(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := writeTree(t, files)
+			load, err := LoadProgram(context.Background(), dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := withStrict(context.Background(), tc.strict)
+			res, err := reconciledResult(ctx, scanned, dir, append(os.Environ(), "GOWORK=off"), func() (*LoadResult, error) { return load, nil }, entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withheld := res.Refutation == nil; withheld != tc.withheld {
+				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
+			}
+			if declared := slices.Contains(res.Partiality.Reasons, plugin.PartialReasonLibraryEscape); declared != tc.withheld {
+				t.Errorf("library_escape declared = %v, want %v", declared, tc.withheld)
+			}
+			if r := res.Refutation; r != nil && (len(r.Assumptions) != 1 || !strings.Contains(r.Assumptions[0], tc.assumption)) {
+				t.Errorf("assumptions = %q, want one containing %q", r.Assumptions, tc.assumption)
+			}
+			rec := res.LibraryEntrypoints
+			if rec == nil {
+				t.Fatal("no library_entrypoints record")
+			}
+			if rec.Source != tc.source || !slices.Equal(rec.Packages, tc.packages) {
+				t.Errorf("record = source %q packages %q, want %q %q", rec.Source, rec.Packages, tc.source, tc.packages)
 			}
 		})
 	}

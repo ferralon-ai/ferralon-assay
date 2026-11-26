@@ -17,13 +17,13 @@ import (
 // defaults there, and those are the router's code, no first-party handler. The
 // stored value resolves as a registered handler does (routerHandler); a value that
 // is no static func resolves to nothing and is skipped.
-func (s *ssaProgram) catchAllStoreRoutes(fn *ssa.Function, st *ssa.Store) []route {
+func (s *ssaProgram) catchAllStoreRoutes(handlers *handlerResolver, fn *ssa.Function, st *ssa.Store) []route {
 	r, ok := catchAllStoreRouter(st.Addr)
 	if !ok || fn.Pkg == nil || fn.Pkg.Pkg == nil || r.paths[fn.Pkg.Pkg.Path()] {
 		return nil
 	}
 	var routes []route
-	for _, h := range s.collectHandlers([]ssa.Value{st.Val}, func(v ssa.Value) *ssa.Function { return s.routerHandler(r, v) }) {
+	for _, h := range s.collectHandlers([]ssa.Value{st.Val}, func(v ssa.Value) *ssa.Function { return s.routerHandler(handlers, r, v) }) {
 		routes = append(routes, route{selector: catchAllSelector, symbol: h})
 	}
 	return routes

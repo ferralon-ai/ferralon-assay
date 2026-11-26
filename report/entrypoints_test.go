@@ -250,6 +250,49 @@ func TestEntryRootsCarryInferredAndDenied(t *testing.T) {
 	}
 }
 
+// TestEntryRootsCarryApplicationMains: read as an application, the go record names the mains the
+// reading rests on beside a library set that cannot state them, and keeps them through a stored
+// report's round trip, an inheriting builder and Upgrade.
+func TestEntryRootsCarryApplicationMains(t *testing.T) {
+	lib := plugin.ResolvedLibraryEntrypoints{Ecosystem: "golang", Source: plugin.LibraryEntrypointsSourceMains, Input: "auto", Packages: []string{}}
+	rec, _ := plugin.EntryRootRecordOf(lib)
+	rec.Effective[plugin.EntryKindMain] = []string{"example.com/m/cmd/app"}
+	rec.Inferred = map[string][]string{
+		plugin.EntryKindLibrary: {"example.com/m/pkg/api"},
+		plugin.EntryKindMain:    {"example.com/m/cmd/app"},
+	}
+	recorded := NewBuilder(Subject{ResolvedCommit: "c"}).WithLibraryEntrypoints(lib).WithEntryRoots(rec).Build()
+	if len(recorded.Entrypoints) != 1 || !reflect.DeepEqual(recorded.Entrypoints[0], rec) {
+		t.Fatalf("Entrypoints = %+v, want [%+v]", recorded.Entrypoints, rec)
+	}
+	// Against a literal, not rec: rec shares its maps with what the builder was handed.
+	if got := recorded.Entrypoints[0].Effective[plugin.EntryKindMain]; !reflect.DeepEqual(got, []string{"example.com/m/cmd/app"}) {
+		t.Fatalf("effective.main = %v, want [example.com/m/cmd/app]", got)
+	}
+	// Another application's mains are another set's record.
+	other := rec
+	other.Effective = map[string][]string{plugin.EntryKindLibrary: {"example.com/m/pkg/api"}, plugin.EntryKindMain: {"example.com/m/cmd/app"}}
+	derived, _ := plugin.EntryRootRecordOf(lib)
+	if got := NewBuilder(Subject{ResolvedCommit: "c"}).WithLibraryEntrypoints(lib).WithEntryRoots(other).Build().Entrypoints; len(got) != 1 || !reflect.DeepEqual(got[0], derived) {
+		t.Errorf("a record of another library set: Entrypoints = %+v, want [%+v]", got, derived)
+	}
+	raw, err := json.Marshal(recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read Report
+	if err := json.Unmarshal(raw, &read); err != nil {
+		t.Fatal(err)
+	}
+	next := NewBuilder(Subject{ResolvedCommit: "d"}).WithLibraryEntrypoints(read.LibraryEntrypoints...).WithEntryRoots(read.Entrypoints...).Build()
+	if !reflect.DeepEqual(next.Entrypoints, recorded.Entrypoints) {
+		t.Errorf("inherited entrypoints %+v, want %+v", next.Entrypoints, recorded.Entrypoints)
+	}
+	if got, err := Upgrade(read); err != nil || !reflect.DeepEqual(got.Entrypoints, recorded.Entrypoints) {
+		t.Errorf("Upgrade dropped the mains: %+v (%v)", got.Entrypoints, err)
+	}
+}
+
 // TestJSEntryRootsDoNotDrift: the js lane's record has no library_entrypoints twin to derive it
 // from, so it is kept as recorded: through the builder, a stored report's round trip, an inheriting
 // builder and beside the go lane's record, in lane order.

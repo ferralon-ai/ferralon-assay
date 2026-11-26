@@ -68,6 +68,9 @@ var chiForms = []struct {
 	{"MethodNotAllowed", "server#methodNotAllowedForm().", "sinkMethodNotAllowed"},
 	{"NotFound on a chi.Router in a Route closure", "server#subNotFoundForm().", "sinkSubNotFound"},
 	{"chi v1 NotFound", "server#v1NotFoundForm().", "sinkV1NotFound"},
+	{"handler in a package var", "init$1().", "sinkVar"},
+	{"handler in a struct field", "fieldForm().", "sinkField"},
+	{"handler from a factory", "makeHandler$1().", "sinkFactory"},
 }
 
 // chiCatchAllForms are the chiForms handlers chi runs for a request no route matches
@@ -127,7 +130,11 @@ func TestChi_RouteIngressHeadsTaintTrace(t *testing.T) {
 	for _, f := range chiForms {
 		sinks = append(sinks, chiFixtureSCIP+f.sink+"().")
 	}
-	negSinks := []string{chiFixtureSCIP + "sinkNeverRegistered().", chiFixtureSCIP + "sinkLookalike()."}
+	negSinks := []string{
+		chiFixtureSCIP + "sinkNeverRegistered().",
+		chiFixtureSCIP + "sinkUnbound().",
+		chiFixtureSCIP + "sinkLookalike().",
+	}
 	res, err := ComputeTaint(context.Background(), plugin.ComputeTaintRequest{
 		BuildDir: chiFixtureDir,
 		Sinks:    append(sinks, negSinks...),
@@ -160,11 +167,17 @@ func TestChi_RouteIngressHeadsTaintTrace(t *testing.T) {
 // TestChi_UnregisteredHandlerIsNoIngress proves a handler-shaped func that no router
 // registers — a method and a package-scope func — yields no ingress of any kind, and
 // neither do the arguments of chi's Route, Group and With: the grouping closures
-// (main$1 for Route, main$2 for Group) and the With middleware are not handlers.
+// (main$1 for Route, main$2 for Group) and the With middleware are not handlers. Nor
+// is a handler bound so that the registered value is no one function: a package var
+// stored twice, a struct field holding two handlers, or a factory returning its
+// parameter.
 func TestChi_UnregisteredHandlerIsNoIngress(t *testing.T) {
 	assertNoChiIngress(t, chiIngresses(t),
 		"server#neverRegistered().",
 		"unregisteredFunc().",
+		"reboundA().", "reboundB().", // a package var stored twice
+		"twoA().", "twoB().", // a struct field holding two handlers
+		"paramHandler().", // returned by a factory that returns its parameter
 		"main$1().",
 		"main$2().",
 		"middleware().",
@@ -243,7 +256,7 @@ func Box(f http.HandlerFunc) iface.Handler { return f }`
 	}
 	sp := &ssaProgram{prog: app.Prog}
 	for _, r := range pathRouters {
-		if fn := sp.routerHandler(r, mi); fn != nil {
+		if fn := sp.routerHandler(newHandlerResolver(sp), r, mi); fn != nil {
 			t.Errorf("net/http HandlerFunc boxed into %s resolved to handler %s, want none", mi.Type(), fn)
 		}
 	}

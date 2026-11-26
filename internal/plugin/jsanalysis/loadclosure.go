@@ -426,6 +426,25 @@ func computedLoadAssumption(packages []string) string {
 		" are assumed to resolve only to that code's own modules, its declared dependencies, the project's direct dependencies and any package a literal prefix names"
 }
 
+// declaredClearsInStrict reports whether a strict clear may rest on what the caller declared in the
+// entrypoints input: the inferred entry points its "!" selectors remove. It is the one place strict
+// mode tells an assumption the caller declares from one the lane infers.
+func declaredClearsInStrict() bool { return true }
+
+// strict leaves the closure complete only when no clear from it rests on an assumption the lane
+// infers. An assumption becomes a veto instead, so the closure clears no package and every
+// dependency limit counts against every advisory, as for a closure the lane cannot bound.
+func (lc *loadClosure) strict() {
+	for _, a := range lc.Assumptions {
+		lc.Vetoes = append(lc.Vetoes, "in strict mode no clear rests on an assumption: "+a)
+	}
+	if len(lc.Removed) > 0 && !declaredClearsInStrict() {
+		lc.Vetoes = append(lc.Vetoes, "strict mode clears on no declared entry-point override")
+	}
+	lc.Vetoes = slices.Compact(slices.Sorted(slices.Values(lc.Vetoes)))
+	lc.Complete = len(lc.Vetoes) == 0
+}
+
 // prefixTargets returns what the literal prefix of a computed load in module adds to the load's
 // bound: the installed packages the prefix names, in whole (`idle/locale/`) or by the start of
 // a name (`eslint-plugin-`). pkgPath is the loading package's directory, empty for first-party
@@ -874,6 +893,74 @@ func scriptLoadWords(script string) []string {
 	})
 }
 
+// launchWord is one word of a launch text as the lane reads it. fetched marks the command a
+// package runner (npx, pnpm dlx, …) fetches, with its version cut off.
+type launchWord struct {
+	w       string
+	fetched bool
+}
+
+// launchWords returns the words of a launch text (scriptLoadWords), each command a package
+// runner fetches cut to its name.
+func launchWords(text string) []launchWord {
+	var out []launchWord
+	fetches, manager := false, false
+	for _, w := range scriptLoadWords(text) {
+		fetched := false
+		if fetches && !strings.HasPrefix(w, "-") {
+			fetches, fetched = false, true
+			if i := strings.LastIndex(w, "@"); i > 0 {
+				w = w[:i]
+			}
+		}
+		// exec and dlx are package-runner verbs only after a package manager: a shell's own exec
+		// runs a command already on the line.
+		switch w {
+		case "npx", "pnpx", "bunx":
+			fetches = true
+		case "dlx", "exec":
+			fetches = manager
+		}
+		manager = w == "npm" || w == "pnpm" || w == "yarn" || w == "bun"
+		out = append(out, launchWord{w: w, fetched: fetched})
+	}
+	return out
+}
+
+// firstPartyLaunchTexts returns launchTexts and, transitively, every first-party file with no
+// extension one of them names that is not one already: `node ./server` runs ./server, which the
+// lane parses as no source, so its words are read as a launch text's are. It is the whole
+// first-party surface the lane infers entry points from, and what LaunchDigest hashes.
+func firstPartyLaunchTexts(prog *program, lr *loadRecord) []launchText {
+	texts := launchTexts(prog, lr)
+	scanned := map[string]bool{}
+	for _, lt := range texts {
+		scanned[lt.rel] = true
+	}
+	for i := 0; i < len(texts); i++ {
+		from := texts[i].rel
+		for _, lw := range launchWords(texts[i].text) {
+			w := lw.w
+			if w == "" || strings.HasPrefix(w, "-") || path.Ext(w) != "" {
+				continue
+			}
+			for _, base := range []string{path.Dir(from), "."} {
+				rel := path.Join(base, w)
+				if strings.HasPrefix(rel, "..") || strings.Contains(rel, "node_modules/") || scanned[rel] {
+					continue
+				}
+				if fi, err := os.Stat(filepath.Join(prog.root, filepath.FromSlash(rel))); err == nil && fi.Mode().IsRegular() {
+					scanned[rel] = true
+					if text, ok := readLaunchText(prog.root, rel, lr); ok {
+						texts = append(texts, launchText{rel: rel, origin: rel, text: text})
+					}
+				}
+			}
+		}
+	}
+	return texts
+}
+
 // inferScriptRoots returns the entry points the tree's launch texts (launchTexts) start inside
 // installed packages, and the lock entries they run. A script is a shell line the lane does not
 // interpret: every word that names an installed package's binary roots that binary, and every
@@ -923,7 +1010,7 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]scr
 		}
 	}
 
-	texts := launchTexts(prog, lr)
+	texts := firstPartyLaunchTexts(prog, lr)
 	for i := range lr.scripted {
 		s := &lr.scripted[i]
 		for _, name := range slices.Sorted(maps.Keys(s.pkg.installTexts)) {
@@ -931,30 +1018,6 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]scr
 			texts = append(texts, launchText{rel: rel, origin: rel + "#scripts." + name, text: s.pkg.installTexts[name], dep: s})
 		}
 	}
-	scanned := map[string]bool{}
-	for _, lt := range texts {
-		scanned[lt.rel] = true
-	}
-	// named returns each first-party file with no extension that w may name and that is not
-	// yet a launch text: `node ./server` runs it, and the lane parses no such file, so its
-	// words are scanned as a launch text's are.
-	named := func(from, w string) []string {
-		var files []string
-		if w == "" || strings.HasPrefix(w, "-") || path.Ext(w) != "" {
-			return nil
-		}
-		for _, base := range []string{path.Dir(from), "."} {
-			rel := path.Join(base, w)
-			if strings.HasPrefix(rel, "..") || strings.Contains(rel, "node_modules/") || scanned[rel] || slices.Contains(files, rel) {
-				continue
-			}
-			if fi, err := os.Stat(filepath.Join(prog.root, filepath.FromSlash(rel))); err == nil && fi.Mode().IsRegular() {
-				files = append(files, rel)
-			}
-		}
-		return files
-	}
-
 	rs := prog.resolver()
 	var roots []scriptRoot
 	var rooted []*depEntry
@@ -974,26 +1037,12 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]scr
 	for i := 0; i < len(texts); i++ {
 		lt := texts[i]
 		rel, origin := lt.rel, lt.origin
-		fetches, manager, cmd := false, false, ""
-		for _, w := range scriptLoadWords(lt.text) {
+		cmd := ""
+		for _, lw := range launchWords(lt.text) {
+			w := lw.w
 			// A runner that fetches a command the install does not hold runs code no
 			// lockfile names, which may load anything installed.
-			if fetches && !strings.HasPrefix(w, "-") {
-				fetches = false
-				if i := strings.LastIndex(w, "@"); i > 0 {
-					w = w[:i]
-				}
-				lr.veto(len(bins[w]) == 0, origin+" runs "+w+" through a package runner and no installed package provides it")
-			}
-			// exec and dlx are package-runner verbs only after a package manager: a shell's
-			// own exec runs a command already on the line.
-			switch w {
-			case "npx", "pnpx", "bunx":
-				fetches = true
-			case "dlx", "exec":
-				fetches = manager
-			}
-			manager = w == "npm" || w == "pnpm" || w == "yarn" || w == "bun"
+			lr.veto(lw.fetched && len(bins[w]) == 0, origin+" runs "+w+" through a package runner and no installed package provides it")
 			if s := lt.dep; s != nil {
 				lr.veto(installerWords[w] || strings.HasSuffix(w, ".npm_execpath"), origin+" runs "+w+", which can install code no lockfile names")
 				// Code given on the command line is JavaScript the lane does not parse.
@@ -1018,13 +1067,6 @@ func inferScriptRoots(prog *program, entries []*depEntry, lr *loadRecord) ([]scr
 					}
 				} else if e, _ := rs.depTargets(rel, w, true); e == nil && namesFile(w) {
 					lr.veto(true, origin+" names "+w+", which is not a file of its package")
-				}
-			} else {
-				for _, f := range named(rel, w) {
-					scanned[f] = true
-					if text, ok := readLaunchText(prog.root, f, lr); ok {
-						texts = append(texts, launchText{rel: f, origin: f, text: text})
-					}
 				}
 			}
 			if i := strings.LastIndex(w, "node_modules/"); i >= 0 {

@@ -16,7 +16,10 @@ import (
 //   - Advisories: UNION across both Reports, keyed by (advisory id, source). When
 //     both sides evaluated the same advisory, the verdict with the LATER provenance
 //     timestamp wins (the more recent analysis is authoritative). Ties (equal
-//     timestamps) keep mine, since mine is the write being retried.
+//     timestamps) keep mine, since mine is the write being retried. When the two
+//     Reports' strictness (report.Report.ModeOf) differs, only the Report the merge
+//     takes Subject and Provenance from contributes advisories and partiality: its
+//     mode is the one the merged Report records.
 //   - SBOM / Subject / Provenance: taken from whichever Report has the later
 //     provenance timestamp (the more recent full scan describes the current tree).
 //     The one exception is Provenance.Intel.SignalsDigest: the union can carry a row
@@ -126,8 +129,13 @@ func mergeReports(base, mine *report.Report) *report.Report {
 	// when timestamps are equal the retrying writer (mine) is the primary only if it
 	// is strictly later — equal overall keeps base as primary, so base's findings win
 	// ties, matching "the committed winner stands unless mine is newer".
-	for _, f := range secondary.Advisories {
-		add(f, secondary, func(report.AdvisoryFinding) bool { return false })
+	// The merged report keeps the primary's mode, and a row reached under the other strictness may
+	// not stand under it: a secondary of another mode contributes no row, nor the limits on them.
+	sameMode := primary.ModeOf() == secondary.ModeOf()
+	if sameMode {
+		for _, f := range secondary.Advisories {
+			add(f, secondary, func(report.AdvisoryFinding) bool { return false })
+		}
 	}
 	primaryNewer := primary.Provenance.Timestamp.After(secondary.Provenance.Timestamp) ||
 		primary.Provenance.Timestamp.Equal(secondary.Provenance.Timestamp)
@@ -167,9 +175,14 @@ func mergeReports(base, mine *report.Report) *report.Report {
 		AddPackages(primary.SBOM.Packages...).
 		SetRelationships(primary.SBOM.Relationships).
 		SetGoBuildList(primary.SBOM).
+		SetJSLaunchDigest(primary.SBOM).
 		WithLibraryEntrypoints(primary.LibraryEntrypoints...).
 		WithEntryRoots(primary.Entrypoints...).
 		WithProvenance(prov)
+	if primary.Mode != nil {
+		b.WithMode(*primary.Mode)
+	}
+	b.WithSubjectToolchain(primary.SubjectToolchain)
 	if primary.Baseline != nil {
 		b.WithBaseline(*primary.Baseline)
 	}
@@ -181,7 +194,9 @@ func mergeReports(base, mine *report.Report) *report.Report {
 	// Erring toward disclosing a limit that has since been resolved is the safe
 	// direction; erring the other way silently re-cleans a partial scan.
 	b.AddPartiality(primary.Partiality...)
-	b.AddPartiality(secondary.Partiality...)
+	if sameMode {
+		b.AddPartiality(secondary.Partiality...)
+	}
 	merged := b.Build()
 	return &merged
 }

@@ -233,6 +233,9 @@ type lofClosure struct {
 	// fcStd holds what fails closed only for a standard-library refutation: a target inside the
 	// toolchain's own packages, which call no module code.
 	fcStd []string
+	// linkTo holds the packages a //go:linkname the closure binds outside the toolchain's own
+	// packages names: the package a pull reads its body from, or the one a push gives a body to.
+	linkTo map[string]bool
 	// unres holds the bare identifiers no declaration has, and unresQ the qualified references to a
 	// standard-library package that no declaration of it has.
 	unres  []lofRef
@@ -245,12 +248,12 @@ type lofClosure struct {
 }
 
 func newLofClosure() *lofClosure {
-	return &lofClosure{funcs: map[*types.Func]bool{}, inits: map[*types.Package]bool{}, types: map[*types.TypeName]bool{}, methods: map[string]bool{}, src: map[[2]string]bool{}}
+	return &lofClosure{funcs: map[*types.Func]bool{}, inits: map[*types.Package]bool{}, types: map[*types.TypeName]bool{}, methods: map[string]bool{}, src: map[[2]string]bool{}, linkTo: map[string]bool{}}
 }
 
 func (c *lofClosure) clone() *lofClosure {
 	cp := *c
-	cp.funcs, cp.inits, cp.types, cp.methods, cp.src = maps.Clone(c.funcs), maps.Clone(c.inits), maps.Clone(c.types), maps.Clone(c.methods), maps.Clone(c.src)
+	cp.funcs, cp.inits, cp.types, cp.methods, cp.src, cp.linkTo = maps.Clone(c.funcs), maps.Clone(c.inits), maps.Clone(c.types), maps.Clone(c.methods), maps.Clone(c.src), maps.Clone(c.linkTo)
 	cp.newMeth, cp.fc, cp.fcStd, cp.unres, cp.unresQ = slices.Clone(c.newMeth), slices.Clone(c.fc), slices.Clone(c.fcStd), slices.Clone(c.unres), slices.Clone(c.unresQ)
 	return &cp
 }
@@ -1236,15 +1239,32 @@ func (k *lofWalk) fail(p *lofPkg, item string) {
 	k.out.fail(item)
 }
 
+// link records a //go:linkname raised in package p that binds a symbol of package target. The walk
+// follows the link's body like a call, so the link stands in for code it read only when target is
+// one of the refuted module's packages that count: a push replaces the body of one of their
+// functions, and a pull reads it past the import graph. Which packages count is the advisory's, so
+// the closure keeps the target for the row to decide (lofRow.counts). Inside the toolchain's own
+// packages a link fails closed for a standard-library refutation only, as fail does.
+func (k *lofWalk) link(p *lofPkg, target string) {
+	if p != nil && p.std {
+		k.out.failStd(lofLinkname)
+		return
+	}
+	k.out.linkTo[target] = true
+}
+
 // touch links what compiling f links: the packages it imports, whose initializers run, and the
-// targets of its //go:linkname directives. A //go:linkname directive fails closed, and so does a
-// cgo file's #include: the walk reads neither the link's symbol binding nor C.
+// targets of its //go:linkname directives. A malformed //go:linkname directive fails closed, and so
+// does a cgo file's #include: the walk reads neither the link's symbol binding nor C. A well-formed
+// one names its target (link), and the local name, which Go resolves in the whole package, may push
+// a body there, so the walk follows that local as the target's, whether or not the build loaded
+// either package.
 func (k *lofWalk) touch(f *lofFile) {
 	if k.touched[f] {
 		return
 	}
 	k.touched[f] = true
-	if f.badLink || len(f.links) > 0 {
+	if f.badLink {
 		k.fail(f.pkg, lofLinkname)
 	}
 	if f.include {
@@ -1260,6 +1280,7 @@ func (k *lofWalk) touch(f *lofFile) {
 	sort.Strings(locals)
 	for _, l := range locals {
 		k.remote(f.pkg, f.links[l])
+		k.resolveIn(f.pkg, l)
 	}
 }
 
@@ -1564,6 +1585,7 @@ func (k *lofWalk) remote(from *lofPkg, remote string) {
 	if path == "unsafe" {
 		return
 	}
+	k.link(from, path)
 	p := k.w.pkg(path)
 	k.enter(p)
 	recv, name, isMethod := strings.Cut(sym, ".")
@@ -1599,8 +1621,8 @@ func (k *lofWalk) remote(from *lofPkg, remote string) {
 // bodyless resolves a function declared without a body: a //go:linkname pull names its body (an
 // edge touch follows), the host provides it (//go:wasmimport: foreign code, a dynamic call), its
 // package's assembly or a push from another package provides it, or the compiler expands it inline.
-// Assembly and a push fail closed, as does anything else: assembly is not read, so it may call any
-// function value, and a push binds through the link.
+// Assembly fails closed, as does anything else unresolved: assembly is not read, so it may call any
+// function value. A push is followed through the pushing body and names p as its target (link).
 func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 	p := d.file.pkg
 	if d.file.links[d.name] != "" {
@@ -1620,7 +1642,7 @@ func (k *lofWalk) bodyless(d *lofDecl, fn *ast.FuncDecl) {
 	k.w.readPushes()
 	for _, push := range k.w.pushes[sym] {
 		if k.pushBody(push[0], push[1]) {
-			k.fail(p, lofLinkname)
+			k.link(p, p.path)
 			found = true
 		}
 	}

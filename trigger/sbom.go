@@ -41,10 +41,11 @@ type ResolveSBOMRequest struct {
 // returns an empty SBOM, a scan_cut_short partiality note and a nil error, so a library caller must
 // read the notes, not only the error, before trusting an empty package set.
 func ResolveSBOM(ctx context.Context, req ResolveSBOMRequest) (report.SBOM, []report.PartialityNote, error) {
-	inv, language, err := inventoryWithin(ctx, req.Codebase, req.AssessOptions...)
+	inv, language, launch, err := inventoryWithin(ctx, req.Codebase, req.AssessOptions...)
 	if err != nil {
 		return report.SBOM{}, nil, err
 	}
 	sbom, notes := sbomFromInventory(inv, ecosystemFor(language))
+	sbom.JSLaunchDigest = launch
 	return sbom, notes, nil
 }

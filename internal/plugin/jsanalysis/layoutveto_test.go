@@ -139,7 +139,7 @@ func TestLayoutVeto_RunCache(t *testing.T) {
 
 	graph := func(ctx context.Context, f *depFixture, cache string) plugin.CallGraphResult {
 		t.Helper()
-		cg, err := callGraphFor(ctx, f.dir, cache)
+		cg, err := callGraphFor(ctx, f.dir, cache, false)
 		if err != nil {
 			t.Fatal(err)
 		}

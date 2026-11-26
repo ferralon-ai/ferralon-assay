@@ -1350,9 +1350,14 @@ func symbolDescriptor(obj types.Object) string {
 
 // receiverTypeName returns the bare named-type name of a method receiver,
 // stripping any pointer indirection so (*T) and T share a stable receiver token.
+// A receiver declared through an alias (type A = T; func (A) M()) names T, the
+// type the method belongs to: the alias's own String is package-qualified, and a
+// slash in a descriptor misplaces the package boundary every reader of the id
+// finds at its last slash.
 func receiverTypeName(t types.Type) string {
+	t = types.Unalias(t)
 	if ptr, ok := t.(*types.Pointer); ok {
-		t = ptr.Elem()
+		t = types.Unalias(ptr.Elem())
 	}
 	if named, ok := t.(*types.Named); ok {
 		return named.Obj().Name()
@@ -1564,7 +1569,14 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 			// The standard library or a dependency module holds the advisory's package: its code is
 			// not in the index, and a first-party symbol that shares a name with an advisory symbol
 			// is not the advisory's.
+			// A dependency module the build compiles from a replacement is read where the build compiles
+			// it: no release of the module describes that code.
 			if moduleFilter == "" && (isToolchainPackage(pkgFilter) || dependencyHolds(ctx, req.BuildDir, pkgFilter)) {
+				if !isToolchainPackage(pkgFilter) {
+					if res, ok := replacedResolution(ctx, req.BuildDir, pkgFilter, req.AdvisorySymbols); ok {
+						return res, nil
+					}
+				}
 				return plugin.SymbolResolutionResult{Partiality: index.Partiality}, nil
 			}
 			// Another major version of the advisory's module in the build is a package instance of

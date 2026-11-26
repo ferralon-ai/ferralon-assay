@@ -140,11 +140,14 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				Detail: disqualDetail(res.Reason) + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck),
 			},
 		}
-		// A version placed outside only under an assumption about a pseudo-version's ancestry is
-		// not proven out of scope: it is refuted under that stated assumption.
+		// A version placed outside only under an assumption (a pseudo-version's ancestry, the
+		// toolchain line under GOTOOLCHAIN=auto, or a release in the scanned history whose fixes
+		// were not reverted) is not proven out of scope: it is refuted under the stated assumptions.
 		if len(res.Assumptions) > 0 {
 			f.Verdict = report.VerdictNotExploitable
-			f.Evidence.Detail = versionOutsideAssumingDetail + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck)
+			if res.Reason == pipeline.ReasonVersionNotInRange {
+				f.Evidence.Detail = versionOutsideAssumingDetail + refuteAttribution(res.Source) + crossCheckNote(res.CrossCheck)
+			}
 			f.Evidence.Assumptions = res.Assumptions
 		}
 	case hasCandidate(store, assessmentID):
@@ -289,11 +292,28 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 	return f
 }
 
-// annotations returns the assumptions the assessment's resolved versions rest on. They qualify
-// whatever verdict the row reaches, so they are read for every row and gate none.
+// annotations returns the assumptions the assessment's resolved versions rest on, and those its
+// reachability analysis rests on unless the advisory is disqualified, a verdict that analysis
+// did not reach. They qualify the verdict the row reaches and gate none.
 func annotations(store artifact.Store, assessmentID string) []plugin.Annotation {
 	inv, _ := inventory(store, assessmentID)
-	return withoutReadPins(inv.Annotations)
+	return withReachabilityAssumptions(store, assessmentID, withoutReadPins(inv.Annotations))
+}
+
+// withReachabilityAssumptions appends to as the assumptions the assessment's reachability result
+// rests on, unless the advisory is disqualified.
+func withReachabilityAssumptions(store artifact.Store, assessmentID string, as []plugin.Annotation) []plugin.Annotation {
+	reach, ok := reachabilityResult(store, assessmentID)
+	if !ok || len(reach.Annotations) == 0 || disqualified(store, assessmentID) {
+		return as
+	}
+	out := slices.Clone(as)
+	for _, a := range reach.Annotations {
+		if !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // guardsOnPath returns the advisory-declared guard symbols present on the candidate
@@ -636,19 +656,27 @@ func priorityFor(adv report.Advisory, sig *intel.Signals, claims *intel.Claims) 
 func rankWith(b *report.Builder, sig *intel.Signals, workSet []assessment.VulnRef, src pipeline.AdvisorySource) {
 	claims := new(intel.Claims)
 	if sig != nil {
-		ids := make([]string, 0, len(workSet))
-		for _, v := range workSet {
-			ids = append(ids, v.ID)
-		}
-		// An id whose record does not resolve still claims itself.
-		pipeline.LookupEach(src, ids, func(id string, facts pipeline.AdvisoryFacts, _ bool) {
-			claims.Add(id, facts.Aliases...)
-		})
+		claimWorkSet(claims, workSet, src)
 		for _, f := range b.Build().Advisories {
 			claims.Add(f.Advisory.ID, f.Advisory.Aliases...)
 		}
 	}
 	b.WithPriority(func(adv report.Advisory) *report.Priority { return priorityFor(adv, sig, claims) })
+}
+
+// claimWorkSet adds every advisory in workSet to claims by its id and the aliases src lists for
+// it, and returns those aliases by id. An id whose record does not resolve still claims itself.
+func claimWorkSet(claims *intel.Claims, workSet []assessment.VulnRef, src pipeline.AdvisorySource) map[string][]string {
+	ids := make([]string, 0, len(workSet))
+	for _, v := range workSet {
+		ids = append(ids, v.ID)
+	}
+	aliases := make(map[string][]string, len(ids))
+	pipeline.LookupEach(src, ids, func(id string, facts pipeline.AdvisoryFacts, _ bool) {
+		claims.Add(id, facts.Aliases...)
+		aliases[id] = facts.Aliases
+	})
+	return aliases
 }
 
 // withSignals records, on the provenance p a run is about to hand its Builder, which signals file
@@ -1073,7 +1101,7 @@ func shortDigest(d string) string {
 // function cannot name has no standing to claim grounds it cannot describe.
 func disqualBasis(reason string) verdict.NonExploitableBasis {
 	switch reason {
-	case pipeline.ReasonVersionNotInRange, pipeline.ReasonFixCommitInHistory:
+	case pipeline.ReasonVersionNotInRange, pipeline.ReasonFixCommitInHistory, pipeline.ReasonAncestorReleaseOutsideRange:
 		return verdict.BasisVersionNotAffected
 	case pipeline.ReasonSymbolAbsent:
 		return verdict.BasisSymbolAbsent
@@ -1087,8 +1115,8 @@ func disqualBasis(reason string) verdict.NonExploitableBasis {
 }
 
 // versionOutsideAssumingDetail is the detail of a version-axis refute that holds only under the
-// row's stated assumptions about a pseudo-version's ancestry.
-const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumption about a pseudo-version's ancestry"
+// row's stated assumptions, which its evidence lists.
+const versionOutsideAssumingDetail = "resolved dependency version is outside the advisory's affected range under the stated assumptions"
 
 // disqualDetail renders the customer-visible grounds for a disqualification. Each reason code
 // gets its own arm: the version and symbol axes record an adjudicated comparison that cleared
@@ -1102,6 +1130,8 @@ func disqualDetail(reason string) string {
 		return "resolved dependency version is outside the advisory's affected range"
 	case pipeline.ReasonFixCommitInHistory:
 		return "the commit the advisory names as its fix is in the scanned commit's history, and every range the advisory affects the project's own package by ends at a fixed version"
+	case pipeline.ReasonAncestorReleaseOutsideRange:
+		return "the project's highest release tag in the scanned commit's history is at or past the fixed version of every range the advisory affects the project's own package by, under the stated assumptions"
 	case pipeline.ReasonSymbolAbsent:
 		return "the vulnerable symbol is absent from the built artifact"
 	case pipeline.ReasonAdvisoryEcosystemMismatch:
@@ -1499,6 +1529,7 @@ var refutationWithheldReasons = map[string]bool{
 	plugin.PartialReasonExcludedFilesAssembly:        true,
 	plugin.PartialReasonExcludedFilesLinkname:        true,
 	plugin.PartialReasonExcludedFilesCgoInclude:      true,
+	plugin.PartialReasonExcludedFilesUnresolvedName:  true,
 	plugin.PartialReasonExcludedFilesBuildConstraint: true,
 	plugin.PartialReasonUnsearchedMethods:            true,
 	plugin.PartialReasonLibraryEscape:                true,
@@ -1617,11 +1648,13 @@ var outsideBuildExempt = map[string]bool{
 	plugin.PartialReasonReflectiveCall: true,
 	// The module graph does not depend on GOOS, GOARCH or build tags, and the module search reads
 	// every .go file whatever its build constraints. The assembly, linkname targets and C a left-out
-	// file reaches call only Go code compiled into the build, which comes from a listed module.
+	// file reaches call only Go code compiled into the build, which comes from a listed module. A name
+	// it cannot resolve is its own package's, an import's or C's, so it too reaches only that code.
 	plugin.PartialReasonExcludedFiles:                true,
 	plugin.PartialReasonExcludedFilesAssembly:        true,
 	plugin.PartialReasonExcludedFilesLinkname:        true,
 	plugin.PartialReasonExcludedFilesCgoInclude:      true,
+	plugin.PartialReasonExcludedFilesUnresolvedName:  true,
 	plugin.PartialReasonExcludedFilesBuildConstraint: true,
 }
 
@@ -1806,7 +1839,7 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 		ecosystem = ecosystemFor(inv.Language)
 	}
 	var notes []report.PartialityNote
-	for _, a := range withoutReadPins(inv.Annotations) {
+	for _, a := range withReachabilityAssumptions(store, assessmentID, withoutReadPins(inv.Annotations)) {
 		notes = append(notes, report.PartialityNote{Reason: a.Reason, Ecosystem: ecosystem, Path: a.Path, Detail: a.Detail})
 	}
 	if disqualified(store, assessmentID) {
@@ -1820,11 +1853,16 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 		// lost when the union is unavailable.
 		reasons = inv.PartialityFlags
 	}
+	cause := reachabilityFailureCause(store, assessmentID)
 	for _, reason := range reasons {
-		notes = append(notes, report.PartialityNote{
-			Reason:    reason,
-			Ecosystem: ecosystem,
-		})
+		note := report.PartialityNote{Reason: reason, Ecosystem: ecosystem}
+		if reason == plugin.PartialReasonToolFailure {
+			note.Detail, cause = cause, ""
+		}
+		notes = append(notes, note)
+	}
+	if cause != "" {
+		notes = append(notes, report.PartialityNote{Reason: plugin.PartialReasonToolFailure, Ecosystem: ecosystem, Detail: cause})
 	}
 	// A scoped limit is disclosed whether or not it counted against any advisory: it is still a
 	// part of the program the analysis could not see.
@@ -1837,6 +1875,21 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 		})
 	}
 	return notes
+}
+
+// reachabilityFailureCause is the reachability result's Cause when it explains the tool_failure
+// that result declares. Beside unsearched_methods the Cause names an unsearched method, not the
+// failure.
+func reachabilityFailureCause(store artifact.Store, assessmentID string) string {
+	reach, ok := reachabilityResult(store, assessmentID)
+	if !ok || reach.Partiality.Cause == "" {
+		return ""
+	}
+	reasons := reach.Partiality.Reasons
+	if !slices.Contains(reasons, plugin.PartialReasonToolFailure) || slices.Contains(reasons, plugin.PartialReasonUnsearchedMethods) {
+		return ""
+	}
+	return reach.Partiality.Cause
 }
 
 // footprintPartialityFlags reads the unioned partiality reason codes off the

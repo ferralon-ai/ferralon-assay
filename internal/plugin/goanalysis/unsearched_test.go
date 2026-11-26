@@ -2,6 +2,7 @@ package goanalysis
 
 import (
 	"context"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -22,7 +23,6 @@ import (
 func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 	base := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
-		"main.go":             "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { vulnmod.Safe() }\n",
 		"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
 		"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Safe() {}\n\nfunc Bad() {}\n\ntype T struct{}\n\nfunc (T) M() { Bad() }\n\ntype G[X any] struct{ v X }\n\nfunc (G[X]) M() { Bad() }\n",
 	}
@@ -111,8 +111,10 @@ func TestReconciledResult_WithholdsForUnsearchedMethods(t *testing.T) {
 }
 
 // TestReconciledResult_WithholdsForLibraryEscape: a refutation is withheld whenever an importable package
-// reaches the refuted module, however it hands a value of it to its importer and whether or not a
-// main package is in the build, and stands when only main or internal packages do.
+// reaches the refuted module, however it hands a value of it to its importer, and stands when only main
+// or internal packages do. A build of one module with a main at its root or under cmd is read as an
+// application: its importable packages are not entry points, so one reaching the module beside such a
+// main does not withhold.
 func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 	base := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/neutral v0.0.0\n\texample.com/vulnmod v0.0.0\n)\n\nreplace example.com/vulnmod => ./_vulnmod\n\nreplace example.com/neutral => ./_neutral\n",
@@ -170,7 +172,7 @@ func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 		{"a main package beside an importable package that reaches the module", map[string]string{
 			"pkg/lib/lib.go": lib + "func Get() func() { return vulnmod.Bad }\n",
 			"cmd/x/main.go":  "package main\n\nimport \"example.com/m/pkg/lib\"\n\nfunc main() { _ = lib.Get() }\n",
-		}, moduleFinding, true},
+		}, moduleFinding, false},
 		{"a main package beside only internal packages that reach the module", map[string]string{
 			"internal/lib/lib.go": lib + "func Get() func() { return vulnmod.Bad }\n",
 			"cmd/x/main.go":       "package main\n\nimport \"example.com/m/internal/lib\"\n\nfunc main() { _ = lib.Get() }\n",
@@ -216,7 +218,7 @@ func TestReconciledResult_WithholdsForLibraryEscape(t *testing.T) {
 			res := withholdRefutation(context.Background(), plugin.ReachabilityResult{
 				Partiality: plugin.Complete(),
 				Refutation: &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Package: module},
-			}, tc.scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"), resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir))
+			}, tc.scanned, load.Packages, load.buildRelease(), dir, append(os.Environ(), "GOWORK=off"), resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir, false))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("refutation withheld = %v, want %v (result %+v)", withheld, tc.withheld, res)
 			}
@@ -253,6 +255,14 @@ var narrowedScans = struct{ narrow, wholeModule, noEntry vulnScan }{
 	narrow:      vulnScan{imports: map[string][]string{"example.com/vulnmod": {"example.com/vulnmod/ssh"}}},
 	wholeModule: vulnScan{imports: map[string][]string{"example.com/vulnmod": {"example.com/vulnmod/ssh"}}, wholeModule: map[string]bool{"example.com/vulnmod": true}},
 	noEntry:     vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod/ssh"}}}}},
+}
+
+// narrowedLibrary is narrowedModule without its main package: a library, whose importable packages
+// are its entry points.
+func narrowedLibrary() map[string]string {
+	tree := maps.Clone(narrowedModule)
+	delete(tree, "main.go")
+	return tree
 }
 
 func narrowedRefutation() plugin.ReachabilityResult {
@@ -304,7 +314,7 @@ func TestWithholdForUnsearchedMethods_VulnerablePackages(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := writeTree(t, merge(narrowedModule, map[string]string{"lib/lib.go": tc.lib}))
+			dir := writeTree(t, merge(narrowedLibrary(), map[string]string{"lib/lib.go": tc.lib}))
 			load, err := LoadProgram(context.Background(), dir)
 			if err != nil {
 				t.Fatal(err)
@@ -312,7 +322,7 @@ func TestWithholdForUnsearchedMethods_VulnerablePackages(t *testing.T) {
 			if incompleteLoad(load.Packages, nil) {
 				t.Fatal("load incomplete")
 			}
-			res := withholdForUnsearchedMethods(narrowedRefutation(), tc.scanned, load.Packages, resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir))
+			res := withholdForUnsearchedMethods(narrowedRefutation(), tc.scanned, load.Packages, resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir, false))
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
 			}
@@ -367,7 +377,7 @@ func TestWithholdForLibraryEscape_VulnerablePackages(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := writeTree(t, merge(narrowedModule, map[string]string{"lib/lib.go": tc.lib}))
+			dir := writeTree(t, merge(narrowedLibrary(), map[string]string{"lib/lib.go": tc.lib}))
 			load, err := LoadProgram(context.Background(), dir)
 			if err != nil {
 				t.Fatal(err)
@@ -379,7 +389,7 @@ func TestWithholdForLibraryEscape_VulnerablePackages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			entry := resolveEntrypoints(load.Packages, decl, dir)
+			entry := resolveEntrypoints(load.Packages, decl, dir, false)
 			res := withholdForLibraryEscape(narrowedRefutation(), tc.scanned, load.Packages, entry)
 			if withheld := res.Refutation == nil; withheld != tc.withheld {
 				t.Fatalf("withheld = %v, want %v", withheld, tc.withheld)
@@ -432,7 +442,7 @@ func TestNarrowedGates_StandardLibraryWidening(t *testing.T) {
 	if incompleteLoad(load.Packages, nil) {
 		t.Fatal("load incomplete")
 	}
-	entry := resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir)
+	entry := resolveEntrypoints(load.Packages, plugin.LibraryEntrypoints{}, dir, false)
 	for _, g := range gates {
 		for _, tc := range scans {
 			t.Run(g.name+"/"+tc.name, func(t *testing.T) {
@@ -473,7 +483,7 @@ func TestWithholdForUnsearchedMethods_DeclaringPackageNotLoaded(t *testing.T) {
 	}
 	lib.Imports = map[string]*packages.Package{}
 	pkgs := []*packages.Package{lib}
-	res := withholdForUnsearchedMethods(narrowedRefutation(), narrowedScans.narrow, pkgs, resolveEntrypoints(pkgs, plugin.LibraryEntrypoints{}, dir))
+	res := withholdForUnsearchedMethods(narrowedRefutation(), narrowedScans.narrow, pkgs, resolveEntrypoints(pkgs, plugin.LibraryEntrypoints{}, dir, false))
 	if res.Refutation != nil {
 		t.Fatal("refutation stands, want withheld")
 	}
@@ -503,12 +513,13 @@ func TestWithholdForUnsearchedMethods_EntryPoints(t *testing.T) {
 		{"an exported generic type, entry path listed", map[string]string{"lib/lib.go": lib + generic}, plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsPaths, Include: []string{"lib"}}, boxCause},
 		{"a method promoted into an unexported and an exported type of an entry package", map[string]string{"lib/lib.go": lib + "type a struct{ vulnmod.T }\n\ntype Outer struct{ vulnmod.T }\n"}, plugin.LibraryEntrypoints{},
 			"unsearched method (example.com/vulnmod.T).M, reached through entry package example.com/m/lib, may call into example.com/vulnmod"},
+		{"an exported generic type in an application", map[string]string{"lib/lib.go": lib + generic, "main.go": "package main\n\nfunc main() {}\n"}, plugin.LibraryEntrypoints{}, ""},
+		{"an exported generic type in an application, library mode declared", map[string]string{"lib/lib.go": lib + generic, "main.go": "package main\n\nfunc main() {}\n"}, plugin.LibraryEntrypoints{Mode: plugin.LibraryEntrypointsPaths, Include: []string{"."}}, boxCause},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			files := map[string]string{
 				"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
-				"main.go":             "package main\n\nfunc main() {}\n",
 				"other/other.go":      "package other\n",
 				"_vulnmod/go.mod":     "module example.com/vulnmod\n\ngo 1.22\n",
 				"_vulnmod/vulnmod.go": "package vulnmod\n\nfunc Bad() {}\n\ntype T struct{}\n\nfunc (T) M() { Bad() }\n",
@@ -519,7 +530,7 @@ func TestWithholdForUnsearchedMethods_EntryPoints(t *testing.T) {
 				t.Fatal(err)
 			}
 			scanned := vulnScan{findings: []vulnFinding{{OSV: "GO-1", Trace: []vulnFrame{{Module: "example.com/vulnmod", Version: "v0.0.0", Package: "example.com/vulnmod"}}}}}
-			entry := resolveEntrypoints(load.Packages, tc.decl, dir)
+			entry := resolveEntrypoints(load.Packages, tc.decl, dir, false)
 			// The package's types are walked off a map: repeat the step so a result that depends on
 			// that order shows.
 			for range 50 {

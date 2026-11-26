@@ -75,6 +75,9 @@ import (
 // "plugin resolves, pipeline ranges" symmetry: this op resolves only the concrete installed
 // literal version. Advisory RANGE matching (PEP 440 specifiers, ordering) is applied by the
 // pipeline disqualification predicate (pipeline/pypi_version.go), never here.
+//
+// Under req.Strict an answer that would carry an assumption Annotation (an install the analysis
+// assumes is inactive) is withheld instead, as an unreadable install is.
 func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
@@ -94,6 +97,13 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 	manifests, parseFailed, scriptWithheld, installs, poetry, tooling, unrecognised, inactive, configNamed := versionSurfacesCached(ctx, req.BuildDir)
 	if tooling[want] {
 		parseFailed, scriptWithheld = true, true
+	}
+	if req.Strict && len(inactive) > 0 {
+		// An install the answer takes to be inactive is an assumption: in strict mode it withholds as
+		// an install the lane cannot read does. versionSurfacesCached is keyed by the build dir alone
+		// and holds the same snapshot for both modes; strict is applied after it.
+		parseFailed, scriptWithheld = true, true
+		inactive = nil
 	}
 	copies, copyOrigins, copiesRead := installedCopiesCached(ctx, req.BuildDir)
 	parseFailed = parseFailed || !copiesRead

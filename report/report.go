@@ -271,6 +271,15 @@ type SBOM struct {
 	// GoWorkspaceModules are the go.work's other main modules when GoBuildList was resolved under one;
 	// set with it.
 	GoWorkspaceModules []string `json:"go_workspace_modules,omitempty"`
+	// JSLaunchDigest is a sha256 over the launch surface the JS lane infers entry points from in
+	// the scanned tree: every first-party package.json value but names, prose and dependency
+	// lists, every launch file (container, CI, process-manager, shell and env files) and every
+	// interpreter-line file. That surface adds js entry points without changing any
+	// package, so a PR whose digest differs from its baseline's assesses its js rows again
+	// rather than inheriting them. Empty when the tree has no first-party package.json and no
+	// lockfile the JS lane reads, or for
+	// an SBOM written before the digest was recorded.
+	JSLaunchDigest string `json:"js_launch_digest,omitempty"`
 }
 
 // Relationship is one parent→child dependency edge in the SBOM (§4.1.2). Endpoints are
@@ -1209,6 +1218,18 @@ type Report struct {
 	// failed and the scan fell back to reading none, the cause. Set on every JavaScript scan;
 	// nil for every other language.
 	DependencyCode *DependencyCode `json:"dependency_code,omitempty"`
+
+	// SubjectToolchain is the Go toolchain the run analysed the subject under, with where it came
+	// from. Absent for a run with no Go assessment and for a report written before the field existed.
+	SubjectToolchain *SubjectToolchain `json:"subject_toolchain,omitempty"`
+	// Mode records the strictness the run adjudicated under and which statement decided it. Every
+	// Report a run builds carries it; one stored before the field existed has none and reads as
+	// practical (ModeOf). Additive and omitted when absent (§11).
+	Mode *Mode `json:"mode,omitempty"`
+	// RunAssumptions is the run-level block of what the scan took as given about the build, derived
+	// from the Report's own fields (AssumptionsOf) when the run publishes. Additive and omitted
+	// when absent (§11).
+	RunAssumptions *RunAssumptions `json:"run_assumptions,omitempty"`
 }
 
 // SetAdvisories replaces the findings of a built Report, ordered as Build orders them.

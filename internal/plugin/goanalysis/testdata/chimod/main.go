@@ -162,6 +162,7 @@ func main() {
 
 	r := chi.NewRouter()
 	r.Get("/get/{id}", s.getForm)
+	registerBound(r)
 	r.Post("/post", s.postForm)
 	r.Put("/put", s.putForm)
 	r.Patch("/patch", s.patchForm)

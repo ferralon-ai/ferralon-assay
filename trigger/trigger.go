@@ -51,6 +51,10 @@ type BaselineRequest struct {
 	// AssessOptions are the pipeline seams (WithPlugin / WithCheckout) the Assess
 	// stages run with. Empty = the hermetic stub path.
 	AssessOptions []pipeline.AssessOption
+	// ModeSource is the report.ModeSource the run's strictness came from; "" records default for a
+	// practical run and input for a strict one. The strictness itself is the one AssessOptions select
+	// (pipeline.WithStrict).
+	ModeSource string
 	// Signals is the EPSS/KEV signals file the run was given; nil for none, in which case no
 	// finding carries a Priority. Ranking context only: it is applied after every verdict is final.
 	// A caller outside this module sets it with signals.Feed. The Report the run builds records
@@ -126,12 +130,8 @@ type DependencyFetchRun struct {
 // A baseline stopped before its dependency inventory resolved keeps the stored SBOM: replacing it
 // with an empty one would leave CVE-watch nothing to query until the next baseline finishes.
 func RunBaseline(ctx context.Context, store statestore.StateStore, req BaselineRequest) (*report.Report, error) {
-	rep, assessed, err := baselineReport(ctx, req, func() (report.SBOM, error) {
-		prior, err := readForUpdate(ctx, store)
-		if err != nil {
-			return report.SBOM{}, err
-		}
-		return prior.SBOM, nil
+	rep, assessed, err := baselineReport(ctx, req, func() (*statestore.State, error) {
+		return readForUpdate(ctx, store)
 	})
 	if err != nil {
 		return nil, err
@@ -171,10 +171,11 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 	return rep, err
 }
 
-// baselineReport is buildBaselineReport with priorSBOM, which reads the stored SBOM a baseline
-// stopped before its inventory resolved carries forward. Nil carries nothing forward. It also
-// returns the advisories whose assessment completed, sorted by ID.
-func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (report.SBOM, error)) (*report.Report, []report.Advisory, error) {
+// baselineReport is buildBaselineReport with readPrior, which reads the stored state. The stored
+// SBOM is what a baseline stopped before its inventory resolved carries forward, and the stored
+// scan_cut_short rows name the advisories the scan assesses first. Nil carries nothing forward. It
+// also returns the advisories whose assessment completed, sorted by ID.
+func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (*statestore.State, error)) (*report.Report, []report.Advisory, error) {
 	analyzer := req.AnalyzerVersion
 	if analyzer == "" {
 		analyzer = AnalyzerVersion
@@ -190,7 +191,23 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	// defers, or skips it BEFORE any Assessment is constructed. Band is read here and only
 	// here; the admitted slice is plain VulnRefs with band stripped, so band never crosses
 	// the S1 seam into a pipeline/verdict struct (inv.5). Fail-open: an absent band admits.
-	admitted := admitAdvisories(scheduleFor(req.Advisories, req.Bands))
+	// The same gate orders the loop: by band, then the advisories the stored report holds a
+	// scan_cut_short row for, then by the run's EPSS/KEV signals (KEV-listed, then EPSS
+	// descending, then the rest in input order), so a scan that stops early has retried what the
+	// last one left and then assessed the likeliest-exploited advisories; with no signals or prior
+	// the order is the input's.
+	var prior *statestore.State
+	if readPrior != nil {
+		var err error
+		if prior, err = readPrior(); err != nil {
+			return nil, nil, fmt.Errorf("trigger: read the stored state: %w", err)
+		}
+	}
+	scheduled := scheduleFor(req.Advisories, req.Bands)
+	if prior != nil && prior.Report != nil {
+		scheduled = withCarried(scheduled, prior.Report)
+	}
+	admitted := admitAdvisories(withSignalPriority(scheduled, req.Signals, pipeline.AdvisorySourceOf(req.AssessOptions...)))
 
 	// Declared BEFORE any finding, so a pass whose work set could not be fully determined
 	// discloses that even if it goes on to produce zero findings — the case the note exists for.
@@ -205,19 +222,15 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	// unchanged in the loop below (advisoryFromArtifacts still serves the finding path — §4.1 / C5).
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
-	inv, invLanguage, err := inventoryWithin(analysis, req.Codebase, req.AssessOptions...)
+	inv, invLanguage, launch, err := inventoryWithin(analysis, req.Codebase, req.AssessOptions...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("trigger: resolve codebase inventory: %w", err)
 	}
 	sbom, invNotes := sbomFromInventory(inv, ecosystemFor(invLanguage))
-	if inventoryCutShort(invNotes) && priorSBOM != nil {
-		prior, err := priorSBOM()
-		if err != nil {
-			return nil, nil, fmt.Errorf("trigger: read the stored SBOM: %w", err)
-		}
-		if len(prior.Packages) > 0 {
+	if inventoryCutShort(invNotes) && prior != nil {
+		if len(prior.SBOM.Packages) > 0 {
 			// The stored build list is another commit's, so it is never this build's whole module list.
-			sbom = prior
+			sbom = prior.SBOM
 			sbom.GoBuildList, sbom.GoMainModule, sbom.GoWorkspaceModules = "", "", nil
 			b.AddPartiality(priorSBOMNote)
 		}
@@ -225,12 +238,17 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 	b.AddPackages(sbom.Packages...)
 	b.SetRelationships(sbom.Relationships)
 	b.SetGoBuildList(sbom)
+	// The launch digest is this commit's, from this run's inventory, even when the packages are
+	// the prior's. A cut-short inventory carries none, which differs from any JS baseline's and
+	// so never inherits.
+	b.SetJSLaunchDigest(report.SBOM{JSLaunchDigest: launch})
+	b.WithMode(runMode(req.AssessOptions, req.ModeSource))
 	b.AddPartiality(invNotes...)
 	mods := goModulesOf(sbom, invNotes)
 
 	// cut and rows count the rows the scan stopped before assessing and all rows, sibling
 	// instances included, so the note's count is the number of scan_cut_short rows.
-	cut, rows := 0, len(admitted.Admitted)
+	cut, rows, carriedAssessed := 0, len(admitted.Admitted), 0
 	var assessed []report.Advisory
 	passes := newAdvisoryPasses(analysis, requestsFor(admitted.Admitted, req.Codebase), assessOpts)
 	defer passes.close()
@@ -250,6 +268,9 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 			b.AddPartiality(assessFailureNote(adv, err))
 			continue
 		}
+		if admitted.Carried[i] {
+			carriedAssessed++
+		}
 		// Coordinate-specific advisory resolution, RETAINED unchanged (§4.1 / C5): advisoryFromArtifacts
 		// still resolves the advisory's own package for the finding, but it no longer DEFINES the SBOM —
 		// the whole-graph inventory above does.
@@ -262,6 +283,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 		b.AddFinding(f)
 		b.WithLibraryEntrypoints(libraryEntrypoints(st, assessmentID)...)
 		b.WithEntryRoots(entryRoots(st, assessmentID)...)
+		b.WithSubjectToolchain(subjectToolchain(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
 			b.AddPartiality(note)
 		}
@@ -278,7 +300,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 		b.AddPartiality(sibNotes...)
 	}
 	if cut > 0 {
-		b.AddPartiality(cutShortNote(cut, rows, stopCause(analysis)))
+		b.AddPartiality(cutShortNote(cut, rows, stopCause(analysis), carriedAssessed))
 	}
 
 	b.WithProvenance(withSignals(report.Provenance{
@@ -297,9 +319,10 @@ func baselineReport(ctx context.Context, req BaselineRequest, priorSBOM func() (
 }
 
 // PRInheritRequest configures a PR-adjacent run. It diffs the PR's resolved SBOM
-// against the stored baseline; if the dependency set is unchanged it inherits the
-// baseline Report (the fast path — no re-analysis), otherwise it re-analyzes the
-// affected slice (the advisories touching changed packages). Either way the result
+// against the stored baseline; if the dependency set and the JS launch digest are
+// unchanged it inherits the baseline Report (the fast path — no re-analysis), otherwise
+// it re-analyzes the affected slice (the advisories touching changed packages, and every
+// npm row when the launch digest moved). Either way the result
 // is returned to the caller and the stored baseline is left untouched.
 type PRInheritRequest struct {
 	// Subject is the PR head's neutral identity.
@@ -330,6 +353,8 @@ type PRInheritRequest struct {
 	Cursor          string
 	// AssessOptions are the pipeline seams for any re-analysis.
 	AssessOptions []pipeline.AssessOption
+	// ModeSource mirrors BaselineRequest.ModeSource.
+	ModeSource string
 	// Signals mirrors BaselineRequest.Signals. Every row is ranked by it — inherited rows too, so
 	// none keeps a value from the signals file the baseline run read.
 	Signals *intel.Signals
@@ -369,9 +394,11 @@ type PRInheritResult struct {
 // inherits the baseline's findings, carrying a Baseline pointer. S1–S6 runs only for a
 // work-set advisory the baseline holds no usable row for (none, or a scan_cut_short one),
 // which would otherwise have none.
-// Slow path: at least one package changed, or the entry-point statement differs from the one the
-// baseline's refutations rest on → re-run S1–S6 for the advisories whose
-// package changed and merge those findings over the inherited baseline findings.
+// Slow path: at least one package changed, the entry-point statement differs from the one the
+// baseline's refutations rest on, or the JS launch surface (jsanalysis.LaunchDigest) differs from
+// the baseline's → re-run S1–S6 for the advisories whose package changed, every one under a restated
+// statement and every npm one under a changed launch surface, and merge those findings over the
+// inherited baseline findings.
 //
 // RunPRInherit only reads the store. The state ref holds the default branch's
 // baseline, which later PR runs inherit from and cve-watch diffs against; a Report of
@@ -395,12 +422,12 @@ func RunPRInherit(ctx context.Context, store statestore.StateStore, req PRInheri
 
 	changed := changedPackages(baseline.SBOM, req.PRSBOM)
 
-	if len(changed) == 0 && !restated(baseline, req.AssessOptions) {
+	if len(changed) == 0 && !restated(baseline, req.AssessOptions) && !relaunched(baseline.SBOM, req.PRSBOM) {
 		// Nothing changed, so every baseline row stands but a scan_cut_short one, which says
 		// nothing and is replaced by a fresh row. An advisory new to the work set has no row to
 		// inherit either, and the Report's cursor covers it all the same.
 		unrowed := unrowedAdvisories(baseline, req.Advisories)
-		fresh, notes, cause := assessUnrowed(ctx, req, unrowed)
+		fresh, notes, cause := assessUnrowed(ctx, req, baseline, unrowed)
 		rep, err := inheritBaseline(baseline, req, state, fresh, notes, cause)
 		if err != nil {
 			return nil, err
@@ -448,6 +475,8 @@ type CVEWatchRequest struct {
 	AnalyzerVersion string
 	// AssessOptions are the pipeline seams for an earnest re-analysis.
 	AssessOptions []pipeline.AssessOption
+	// ModeSource mirrors BaselineRequest.ModeSource.
+	ModeSource string
 	// Signals mirrors PRInheritRequest.Signals.
 	Signals *intel.Signals
 	// Advisories is the run's work set. CVE-watch assesses only the newly-relevant advisories, but
@@ -558,6 +587,11 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	var retry []report.AdvisoryFinding
 	if req.DependencyFetch != nil {
 		retry = notFetchedRetry(state.Report, state.DepFetch, newIDs)
+	}
+	// A baseline that stopped before its inventory resolved leaves every row cut, and the SBOM
+	// cve-watch would assess them against is not that build's; the next baseline clears them.
+	if !inventoryCutShort(state.Report.Partiality) {
+		retry = cutShortRetry(state.Report, newIDs, retry)
 	}
 	if restated(state.Report, req.AssessOptions) {
 		retry = restatedRetry(state.Report, newIDs, retry)

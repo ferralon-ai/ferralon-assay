@@ -3,10 +3,15 @@
 A Go repository that ships programs, such as traefik's `cmd/traefik`, has two answers to "can this
 advisory's vulnerable code run?":
 
-- **Library view.** Any importable package is an entry point, because almost any repository can be
-  imported, and a false negative is the failure the scanner cannot ship. This is the analysis the
-  row's verdict reports, and the `library-entrypoints` setting shapes it
-  ([GO-LIBRARY-ESCAPE](capabilities/go.md#go-library-escape)).
+- **Library view.** The importable packages the `library-entrypoints` setting names are entry
+  points. This is the analysis the row's verdict reports
+  ([GO-LIBRARY-ESCAPE](capabilities/go.md#go-library-escape)). Declared library mode
+  (`go:library=.`) takes every importable package, because almost any repository can be imported.
+  With nothing declared, a fully loaded build of one module that ships a `main` package at the
+  module's root or under its `cmd` directory is read as an application:
+  no library package is an entry point for `library_escape` or `unsearched_methods`, and a
+  `not_exploitable` that rests on that carries it as an assumption. The search itself still roots
+  every package's exported API.
 - **Program view.** The entry points are only the `main` and `init` functions of the shipped `main`
   packages. A caller that imports the module does not count.
 
@@ -23,8 +28,11 @@ something to rule out (a refutation withheld, or a path that does not begin in a
 A shipped `main` package is a `main` package with compiled files, in a main module of the build, with
 no `example`, `examples`, `test`, `tests` or `testdata` element below the module path. A `main` under
 `cmd/` counts, and so does a generator or release tool the build compiles (traefik has four besides
-`cmd/traefik`): the scan cannot tell which mains are shipped, and including one only makes the claim
-harder to earn. The scope is **all** the shipped mains together: govulncheck reports one path per
+`cmd/traefik`): the scan cannot tell which mains are shipped, and for the program view including one
+only makes the claim harder to earn. Whether a bare `auto` reads the build as an application is decided
+by a narrower set, since there an extra main works the other way and would drop the library-escape
+withhold: only a shipped main at the module root or under `cmd/`, in a build of one main module, counts
+(see [operator-guide.md](operator-guide.md)). The scope is **all** the shipped mains together: govulncheck reports one path per
 symbol, so which of several binaries reach an advisory cannot be told from one run, and the claim is
 made only when none of them does.
 
@@ -105,7 +113,13 @@ and the OpenVEX projector emits no scoped statement for it even when validation 
 - `evidence` has the same fields as any `not_exploitable`. Its basis is `vulnerable_symbol_unreachable`.
   It carries no `assumptions`: the scope is the whole of its claim.
 - The grounds are those of any refutation: the admitted package's version resolved, the advisory names
-  no other package, and the refutation is of the admitted package. The row also passes the gate every
+  no other package, and the refutation is of the admitted package. For an advisory matched to several
+  modules, the program view refutes each one it rules out, so a row admitted on any of them is
+  grounded by that module's refutation, and the view's refutations of the others count as ruling those
+  out, for this scoped verdict only. They are held back by the same limits as a library view's
+  refutation of another module, and they never ground the row's own verdict. The scoped verdict's
+  detail states each module ruled out beside it, by either view, with that module's own grounds and
+  platform scope. The row also passes the gate every
   `not_exploitable` passes: no toolchain axis left undetermined and no did-not-run limit counting for
   the package, other than the library-entry withholds the program view answers. A `reachable_candidate`
   row is held to it too, though its own verdict never reaches that gate.

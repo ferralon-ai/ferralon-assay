@@ -561,13 +561,14 @@ func isGinBinder(name string) bool {
 
 // echoContextAccessors are the echo.Context methods that return attacker-controlled
 // request data: path, query and form values, uploaded files, the raw query string, the
-// client IP, the request itself and its cookies.
+// client IP, the scheme (which echo reads from X-Forwarded-Proto and its variants when
+// the connection is not TLS), the request itself and its cookies.
 // echo.Context is an INTERFACE, so these are invoke calls with the context as the
 // receiver, never a static callee.
 var echoContextAccessors = map[string]bool{
 	"Param": true, "ParamValues": true, "QueryParam": true, "QueryParams": true, "FormValue": true,
 	"FormParams": true, "FormFile": true, "MultipartForm": true, "QueryString": true,
-	"RealIP": true, "Request": true, "Cookie": true, "Cookies": true,
+	"RealIP": true, "Scheme": true, "Request": true, "Cookie": true, "Cookies": true,
 }
 
 // echoContextBinders are the echo.Context methods that decode the request into the

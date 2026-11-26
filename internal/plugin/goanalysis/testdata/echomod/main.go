@@ -68,6 +68,7 @@ func sinkFormFile(v any)      { sunk = append(sunk, v) }
 func sinkMultipartForm(v any) { sunk = append(sunk, v) }
 func sinkQueryString(v any)   { sunk = append(sunk, v) }
 func sinkRealIP(v any)        { sunk = append(sunk, v) }
+func sinkScheme(v any)        { sunk = append(sunk, v) }
 
 // Negative sinks: no echo-registered handler reaches these.
 func sinkNotRequestData(v any)  { sunk = append(sunk, v) }
@@ -120,6 +121,7 @@ func (s *server) accessorsForm(c echo.Context) error {
 	sinkMultipartForm(mf.Value)
 	sinkQueryString(c.QueryString())
 	sinkRealIP(c.RealIP())
+	sinkScheme(c.Scheme())
 	var in struct{ User string }
 	_ = c.Bind(&in)
 	sinkBind(in.User)
@@ -209,6 +211,8 @@ func main() {
 	e.Match([]string{"GET", "POST"}, "/match", s.matchForm)
 	e.GET("/mw/:id", s.routeMWForm, routeMiddleware, echo.WrapMiddleware(netMiddleware))
 	e.POST("/accessors", s.accessorsForm)
+	e.POST("/custom", s.customForm)
+	e.POST("/custom-asserted", s.customAssertedForm)
 	registerBound(e)
 
 	api := e.Group("/api", groupMiddleware)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -1406,5 +1407,53 @@ func TestLofUnder(t *testing.T) {
 		if got := lofUnder(tc.path, tc.root); got != tc.want {
 			t.Errorf("lofUnder(%q, %q) = %v, want %v", tc.path, tc.root, got, tc.want)
 		}
+	}
+}
+
+// TestLofEngine_StdFromBound: only the bound's std backs the standard library. A floor that names the
+// loader's own release, with no std, still leaves the toolchain unknown; the same floor with the
+// loader's release as std reads its GOROOT. The run cache keys on the bound's values.
+func TestLofEngine_StdFromBound(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.22\n",
+		"main.go": "package main\n\nimport \"strings\"\n\nfunc main() { _ = strings.ToUpper(\"x\") }\n",
+	})
+	load, err := LoadProgram(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, ok := parseGoRelease(load.goVersion)
+	if !ok {
+		t.Skipf("loaded under %q", load.goVersion)
+	}
+	env := append(os.Environ(), "GOWORK=off")
+	for _, tc := range []struct {
+		name    string
+		bound   *releaseBound
+		failStd string
+	}{
+		{"a floor alone", &releaseBound{release: loaded}, lofUnknownToolchain},
+		{"a floor with the loader's release as std", &releaseBound{release: loaded, std: &loaded}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := WithRunCacheDir(context.Background(), t.TempDir())
+			if e := loadLofEngine(ctx, load.Packages, tc.bound, dir, env); e.Fail != "" || e.FailStd != tc.failStd {
+				t.Fatalf("fail = %q, standard-library failure = %q, want %q", e.Fail, e.FailStd, tc.failStd)
+			}
+		})
+	}
+	other := loaded
+	if fmt.Sprint(&releaseBound{release: loaded, std: &loaded}) != fmt.Sprint(&releaseBound{release: loaded, std: &other}) {
+		t.Error("equal bounds key the run cache apart")
+	}
+	if fmt.Sprint(&releaseBound{release: loaded}) == fmt.Sprint(&releaseBound{release: loaded, std: &loaded}) {
+		t.Error("a bound without std shares a run cache key with one that has it")
+	}
+	if fmt.Sprint(&releaseBound{release: loaded}) == fmt.Sprint(&releaseBound{release: loaded, exact: true}) {
+		t.Error("a floor shares a run cache key with an exact bound on the same release")
+	}
+	floor, _ := parseGoRelease("go1.21.0")
+	if fmt.Sprint(&releaseBound{release: floor, std: &loaded}) == fmt.Sprint(&releaseBound{release: loaded, std: &loaded}) {
+		t.Error("bounds on different releases share a run cache key")
 	}
 }

@@ -59,6 +59,9 @@ func TestHelperProcess(t *testing.T) {
 		return
 	}
 	mode := os.Getenv(helperModeEnv)
+	if mode == "serve" {
+		serveHelper() // java_client_test.go
+	}
 
 	line, _ := bufio.NewReader(os.Stdin).ReadBytes('\n')
 	var req Request

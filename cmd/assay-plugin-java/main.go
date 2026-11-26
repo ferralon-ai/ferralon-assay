@@ -14,13 +14,20 @@
 // The client (internal/plugin.javaPlugin) owns the timeout via exec.CommandContext;
 // this process runs to completion on a single request. A hard failure sets
 // Response.Error and exits non-zero; declared partiality is a success payload.
+//
+// With plugin.JavaServeEnv set to "1" (plugin.WithJavaScanProcess) it serves a whole scan
+// instead: one Response per request line, in order, until stdin closes, keeping the parsed
+// tree, call graph and ingresses between requests (javaanalysis.WithSession). A failed request
+// is answered with Response.Error and the process goes on to the next.
 package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
@@ -43,6 +50,13 @@ const envRunCacheDir = brand.EnvPrefix + "_JAVA_RUN_CACHE_DIR"
 
 func main() {
 	ctx := javaanalysis.WithRunCacheDir(context.Background(), os.Getenv(envRunCacheDir))
+	if os.Getenv(plugin.JavaServeEnv) == "1" {
+		if err := serve(javaanalysis.WithSession(ctx), os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(ctx, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -53,12 +67,54 @@ func main() {
 // non-nil error only for a hard failure (the caller exits non-zero); in that case
 // it still writes a Response with Error set so the client can decode a structured
 // failure.
-func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
+func run(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
 	line, err := bufio.NewReader(stdin).ReadBytes('\n')
 	if err != nil && len(line) == 0 {
 		return writeError(stdout, fmt.Sprintf("read request: %v", err))
 	}
+	return answer(ctx, line, stdout)
+}
 
+// serve is the process plugin.WithJavaScanProcess keeps for one scan: it answers one Request per
+// line, in order, until stdin closes, carrying ctx's session (javaanalysis.WithSession) from one
+// request to the next so the source tree is parsed and the dependency JARs opened once per scan. A
+// request that fails is answered with Error set, exactly as run answers it, and the next is read;
+// only a response that cannot be written ends the loop with an error.
+func serve(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
+	r := bufio.NewReader(stdin)
+	w := &recordingWriter{w: stdout}
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(bytes.TrimSpace(line)) > 0 {
+			_ = answer(ctx, line, w)
+			if w.err != nil {
+				return fmt.Errorf("write response: %w", w.err)
+			}
+		}
+		if err != nil {
+			return nil // stdin closed: the scan is over
+		}
+	}
+}
+
+// recordingWriter keeps the first write error, which serve checks after each response.
+type recordingWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (r *recordingWriter) Write(p []byte) (int, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	n, err := r.w.Write(p)
+	r.err = err
+	return n, err
+}
+
+// answer decodes one request line, dispatches it and writes its one Response line. A non-nil
+// error is a failed request, already answered with Error set.
+func answer(ctx context.Context, line []byte, stdout io.Writer) error {
 	var req plugin.Request
 	if err := json.Unmarshal(line, &req); err != nil {
 		return writeError(stdout, fmt.Sprintf("unmarshal request: %v", err))
@@ -209,7 +265,7 @@ func dispatch(ctx context.Context, req plugin.Request, opts ...javaanalysis.Opti
 	}
 }
 
-func writeResponse(stdout *os.File, resp plugin.Response) error {
+func writeResponse(stdout io.Writer, resp plugin.Response) error {
 	out, err := json.Marshal(resp)
 	if err != nil {
 		return writeError(stdout, fmt.Sprintf("marshal response: %v", err))
@@ -221,7 +277,7 @@ func writeResponse(stdout *os.File, resp plugin.Response) error {
 
 // writeError writes a structured error Response (so the client decodes a clean
 // failure) and returns a non-nil error so main exits non-zero (inv.4).
-func writeError(stdout *os.File, msg string) error {
+func writeError(stdout io.Writer, msg string) error {
 	out, _ := json.Marshal(plugin.Response{Protocol: plugin.ProtocolVersion, Error: msg})
 	out = append(out, '\n')
 	_, _ = stdout.Write(out)

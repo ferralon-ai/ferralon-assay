@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/beangraph"
@@ -156,7 +157,7 @@ func loadProgram(buildDir string) (*program, error) {
 	return prog, nil
 }
 
-// CallGraph builds the source-level call graph for the Java module at
+// callGraph builds the source-level call graph for the Java module at
 // req.BuildDir. It is a pure-Go, source-only graph: caller and callee are both
 // declared methods, and a call site is connected to its callee ONLY when the
 // callee's (simple name, arity) resolves to exactly one declared method in the
@@ -165,8 +166,8 @@ func loadProgram(buildDir string) (*program, error) {
 // declaration), NO edge is fabricated and the result is declared partial with
 // reason dynamic_dispatch — the inv.5 honesty boundary: an unresolved callee is
 // never rendered as a (wrong) edge or as reachability.
-func CallGraph(ctx context.Context, req plugin.CallGraphRequest, opts ...Option) (plugin.CallGraphResult, error) {
-	prog, err := loadProgram(req.BuildDir)
+func callGraph(ctx context.Context, req plugin.CallGraphRequest, opts ...Option) (plugin.CallGraphResult, error) {
+	prog, err := sessionProgram(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.CallGraphResult{}, err
 	}
@@ -241,7 +242,7 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest, opts ...Option)
 	// augmentation. A resolution failure is swallowed here exactly as before — the
 	// depreach completeness account surfaces unopened dependencies through reachability
 	// partiality, never a fabricated edge (inv.5).
-	dg, _ := buildDependencyGraph(req.BuildDir, opts...)
+	dg, _ := openDependencies(req.BuildDir, opts...)
 
 	// H2 seam (edge-seam.md §5): resolve the unresolved interface-dispatch call sites
 	// through the DI bean model and fold the resolved interface→impl edges into the
@@ -250,7 +251,7 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest, opts ...Option)
 	// on the lexical result BEFORE the depgraph/SCIP passes so the Assess path (gate
 	// unset) benefits. With no beans found, resolveBeanEdges returns nothing and the merge
 	// is a strict no-op — byte-identical to pre-bean-model behavior.
-	beans := prog.beanData.beans
+	beans := slices.Clip(prog.beanData.beans) // prog may be a session's: never append into it
 	if dg != nil {
 		beans = append(beans, depBeansSimpleName(dg.Classes)...)
 	}

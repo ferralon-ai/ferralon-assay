@@ -8,7 +8,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// FindIngresses identifies framework-idiomatic entry points in the Java module at
+// findIngresses identifies framework-idiomatic entry points in the Java module at
 // req.BuildDir: methods carrying an HTTP route annotation (@RequestMapping /
 // @GetMapping / @PostMapping / @Path / @GET / @POST and siblings), and the
 // doGet/doPost/service overrides of a class that extends HttpServlet. Each ingress
@@ -17,15 +17,13 @@ import (
 // ingress to a reachable sink. An unrecognized method is simply not an ingress
 // (absence is declared at the reachability layer, never fabricated here). A
 // missing build dir is a hard error (inv.4).
-func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest, opts ...Option) (plugin.IngressResult, error) {
-	return findIngresses(ctx, req, nil, opts...)
-}
-
-// findIngresses is FindIngresses with the first-party bytecode the caller already read, nil to
-// read it here. The compiled entry points (ingress_bytecode.go) are added to the lexical ones
-// before the container-resolved set is merged, so both tracks list them.
+//
+// fp is the first-party bytecode the caller already read, nil to read it here. The compiled
+// entry points (ingress_bytecode.go) are added to the lexical ones before the
+// container-resolved set is merged, so both tracks list them. FindIngresses (session.go) is
+// this, once per session.
 func findIngresses(ctx context.Context, req plugin.FindIngressesRequest, fp *firstPartyBytecode, opts ...Option) (plugin.IngressResult, error) {
-	prog, err := loadProgram(req.BuildDir)
+	prog, err := sessionProgram(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.IngressResult{}, err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -229,7 +230,9 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 			prev := cleanup
 			cleanup = func() { prev(); _ = os.RemoveAll(dir) }
 		}
-		javaOpts = append(javaOpts, plugin.WithJavaRunCacheDir(dir))
+		// One analyzer process answers the whole scan, so the tree is parsed and the dependency
+		// JARs opened once rather than for each advisory; cleanup ends it.
+		javaOpts = append(javaOpts, plugin.WithJavaRunCacheDir(dir), plugin.WithJavaScanProcess())
 	}
 	lp, err := selectPlugin(language, pluginBin, graph, goOpts, jsOpts, pyOpts, javaOpts, cfOpts...)
 	if err != nil {
@@ -242,6 +245,10 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 			}
 		}
 		return nil, err
+	}
+	if c, ok := lp.(io.Closer); ok {
+		prev := cleanup
+		cleanup = func() { _ = c.Close(); prev() }
 	}
 	logPhase(os.Stderr, "acquire", time.Since(start)-graphTime)
 

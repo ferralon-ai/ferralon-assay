@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"reflect"
 	"slices"
 	"sort"
@@ -22,17 +23,20 @@ import (
 // never embeds pipeline state. Build sorts the SBOM and findings into a stable order
 // so the serialized Report is deterministic (content-addressable in the StateStore).
 type Builder struct {
-	subject       Subject
-	packages      []Package
-	relationships []Relationship
-	goBuildList   SBOM
-	advisories    []AdvisoryFinding
-	partiality    []PartialityNote
-	provenance    Provenance
-	baseline      *BaselineRef
-	priority      func(Advisory) *Priority
-	entrypoints   []plugin.ResolvedLibraryEntrypoints
-	entryRoots    []plugin.EntryRootRecord
+	subject        Subject
+	packages       []Package
+	relationships  []Relationship
+	goBuildList    SBOM
+	jsLaunchDigest string
+	advisories     []AdvisoryFinding
+	partiality     []PartialityNote
+	provenance     Provenance
+	baseline       *BaselineRef
+	priority       func(Advisory) *Priority
+	entrypoints    []plugin.ResolvedLibraryEntrypoints
+	entryRoots     []plugin.EntryRootRecord
+	mode           *Mode
+	toolchain      *SubjectToolchain
 }
 
 // NewBuilder starts a Report for the given scanned subject. CommitSHA in provenance
@@ -72,6 +76,13 @@ func (b *Builder) SetRelationships(rels []Relationship) *Builder {
 // set values; the SBOM's packages and relationships are not read.
 func (b *Builder) SetGoBuildList(s SBOM) *Builder {
 	b.goBuildList = SBOM{GoBuildList: s.GoBuildList, GoMainModule: s.GoMainModule, GoWorkspaceModules: slices.Clone(s.GoWorkspaceModules)}
+	return b
+}
+
+// SetJSLaunchDigest records the SBOM's JSLaunchDigest, so a Report rebuilt from a stored SBOM
+// keeps the launch surface its js rows were reached under. Replaces any previously set value.
+func (b *Builder) SetJSLaunchDigest(s SBOM) *Builder {
+	b.jsLaunchDigest = s.JSLaunchDigest
 	return b
 }
 
@@ -220,6 +231,24 @@ func (b *Builder) WithEntryRoots(rs ...plugin.EntryRootRecord) *Builder {
 	return b
 }
 
+// WithMode records the strictness the run adjudicated under.
+func (b *Builder) WithMode(m Mode) *Builder {
+	b.mode = &m
+	return b
+}
+
+// WithSubjectToolchain records the toolchain the run analysed the subject under. The first fact
+// stays, resolved or not: a fact this run established, including "unresolved", outranks the stored
+// one a carry-forward offers after it, which describes another commit. nil is ignored.
+func (b *Builder) WithSubjectToolchain(t *SubjectToolchain) *Builder {
+	if t == nil || b.toolchain != nil {
+		return b
+	}
+	c := *t
+	b.toolchain = &c
+	return b
+}
+
 // WithBaseline sets the inherited-baseline pointer (PR-adjacent inherit / diff).
 func (b *Builder) WithBaseline(ref BaselineRef) *Builder {
 	b.baseline = &ref
@@ -338,6 +367,7 @@ func (b *Builder) Build() Report {
 		GoBuildList:        b.goBuildList.GoBuildList,
 		GoMainModule:       b.goBuildList.GoMainModule,
 		GoWorkspaceModules: sortedUnique(b.goBuildList.GoWorkspaceModules),
+		JSLaunchDigest:     b.jsLaunchDigest,
 	}
 	return Report{
 		SchemaVersion:      SchemaVersion,
@@ -349,6 +379,8 @@ func (b *Builder) Build() Report {
 		Baseline:           b.baseline,
 		LibraryEntrypoints: entrypoints,
 		Entrypoints:        entrypointRecordsWith(entrypoints, b.entryRoots),
+		Mode:               b.mode,
+		SubjectToolchain:   b.toolchain,
 	}
 }
 
@@ -490,9 +522,9 @@ func entrypointRecords(sets []plugin.ResolvedLibraryEntrypoints) []plugin.EntryR
 
 // entrypointRecordsWith is entrypointRecords, with a lane's record from roots in place of the one
 // derived from the library set when it states that same set: the first record of the lane whose
-// bare form matches adds what it inferred and what the caller denied. A record of another set (an
-// inherited one beside a fresh library set) is dropped rather than allowed to drift from
-// library_entrypoints. A lane with a record in roots and no library set states the first of them as
+// bare form matches adds what it inferred, what the caller denied and, read as an application, the
+// mains it rests on. A record of another set (an inherited one beside a fresh library set) is
+// dropped rather than allowed to drift from library_entrypoints. A lane with a record in roots and no library set states the first of them as
 // it is, or the first that lists what the lane inferred, under the same statement, when the first lists none: the lane records its entry points on assessments that judged no refutation, and
 // library_entrypoints holds only the sets a refutation rested on.
 func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plugin.EntryRootRecord) []plugin.EntryRootRecord {
@@ -501,6 +533,12 @@ func entrypointRecordsWith(sets []plugin.ResolvedLibraryEntrypoints, roots []plu
 		for _, r := range roots {
 			bare := r
 			bare.Inferred, bare.Denied = nil, nil
+			if r.Source == plugin.LibraryEntrypointsSourceMains {
+				// library_entrypoints states the library set alone: the mains an application reading
+				// rests on are the record's to add, like Inferred.
+				bare.Effective = maps.Clone(r.Effective)
+				delete(bare.Effective, plugin.EntryKindMain)
+			}
 			if r.Lane == rec.Lane && sameJSON(bare, rec) {
 				records[i] = r
 				break

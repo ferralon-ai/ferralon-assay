@@ -226,7 +226,7 @@ func TestScanSurfaces_RecordingLeavesVersionSurfaces(t *testing.T) {
 		dir := writeTree(t, files)
 		m1, u1, w1, i1, p1, t1, r1, a1, c1 := versionSurfaces(dir)
 		var runs []scriptRun
-		m2, u2, w2, i2, p2, t2, r2, a2, c2 := scanSurfaces(dir, &runs)
+		m2, u2, w2, i2, p2, t2, r2, a2, c2 := scanSurfaces(dir, &runs, nil)
 		if !reflect.DeepEqual([]any{m1, u1, w1, i1, p1, t1, r1, a1, c1}, []any{m2, u2, w2, i2, p2, t2, r2, a2, c2}) {
 			t.Errorf("tree %d: recording changed versionSurfaces: %v %v %v %v %v %v %v %v %v, want %v %v %v %v %v %v %v %v %v", i, m2, u2, w2, i2, p2, t2, r2, a2, c2, m1, u1, w1, i1, p1, t1, r1, a1, c1)
 		}

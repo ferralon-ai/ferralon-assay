@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jvmingress"
@@ -25,7 +26,7 @@ import (
 // supertype yields no ingress, and a malformed annotation table fails the class parse
 // upstream (declared partiality via loadProgram) — never a silently fabricated or dropped
 // root.
-func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
+func FindIngresses(_ context.Context, req plugin.FindIngressesRequest, opts ...javaanalysis.Option) (plugin.IngressResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
 		return plugin.IngressResult{}, err
@@ -38,7 +39,7 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 			Symbol: SymbolFromMethodRef(ref),
 		})
 	}
-	ingresses = append(ingresses, registerFrameworkIngresses(prog)...)
+	ingresses = append(ingresses, registerFrameworkIngresses(prog, req.BuildDir, opts...)...)
 
 	return plugin.IngressResult{
 		Partiality: prog.partiality(),
@@ -52,9 +53,26 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 // recognized annotation is an ingress, and a servlet method on an HttpServlet subclass is
 // an ingress — matching Java, no class-level stereotype is required. The emitted list is
 // sorted by canonical symbol (then Kind) for determinism.
-func registerFrameworkIngresses(prog *program) []plugin.Ingress {
+func registerFrameworkIngresses(prog *program, buildDir string, opts ...javaanalysis.Option) []plugin.Ingress {
+	// Supertypes resolve through the dependency closure, as the search's roots do, so a route
+	// inherited from a dependency JAR is listed. Without a build graph that closure is empty.
+	firstParty := make(map[string]bool, len(prog.classes))
+	for _, c := range prog.classes {
+		firstParty[c.Name] = true
+	}
+	deps := loadDependencyClosure(buildDir, firstParty, opts...)
+	byName := make(map[string]*classfile.Class, len(prog.classes)+len(deps.classes))
+	for i := range prog.classes {
+		byName[prog.classes[i].Name] = &prog.classes[i]
+	}
+	for i := range deps.classes {
+		if _, dup := byName[deps.classes[i].Name]; !dup {
+			byName[deps.classes[i].Name] = &deps.classes[i]
+		}
+	}
+	lookup := func(n string) (*classfile.Class, bool) { c, ok := byName[n]; return c, ok }
 	var ingresses []plugin.Ingress
-	for _, fi := range frameworkIngresses(prog.classes) {
+	for _, fi := range frameworkIngresses(prog.classes, lookup) {
 		ingresses = append(ingresses, plugin.Ingress{
 			Kind:     fi.kind,
 			Symbol:   SymbolFromMethodRef(fi.ref),
@@ -142,16 +160,17 @@ type frameworkIngress struct {
 // Recognition matches GRANITE's Java lanes: a mapping/entrypoint annotation on a method is
 // sufficient on its own — no class-level stereotype gate — and a servlet method on a class
 // whose direct superclass name ends in the servlet suffix is an ingress. Over-approximating
-// roots this way can only raise reachability, never false-safe (inv.5).
-func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
+// roots this way can only raise reachability, never false-safe (inv.5). lookup resolves the
+// supertypes a method inherits a mapping from; nil resolves among classes alone.
+func frameworkIngresses(classes []classfile.Class, lookup func(string) (*classfile.Class, bool)) []frameworkIngress {
 	var out []frameworkIngress
 	byName := make(map[string]*classfile.Class, len(classes))
 	for i := range classes {
 		byName[classes[i].Name] = &classes[i]
 	}
-	lookup := func(name string) (*classfile.Class, bool) { c, ok := byName[name]; return c, ok }
+	local := func(name string) (*classfile.Class, bool) { c, ok := byName[name]; return c, ok }
 	for _, c := range classes {
-		isValidator := len(validatorSupers) > 0 && validatorAncestor(&c, lookup)
+		isValidator := len(validatorSupers) > 0 && validatorAncestor(&c, local)
 		base := classRequestMappingPath(c.Annotations)
 		isServlet := servletSuperSuffix != "" && superClassMatchesSuffix(c.Super, servletSuperSuffix)
 		for _, m := range c.Methods {
@@ -170,6 +189,19 @@ func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
 			if n, ok := validatorMethods[m.Ref.Name]; isValidator && ok && !m.Abstract && (n == anyArity || descriptorArity(m.Ref.Descriptor) == n) {
 				out = append(out, frameworkIngress{ref: m.Ref, kind: jvmingress.KindConstraintValidator})
 			}
+		}
+	}
+	// A method that inherits its mapping from a supertype's method is an ingress too.
+	if lookup == nil {
+		lookup = local
+	}
+	own := map[string]bool{}
+	for _, fi := range out {
+		own[fi.ref.String()] = true
+	}
+	for _, e := range jvmingress.Compiled(classes, lookup) {
+		if !own[e.Ref.String()] {
+			out = append(out, frameworkIngress{ref: e.Ref, kind: e.Kind, selector: e.Selector})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -215,8 +247,8 @@ func validatorAncestor(c *classfile.Class, lookup func(string) (*classfile.Class
 // ingress (routes, container entrypoints, and servlets), so Reachability can root a search
 // at any framework ingress just as it does at `main`. Order matches frameworkIngresses
 // (sorted) for determinism.
-func frameworkIngressRefs(classes []classfile.Class) []classfile.MethodRef {
-	fis := frameworkIngresses(classes)
+func frameworkIngressRefs(classes []classfile.Class, lookup func(string) (*classfile.Class, bool)) []classfile.MethodRef {
+	fis := frameworkIngresses(classes, lookup)
 	refs := make([]classfile.MethodRef, len(fis))
 	for i, fi := range fis {
 		refs[i] = fi.ref

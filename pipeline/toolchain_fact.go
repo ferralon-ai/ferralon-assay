@@ -15,8 +15,8 @@
 // GOTOOLCHAIN=auto; under GOTOOLCHAIN=local or a pinned GOTOOLCHAIN it ignores it, and the subject's
 // GOTOOLCHAIN is not visible here (job env, GOENV, a container image). actions/setup-go sets
 // GOTOOLCHAIN=local for the rest of the job, so a build below the toolchain line is the ordinary
-// case, not an edge. The line's version therefore never becomes the floor and never refutes an exact
-// claim; only its presence is read. Presence says two things: the go line binds (below), and the
+// case, not an edge. The line's version therefore never becomes the syntax floor and never refutes an
+// exact claim; for that floor only its presence is read. Presence says two things: the go line binds (below), and the
 // build ran go1.21.0 or later, because go commands before 1.21 reject the file at parse. So with a
 // `toolchain` line the floor is the go line raised to go1.21.0, whatever the line's own version.
 //
@@ -27,6 +27,13 @@
 // 1.21 reject both at parse (directivesBindToolchain). Otherwise the go line is no floor, and the
 // toolchain the build's environment resolves stands in for it under the same trust as the CI
 // observation.
+//
+// Practical mode reads the `toolchain` line's version too, as a floor that rests on an assumption:
+// the build runs under GOTOOLCHAIN=auto, which switches to the line's release whenever the local Go
+// is older, so the build's toolchain is at or above it. The fact then carries that assumption and
+// the floor without it (StrictVersion), and every clearance that needs the assumed floor names it.
+// Strict mode, a caller-declared toolchain, and a trusted observation all leave the line's version
+// unread, as above.
 //
 // So the two consumers of this fact can do different things with it:
 //
@@ -77,9 +84,10 @@ const (
 	// only under the same trust (trustCIObserved), ranked below the observation, and only when the
 	// directives do not bind.
 	ToolchainSourceBuildResolved = "build_resolved"
-	// ToolchainSourceToolchainDirective names the go.mod `toolchain goX.Y.Z` directive. It is an
-	// input, not a bound: resolution never selects it as a fact's Source or a contradiction's
-	// FloorSource, because the go command ignores the line's version outside GOTOOLCHAIN=auto.
+	// ToolchainSourceToolchainDirective names the go.mod `toolchain goX.Y.Z` directive. The go
+	// command ignores the line's version outside GOTOOLCHAIN=auto, so resolution selects it as a
+	// fact's Source only for the practical-mode assumed floor (ToolchainFact.Assumption), and never
+	// as a contradiction's FloorSource.
 	ToolchainSourceToolchainDirective = "toolchain_directive"
 	// ToolchainSourceGoDirective is the go.mod `go` directive when it binds (directivesBindToolchain):
 	// the floor, normalized to goX.Y.Z and raised to go1.21.0 when a `toolchain` line is present.
@@ -111,6 +119,11 @@ type ToolchainFact struct {
 	// rather than the disclosure an always-emitted unresolved fact is. When set, Bound is "minimum"
 	// and Version/Source describe the floor that survived, not the claim that did not.
 	Contradiction *ToolchainContradiction `json:"contradiction,omitempty"`
+	// Assumption is set when Version is the practical-mode floor from the `toolchain` line: the one
+	// line a clearance that needs this floor rests on. StrictVersion is then the floor without the
+	// assumption, empty when there is none. Bound is always "minimum" when Assumption is set.
+	Assumption    string `json:"assumption,omitempty"`
+	StrictVersion string `json:"strict_version,omitempty"`
 }
 
 // ToolchainContradiction records an exact toolchain claim the subject's own manifest disproved, so the
@@ -146,6 +159,8 @@ type toolchainInputs struct {
 	// (BazelWorkspaceAbove). rules_go then compiles with the SDK the workspace declares, which
 	// go.mod's directives do not bound.
 	bazelWorkspace bool
+	// strict withholds the practical-mode floor from the `toolchain` line (assumeAutoToolchain).
+	strict bool
 }
 
 // directivesBindToolchain reports whether go.mod's directives bound the subject's toolchain from
@@ -261,7 +276,41 @@ func resolveToolchainFact(in toolchainInputs) ToolchainFact {
 		}
 	}
 
-	return floorFact
+	return assumeAutoToolchain(in, floorFact, floorParsed, haveFloor)
+}
+
+// assumeAutoToolchain raises the go.mod floor to the `toolchain` line's release in practical mode,
+// on the assumption that the build runs under GOTOOLCHAIN=auto. It applies only where the floor is
+// the fact: an exact source, declared or trusted, says which release the build ran, and that
+// outranks an assumption about how it was chosen. The line must name a full release (goX.Y.Z, no
+// suffix) above the floor; anything else leaves the floor as it is. Inside a Bazel workspace the
+// line governs nothing, so the floor stands there too.
+func assumeAutoToolchain(in toolchainInputs, floor ToolchainFact, floorParsed goToolchainVersion, haveFloor bool) ToolchainFact {
+	if in.strict || in.bazelWorkspace {
+		return floor
+	}
+	line, ok := parseFullGoRelease(in.toolchainDirective)
+	if !ok || (haveFloor && compareGoToolchain(line, floorParsed) <= 0) {
+		return floor
+	}
+	v := formatGoToolchainVersion(line)
+	return ToolchainFact{
+		Version:       v,
+		Bound:         ToolchainBoundMinimum,
+		Source:        ToolchainSourceToolchainDirective,
+		Assumption:    fmt.Sprintf("the build runs under GOTOOLCHAIN=auto, so on the toolchain line's %s or newer", v),
+		StrictVersion: floor.Version,
+	}
+}
+
+// parseFullGoRelease parses a `toolchain` line naming a full release: "go" and three numeric
+// segments. A two-segment name, a prerelease, or a custom suffix is not one.
+func parseFullGoRelease(s string) (goToolchainVersion, bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "go") || strings.Count(s, ".") != 2 {
+		return goToolchainVersion{}, false
+	}
+	return parseGoToolchainVersion(s)
 }
 
 // firstToolchainLineRelease is the oldest go command that parses a go.mod carrying a `toolchain`

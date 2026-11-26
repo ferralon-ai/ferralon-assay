@@ -105,7 +105,8 @@ type lofNode struct {
 // (string ids); Src the source functions it walks (package path, "F" or "T.M"). Novel is set when
 // one of the file's loaded roots lies outside G0's CHA-round or final slice. Links holds the
 // packages the build did not load that the file can link (string ids), with LinkFC what that walk
-// fails closed on.
+// fails closed on. LinkTo holds the packages the closure's //go:linkname directives bind (string
+// ids; lofClosure.linkTo).
 type lofFacts struct {
 	FC, FCStd                []string
 	Funcs, TypeMeth, NewMeth []int32
@@ -116,6 +117,7 @@ type lofFacts struct {
 	Excluded                 bool
 	Links                    []int32
 	LinkFC                   []string
+	LinkTo                   []int32
 }
 
 // lofCandidate is a left-out file and the package it belongs to.
@@ -378,11 +380,11 @@ func funcKey(f *types.Func) string {
 // G_T.
 func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *releaseBound, buildDir string, env []string) (*lofEngine, error) {
 	excluded := func(x constraint.Expr) bool { return ignored(x) || (release != nil && release.excludes(x)) }
-	var exact *goRelease
-	if release != nil && release.exact {
-		exact = &release.release
+	var std *goRelease
+	if release != nil {
+		std = release.std
 	}
-	goroot, failStd := lofToolchain(ctx, buildDir, env, exact)
+	goroot, failStd := lofToolchain(ctx, buildDir, env, std)
 	w := newLofWorld(ctx, pkgs, buildDir, env, excluded, goroot, time.Now().Add(lofBudgetTime))
 	w.modcache = lofModCache(ctx, buildDir, env)
 	in := &lofInterner{ids: map[string]int32{}}
@@ -410,6 +412,10 @@ func buildLofEngine(ctx context.Context, pkgs []*packages.Package, release *rele
 		}
 		slices.Sort(f.Links)
 		f.LinkFC = linkFC
+		for ip := range cl.linkTo {
+			f.LinkTo = append(f.LinkTo, in.id(ip))
+		}
+		slices.Sort(f.LinkTo)
 		for m := range cl.methods {
 			f.Methods = append(f.Methods, in.id(m))
 		}
@@ -755,7 +761,7 @@ func (row *lofRow) reach(callers [][]int32, inSlice func(lofNode) bool) *lofReac
 
 // counts reports whether the left-out file at path may reach S. A file the engine does not hold, or
 // any file when the engine could not be built, counts. When the file counts because its closure
-// links assembly, binds a //go:linkname or includes C (lofAnnotated), reasons holds the
+// links assembly, binds a //go:linkname to one of S's packages or includes C (lofAnnotated), reasons holds the
 // excluded_files localisations naming them. failed is set when it counts because the engine itself
 // failed: it could not be built, or the walk could not read or parse a file or ran out of budget
 // (lofFailed).
@@ -816,6 +822,9 @@ func (row *lofRow) countsWhy(path string) (counts bool, reasons []string, failed
 	if row.stdlib {
 		fc = append(slices.Clone(fc), f.FCStd...)
 	}
+	if slices.ContainsFunc(f.LinkTo, func(id int32) bool { return row.inPkg(e.Strs[id]) }) && !slices.Contains(fc, lofLinkname) {
+		fc = append(slices.Clone(fc), lofLinkname)
+	}
 	if len(fc) > 0 || (row.stdlib && e.FailStd != "") {
 		return true, lofAnnotated(fc), lofFailed(fc), false
 	}
@@ -849,9 +858,10 @@ func (row *lofRow) countsWhy(path string) (counts bool, reasons []string, failed
 // lofAnnotations maps the fail-closed items the gate names to the reason a withheld refutation
 // declares for them.
 var lofAnnotations = map[string]string{
-	lofAssembly:   plugin.PartialReasonExcludedFilesAssembly,
-	lofLinkname:   plugin.PartialReasonExcludedFilesLinkname,
-	lofCgoInclude: plugin.PartialReasonExcludedFilesCgoInclude,
+	lofAssembly:       plugin.PartialReasonExcludedFilesAssembly,
+	lofLinkname:       plugin.PartialReasonExcludedFilesLinkname,
+	lofCgoInclude:     plugin.PartialReasonExcludedFilesCgoInclude,
+	lofUnresolvedName: plugin.PartialReasonExcludedFilesUnresolvedName,
 }
 
 // lofEngineFailures holds the fail-closed items that mark a failure of the engine's own steps rather

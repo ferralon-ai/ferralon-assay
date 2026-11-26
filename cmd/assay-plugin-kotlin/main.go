@@ -119,7 +119,7 @@ func dispatch(ctx context.Context, req plugin.Request, opts ...javaanalysis.Opti
 		if req.FindIngresses == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing find_ingresses request", req.Op)
 		}
-		res, err := kotlinanalysis.FindIngresses(ctx, *req.FindIngresses)
+		res, err := kotlinanalysis.FindIngresses(ctx, *req.FindIngresses, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}

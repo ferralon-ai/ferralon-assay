@@ -257,6 +257,7 @@ func renderSummary(r report.Report, fetch []resultsink.DependencyFetchNote) stri
 	if v := r.Provenance.AnalyzerVersion; v != "" && brand.Tier0RenderAnalyzer {
 		fmt.Fprintf(&b, "**Analyzer:** `%s`  \n", v)
 	}
+	b.WriteString(modeLine(r))
 	b.WriteString("\n")
 
 	b.WriteString(reportHeadline(r, c))
@@ -305,6 +306,15 @@ func renderSummary(r report.Report, fetch []resultsink.DependencyFetchNote) stri
 	b.WriteString(limitsFooter(r))
 
 	return b.String()
+}
+
+// modeLine names the strictness the run adjudicated under and where it was stated, "" for a report
+// that records none. Both surfaces that render the header share it.
+func modeLine(r report.Report) string {
+	if r.Mode == nil {
+		return ""
+	}
+	return fmt.Sprintf("**Strictness:** `%s` (%s)  \n", r.Mode.Strictness, r.Mode.Source)
 }
 
 // partialHeadlineTail qualifies a headline whose counts a disclosed coverage limit

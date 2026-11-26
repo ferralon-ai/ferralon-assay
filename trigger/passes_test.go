@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -540,4 +541,743 @@ func gitRepoWithGoMod(t *testing.T, body string) string {
 		}
 	}
 	return dir
+}
+
+// TestCVEWatch_RetriedCutRowAssessesSiblingInstances: a cut row cve-watch retries gets the rows a
+// completed baseline gives its advisory, the sibling instance included, so the retry cannot clear
+// the cut disclosure while another major version of the module was never assessed.
+func TestCVEWatch_RetriedCutRowAssessesSiblingInstances(t *testing.T) {
+	assessOpts := func(p plugin.LanguagePlugin) []pipeline.AssessOption {
+		return []pipeline.AssessOption{
+			pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, siblingGoMod), lang: "go"}),
+			pipeline.WithPlugin(p),
+			pipeline.WithAdvisorySource(siblingSource{}),
+		}
+	}
+	complete := refutingGoPlugin{inventory: plugin.Complete()}
+	store := &memStore{}
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	stopFirst := stopOnNthPlugin{refutingGoPlugin: complete, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: 1}
+	if _, err := RunBaseline(context.Background(), store, BaselineRequest{
+		Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "base-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		Advisories:    passAdvisories("GO-S-1"),
+		AssessOptions: assessOpts(stopFirst),
+		Analysis:      analysis,
+	}); err != nil {
+		t.Fatalf("RunBaseline: %v", err)
+	}
+	if got := cutIDs(store.state.Report); !slices.Equal(got, []string{"GO-S-1"}) {
+		t.Fatalf("stored cut rows = %v, want GO-S-1", got)
+	}
+
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: assessOpts(complete),
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if res.Report == nil {
+		t.Fatal("cve-watch ran no earnest pass")
+	}
+	want := rowsByID(runPasses(t, passAdvisories("GO-S-1"), assessOpts(complete), nil))["GO-S-1"]
+	got := rowsByID(res.Report)["GO-S-1"]
+	if len(want) != 2 {
+		t.Fatalf("baseline rows = %+v, want the primary and a sibling", want)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("cve-watch rows for GO-S-1:\n%+v\nbaseline rows:\n%+v", got, want)
+	}
+	if len(cutShortNotes(res.Report)) != 0 {
+		t.Errorf("cut-short notes remain: %+v", cutShortNotes(res.Report))
+	}
+}
+
+// siblingNotesSource is siblingSource whose second major version lists a vulnerable symbol and
+// whose first does not, so the two instances' rows carry different notes.
+type siblingNotesSource struct{}
+
+func (siblingNotesSource) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
+	facts, _ := siblingSource{}.Lookup(id)
+	base, _ := fixtureSource().Lookup(wiringAdvisory.ID)
+	facts.AffectedPackages[1].Symbols = base.Symbols
+	return facts, true
+}
+
+func siblingAssessOpts(t *testing.T, p plugin.LanguagePlugin, src pipeline.AdvisorySource) []pipeline.AssessOption {
+	t.Helper()
+	return []pipeline.AssessOption{
+		pipeline.WithCheckout(fixedCheckout{dir: writeGoMod(t, siblingGoMod), lang: "go"}),
+		pipeline.WithPlugin(p),
+		pipeline.WithAdvisorySource(src),
+	}
+}
+
+// cutSiblingBaseline stores a baseline over the sibling advisory that the scan stopped at its first
+// reachability call, so its one row is cut, under source.
+func cutSiblingBaseline(t *testing.T, src pipeline.AdvisorySource, source string, n int32) *memStore {
+	t.Helper()
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	p := stopOnNthPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: n}
+	store := &memStore{}
+	if _, err := RunBaseline(context.Background(), store, BaselineRequest{
+		Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "base-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		Advisories:    []assessment.VulnRef{{ID: "GO-S-1", Source: source}},
+		AssessOptions: siblingAssessOpts(t, p, src),
+		Analysis:      analysis,
+	}); err != nil {
+		t.Fatalf("RunBaseline: %v", err)
+	}
+	if got := cutIDs(store.state.Report); !slices.Equal(got, []string{"GO-S-1"}) {
+		t.Fatalf("stored cut rows = %v, want GO-S-1", got)
+	}
+	return store
+}
+
+// TestCVEWatch_RetriedOSVCutRowAssessesSiblingInstances: a cut row stored under source osv, whose
+// ID OSV reports again, is assessed as a new advisory and gets the rows and notes a completed
+// baseline gives it, the sibling instance's included.
+func TestCVEWatch_RetriedOSVCutRowAssessesSiblingInstances(t *testing.T) {
+	src := siblingNotesSource{}
+	complete := refutingGoPlugin{inventory: plugin.Complete()}
+	store := cutSiblingBaseline(t, src, osvSource, 1)
+	full := runPasses(t, []assessment.VulnRef{{ID: "GO-S-1", Source: osvSource}}, siblingAssessOpts(t, complete, src), nil)
+	want := rowsByID(full)["GO-S-1"]
+	if len(want) != 2 {
+		t.Fatalf("baseline rows = %+v, want the primary and a sibling", want)
+	}
+	var pkg report.Package
+	for _, f := range want {
+		if f.Package != nil && f.Package.Name == "example.com/lib" {
+			pkg = *f.Package
+		}
+	}
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{{ID: "GO-S-1", Package: pkg}}}}, CVEWatchRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: siblingAssessOpts(t, complete, src),
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if !slices.Equal(res.NewAdvisories, []string{"GO-S-1"}) {
+		t.Fatalf("new advisories = %v, want GO-S-1 assessed by the new-advisory lane", res.NewAdvisories)
+	}
+	if got := rowsByID(res.Report)["GO-S-1"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("cve-watch rows for GO-S-1:\n%+v\nbaseline rows:\n%+v", got, want)
+	}
+	if len(cutShortNotes(res.Report)) != 0 {
+		t.Errorf("cut-short notes remain: %+v", cutShortNotes(res.Report))
+	}
+	for _, n := range full.Partiality {
+		if !hasNoteReason(res.Report.Partiality, n.Reason) {
+			t.Errorf("baseline note %q missing from the cve-watch report: %+v", n.Reason, res.Report.Partiality)
+		}
+	}
+}
+
+// TestCVEWatch_SiblingStopsAgainStaysDisclosed: a retried cut row whose sibling instance the scan
+// stops before assessing again keeps the sibling's cut row, discloses it as 1 of 2, and holds the
+// cursor so the next run assesses it.
+func TestCVEWatch_SiblingStopsAgainStaysDisclosed(t *testing.T) {
+	store := cutSiblingBaseline(t, siblingSource{}, "corpus", 1)
+	store.state.Cursor = "held"
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	p := stopOnNthPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: 2}
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: siblingAssessOpts(t, p, siblingSource{}),
+		Analysis:      analysis,
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if res.Report == nil {
+		t.Fatal("cve-watch ran no earnest pass")
+	}
+	if rows := rowsByID(res.Report)["GO-S-1"]; len(rows) != 2 || len(cutIDs(res.Report)) != 1 {
+		t.Errorf("rows for GO-S-1 = %+v, want the primary and one cut sibling", rows)
+	}
+	const want = "1 of 2 advisories were not assessed: test stop"
+	if notes := cutShortNotes(res.Report); len(notes) != 1 || notes[0].Detail != want {
+		t.Errorf("scan_cut_short notes = %+v, want one %q", notes, want)
+	}
+	if res.Cursor != "held" || !res.Truncated {
+		t.Errorf("cursor = %q, truncated = %v; want the held cursor and a truncated report", res.Cursor, res.Truncated)
+	}
+}
+
+// TestCVEWatch_RetriedCutRowReplacesEveryCutRowUnderItsKey: a key holding two cut rows is cleared by
+// one retry, which leaves the rows a completed baseline gives, not a stale cut row beside them.
+func TestCVEWatch_RetriedCutRowReplacesEveryCutRowUnderItsKey(t *testing.T) {
+	src := siblingSource{}
+	complete := refutingGoPlugin{inventory: plugin.Complete()}
+	store := cutSiblingBaseline(t, src, "corpus", 1)
+	store.state.Report.Advisories = append(store.state.Report.Advisories, cutShortFinding(assessment.VulnRef{ID: "GO-S-1", Source: "corpus"}))
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: siblingAssessOpts(t, complete, src),
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	want := rowsByID(runPasses(t, passAdvisories("GO-S-1"), siblingAssessOpts(t, complete, src), nil))["GO-S-1"]
+	if got := rowsByID(res.Report)["GO-S-1"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("cve-watch rows for GO-S-1:\n%+v\nbaseline rows:\n%+v", got, want)
+	}
+	if len(cutIDs(res.Report)) != 0 || len(cutShortNotes(res.Report)) != 0 {
+		t.Errorf("cut rows %v, notes %+v remain", cutIDs(res.Report), cutShortNotes(res.Report))
+	}
+}
+
+// TestCVEWatch_NotFetchedRetryLeavesSiblingRows: a retry of a completed parent that is not a cut row
+// replaces the parent and keeps the stored sibling row; it does not assess the siblings again.
+func TestCVEWatch_NotFetchedRetryLeavesSiblingRows(t *testing.T) {
+	src := siblingSource{}
+	complete := refutingGoPlugin{inventory: plugin.Complete()}
+	store := &memStore{}
+	if _, err := RunBaseline(context.Background(), store, BaselineRequest{
+		Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "base-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		Advisories:    passAdvisories("GO-S-1"),
+		AssessOptions: siblingAssessOpts(t, complete, src),
+	}); err != nil {
+		t.Fatalf("RunBaseline: %v", err)
+	}
+	if rows := rowsByID(store.state.Report)["GO-S-1"]; len(rows) != 2 {
+		t.Fatalf("stored rows = %+v, want the primary and a sibling", rows)
+	}
+	store.state.DepFetch = &statestore.DepFetch{Reassess: []string{"GO-S-1"}}
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+		Subject:         Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:        assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions:   siblingAssessOpts(t, complete, src),
+		DependencyFetch: func(prior *statestore.DepFetch, _ DependencyFetchRun) *statestore.DepFetch { return prior },
+	})
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if !slices.Equal(res.Reassessed, []string{"GO-S-1"}) {
+		t.Fatalf("reassessed = %v, want GO-S-1", res.Reassessed)
+	}
+	if rows := rowsByID(res.Report)["GO-S-1"]; len(rows) != 2 {
+		t.Errorf("rows for GO-S-1 = %+v, want the primary and the one stored sibling", rows)
+	}
+}
+
+// TestCVEWatch_RetryKeepsCutSiblingWhateverTheStoredOrder: a baseline whose stop landed in the
+// sibling pass stores the completed parent and a cut sibling under one key. A not-fetched retry of
+// the parent replaces the parent's row only, whichever row the stored order puts first.
+func TestCVEWatch_RetryKeepsCutSiblingWhateverTheStoredOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		cutFirst bool
+	}{{"cut row first", true}, {"parent first", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := siblingSource{}
+			store := cutSiblingBaseline(t, src, "corpus", 2)
+			rows := store.state.Report.Advisories
+			slices.SortStableFunc(rows, func(a, b report.AdvisoryFinding) int {
+				ac, bc := a.UndeterminedReason == report.ReasonScanCutShort, b.UndeterminedReason == report.ReasonScanCutShort
+				switch {
+				case ac == bc:
+					return 0
+				case ac == tc.cutFirst:
+					return -1
+				}
+				return 1
+			})
+			if (rows[0].UndeterminedReason == report.ReasonScanCutShort) != tc.cutFirst {
+				t.Fatalf("stored order = %+v, want the cut row first = %v", rows, tc.cutFirst)
+			}
+			store.state.DepFetch = &statestore.DepFetch{Reassess: []string{"GO-S-1"}}
+			res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, CVEWatchRequest{
+				Subject:         Subject{Repo: "r", ResolvedCommit: "head-sha"},
+				Codebase:        assessment.CodebaseRef{Repo: "r", Revision: "main"},
+				AssessOptions:   siblingAssessOpts(t, refutingGoPlugin{inventory: plugin.Complete()}, src),
+				DependencyFetch: func(prior *statestore.DepFetch, _ DependencyFetchRun) *statestore.DepFetch { return prior },
+			})
+			if err != nil {
+				t.Fatalf("RunCVEWatch: %v", err)
+			}
+			if got := cutIDs(res.Report); !slices.Equal(got, []string{"GO-S-1"}) {
+				t.Errorf("cut rows = %v, want the one cut sibling", got)
+			}
+			if got := rowsByID(res.Report)["GO-S-1"]; len(got) != 2 {
+				t.Errorf("rows for GO-S-1 = %+v, want the fresh parent and the cut sibling", got)
+			}
+			if len(cutShortNotes(res.Report)) != 1 {
+				t.Errorf("cut-short notes = %+v, want one", cutShortNotes(res.Report))
+			}
+		})
+	}
+}
+
+// retryStored runs a cve-watch over store's GO-S-1 rows with the retry lane named: "not fetched"
+// lists the ID for reassessment, "restated" stores an entry-point statement the run does not state.
+func retryStored(t *testing.T, store *memStore, lane string, p plugin.LanguagePlugin, analysis context.Context) *CVEWatchResult {
+	t.Helper()
+	return retryStoredFrom(t, store, lane, p, siblingSource{}, analysis)
+}
+
+// retryStoredFrom is retryStored with the advisory facts read from src.
+func retryStoredFrom(t *testing.T, store *memStore, lane string, p plugin.LanguagePlugin, src pipeline.AdvisorySource, analysis context.Context) *CVEWatchResult {
+	t.Helper()
+	req := CVEWatchRequest{
+		Subject:       Subject{Repo: "r", ResolvedCommit: "head-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		AssessOptions: siblingAssessOpts(t, p, src),
+		Analysis:      analysis,
+	}
+	switch lane {
+	case "not fetched":
+		store.state.DepFetch = &statestore.DepFetch{Reassess: []string{"GO-S-1"}}
+		req.DependencyFetch = func(prior *statestore.DepFetch, _ DependencyFetchRun) *statestore.DepFetch { return prior }
+	case "restated":
+		store.state.Report.LibraryEntrypoints = []plugin.ResolvedLibraryEntrypoints{{Ecosystem: "golang", Input: "none,auto"}}
+	}
+	res, err := RunCVEWatch(context.Background(), store, &fakeOSV{}, req)
+	if err != nil {
+		t.Fatalf("RunCVEWatch: %v", err)
+	}
+	if res.Report == nil {
+		t.Fatal("cve-watch ran no earnest pass")
+	}
+	return res
+}
+
+// completedSiblingBaseline stores a completed baseline's GO-S-1 rows, the parent and one sibling,
+// the sibling made a failed assessment's row when failed, in the order sibling-first or not.
+func completedSiblingBaseline(t *testing.T, failed, siblingFirst bool) *memStore {
+	t.Helper()
+	store := &memStore{}
+	if _, err := RunBaseline(context.Background(), store, BaselineRequest{
+		Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "base-sha"},
+		Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
+		Advisories:    passAdvisories("GO-S-1"),
+		AssessOptions: siblingAssessOpts(t, refutingGoPlugin{inventory: plugin.Complete()}, siblingSource{}),
+	}); err != nil {
+		t.Fatalf("RunBaseline: %v", err)
+	}
+	rows := store.state.Report.Advisories
+	if len(rows) != 2 {
+		t.Fatalf("stored rows = %+v, want the parent and a sibling", rows)
+	}
+	sib := slices.IndexFunc(rows, func(f report.AdvisoryFinding) bool { return f.Package != nil && f.Package.Name == "example.com/lib/v2" })
+	if sib < 0 {
+		t.Fatalf("stored rows = %+v, want a sibling of example.com/lib/v2", rows)
+	}
+	if failed {
+		ref := assessment.VulnRef{ID: "GO-S-1", Source: "corpus"}
+		err := errors.New("boom")
+		rows[sib] = assessFailureFinding(ref, err)
+		store.state.Report.Partiality = append(store.state.Report.Partiality, assessFailureNote(ref, err))
+	}
+	if (sib == 0) != siblingFirst {
+		rows[0], rows[1] = rows[1], rows[0]
+	}
+	return store
+}
+
+// TestCVEWatch_RetryOfParentKeepsCompletedAndFailedSiblings: a not-fetched or restated retry of a
+// completed parent replaces the parent's row and leaves its sibling's row, completed or failed (a
+// failed sibling's names no package), as stored, in either stored order.
+func TestCVEWatch_RetryOfParentKeepsCompletedAndFailedSiblings(t *testing.T) {
+	complete := refutingGoPlugin{inventory: plugin.Complete()}
+	for _, lane := range []string{"not fetched", "restated"} {
+		for _, failed := range []bool{false, true} {
+			for _, siblingFirst := range []bool{true, false} {
+				name := fmt.Sprintf("%s/failed=%v/sibling first=%v", lane, failed, siblingFirst)
+				t.Run(name, func(t *testing.T) {
+					store := completedSiblingBaseline(t, failed, siblingFirst)
+					var sibling report.AdvisoryFinding
+					for _, f := range store.state.Report.Advisories {
+						if failed == (f.UndeterminedReason == report.ReasonAnalysisDidNotRun) && (f.Package == nil || f.Package.Name == "example.com/lib/v2") {
+							sibling = f
+						}
+					}
+					res := retryStored(t, store, lane, complete, context.Background())
+					rows := rowsByID(res.Report)["GO-S-1"]
+					if len(rows) != 2 || !slices.ContainsFunc(rows, func(f report.AdvisoryFinding) bool { return reflect.DeepEqual(f, sibling) }) {
+						t.Errorf("rows = %+v, want the fresh parent and the stored sibling %+v", rows, sibling)
+					}
+					if failed && !hasNoteReason(res.Report.Partiality, plugin.PartialReasonToolFailure) {
+						t.Errorf("the sibling's failure note was dropped: %+v", res.Report.Partiality)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestCVEWatch_RetryReplacesParentFailureRow: a parent whose stored assessment failed has no package
+// and no sibling rows, so a retry's fresh row replaces it.
+func TestCVEWatch_RetryReplacesParentFailureRow(t *testing.T) {
+	for _, lane := range []string{"not fetched", "restated"} {
+		t.Run(lane, func(t *testing.T) {
+			store := completedSiblingBaseline(t, false, false)
+			ref := assessment.VulnRef{ID: "GO-S-1", Source: "corpus"}
+			store.state.Report.Advisories = []report.AdvisoryFinding{assessFailureFinding(ref, errors.New("boom"))}
+			res := retryStored(t, store, lane, refutingGoPlugin{inventory: plugin.Complete()}, context.Background())
+			rows := rowsByID(res.Report)["GO-S-1"]
+			if len(rows) != 1 || rows[0].UndeterminedReason == report.ReasonAnalysisDidNotRun {
+				t.Errorf("rows = %+v, want the fresh row alone", rows)
+			}
+		})
+	}
+}
+
+// TestCVEWatch_RetryThatStopsReplacesParentRow: a retry of a completed parent that stops replaces
+// the parent's row with a cut row and leaves the completed sibling.
+func TestCVEWatch_RetryThatStopsReplacesParentRow(t *testing.T) {
+	store := completedSiblingBaseline(t, false, false)
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	p := stopOnNthPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: 1}
+	res := retryStored(t, store, "not fetched", p, analysis)
+	rows := rowsByID(res.Report)["GO-S-1"]
+	if len(rows) != 2 || len(cutIDs(res.Report)) != 1 {
+		t.Errorf("rows = %+v, want one cut row and the stored sibling", rows)
+	}
+}
+
+// TestCVEWatch_RetryThatStopsAgainReturnsKeyToCutOnly: a retry that stops again leaves its key
+// holding only cut rows, so the next run fans it out. Stopped in analysis, the retry names the
+// parent, and its cut row replaces the parent's beside the cut sibling. Stopped before its first
+// pass, it names no instance; beside one packaged row and otherwise cut rows it takes that row as
+// the parent's, even when it is a completed sibling's, in either stored order and either lane.
+func TestCVEWatch_RetryThatStopsAgainReturnsKeyToCutOnly(t *testing.T) {
+	t.Run("in analysis beside a cut sibling", func(t *testing.T) {
+		store := cutSiblingBaseline(t, siblingSource{}, "corpus", 2)
+		slices.SortStableFunc(store.state.Report.Advisories, func(a, b report.AdvisoryFinding) int {
+			return cmp.Compare(btoi(b.UndeterminedReason == report.ReasonScanCutShort), btoi(a.UndeterminedReason == report.ReasonScanCutShort))
+		})
+		analysis, cancel := context.WithCancelCause(context.Background())
+		t.Cleanup(func() { cancel(nil) })
+		p := stopOnNthPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: 1}
+		res := retryStored(t, store, "not fetched", p, analysis)
+		rows := rowsByID(res.Report)["GO-S-1"]
+		if len(rows) != 2 || len(cutIDs(res.Report)) != 2 {
+			t.Errorf("rows = %+v, want two cut rows and no completed one", rows)
+		}
+		if notes := cutShortNotes(res.Report); len(notes) != 1 || !strings.HasPrefix(notes[0].Detail, "2 of 2 advisories") {
+			t.Errorf("scan_cut_short notes = %+v, want one for 2 of 2", notes)
+		}
+	})
+	for _, lane := range []string{"not fetched", "restated"} {
+		for _, siblingFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("before its first pass beside a completed sibling/%s/sibling first=%v", lane, siblingFirst), func(t *testing.T) {
+				store := completedSiblingBaseline(t, false, siblingFirst)
+				for i, f := range store.state.Report.Advisories {
+					if f.Package != nil && f.Package.Name == "example.com/lib" {
+						store.state.Report.Advisories[i] = cutShortFinding(assessment.VulnRef{ID: "GO-S-1", Source: "corpus"})
+					}
+				}
+				analysis, cancel := context.WithCancelCause(context.Background())
+				cancel(errTestStop)
+				res := retryStored(t, store, lane, refutingGoPlugin{inventory: plugin.Complete()}, analysis)
+				rows := rowsByID(res.Report)["GO-S-1"]
+				if len(rows) != 2 || len(cutIDs(res.Report)) != 2 {
+					t.Errorf("rows = %+v, want two cut rows and no completed one", rows)
+				}
+			})
+		}
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// failFirstPlugin errors the first Reachability call, so the assessment that makes it fails.
+type failFirstPlugin struct {
+	refutingGoPlugin
+	calls *atomic.Int32
+}
+
+func (p failFirstPlugin) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	if req.MatchOnly {
+		return p.refutingGoPlugin.Reachability(ctx, req)
+	}
+	if p.calls.Add(1) == 1 {
+		return plugin.ReachabilityResult{}, errors.New("plugin crashed")
+	}
+	return p.refutingGoPlugin.Reachability(ctx, req)
+}
+
+// rowKind names what a GO-S-1 row records: the module a completed row names, or cut, or failure.
+func rowKind(f report.AdvisoryFinding) string {
+	switch f.UndeterminedReason {
+	case report.ReasonScanCutShort:
+		return "cut"
+	case report.ReasonAnalysisDidNotRun:
+		return "failure"
+	}
+	if f.Package == nil {
+		return "completed:none"
+	}
+	return "completed:" + f.Package.Name
+}
+
+// TestCVEWatch_RetryRowMatrix holds the retry merge to one invariant over every state a key can be
+// stored in and every retry that can reach it. The key's parent row is completed (naming
+// example.com/lib), cut or a failure (naming no package); its sibling instance's row, for
+// example.com/lib/v2, is absent, completed, cut or a failure; the two are stored in either order.
+// The run retries the parent and it completes, stops or fails. Afterwards:
+//
+//	(a) the sibling's stored row is unchanged, and a failed sibling's note stands;
+//	(b) the parent has exactly one row, fresh: completed, cut when it stopped, a failure when it failed;
+//	(c) no stale row for the parent stays beside it.
+//
+// A key holding only cut rows is a retried cut row's: every row under it is replaced, and the run
+// assesses the sibling again, as a baseline does.
+//
+// Every stop and failure here comes in analysis, after the retry's first pass adjudicated the
+// parent, so the retry always names the parent's package, whatever the stored order. The invariant
+// gives way in one family of cells, where the stored rows cannot say which row is the parent's: the
+// key's package-less rows differ (a cut row beside a failure row, either of which may be the
+// parent's). The run then keeps every stored row and adds the fresh one: three rows, every stored one
+// disclosed, none lost. A stale duplicate is the price of never dropping a sibling's row on a guess.
+func TestCVEWatch_RetryRowMatrix(t *testing.T) {
+	base := completedSiblingBaseline(t, false, false)
+	var parent, sibling report.AdvisoryFinding
+	for _, f := range base.state.Report.Advisories {
+		if f.Package != nil && f.Package.Name == "example.com/lib/v2" {
+			sibling = f
+		} else {
+			parent = f
+		}
+	}
+	ref := assessment.VulnRef{ID: "GO-S-1", Source: "corpus"}
+	stored := map[string]report.AdvisoryFinding{
+		"completed": parent,
+		"cut":       cutShortFinding(ref),
+		"failure":   assessFailureFinding(ref, errors.New("boom")),
+	}
+	siblingRows := map[string]report.AdvisoryFinding{
+		"completed": sibling,
+		"cut":       cutShortFinding(ref),
+		"failure":   assessFailureFinding(ref, errors.New("boom")),
+	}
+	kinds := func(rows ...report.AdvisoryFinding) []string {
+		var out []string
+		for _, f := range rows {
+			out = append(out, rowKind(f))
+		}
+		slices.Sort(out)
+		return out
+	}
+	for _, parentKind := range []string{"completed", "cut", "failure"} {
+		for _, siblingKind := range []string{"absent", "completed", "cut", "failure"} {
+			for _, siblingFirst := range []bool{false, true} {
+				if siblingKind == "absent" && siblingFirst {
+					continue
+				}
+				for _, outcome := range []string{"completes", "stops", "fails"} {
+					cutOnly := parentKind == "cut" && (siblingKind == "absent" || siblingKind == "cut")
+					lanes := []string{"not fetched", "restated"}
+					if cutOnly {
+						lanes = append(lanes, "cut retry")
+					}
+					for _, lane := range lanes {
+						name := fmt.Sprintf("parent %s/sibling %s/sibling first=%v/%s/%s", parentKind, siblingKind, siblingFirst, lane, outcome)
+						t.Run(name, func(t *testing.T) {
+							store := &memStore{}
+							st := *base.state
+							rep := *base.state.Report
+							rep.Advisories = []report.AdvisoryFinding{stored[parentKind]}
+							rep.Partiality = nil
+							if siblingKind != "absent" {
+								rep.Advisories = append(rep.Advisories, siblingRows[siblingKind])
+								if siblingFirst {
+									rep.Advisories[0], rep.Advisories[1] = rep.Advisories[1], rep.Advisories[0]
+								}
+							}
+							for _, k := range []string{parentKind, siblingKind} {
+								if k == "failure" {
+									rep.Partiality = append(rep.Partiality, assessFailureNote(ref, errors.New("boom")))
+								}
+							}
+							st.Report = &rep
+							store.state = &st
+							var p plugin.LanguagePlugin = refutingGoPlugin{inventory: plugin.Complete()}
+							analysis := context.Background()
+							switch outcome {
+							case "stops":
+								ctx, cancel := context.WithCancelCause(context.Background())
+								t.Cleanup(func() { cancel(nil) })
+								p = stopOnNthPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: 1}
+								analysis = ctx
+							case "fails":
+								p = failFirstPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, calls: &atomic.Int32{}}
+							}
+							storedRows := slices.Clone(store.state.Report.Advisories)
+							res := retryStored(t, store, lane, p, analysis)
+							got := kinds(rowsByID(res.Report)["GO-S-1"]...)
+
+							fresh := map[string]string{"completes": "completed:example.com/lib", "stops": "cut", "fails": "failure"}[outcome]
+							var want []string
+							if cutOnly {
+								// Replaced as a baseline gives them: a parent that completes brings its
+								// sibling instance, one that stops or fails brings none.
+								want = []string{fresh}
+								if outcome == "completes" {
+									want = append(want, "completed:example.com/lib/v2")
+								}
+							} else {
+								want = []string{fresh}
+								if siblingKind != "absent" {
+									want = append(want, rowKind(siblingRows[siblingKind]))
+								}
+							}
+							differ := siblingKind != "absent" && parentKind != "completed" && siblingKind != "completed" && parentKind != siblingKind
+							exception := !cutOnly && differ
+							if exception {
+								want = append([]string{fresh}, kinds(storedRows...)...)
+							}
+							slices.Sort(want)
+							if !slices.Equal(got, want) {
+								t.Errorf("rows = %v, want %v", got, want)
+							}
+							if !cutOnly {
+								// (a), and in the exception cells every stored row survives.
+								var keep []report.AdvisoryFinding
+								switch {
+								case exception:
+									keep = storedRows
+								case siblingKind != "absent":
+									keep = []report.AdvisoryFinding{siblingRows[siblingKind]}
+								}
+								for _, k := range keep {
+									if !slices.ContainsFunc(rowsByID(res.Report)["GO-S-1"], func(f report.AdvisoryFinding) bool { return reflect.DeepEqual(f, k) }) {
+										t.Errorf("stored row %s changed or was dropped: %+v", rowKind(k), rowsByID(res.Report)["GO-S-1"])
+									}
+								}
+							}
+							if !cutOnly && siblingKind == "failure" && !hasNoteReason(res.Report.Partiality, plugin.PartialReasonToolFailure) {
+								t.Errorf("the failed sibling's note was dropped: %+v", res.Report.Partiality)
+							}
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+// stopOnFirst returns a plugin whose first Reachability call stops the run, and its analysis context.
+func stopOnFirst(t *testing.T) (plugin.LanguagePlugin, context.Context) {
+	t.Helper()
+	analysis, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(nil) })
+	return stopOnNthPlugin{refutingGoPlugin: refutingGoPlugin{inventory: plugin.Complete()}, stop: func() { cancel(errTestStop) }, calls: &atomic.Int32{}, n: 1}, analysis
+}
+
+// TestCVEWatch_StoppedRetryThenNextRunKeepsSibling: a restated retry that stops on the parent leaves
+// no new entry-point statement, so the next scheduled cve-watch retries the key again. The sibling's
+// completed row survives both runs, and the parent ends with one completed row.
+func TestCVEWatch_StoppedRetryThenNextRunKeepsSibling(t *testing.T) {
+	store := completedSiblingBaseline(t, false, false)
+	p, analysis := stopOnFirst(t)
+	res := retryStored(t, store, "restated", p, analysis)
+	if rows := rowsByID(res.Report)["GO-S-1"]; len(rows) != 2 || len(cutIDs(res.Report)) != 1 {
+		t.Fatalf("after the stopped retry rows = %+v, want one cut row and the sibling", rows)
+	}
+	res = retryStored(t, store, "plain", refutingGoPlugin{inventory: plugin.Complete()}, context.Background())
+	got := []string{}
+	for _, f := range rowsByID(res.Report)["GO-S-1"] {
+		got = append(got, rowKind(f))
+	}
+	slices.Sort(got)
+	if want := []string{"completed:example.com/lib", "completed:example.com/lib/v2"}; !slices.Equal(got, want) {
+		t.Errorf("after the next run rows = %v, want %v", got, want)
+	}
+}
+
+// TestCVEWatch_RetryOfStoredParentFailureLeavesNoFailureRow: a parent whose retry errored stores a
+// package-less failure row beside its sibling; the next retry completes and replaces it, in either
+// stored order.
+func TestCVEWatch_RetryOfStoredParentFailureLeavesNoFailureRow(t *testing.T) {
+	for _, siblingFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sibling first=%v", siblingFirst), func(t *testing.T) {
+			store := completedSiblingBaseline(t, false, siblingFirst)
+			ref := assessment.VulnRef{ID: "GO-S-1", Source: "corpus"}
+			rows := store.state.Report.Advisories
+			for i, f := range rows {
+				if f.Package != nil && f.Package.Name != "example.com/lib/v2" {
+					rows[i] = assessFailureFinding(ref, errors.New("boom"))
+				}
+			}
+			res := retryStored(t, store, "not fetched", refutingGoPlugin{inventory: plugin.Complete()}, context.Background())
+			got := []string{}
+			for _, f := range rowsByID(res.Report)["GO-S-1"] {
+				got = append(got, rowKind(f))
+			}
+			slices.Sort(got)
+			if want := []string{"completed:example.com/lib", "completed:example.com/lib/v2"}; !slices.Equal(got, want) {
+				t.Errorf("rows = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestCVEWatch_RetryThatLearnsNoPackageKeepsFailedSibling: a failed sibling stored above its parent,
+// and a retry that stops. Stopped in analysis, the retry's first pass has named the parent, so the
+// parent's row gives way to the fresh cut row and the failure row stays. Stopped before its first
+// pass, the retry names no package and the stored rows cannot say which is the parent's (the accepted
+// residue), so every stored row stays beside the fresh cut row: the failure row is not lost.
+func TestCVEWatch_RetryThatLearnsNoPackageKeepsFailedSibling(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want []string
+	}{
+		{"stops in analysis", []string{"cut", "failure"}},
+		{"stops before its first pass", []string{"completed:example.com/lib", "cut", "failure"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := completedSiblingBaseline(t, true, true)
+			p, analysis := stopOnFirst(t)
+			if tc.name == "stops before its first pass" {
+				ctx, cancel := context.WithCancelCause(context.Background())
+				cancel(errTestStop)
+				analysis = ctx
+			}
+			res := retryStored(t, store, "not fetched", p, analysis)
+			var got []string
+			for _, f := range rowsByID(res.Report)["GO-S-1"] {
+				got = append(got, rowKind(f))
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("rows = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCVEWatch_RetryReplacesTheOnlyRowWhateverItsPackage: a key's only row is the retried
+// instance's even when it names another package than the fresh row (the instance is labeled
+// differently from one run to the next), so the retry leaves one row, not two.
+func TestCVEWatch_RetryReplacesTheOnlyRowWhateverItsPackage(t *testing.T) {
+	store := completedSiblingBaseline(t, false, false)
+	rep := store.state.Report
+	rep.Advisories = slices.DeleteFunc(slices.Clone(rep.Advisories), func(f report.AdvisoryFinding) bool {
+		return f.Package == nil || f.Package.Name != "example.com/lib/v2"
+	})
+	res := retryStored(t, store, "not fetched", refutingGoPlugin{inventory: plugin.Complete()}, context.Background())
+	rows := rowsByID(res.Report)["GO-S-1"]
+	if len(rows) != 1 || rowKind(rows[0]) != "completed:example.com/lib" {
+		t.Errorf("rows = %+v, want the fresh row alone", rows)
+	}
 }

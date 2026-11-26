@@ -50,6 +50,8 @@ type AssessConfig struct {
 	SubjectGoVersion string
 	CIGoVersion      string
 	TrustCIGoVersion bool
+	// Strict withholds every clearance that rests on an assumption. See WithStrict.
+	Strict bool
 	// SubjectGoWork is the caller's statement of the GOWORK the subject's Go build runs under. See
 	// WithSubjectGoWork.
 	SubjectGoWork string
@@ -148,6 +150,21 @@ func WithSubjectToolchain(declared, observed string, trustObserved bool) AssessO
 	}
 }
 
+// WithStrict selects strict mode: no clearance may rest on an assumption. Practical mode, the
+// default, may clear a row under an assumption only when the row names it.
+func WithStrict(strict bool) AssessOption {
+	return func(c *AssessConfig) { c.Strict = strict }
+}
+
+// StrictOf reports whether a run assessed with opts is in strict mode.
+func StrictOf(opts ...AssessOption) bool {
+	var cfg AssessConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return cfg.Strict
+}
+
 // WithSubjectGoWork states the GOWORK the subject's Go build runs under: "off", or the path of its
 // go.work, relative to the checkout root unless absolute. Unstated, the build runs under the go.work
 // the go command finds from the module, searched no higher than its repository. Never pass the
@@ -211,16 +228,16 @@ func AssessStages(opts ...AssessOption) []Stage {
 	}
 	stages := []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, strict: cfg.Strict, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
 		maliciousPresence{},
-		disqualificationDiscovery{src: cfg.Source, plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability},
+		disqualificationDiscovery{src: cfg.Source, plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, strict: cfg.Strict},
 	}
 	if cfg.DependencyAcquisition != nil {
 		stages = append(stages, dependencyAcquisition{acq: cfg.DependencyAcquisition, plugin: cfg.Plugin})
 	}
 	return append(stages,
 		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition, libraryEntrypoints: cfg.LibraryEntrypoints, entrypoints: cfg.Entrypoints},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, deps: cfg.DependencyAcquisition, libraryEntrypoints: cfg.LibraryEntrypoints, entrypoints: cfg.Entrypoints, strict: cfg.Strict},
 		exposureFootprintStage{},
 	)
 }
@@ -252,7 +269,7 @@ func SBOMStages(opts ...AssessOption) []Stage {
 	}
 	return []Stage{
 		advisoryIntake{src: cfg.Source},
-		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
+		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion, strict: cfg.Strict, subjectGoWork: cfg.SubjectGoWork, selectModule: cfg.SelectModule, memo: cfg.InventoryMemo},
 	}
 }
 
@@ -959,6 +976,8 @@ type codebaseInventory struct {
 	subjectGoVersion string
 	ciGoVersion      string
 	trustCIGoVersion bool
+	// strict withholds the toolchain floor that rests on an assumption (ToolchainCandidates.Strict).
+	strict bool
 	// subjectGoWork is the caller's statement of the GOWORK the subject's build runs under: "off", a
 	// go.work path relative to the checkout root, or "" to take the go.work the go command finds.
 	// See ResolveGoWorkspace.
@@ -1027,6 +1046,7 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		vr, err := s.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{
 			BuildDir:   buildDir,
 			Coordinate: coordinate,
+			Strict:     s.strict,
 		})
 		if err != nil {
 			return depVersions{}, nil, err
@@ -1303,6 +1323,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			ToolchainDirective: toolchainDirective,
 			GoDirective:        goDirective,
 			BazelWorkspace:     s.memo.bazelWorkspaceAbove(buildDir),
+			Strict:             s.strict,
 		}
 		toolchain = ResolveToolchain(cands)
 		if !cands.BazelWorkspace {
@@ -1413,7 +1434,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// construction. A root package need not list itself, and may match with no version.
 	var membership *manifestMembership
 	if buildDir != "" && resolved.Version == "" && !isRoot {
-		membership = resolveManifestMembership(ctx, s.plugin, buildDir, language, AffectedPackageKeys(facts))
+		membership = resolveManifestMembership(ctx, s.plugin, buildDir, language, AffectedPackageKeys(facts), s.strict)
 	}
 
 	inv := struct {
@@ -1724,6 +1745,9 @@ type disqualificationDiscovery struct {
 	src              AdvisorySource
 	plugin           plugin.LanguagePlugin
 	subjectToolchain bool
+	// strict withholds the clearance a release in the scanned history gives an unversioned project
+	// (ReasonAncestorReleaseOutsideRange), which rests on an assumption.
+	strict bool
 }
 
 func (disqualificationDiscovery) Name() string              { return "disqualification_discovery" }
@@ -1735,15 +1759,21 @@ func (disqualificationDiscovery) Status() assessment.Status { return assessment.
 type DisqualResult struct {
 	Disqualified bool   `json:"disqualified"`
 	Reason       string `json:"reason"`
-	// Source names the advisory record a version, symbol or fix-commit refute relied on. Set exactly
-	// when Disqualified is true on ReasonVersionNotInRange, ReasonSymbolAbsent or
-	// ReasonFixCommitInHistory; nil otherwise.
+	// Source names the advisory record a version, symbol, fix-commit or ancestor-release refute
+	// relied on. Set exactly when Disqualified is true on ReasonVersionNotInRange,
+	// ReasonSymbolAbsent, ReasonFixCommitInHistory or ReasonAncestorReleaseOutsideRange; nil
+	// otherwise.
 	Source *RefuteSource `json:"source,omitempty"`
 	// FixCommit is the commit a ReasonFixCommitInHistory refute found in the scanned history.
 	FixCommit string `json:"fix_commit,omitempty"`
-	// Assumptions are the lines a ReasonVersionNotInRange refute rests on: an installed
+	// AncestorRelease is the release tag a ReasonAncestorReleaseOutsideRange refute found in the
+	// scanned history.
+	AncestorRelease string `json:"ancestor_release,omitempty"`
+	// Assumptions are the lines a refute rests on: for ReasonVersionNotInRange, an installed
 	// pseudo-version placed outside a range only under an assumption about its revision's ancestry
-	// (compareGoModVersionsAssuming). Empty when the refute rests on version order alone.
+	// (compareGoModVersionsAssuming), or the toolchain line under GOTOOLCHAIN=auto; for
+	// ReasonAncestorReleaseOutsideRange, that no fix was reverted after the release. Empty when the
+	// refute rests on version order alone.
 	Assumptions []string `json:"assumptions,omitempty"`
 	// RangeDisputed, on a row that proceeds, names the source that contradicted a version-axis
 	// disqualification: an alias record of the advisory, or the analyzer's own database.
@@ -1778,6 +1808,11 @@ const (
 	// range of it ends at a fixed version, and the commit the advisory names as the fix is HEAD or
 	// an ancestor of it (fixCommitClears). It clears; its absence establishes nothing.
 	ReasonFixCommitInHistory = "fix_commit_in_history"
+	// ReasonAncestorReleaseOutsideRange: the advisory is against the scanned project's own Go
+	// module, HEAD carries no release tag of its own, and the highest release tag in HEAD's history
+	// is at or past the fixed version of every range (ancestorReleaseClears). It clears, practical
+	// mode only, under the assumption that no fix was reverted between that release and HEAD.
+	ReasonAncestorReleaseOutsideRange = "ancestor_release_outside_range"
 
 	// Intake disqualification reason codes (M0). These short-circuit advisories that are
 	// un-adjudicable BY DESIGN — nothing in the resolved codebase the analysis could ever
@@ -2586,6 +2621,23 @@ func Toolchain(store artifact.Store, caseID string) (ToolchainFact, bool) {
 	return inv.Toolchain, true
 }
 
+// GoToolchain is Toolchain for a Go assessment only: ok is false for another language, whose
+// inventory carries the unresolved placeholder because the fact is Go-only, and when there is no
+// inventory artifact.
+func GoToolchain(store artifact.Store, caseID string) (ToolchainFact, bool) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return ToolchainFact{}, false
+	}
+	var inv struct {
+		Language string `json:"language"`
+	}
+	if json.Unmarshal(arts[0].Payload, &inv) != nil || inv.Language != "go" {
+		return ToolchainFact{}, false
+	}
+	return Toolchain(store, caseID)
+}
+
 // SubjectToolchainScanned reports whether reachability for this case actually ran under the
 // SUBJECT's Go toolchain. It is the licence a stdlib refutation-by-absence needs: only
 // when it is true is an empty path set evidence about the subject rather than about the analyzer.
@@ -2720,6 +2772,43 @@ func extractVersionAxis(store artifact.Store, caseID string) (versionAxis, bool)
 		return versionAxis{Versions: []string{inv.ResolvedVersion}}, true
 	}
 	return versionAxis{}, false
+}
+
+// assumedToolchainFloor returns the toolchain fact's assumption when a version-axis disqualification
+// needs the assumed floor: the same inputs with every toolchain version read at the floor without
+// the assumption (StrictVersion, or none) no longer disqualify on the version axis. "" when the fact
+// carries no assumption or the floor without it already disqualifies.
+//
+// The toolchain's versions are found by value. Only the toolchain fact writes a go-prefixed version
+// to the inventory; a module version is "v"-prefixed and never equals one.
+func assumedToolchainFloor(store artifact.Store, caseID string, rngs []affectedRange, rangeKnown bool, axis versionAxis, axisKnown bool, others []presentRanges, symbol string, symbolKnown bool) string {
+	tc, ok := Toolchain(store, caseID)
+	if !ok || tc.Assumption == "" {
+		return ""
+	}
+	strictVersions := func(vs []string) []string {
+		out := make([]string, 0, len(vs))
+		for _, v := range vs {
+			switch {
+			case v != tc.Version:
+				out = append(out, v)
+			case tc.StrictVersion != "":
+				out = append(out, tc.StrictVersion)
+			}
+		}
+		return out
+	}
+	strictAxis := versionAxis{Versions: strictVersions(axis.Versions), Complete: axis.Complete}
+	strictOthers := make([]presentRanges, len(others))
+	for i, o := range others {
+		o.Versions = strictVersions(o.Versions)
+		strictOthers[i] = o
+	}
+	d, r, _ := disqualifyEvery(rngs, rangeKnown, strictAxis, axisKnown && len(strictAxis.Versions) > 0, strictOthers, symbol, symbolKnown)
+	if d && r == ReasonVersionNotInRange {
+		return ""
+	}
+	return tc.Assumption
 }
 
 // extractAlsoPresent joins each other affected package the inventory recorded to its ranges on the
@@ -2871,6 +2960,11 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 
 	others := extractAlsoPresent(store, c.ID)
 	disqualified, reason, assumptions := disqualifyEvery(rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown)
+	if disqualified && reason == ReasonVersionNotInRange {
+		if line := assumedToolchainFloor(store, c.ID, rngs, rangeKnown, axis, axisKnown, others, symbol, symbolKnown); line != "" {
+			assumptions = append(assumptions, line)
+		}
+	}
 	res := DisqualResult{Disqualified: disqualified, Reason: reason, Assumptions: assumptions}
 	if disqualified && reason == ReasonVersionNotInRange {
 		dispute, note, aliasAssumptions := s.rangeDispute(ctx, c, store, buildDir, goWork.File, axis, rngs, others)
@@ -2889,10 +2983,17 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	}
 	// A disputed row cannot be re-cleared here: a version-axis disqualification needs a resolved
 	// version, and fixCommitClears refuses any.
+	// fixCommitAbsent records that the complete history lacks the commit the advisory names as its
+	// fix. A release tag in that history then cannot be read as carrying the fix.
+	var fixCommitAbsent bool
 	if !disqualified {
 		if commit, ok := extractFixCommit(store, c.ID); ok && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) {
 			cleared, unanswered := fixCommitClears(rngs, rangeKnown, axis.Versions, others,
-				func() historyAnswer { return headContainsCommit(ctx, buildDir, commit) },
+				func() historyAnswer {
+					a := headContainsCommit(ctx, buildDir, commit)
+					fixCommitAbsent = a == historyLacks
+					return a
+				},
 				func(lower string) bool {
 					return rangeEnteredBeforeFix(ctx, buildDir, rootGoModule(store, c.ID, buildDir), commit, lower)
 				})
@@ -2902,6 +3003,20 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 				res = DisqualResult{Disqualified: true, Reason: ReasonFixCommitInHistory, FixCommit: commit}
 			case unanswered:
 				res.FixCommitUnanswered = commit
+			}
+		}
+	}
+	if !disqualified && !s.strict && !fixCommitAbsent && rootOwnsAdvisoryPackage(store, c.ID, buildDir, goWork) {
+		if mod := rootGoModule(store, c.ID, buildDir); mod != "" {
+			var tag string
+			if ancestorReleaseClears(rngs, rangeKnown, axis.Versions, others, func() (string, bool) {
+				t, v, ok := ancestorReleaseTag(ctx, buildDir, mod)
+				tag = t
+				return v, ok
+			}) {
+				disqualified = true
+				res = DisqualResult{Disqualified: true, Reason: ReasonAncestorReleaseOutsideRange, AncestorRelease: tag,
+					Assumptions: []string{ancestorReleaseAssumption(tag)}}
 			}
 		}
 	}
@@ -3073,6 +3188,9 @@ type reachabilityIngress struct {
 	libraryEntrypoints *plugin.LibraryEntrypoints
 	// entrypoints is the parsed entrypoints input; see entrypointsFor.
 	entrypoints map[string]plugin.EntryOverride
+	// strict asks the plugin for strict mode (WithStrict): a lane declares a limit where it would
+	// otherwise rest its answer on an assumption.
+	strict bool
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
@@ -3388,7 +3506,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	}
 
 	depCache := s.deps.cacheFor(store, c.ID)
-	cg, err := plugin.SharedCallGraph(ctx, s.plugin, plugin.CallGraphRequest{BuildDir: buildDir, GoWork: goWork.File, DependencyCache: depCache})
+	cg, err := plugin.SharedCallGraph(ctx, s.plugin, plugin.CallGraphRequest{BuildDir: buildDir, GoWork: goWork.File, DependencyCache: depCache, Strict: s.strict})
 	if err != nil {
 		return err
 	}
@@ -3416,6 +3534,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		DependencyCache:    depCache,
 		LibraryEntrypoints: entrypoints,
 		EntryOverride:      s.entryOverrideFor(),
+		Strict:             s.strict,
 	})
 	if err != nil {
 		return err
@@ -3492,7 +3611,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		return err
 	}
 	if sink != "" {
-		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, GoWork: goWork.File, Sinks: []string{sink}, DependencyCache: depCache})
+		taint, err := s.plugin.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: buildDir, GoWork: goWork.File, Sinks: []string{sink}, DependencyCache: depCache, Strict: s.strict})
 		if err != nil {
 			return err
 		}

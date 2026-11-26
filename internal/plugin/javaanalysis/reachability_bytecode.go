@@ -56,7 +56,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 	reasons := map[string]bool{}
 	var scoped []plugin.ScopedReason
 
-	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir}, opts...)
+	ing, err := findIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir}, fp, opts...)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -89,6 +89,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, files []filePars
 	rc.Engine.SetLinked(linked)
 	mains := mainRoots(rootClasses(fp, entry))
 	ingresses, unmapped := ingressRoots(files, fp.classes)
+	ingresses = append(ingresses, compiledIngressRoots(fp.classes, rc.class, append(append([]bytecodeRoot{}, mains...), ingresses...))...)
 	if len(mains) == 0 {
 		reasons[reasonNoWholeProgramRoot] = true
 	}
@@ -234,33 +235,7 @@ func ingressRoots(files []fileParse, classes []classfile.Class) (roots []bytecod
 }
 
 // descriptorParamCount counts the parameters in a JVM method descriptor; -1 if malformed.
-func descriptorParamCount(desc string) int {
-	if !strings.HasPrefix(desc, "(") {
-		return -1
-	}
-	n := 0
-	for i := 1; i < len(desc); {
-		switch desc[i] {
-		case ')':
-			return n
-		case '[':
-			i++
-			continue
-		case 'L':
-			end := strings.IndexByte(desc[i:], ';')
-			if end < 0 {
-				return -1
-			}
-			i += end + 1
-		case 'B', 'C', 'D', 'F', 'I', 'J', 'S', 'Z':
-			i++
-		default:
-			return -1
-		}
-		n++
-	}
-	return -1
-}
+func descriptorParamCount(desc string) int { return classfile.MethodRef{Descriptor: desc}.ParamCount() }
 
 // hazardReason names the partiality a depreach hazard maps to, "" when none applies
 // beyond reachability_undetermined.

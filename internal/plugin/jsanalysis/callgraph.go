@@ -212,9 +212,10 @@ func (p *program) resolveIngressSymbol(module string, in ingressMarker) string {
 // frame a hidden call could land on in Escaped (buildGraph).
 //
 // With req.DependencyCache set, the lock-pinned dependency code that store holds is read
-// into the graph as well (depgraph.go).
+// into the graph as well (depgraph.go). With req.Strict, no limit is scoped on a load closure that
+// rests on an assumption the lane infers (loadClosure.strict).
 func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
-	return callGraphFor(ctx, req.BuildDir, req.DependencyCache)
+	return callGraphFor(ctx, req.BuildDir, req.DependencyCache, req.Strict)
 }
 
 // builtGraph is one call-graph build plus the bookkeeping its completeness contract is

@@ -31,7 +31,14 @@ In Go, a refutation also has to hold for code outside the build that imports you
 clause `go:library=...`: `auto` (the default) takes every importable package outside a `cmd`,
 `example`, `examples`, `test`, `tests` or `testdata` path element, `go:library=none` says the build
 ships programs only, and a list of paths relative to the repository root names them, with
-`!go:library=path` taking a path out. `library-entrypoints` (`-library-entrypoints`,
+`!go:library=path` taking a path out. A bare `auto` reads a build as an application when its packages
+all loaded and type-checked, it has one main module, and it ships a `main` package at that module's
+root or under its `cmd` directory (outside `example(s)`, `test(s)` and `testdata`): it then takes no
+library package, and a refutation that holds because of that carries the assumption "treated as an
+application", naming how many of those main packages the build ships; the PR comment names them. A
+`main` anywhere else (a benchmark, an interop client, a generator under `internal`, `hack` or `tools`)
+leaves the library reading in place. `go:library=.` reads the build as a library instead, taking every importable package, `cmd`,
+example and test paths included, so it is wider than `auto`'s library reading of a build with no `main`. `library-entrypoints` (`-library-entrypoints`,
 `ASSAY_LIBRARY_ENTRYPOINTS`) is the alias for those clauses and takes the same statement without the
 prefix: `library-entrypoints: none` is `entrypoints: go:library=none`. Give both only when they say the
 same thing, the same mode over the same paths; two different statements stop the run before it
@@ -41,7 +48,8 @@ vulnerable package, the row is `undetermined` with `refutation_withheld`. A `not
 holds only because of what you declared carries that declaration on the report as an assumption, and
 the Report lists the sets under `library_entrypoints`. On every Go report whose packages loaded,
 `entrypoints[]` also records the library packages Assay treats as callable from outside the build
-(`effective`, which a refutation is judged against), what it inferred with nothing declared
+(`effective`, which a refutation is judged against), whether that set was inferred (`source`
+`auto`), read as an application's (`mains`) or declared (`declared`), what it inferred with nothing declared
 (`inferred`: the importable library packages and the build's `main` packages) and the `!` selectors
 that took a library package out (`denied`), so you can read the guess before you override it. The
 search roots every `main`'s `main` and `init` and the exported API of every package `./...` matches,
@@ -117,7 +125,7 @@ and a limit it does list is not the reason the analysis did not run.
 |---|---|
 | `analysis_did_not_run` | A step the verdict rests on failed or did not run. The scan-level `partiality` notes name the step; when the step failed outright, the row's detail also carries the redacted error. |
 | `package_version_unresolved` | The package's installed version was not resolved, so nothing establishes which code the build carries. A Go module your `replace` directive sends to a fork or a local directory has no release version, and the fork's own version string is never compared with the advisory's affected versions. The row's detail names the replacement, why the advisory was not judged on that code, and what would settle it. |
-| `own_release_version_unknown` | The advisory is on your repository's own code, and the release version of this checkout was not established, so nothing places it inside or outside the advisory's affected versions. For a Go module the version is read from a full semver tag on the checked-out commit itself (`sub/v1.2.3` for a module in directory `sub`), so it is known only when the scan runs on a tagged release commit with its tags fetched (`fetch-tags: true` on `actions/checkout`). A pull request's merge commit, or any untagged commit, has no release version. A Go project with no release version can still be placed when the advisory names the commit that fixed it and the checkout's history contains that commit; a shallow checkout (the `actions/checkout` default) cannot show whether it does, so the row says so and names the remedy, `fetch-depth: 0`. Other ecosystems read it from a version the manifest states outright. Other limits the scan lists may still apply once the version is known. |
+| `own_release_version_unknown` | The advisory is on your repository's own code, and the release version of this checkout was not established, so nothing places it inside or outside the advisory's affected versions. For a Go module the version is read from a full semver tag on the checked-out commit itself (`sub/v1.2.3` for a module in directory `sub`), so it is known only when the scan runs on a tagged release commit with its tags fetched (`fetch-tags: true` on `actions/checkout`). A pull request's merge commit, or any untagged commit, has no release version. A Go project with no release version can still be placed when the advisory names the commit that fixed it and the checkout's history contains that commit; a shallow checkout (the `actions/checkout` default) cannot show whether it does, so the row says so and names the remedy, `fetch-depth: 0`. It can also be placed by the highest release tag in the checked-out commit's history: when every affected range closed at or before that release, the row is `not_exploitable` with the assumption named in its evidence, that the advisory's fix was not reverted between that tag and the checked-out commit. A release in the history only clears a row, and never places the commit inside a range; it does not clear one whose advisory names a fix commit that the complete history lacks. A shallow checkout without tags (the `actions/checkout` default) has no release in its history; `fetch-depth: 0` with `fetch-tags: true` supplies them. Other ecosystems read it from a version the manifest states outright. Other limits the scan lists may still apply once the version is known. |
 | `advisory_symbol_absent` | The advisory names no vulnerable symbol, so there was nothing to search for. |
 | `vulnerable_symbol_unresolved` | The advisory names vulnerable symbols, and not every one was located in the affected package and searched. |
 | `advisory_unknown_to_analyzer` | The analyzer reported nothing about the advisory at all. |
@@ -224,11 +232,59 @@ Findings are sorted most-actionable first, and every projection keeps that order
 | PR comment and pinned Issue | The grade and EPSS/KEV columns, each value with its own date, and a one-line reminder that neither is an exploitability claim. |
 | `openvex.json` | No priority data. OpenVEX has no field for it, so none is projected. |
 
+## Strictness
+
+Strictness decides which clearances stand.
+
+- `strict`: no clearance rests on an assumption Assay inferred.
+- `practical` (the default): a row may clear under an assumption only when the row names it.
+
+The first of these decides the mode:
+
+1. The `strictness` Action input, the `-strictness` flag or `ASSAY_STRICTNESS` (the flag wins over
+   the variable). Values are lowercase `practical` or `strict`; empty states nothing, and any other
+   value fails the run before the target is acquired.
+2. The `strictness` key of `.github/ferralon.yml`, `strictness: practical` or `strictness: strict`.
+   A value of any other type or spelling fails the run. A remote URL target has no checkout to read
+   it from, so only the input applies there.
+3. `practical`.
+
+The report records the mode in `mode` as `{"strictness": ..., "source": "input" | "ferralon.yml" |
+"default"}`, and the job summary, PR comment, pinned issue and CLI summary print it. See
+[sample-report.md](sample-report.md#mode-and-run-assumptions) for the field and the
+`run_assumptions` block beside it.
+
+A report never carries a row produced under the other mode. When the stored baseline's mode differs
+from the run's (a baseline with no `mode` field reads as practical):
+
+- `pr-inherit` analyses every advisory in the PR's work set again, including the instances under
+  other Go major versions of the same module, and drops every baseline row outside the work set. If
+  a stop cut the work set short, a `scan_cut_short` note says the work set may be incomplete, and
+  each advisory the pass stopped before has its own `scan_cut_short` row.
+- `cve-watch` analyses every stored advisory again, and every stored row of an advisory it retries
+  gives way to the new analysis. A row withheld as `dependency_not_fetched` carries no verdict and
+  is not retried for the mode change. It stays until a run that records the dependency code it
+  fetched assesses it again, as under either mode.
+- When two runs store at once, the stored state keeps the later report's rows alone if their modes
+  differ.
+
+The report's description of the run is this run's alone too. `subject_toolchain`, the entry points
+and the partiality notes are not carried from a report of the other mode, so a run that finishes no
+Go assessment states no toolchain rather than the stored one. `cve-watch` keeps the stored SBOM,
+and with it the notes that describe that SBOM.
+
+Set `strictness` in `.github/ferralon.yml` rather than in a workflow's Action input, so the push,
+PR and scheduled `cve-watch` workflows run under the same mode. The push workflow's `baseline` and
+`cve-watch` both store state: if they disagree, each run finds the other's report under another
+mode and analyses everything again. A PR run only reads the baseline, so a PR workflow under
+another mode analyses its whole work set again on every run.
+
 ## The Go toolchain your repository builds with
 
 For a Go standard-library advisory, the question is about the Go **you** build with, which is not
-necessarily the Go the scanner analyzes with. The scan resolves your toolchain as one fact, from the
-first source that yields a usable version:
+necessarily the Go the scanner analyzes with. The scan resolves your toolchain as one fact. Steps 1
+and 2 are tried in order, and the first that yields a usable version is taken. When that is not a
+declaration, step 3 can raise step 2's minimum, or supply one when step 2 yields none:
 
 1. **Your declaration** — `-subject-go-version` on the CLI (for example `go1.21.3`), the
    `ASSAY_SUBJECT_GO_VERSION` environment variable, or the Action input `subject-go-version`. Exact.
@@ -241,10 +297,19 @@ first source that yields a usable version:
    `toolchain` line. Such a `go` line is left out.
 
    A `toolchain` line raises the minimum to at least go1.21.0, because no older go command can read
-   your `go.mod`. Its own version is not a minimum: under `GOTOOLCHAIN=local` or a pinned
-   `GOTOOLCHAIN` the go command ignores it, and `actions/setup-go` sets `GOTOOLCHAIN=local`. With
-   `go 1.21.0` and `toolchain go1.22.5`, the minimum is go1.21.0.
-3. Otherwise, unresolved.
+   your `go.mod`.
+3. **Your `go.mod` `toolchain` line**, when it names a full release (`toolchain go1.22.5`) above the
+   minimum from step 2, or when step 2 yields none — a **minimum that rests on an assumption**.
+   Under `GOTOOLCHAIN=auto`, the go command's default, the build switches to that release or newer,
+   so it cannot run anything older. Under `GOTOOLCHAIN=local` or a pinned `GOTOOLCHAIN` the go
+   command ignores the line, and `actions/setup-go` sets `GOTOOLCHAIN=local`. An advisory cleared
+   only because of this line is reported `not_exploitable` with the assumption named in its
+   evidence: the build runs under `GOTOOLCHAIN=auto`, so on the toolchain line's release or newer.
+   Declare `subject-go-version` when that does not hold for your build; a declaration replaces the
+   assumption. With `go 1.21.0` and `toolchain go1.22.5`, the minimum is go1.22.5 under the
+   assumption and go1.21.0 without it. Under a `go.work`, its own lines are read in place of the
+   module's.
+4. Otherwise, unresolved.
 
 A declaration below your own `go.mod` floor is discarded in favor of the floor, because a module
 cannot build with a Go older than its directives require. A stale `subject-go-version` therefore
@@ -408,8 +473,11 @@ zero-config path the README Quickstart uses.
 ### `pr-inherit`
 
 Resolves the SBOM of the checked-out PR head and diffs it against the stored baseline. If the
-dependency set is unchanged, it inherits the baseline's findings without re-scanning. If it changed, it
-re-analyzes only the affected advisories and merges them over the inherited findings. Either way it
+dependency set and the JS launch surface (`sbom.js_launch_digest`: the package.json values,
+launch files and interpreter-line files the JS lane infers entry points from) are unchanged, it
+inherits the baseline's findings without re-scanning. Otherwise it re-analyzes only the affected
+advisories, plus every npm row when the launch surface changed, and merges them over the inherited
+findings. Either way it
 publishes the PR's Report without storing it: the baseline stays the default branch's, so later PRs
 inherit from it and `cve-watch` diffs against it, and a read-only token is enough — including a
 fork's. With no baseline in the selected store it stops with:

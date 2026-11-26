@@ -615,7 +615,9 @@ type EntryRootRecord struct {
 	// Lane is the analysis lane the record describes.
 	Lane string `json:"lane"`
 	// Source is LibraryEntrypointsSourceAuto when the lane inferred the set with nothing declared,
-	// LibraryEntrypointsSourceDeclared when it rests on the caller's declaration.
+	// LibraryEntrypointsSourceMains when it inferred that the build is an application whose main
+	// packages alone are the entry points, LibraryEntrypointsSourceDeclared when it rests on the
+	// caller's declaration.
 	Source string `json:"source"`
 	// Input is the statement the set was resolved from, in the entrypoints input's syntax.
 	Input string `json:"input"`

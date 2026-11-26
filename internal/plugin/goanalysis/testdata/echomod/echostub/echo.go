@@ -66,6 +66,10 @@ func New() *Echo {
 
 func defaultHTTPErrorHandler(err error, c Context) {}
 
+// DefaultHTTPErrorHandler is echo's default error handler, exported so an application
+// can reinstall it or call it from its own.
+func (e *Echo) DefaultHTTPErrorHandler(err error, c Context) {}
+
 // RouteNotFound registers the handler for a request under path that no route matches.
 func (e *Echo) RouteNotFound(path string, h HandlerFunc, m ...MiddlewareFunc) *Route { return nil }
 

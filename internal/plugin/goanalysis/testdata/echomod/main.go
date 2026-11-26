@@ -15,8 +15,9 @@
 // The negatives sit in the same module: a handler-shaped method and a package-scope
 // func never registered, Pre, Use, Group and route middleware (and the handler
 // closures they return), net/http middleware adapted by WrapMiddleware, echo's own
-// Echo.ServeHTTP and the HandlerFunc adapter reached through WrapHandler, and
-// handlers registered on a look-alike router (same package name, type and method
+// Echo.ServeHTTP and the HandlerFunc adapter reached through WrapHandler, echo's own
+// Echo.DefaultHTTPErrorHandler stored into Echo.HTTPErrorHandler, and handlers
+// registered on a look-alike router (same package name, type and method
 // names as echo, different import path).
 package main
 
@@ -232,6 +233,9 @@ func main() {
 	(&fwdRouter{e: e}).Get("/fwd", s.neverRegistered)
 
 	registerCatchAll(e, api, s)
+	// echo's own error handler stored back from first-party code: the stored func is
+	// echo's code, so it is no ingress.
+	e.HTTPErrorHandler = e.DefaultHTTPErrorHandler
 
 	fake := lookalike.New()
 	fake.GET("/fake", s.lookalikeGet)

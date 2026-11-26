@@ -66,7 +66,7 @@ func TestGroundsOf(t *testing.T) {
 		{report.VerdictNotExploitable, "looked_hard", groundsMissing},
 		{report.VerdictDisqualified, verdict.BasisVersionNotAffected, groundsPresent},
 		{report.VerdictDisqualified, verdict.BasisSymbolAbsent, groundsPresent},
-		{report.VerdictDisqualified, verdict.BasisNone, groundsUnverifiable},
+		{report.VerdictDisqualified, verdict.BasisNone, groundsMissing},
 		{report.VerdictDisqualified, verdict.BasisAdvisoryEcosystemMismatch, groundsUnverifiable},
 		{report.VerdictDisqualified, verdict.BasisNoManifestEntry, groundsUnverifiable},
 		{report.VerdictNotExploitable, verdict.BasisNoManifestEntry, groundsMissing},
@@ -143,6 +143,19 @@ func TestEvaluate(t *testing.T) {
 				t.Errorf("truncated = %v, want %v", res.ScanTruncated, tc.truncated)
 			}
 		})
+	}
+}
+
+// TestEmptyBasisNotExploitableIsMalformed pins where the grounds guard lives: report.Validate
+// refuses a not_exploitable with no basis, so the repository fails as malformed_report, naming
+// the finding.
+func TestEmptyBasisNotExploitableIsMalformed(t *testing.T) {
+	res := evaluate(Target{Repo: "ferralon-demo/x", Language: "go"}, "published-24h", withReport(ok(), reportJSON(neUngrounded, "")))
+	if res.Pass || len(res.Failures) != 1 || res.Failures[0].Kind != KindMalformed {
+		t.Fatalf("failures = %+v, want one %s", res.Failures, KindMalformed)
+	}
+	if want := `"GO-2" is not_exploitable but its basis "" is not one of`; !strings.Contains(res.Failures[0].Detail, want) {
+		t.Errorf("detail = %q, want it to contain %q", res.Failures[0].Detail, want)
 	}
 }
 
@@ -277,7 +290,7 @@ func TestAlert(t *testing.T) {
 		s := Summary{RunURL: "https://example.test/run/1"}
 		for i := 0; i < n; i++ {
 			s.Repos = append(s.Repos, RepoResult{Repo: "o/r" + string(rune('a'+i)),
-				Failures: []Failure{{Kind: KindUngroundedNE, Findings: []string{"GO-2", "GO-3"}}}})
+				Failures: []Failure{{Kind: KindTruncated}}})
 		}
 		s.Repos = append(s.Repos, RepoResult{Repo: "o/ok", Pass: true})
 		return s
@@ -288,8 +301,8 @@ func TestAlert(t *testing.T) {
 		has   string
 	}{
 		{0, 0, ""},
-		{1, 3, "ra: 2 not_exploitable without grounds (GO-2 and 1 more)."},
-		{2, 4, "rb: 2 not_exploitable"},
+		{1, 3, "ra: the scan ran out of time."},
+		{2, 4, "rb: the scan ran out of time."},
 		{5, 4, "4 more repos failed"},
 	} {
 		text := failing(tc.n).alert()

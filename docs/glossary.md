@@ -66,9 +66,8 @@ records in `evidence.basis`: `version_not_in_affected_range`, `vulnerable_symbol
 `verdict/verdict.go:86`. *See also:* [basis](#basis).
 
 <a id="scheme-floor-kinds"></a>**Floor failure kinds** — The reasons `floorcheck` fails a repository
-in the floor run: `ungrounded_not_exploitable`, `ungrounded_disqualified`, `scan_truncated`,
-`scan_failed`, `no_report`, `malformed_report`, `no_result`. *Source:* `docs/floor.md:24`,
-`docs/floor.md:26`. *See also:* [floor run](#floor-run).
+in the floor run: `scan_truncated`, `scan_failed`, `no_report`, `malformed_report`, `no_result`.
+*Source:* `docs/floor.md:24`, `docs/floor.md:26`. *See also:* [floor run](#floor-run).
 
 <a id="scheme-partiality-reasons"></a>**Partiality reason codes** — Stable, machine-readable strings an
 analyzer declares for a limit, for example `reflection`, `cgo`, `tool_failure`, `no_manifest` or
@@ -453,9 +452,10 @@ disqualification predicate fails open, since "unknown" must never be read as "no
 
 <a id="floor-run"></a>**floor run (`floorcheck`)** — The nightly workflow that builds the scanner
 from `main`, scans each demo repository in `floor/targets.json` plus a `pinned` lane of real public repositories
-(each at a full commit id, under its own corpus policy), and fails on an ungrounded
-`not_exploitable` or a failed, timed-out or cut-short scan. `cmd/floorcheck` reads each
-`report.json` and assigns a failure kind. *Source:* `docs/floor.md:3`, `docs/floor.md:21`, `docs/floor.md:69`.
+(each at a full commit id, under its own corpus policy), and fails on a failed, timed-out or
+cut-short scan. `cmd/floorcheck` reads each `report.json` and assigns a failure kind. The report
+validator (`report.Validate`) refuses an ungrounded `not_exploitable`, so the run fails that report as
+`malformed_report`. *Source:* `docs/floor.md:3`, `docs/floor.md:21`, `docs/floor.md:44`, `docs/floor.md:69`.
 *See also:* [grounds conditions](#scheme-grounds).
 
 ### G

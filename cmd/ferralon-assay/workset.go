@@ -625,7 +625,7 @@ func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolv
 		return nil, nil, []report.PartialityNote{{Reason: reasonWorkSetNoInventory, Ecosystem: eco}}
 	}
 
-	res, err := acq.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: acq.buildDir})
+	res, err := acq.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: acq.buildDir, Strict: acq.strict})
 	if err != nil {
 		return nil, nil, []report.PartialityNote{{Reason: reasonWorkSetNoInventory, Ecosystem: eco}}
 	}
@@ -686,7 +686,7 @@ func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, un
 	var extra []report.Package
 	var notes []report.PartialityNote
 	for _, name := range names {
-		vr, err := acq.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: acq.buildDir, Coordinate: name})
+		vr, err := acq.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: acq.buildDir, Coordinate: name, Strict: acq.strict})
 		if err != nil && !named[name] {
 			notes = append(notes, report.PartialityNote{
 				Reason:    reasonWorkSetDependencyUnreadable,

@@ -189,8 +189,8 @@ func (multiCopyJSPlugin) ResolveDependencyVersions(ctx context.Context, req plug
 	return jsanalysis.ResolveDependencyVersions(ctx, req)
 }
 
-func (p multiCopyJSPlugin) ResolveInventory(context.Context, plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
-	return plugin.DependencyInventory{Partiality: p.inventory}, nil
+func (p multiCopyJSPlugin) ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
+	return plugin.DependencyInventory{Partiality: p.inventory, LaunchDigest: jsanalysis.LaunchDigest(req.BuildDir)}, nil
 }
 
 // TestInventoryLimits_MultiCopyDisqualification runs a whole scan over a lockfile that installs

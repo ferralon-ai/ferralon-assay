@@ -41,6 +41,7 @@ func renderTier1Body(r report.Report) string {
 	if v := r.Provenance.AnalyzerVersion; v != "" && brand.Tier1RenderAnalyzer {
 		fmt.Fprintf(&b, "**Analyzer:** `%s`  \n", v)
 	}
+	b.WriteString(modeLine(r))
 	b.WriteString("\n")
 
 	b.WriteString(reportHeadline(r, c))

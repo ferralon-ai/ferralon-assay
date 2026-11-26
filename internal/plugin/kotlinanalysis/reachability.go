@@ -92,7 +92,9 @@ func Reachability(_ context.Context, req plugin.ReachabilityRequest, opts ...jav
 	// point; a build that launches one leaves its launch entry unmapped (launchEntryReasons).
 	mains := mainMethodRefs(prog.classes)
 	mains = append(mains, companionInitRoots(all, mains)...)
-	frameworks := frameworkIngressRefs(prog.classes)
+	// A route inherited from a supertype in the dependency closure (a generated API interface
+	// published as its own artifact) roots its first-party override too.
+	frameworks := frameworkIngressRefs(prog.classes, class)
 	// A class whose supertype the run's classpath lacks cannot link: only when that classpath
 	// is the loaded one (every runtime JAR listed and read, no run-wide closure reason, every
 	// first-party class read from the one traced project), the build's own, which a licensed

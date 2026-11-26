@@ -13,10 +13,12 @@
 //	version: 1
 //	analyze:
 //	  ref: <branch|tag|sha>   # optional; default = the ref CI checked out
+//	strictness: practical|strict   # optional; default = practical
 //
 // Forward compatibility: an unknown key at the top level or inside analyze is a WARNING and the
 // read proceeds, so the schema can grow (e.g. a future analyze.path for monorepos) without
-// breaking older scanners. Malformed YAML, a wrong type, an unsupported version or an invalid ref
+// breaking older scanners. Malformed YAML, a wrong type, an unsupported version, an invalid ref or a
+// strictness other than practical or strict
 // FAIL CLOSED with an error — a config that says something the scanner cannot honor must never be
 // silently skipped, because the scan would then report on a tree the repository did not ask for.
 //
@@ -56,6 +58,9 @@ type Config struct {
 	// Version is the schema version the file declared (SchemaVersion when it omitted the field).
 	Version int
 	Analyze Analyze
+	// Strictness is the file's strictness key: "practical", "strict", or empty when the file states
+	// none. The Action's strictness input overrides it.
+	Strictness string
 }
 
 // Analyze selects what the scan analyzes.
@@ -160,6 +165,14 @@ func Parse(data []byte) (Config, []string, error) {
 				}
 				return nil
 			})
+		case "strictness":
+			if isNull(val) {
+				return nil
+			}
+			if val.Kind != yaml.ScalarNode || val.Tag != "!!str" || !ValidStrictness(val.Value) {
+				return fmt.Errorf("%s: strictness must be practical or strict", DefaultPath)
+			}
+			cfg.Strictness = val.Value
 		default:
 			warnings = append(warnings, fmt.Sprintf("unknown key %q ignored (not understood by this scanner version)", key))
 		}
@@ -173,6 +186,11 @@ func Parse(data []byte) (Config, []string, error) {
 		warnings = append(warnings, fmt.Sprintf("no version field; assuming version %d", SchemaVersion))
 	}
 	return cfg, warnings, nil
+}
+
+// ValidStrictness reports whether v is a strictness value: practical or strict, lower case.
+func ValidStrictness(v string) bool {
+	return v == "practical" || v == "strict"
 }
 
 // eachPair walks a mapping node's key/value pairs, rejecting non-scalar and duplicate keys.

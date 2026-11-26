@@ -340,6 +340,17 @@ inputs:
       value fails the run on it. An explicitly empty value also means 15m.
     required: false
     default: "15m"
+  strictness:
+    description: >-
+      How the analysis treats an assumption it inferred, forwarded to the scanner as
+      ASSAY_STRICTNESS: "practical" or "strict". Strict clears no row that rests on an assumption
+      the scanner inferred; practical may clear a row under an assumption only when the row names
+      it. Empty (default) = the strictness key of .github/ferralon.yml, else practical. The report
+      records the mode and which of the three decided it. Any other value fails the run.
+      VERSION REQUIREMENT: a scanner release that reads ASSAY_STRICTNESS; one that predates it
+      ignores the variable.
+    required: false
+    default: ""
   issue:
     description: "Set to 'false' to disable the scanner's own pinned-Issue surface. Default enabled."
     required: false
@@ -853,6 +864,7 @@ runs:
         # 0 sets no limit; empty (a caller forwarding an unset input) falls back to the 15m default.
         # An env var, so a scanner release that predates it ignores it.
         ASSAY_SCAN_TIMEOUT: ${{ inputs.scan-timeout || '15m' }}
+        ASSAY_STRICTNESS: ${{ inputs.strictness }}
         GITHUB_TOKEN: ${{ github.token }}
         # Route every ${{ }} value through the step env and reference it as a shell $VAR below,
         # never interpolating `${{ inputs.* }}` directly into the run script. A directly-inlined

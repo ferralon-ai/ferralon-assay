@@ -51,6 +51,10 @@ type BaselineRequest struct {
 	// AssessOptions are the pipeline seams (WithPlugin / WithCheckout) the Assess
 	// stages run with. Empty = the hermetic stub path.
 	AssessOptions []pipeline.AssessOption
+	// ModeSource is the report.ModeSource the run's strictness came from; "" records default for a
+	// practical run and input for a strict one. The strictness itself is the one AssessOptions select
+	// (pipeline.WithStrict).
+	ModeSource string
 	// Signals is the EPSS/KEV signals file the run was given; nil for none, in which case no
 	// finding carries a Priority. Ranking context only: it is applied after every verdict is final.
 	// A caller outside this module sets it with signals.Feed. The Report the run builds records
@@ -218,7 +222,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 	// unchanged in the loop below (advisoryFromArtifacts still serves the finding path — §4.1 / C5).
 	analysis := analysisOr(req.Analysis, ctx)
 	assessOpts := scanOptions(req.AssessOptions)
-	inv, invLanguage, err := inventoryWithin(analysis, req.Codebase, req.AssessOptions...)
+	inv, invLanguage, launch, err := inventoryWithin(analysis, req.Codebase, req.AssessOptions...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("trigger: resolve codebase inventory: %w", err)
 	}
@@ -234,6 +238,11 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 	b.AddPackages(sbom.Packages...)
 	b.SetRelationships(sbom.Relationships)
 	b.SetGoBuildList(sbom)
+	// The launch digest is this commit's, from this run's inventory, even when the packages are
+	// the prior's. A cut-short inventory carries none, which differs from any JS baseline's and
+	// so never inherits.
+	b.SetJSLaunchDigest(report.SBOM{JSLaunchDigest: launch})
+	b.WithMode(runMode(req.AssessOptions, req.ModeSource))
 	b.AddPartiality(invNotes...)
 	mods := goModulesOf(sbom, invNotes)
 
@@ -274,6 +283,7 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 		b.AddFinding(f)
 		b.WithLibraryEntrypoints(libraryEntrypoints(st, assessmentID)...)
 		b.WithEntryRoots(entryRoots(st, assessmentID)...)
+		b.WithSubjectToolchain(subjectToolchain(st, assessmentID))
 		if note, ok := limitNoteFor(f); ok {
 			b.AddPartiality(note)
 		}
@@ -309,9 +319,10 @@ func baselineReport(ctx context.Context, req BaselineRequest, readPrior func() (
 }
 
 // PRInheritRequest configures a PR-adjacent run. It diffs the PR's resolved SBOM
-// against the stored baseline; if the dependency set is unchanged it inherits the
-// baseline Report (the fast path — no re-analysis), otherwise it re-analyzes the
-// affected slice (the advisories touching changed packages). Either way the result
+// against the stored baseline; if the dependency set and the JS launch digest are
+// unchanged it inherits the baseline Report (the fast path — no re-analysis), otherwise
+// it re-analyzes the affected slice (the advisories touching changed packages, and every
+// npm row when the launch digest moved). Either way the result
 // is returned to the caller and the stored baseline is left untouched.
 type PRInheritRequest struct {
 	// Subject is the PR head's neutral identity.
@@ -342,6 +353,8 @@ type PRInheritRequest struct {
 	Cursor          string
 	// AssessOptions are the pipeline seams for any re-analysis.
 	AssessOptions []pipeline.AssessOption
+	// ModeSource mirrors BaselineRequest.ModeSource.
+	ModeSource string
 	// Signals mirrors BaselineRequest.Signals. Every row is ranked by it — inherited rows too, so
 	// none keeps a value from the signals file the baseline run read.
 	Signals *intel.Signals
@@ -381,9 +394,11 @@ type PRInheritResult struct {
 // inherits the baseline's findings, carrying a Baseline pointer. S1–S6 runs only for a
 // work-set advisory the baseline holds no usable row for (none, or a scan_cut_short one),
 // which would otherwise have none.
-// Slow path: at least one package changed, or the entry-point statement differs from the one the
-// baseline's refutations rest on → re-run S1–S6 for the advisories whose
-// package changed and merge those findings over the inherited baseline findings.
+// Slow path: at least one package changed, the entry-point statement differs from the one the
+// baseline's refutations rest on, or the JS launch surface (jsanalysis.LaunchDigest) differs from
+// the baseline's → re-run S1–S6 for the advisories whose package changed, every one under a restated
+// statement and every npm one under a changed launch surface, and merge those findings over the
+// inherited baseline findings.
 //
 // RunPRInherit only reads the store. The state ref holds the default branch's
 // baseline, which later PR runs inherit from and cve-watch diffs against; a Report of
@@ -407,7 +422,7 @@ func RunPRInherit(ctx context.Context, store statestore.StateStore, req PRInheri
 
 	changed := changedPackages(baseline.SBOM, req.PRSBOM)
 
-	if len(changed) == 0 && !restated(baseline, req.AssessOptions) {
+	if len(changed) == 0 && !restated(baseline, req.AssessOptions) && !relaunched(baseline.SBOM, req.PRSBOM) {
 		// Nothing changed, so every baseline row stands but a scan_cut_short one, which says
 		// nothing and is replaced by a fresh row. An advisory new to the work set has no row to
 		// inherit either, and the Report's cursor covers it all the same.
@@ -460,6 +475,8 @@ type CVEWatchRequest struct {
 	AnalyzerVersion string
 	// AssessOptions are the pipeline seams for an earnest re-analysis.
 	AssessOptions []pipeline.AssessOption
+	// ModeSource mirrors BaselineRequest.ModeSource.
+	ModeSource string
 	// Signals mirrors PRInheritRequest.Signals.
 	Signals *intel.Signals
 	// Advisories is the run's work set. CVE-watch assesses only the newly-relevant advisories, but

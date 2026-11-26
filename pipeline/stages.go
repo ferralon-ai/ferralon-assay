@@ -156,6 +156,15 @@ func WithStrict(strict bool) AssessOption {
 	return func(c *AssessConfig) { c.Strict = strict }
 }
 
+// StrictOf reports whether a run assessed with opts is in strict mode.
+func StrictOf(opts ...AssessOption) bool {
+	var cfg AssessConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return cfg.Strict
+}
+
 // WithSubjectGoWork states the GOWORK the subject's Go build runs under: "off", or the path of its
 // go.work, relative to the checkout root unless absolute. Unstated, the build runs under the go.work
 // the go command finds from the module, searched no higher than its repository. Never pass the
@@ -1037,6 +1046,7 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		vr, err := s.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{
 			BuildDir:   buildDir,
 			Coordinate: coordinate,
+			Strict:     s.strict,
 		})
 		if err != nil {
 			return depVersions{}, nil, err
@@ -1424,7 +1434,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// construction. A root package need not list itself, and may match with no version.
 	var membership *manifestMembership
 	if buildDir != "" && resolved.Version == "" && !isRoot {
-		membership = resolveManifestMembership(ctx, s.plugin, buildDir, language, AffectedPackageKeys(facts))
+		membership = resolveManifestMembership(ctx, s.plugin, buildDir, language, AffectedPackageKeys(facts), s.strict)
 	}
 
 	inv := struct {
@@ -2609,6 +2619,23 @@ func Toolchain(store artifact.Store, caseID string) (ToolchainFact, bool) {
 		return ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}, true
 	}
 	return inv.Toolchain, true
+}
+
+// GoToolchain is Toolchain for a Go assessment only: ok is false for another language, whose
+// inventory carries the unresolved placeholder because the fact is Go-only, and when there is no
+// inventory artifact.
+func GoToolchain(store artifact.Store, caseID string) (ToolchainFact, bool) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return ToolchainFact{}, false
+	}
+	var inv struct {
+		Language string `json:"language"`
+	}
+	if json.Unmarshal(arts[0].Payload, &inv) != nil || inv.Language != "go" {
+		return ToolchainFact{}, false
+	}
+	return Toolchain(store, caseID)
 }
 
 // SubjectToolchainScanned reports whether reachability for this case actually ran under the

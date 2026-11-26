@@ -232,6 +232,53 @@ Findings are sorted most-actionable first, and every projection keeps that order
 | PR comment and pinned Issue | The grade and EPSS/KEV columns, each value with its own date, and a one-line reminder that neither is an exploitability claim. |
 | `openvex.json` | No priority data. OpenVEX has no field for it, so none is projected. |
 
+## Strictness
+
+Strictness decides which clearances stand.
+
+- `strict`: no clearance rests on an assumption Assay inferred.
+- `practical` (the default): a row may clear under an assumption only when the row names it.
+
+The first of these decides the mode:
+
+1. The `strictness` Action input, the `-strictness` flag or `ASSAY_STRICTNESS` (the flag wins over
+   the variable). Values are lowercase `practical` or `strict`; empty states nothing, and any other
+   value fails the run before the target is acquired.
+2. The `strictness` key of `.github/ferralon.yml`, `strictness: practical` or `strictness: strict`.
+   A value of any other type or spelling fails the run. A remote URL target has no checkout to read
+   it from, so only the input applies there.
+3. `practical`.
+
+The report records the mode in `mode` as `{"strictness": ..., "source": "input" | "ferralon.yml" |
+"default"}`, and the job summary, PR comment, pinned issue and CLI summary print it. See
+[sample-report.md](sample-report.md#mode-and-run-assumptions) for the field and the
+`run_assumptions` block beside it.
+
+A report never carries a row produced under the other mode. When the stored baseline's mode differs
+from the run's (a baseline with no `mode` field reads as practical):
+
+- `pr-inherit` analyses every advisory in the PR's work set again, including the instances under
+  other Go major versions of the same module, and drops every baseline row outside the work set. If
+  a stop cut the work set short, a `scan_cut_short` note says the work set may be incomplete, and
+  each advisory the pass stopped before has its own `scan_cut_short` row.
+- `cve-watch` analyses every stored advisory again, and every stored row of an advisory it retries
+  gives way to the new analysis. A row withheld as `dependency_not_fetched` carries no verdict and
+  is not retried for the mode change. It stays until a run that records the dependency code it
+  fetched assesses it again, as under either mode.
+- When two runs store at once, the stored state keeps the later report's rows alone if their modes
+  differ.
+
+The report's description of the run is this run's alone too. `subject_toolchain`, the entry points
+and the partiality notes are not carried from a report of the other mode, so a run that finishes no
+Go assessment states no toolchain rather than the stored one. `cve-watch` keeps the stored SBOM,
+and with it the notes that describe that SBOM.
+
+Set `strictness` in `.github/ferralon.yml` rather than in a workflow's Action input, so the push,
+PR and scheduled `cve-watch` workflows run under the same mode. The push workflow's `baseline` and
+`cve-watch` both store state: if they disagree, each run finds the other's report under another
+mode and analyses everything again. A PR run only reads the baseline, so a PR workflow under
+another mode analyses its whole work set again on every run.
+
 ## The Go toolchain your repository builds with
 
 For a Go standard-library advisory, the question is about the Go **you** build with, which is not
@@ -426,8 +473,11 @@ zero-config path the README Quickstart uses.
 ### `pr-inherit`
 
 Resolves the SBOM of the checked-out PR head and diffs it against the stored baseline. If the
-dependency set is unchanged, it inherits the baseline's findings without re-scanning. If it changed, it
-re-analyzes only the affected advisories and merges them over the inherited findings. Either way it
+dependency set and the JS launch surface (`sbom.js_launch_digest`: the package.json values,
+launch files and interpreter-line files the JS lane infers entry points from) are unchanged, it
+inherits the baseline's findings without re-scanning. Otherwise it re-analyzes only the affected
+advisories, plus every npm row when the launch surface changed, and merges them over the inherited
+findings. Either way it
 publishes the PR's Report without storing it: the baseline stays the default branch's, so later PRs
 inherit from it and `cve-watch` diffs against it, and a read-only token is enough — including a
 fork's. With no baseline in the selected store it stops with:

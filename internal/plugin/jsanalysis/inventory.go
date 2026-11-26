@@ -86,6 +86,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 	}
 
 	roots, rootsRead := discoverProjectRoots(req.BuildDir)
+	launch := launchDigest(req.BuildDir, len(roots) > 0 || !rootsRead)
 	var (
 		allNodes  []plugin.DependencyNode
 		allEdges  []plugin.DependencyEdge
@@ -98,7 +99,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		// No lockfile and no package.json found: declared absence (with tool_failure when part
 		// of the tree went unread), never an empty-but-Complete inventory that would read
 		// downstream as "no dependencies".
-		return plugin.DependencyInventory{Partiality: mergePartiality(plugin.Partial(plugin.PartialReasonNoManifest), graphPart)}, nil
+		return plugin.DependencyInventory{Partiality: mergePartiality(plugin.Partial(plugin.PartialReasonNoManifest), graphPart), LaunchDigest: launch}, nil
 	}
 
 	for _, root := range roots {
@@ -134,7 +135,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		}
 		return edges[i].Child < edges[j].Child
 	})
-	return plugin.DependencyInventory{Partiality: graphPart, Nodes: nodes, Edges: edges}, nil
+	return plugin.DependencyInventory{Partiality: graphPart, Nodes: nodes, Edges: edges, LaunchDigest: launch}, nil
 }
 
 // discoverProjectRoots returns every directory that directly contains a recognized lockfile

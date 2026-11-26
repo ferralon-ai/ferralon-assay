@@ -31,7 +31,7 @@ type runner struct {
 func (r *runner) run(ctx context.Context, step string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, r.tool, args...)
 	cmd.Dir = r.dir
-	cmd.Env = r.env
+	cmd.Env = StripCredentials(r.env)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out

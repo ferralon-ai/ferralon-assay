@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 )
 
 // These hermetic tests exercise the exec + newline-JSON/stdio transport WITHOUT the real
@@ -93,6 +95,16 @@ func TestHelperProcess(t *testing.T) {
 				},
 			},
 		}
+	case "credentials":
+		for _, k := range buildgraph.CredentialEnv() {
+			if _, ok := os.LookupEnv(k); ok {
+				resp.Error += k + " "
+			}
+		}
+		if os.Getenv("KEEP_ME") != "1" {
+			resp.Error += "KEEP_ME-missing"
+		}
+		resp.SymbolIndex = &SymbolIndexResult{Partiality: Complete()}
 	case "badproto":
 		resp.Protocol = "tegron.plugin.vBOGUS"
 		resp.SymbolIndex = &SymbolIndexResult{Partiality: Complete()}
@@ -312,5 +324,17 @@ func TestConstructorsDiscoverBinaryName(t *testing.T) {
 				t.Errorf("Language() = %q, want %q", got, tc.language)
 			}
 		})
+	}
+}
+
+func TestPluginSubprocessStripsCredentials(t *testing.T) {
+	for _, k := range buildgraph.CredentialEnv() {
+		t.Setenv(k, "secret")
+	}
+	t.Setenv("KEEP_ME", "1")
+	p := newHelperPlugin(t, "credentials")
+	// The helper reports any credential it can see as an error; a clean child answers without one.
+	if _, err := p.IndexSymbols(context.Background(), IndexSymbolsRequest{BuildDir: "/x"}); err != nil {
+		t.Fatalf("subprocess saw: %v", err)
 	}
 }

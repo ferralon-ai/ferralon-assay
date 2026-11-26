@@ -323,10 +323,32 @@ func printSummary(outDir string, rep *report.Report, signals string) {
 	for _, v := range sortedVerdicts(counts) {
 		fmt.Fprintf(os.Stdout, "    - %-20s %d\n", v, counts[v])
 	}
+	if line := coverageLine(rep); line != "" {
+		fmt.Fprintf(os.Stdout, "  coverage:   %s\n", line)
+	}
 	fmt.Fprintf(os.Stdout, "  written to: %s\n", abs)
 	for _, name := range []string{resultsink.FileReportJSON, resultsink.FileReportHTML, resultsink.FileSARIF, resultsink.FileOpenVEX} {
 		fmt.Fprintf(os.Stdout, "    - %s\n", filepath.Join(abs, name))
 	}
+}
+
+// coverageLine is the one line that says the counts above cover only part of the codebase: the
+// report names scan-level limits (partiality) or holds an advisory the scan left undetermined. It
+// carries the meaning of the job summary's "Coverage: partial" header and is empty for a scan that
+// covered what it set out to, so the line never appears on a complete run.
+func coverageLine(rep *report.Report) string {
+	undetermined := 0
+	for _, f := range rep.Advisories {
+		if f.Verdict == report.VerdictUndetermined {
+			undetermined++
+		}
+	}
+	if len(rep.Partiality) == 0 && undetermined == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Coverage: partial — %d scan limit(s), %d advisory finding(s) undetermined. "+
+		"The counts above cover only what was assessed; an undetermined advisory is not a clean result. See %s.",
+		len(rep.Partiality), undetermined, resultsink.FileReportHTML)
 }
 
 func sortedVerdicts(counts map[report.Verdict]int) []report.Verdict {

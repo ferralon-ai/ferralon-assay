@@ -82,6 +82,12 @@ Two more scopes are conditional on inputs this Quickstart does not set: `state-r
 GitHub issues a read-only token whatever you declare, and every write surface skips itself; the
 job summary still lands.
 
+An advisory against your repository's own Go module is placed by the module's release tags. The
+`actions/checkout` default fetches one commit and no tags, so on that checkout such a row stays
+`undetermined` (`own_release_version_unknown`). Set `fetch-depth: 0` and `fetch-tags: true` on the
+checkout step to resolve it; the
+[operator guide](docs/operator-guide.md#undetermined-reasons) says how the tags are read.
+
 A JavaScript scan reads its dependencies' code by default: it fetches each package the lockfile
 pins and reads it only once it matches the lockfile's integrity hash. The Action keeps those
 packages in a cache keyed on your lockfiles, so an unchanged lock fetches them again only where it

@@ -87,10 +87,10 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest, opts ...Option)
 func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest, opts ...Option) (plugin.IngressResult, error) {
 	s := sessionFrom(ctx)
 	if s == nil {
-		return findIngresses(ctx, req, opts...)
+		return findIngresses(ctx, req, nil, opts...)
 	}
 	return memo(&s.mu, s.ingresses, sessionKey{req.BuildDir, resolveOptions(opts)}, func() (plugin.IngressResult, error) {
-		return findIngresses(ctx, req, opts...)
+		return findIngresses(ctx, req, nil, opts...)
 	})
 }
 

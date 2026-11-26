@@ -101,9 +101,10 @@ func TestRunCVEWatch_HookSeesAssessedPackages(t *testing.T) {
 	if got == nil {
 		t.Fatal("the hook was not called")
 	}
-	// The wiring advisory is a fixture Go record naming only its primary, and the finding's Go
-	// package carries no package URL: both leave a package unnamed.
-	want := []string{"", "pkg:golang/golang.org/x/text", ""}
+	// The wiring advisory is a fixture Go record naming only its primary, which leaves a package
+	// unnamed. The finding names the package its assessment adjudicated, as a baseline does, not
+	// the stored row's.
+	want := []string{"pkg:golang/golang.org/x/text", "pkg:golang/golang.org/x/text", ""}
 	if p := got.Packages[wiringAdvisory.ID]; !slices.Equal(p, want) || len(got.Packages) != 1 {
 		t.Fatalf("Packages = %q, want only %s: %q", got.Packages, wiringAdvisory.ID, want)
 	}

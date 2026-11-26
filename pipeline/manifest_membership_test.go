@@ -74,7 +74,7 @@ func TestResolveManifestMembership(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := resolveManifestMembership(context.Background(), tt.p, "/build", tt.language, tt.keys)
+			m := resolveManifestMembership(context.Background(), tt.p, "/build", tt.language, tt.keys, false)
 			if (m == nil) != tt.wantNil {
 				t.Fatalf("membership = %+v, wantNil %v", m, tt.wantNil)
 			}
@@ -118,7 +118,7 @@ func TestIntakeRun_PyPIManifestMembership(t *testing.T) {
 			if tt.stub.err != nil {
 				// A plugin error on the version read already fails the stage; the oracle adds no
 				// verdict of its own. Exercise the oracle's own error path directly instead.
-				if resolveManifestMembership(context.Background(), tt.stub, dir, "python", []PackageKey{{Ecosystem: "pypi", Name: "aiohttp"}}) != nil {
+				if resolveManifestMembership(context.Background(), tt.stub, dir, "python", []PackageKey{{Ecosystem: "pypi", Name: "aiohttp"}}, false) != nil {
 					t.Fatal("plugin error must yield no membership fact")
 				}
 				return
@@ -233,16 +233,52 @@ func TestResolveManifestMembership_JavaBuildGraph(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := resolveManifestMembership(context.Background(), p, build, "java", []PackageKey{{Ecosystem: "maven", Name: tt.coordinate}})
+			m := resolveManifestMembership(context.Background(), p, build, "java", []PackageKey{{Ecosystem: "maven", Name: tt.coordinate}}, false)
 			if m == nil || m.Present != tt.wantPresent || m.Known != tt.wantKnown {
 				t.Fatalf("membership = %+v, want present=%v known=%v", m, tt.wantPresent, tt.wantKnown)
 			}
 		})
 	}
 	t.Run("a reactor module", func(t *testing.T) {
-		m := resolveManifestMembership(context.Background(), p, build, "java", []PackageKey{{Ecosystem: "maven", Name: "com.example:mb"}})
+		m := resolveManifestMembership(context.Background(), p, build, "java", []PackageKey{{Ecosystem: "maven", Name: "com.example:mb"}}, false)
 		if m != nil && !m.Present && m.Known {
 			t.Fatalf("reactor module declared absent: %+v", m)
 		}
 	})
+}
+
+// strictRecorder is a plugin that records the Strict of each version read it is asked for.
+type strictRecorder struct {
+	membershipStub
+	seen *[]bool
+}
+
+func (s strictRecorder) ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+	*s.seen = append(*s.seen, req.Strict)
+	return s.membershipStub.ResolveDependencyVersions(ctx, req)
+}
+
+// TestResolveVersions_ForwardsStrict: strict mode reaches the lane on every version read the
+// pipeline makes, so a lane can withhold an answer that rests on an assumption.
+func TestResolveVersions_ForwardsStrict(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(map[bool]string{false: "practical", true: "strict"}[strict], func(t *testing.T) {
+			var seen []bool
+			p := strictRecorder{membershipStub{lang: "python", exhaustive: true}, &seen}
+
+			resolveManifestMembership(context.Background(), p, "/build", "python", []PackageKey{{Ecosystem: "pypi", Name: "aiohttp"}}, strict)
+			if len(seen) != 1 || seen[0] != strict {
+				t.Errorf("manifest membership read Strict = %v, want [%v]", seen, strict)
+			}
+
+			seen = nil
+			if _, _, err := (codebaseInventory{plugin: p, strict: strict}).resolveDependencyVersion(
+				context.Background(), "/build", GoWorkspace{}, "python", "", "aiohttp", "", ToolchainFact{}); err != nil {
+				t.Fatal(err)
+			}
+			if len(seen) != 1 || seen[0] != strict {
+				t.Errorf("inventory version read Strict = %v, want [%v]", seen, strict)
+			}
+		})
+	}
 }

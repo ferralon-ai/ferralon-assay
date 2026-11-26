@@ -209,6 +209,7 @@ func main() {
 	e.Match([]string{"GET", "POST"}, "/match", s.matchForm)
 	e.GET("/mw/:id", s.routeMWForm, routeMiddleware, echo.WrapMiddleware(netMiddleware))
 	e.POST("/accessors", s.accessorsForm)
+	registerBound(e)
 
 	api := e.Group("/api", groupMiddleware)
 	api.Use(groupMiddleware)
@@ -236,4 +237,38 @@ func main() {
 	fake.Add("GET", "/fake-add", s.lookalikeAdd)
 	fake.Group("/fake-group").GET("/:id", s.lookalikeGroup)
 	e.GET("/fake-wrap", lookalike.WrapHandler(http.HandlerFunc(s.lookalikeNet)))
+}
+
+// The handlers below are bound through an address taken and passed on: setHandler
+// stores a second handler through it, a write that is no store into the var or the
+// field itself, so the value registered is no one handler and registers no ingress,
+// and their sinks get no path. Each keeps a single direct store (the var's
+// initializer, the field's composite literal), so only the escape of its address
+// tells it from a handler bound once.
+func sinkEscapedVar(v any)   { sunk = append(sunk, v) }
+func sinkEscapedField(v any) { sunk = append(sunk, v) }
+
+// setHandler stores h through p, whatever p addresses.
+func setHandler(p *echo.HandlerFunc, h echo.HandlerFunc) { *p = h }
+
+// escapedVar's only store is its declaration's, but its address reaches setHandler.
+var escapedVar echo.HandlerFunc = escapedVarA
+
+func escapedVarA(c echo.Context) error { sinkEscapedVar(c.Param("a")); return nil }
+func escapedVarB(c echo.Context) error { sinkEscapedVar(c.Param("b")); return nil }
+
+// escapedRoutes' field is stored once, by a composite literal, but its address
+// reaches setHandler.
+type escapedRoutes struct{ h echo.HandlerFunc }
+
+func escapedFieldA(c echo.Context) error { sinkEscapedField(c.Param("a")); return nil }
+func escapedFieldB(c echo.Context) error { sinkEscapedField(c.Param("b")); return nil }
+
+func init() {
+	e := echo.New()
+	setHandler(&escapedVar, escapedVarB)
+	e.GET("/escaped-var", escapedVar)
+	r := &escapedRoutes{h: escapedFieldA}
+	setHandler(&r.h, escapedFieldB)
+	e.GET("/escaped-field", r.h)
 }

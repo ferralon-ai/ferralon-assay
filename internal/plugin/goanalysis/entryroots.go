@@ -15,6 +15,11 @@ import (
 func (e entrypoints) disclosure(pkgs []*packages.Package, buildDir string) *plugin.EntryRootRecord {
 	rec, _ := plugin.EntryRootRecordOf(*e.record())
 	rec.Inferred = inferredEntrypoints(pkgs)
+	if len(e.mains) > 0 {
+		// Read as an application, the mains are the entry points: the record names the ones the
+		// reading rests on.
+		rec.Effective[plugin.EntryKindMain] = pkgPaths(e.mains)
+	}
 	rec.Denied = e.denied(pkgs, buildDir)
 	return &rec
 }
@@ -82,12 +87,15 @@ func withoutLoad(ctx context.Context, res plugin.ReachabilityResult, buildDir st
 		return res
 	}
 	key := append(loadCacheKey(ctx, buildDir), "entryroots", string(stmt))
+	if strictFrom(ctx) {
+		key = append(key, "strict")
+	}
 	b, err := runCached(ctx, "entryroots", key, func() ([]byte, error) {
 		loaded, err := load()
 		if err != nil {
 			return nil, err
 		}
-		return json.Marshal(resolveEntrypoints(loaded.Packages, entry, buildDir).disclosure(loaded.Packages, buildDir))
+		return json.Marshal(resolveEntrypoints(loaded.Packages, entry, buildDir, strictFrom(ctx)).disclosure(loaded.Packages, buildDir))
 	})
 	if err != nil {
 		return res

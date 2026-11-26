@@ -42,6 +42,12 @@ func refutedBeside(store artifact.Store, assessmentID string, reach plugin.Reach
 	if reach.Refutation != nil {
 		all = append(all, *reach.Refutation)
 	}
+	return standingBeside(store, assessmentID, all)
+}
+
+// standingBeside returns the refutations of all that may stand beside the admitted package's own
+// gate, by refutedBeside's rule.
+func standingBeside(store artifact.Store, assessmentID string, all []plugin.Refutation) []plugin.Refutation {
 	scoped := footprintScoped(store, assessmentID)
 	var out []plugin.Refutation
 	for _, r := range all {

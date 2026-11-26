@@ -23,6 +23,7 @@ import (
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/vuln/scan"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -163,6 +164,7 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 // scanned — the caller decides what an empty path set is evidence of.
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
 	ctx, err := withGoWork(ctx, req.GoWork)
+	ctx = withStrict(ctx, req.Strict)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
@@ -270,7 +272,7 @@ func libraryView(ctx context.Context, scanned vulnScan, g reconcileGraph, buildD
 		if err != nil {
 			return plugin.ReachabilityResult{}, evidence, fmt.Errorf("load for withholding a refutation: %w", err)
 		}
-		entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir)
+		entrypoints := resolveEntrypoints(loaded.Packages, entry, buildDir, strictFrom(ctx))
 		res.EntryRoots = entrypoints.disclosure(loaded.Packages, buildDir)
 		if loaded.cgoUnresolved {
 			res.Refutation = nil
@@ -457,11 +459,11 @@ func unsearchedCaller(pkgs []*packages.Package, entry entrypoints, module string
 // govulncheck searches only the calls the build's own packages make. A value an entry point hands its
 // importer (a function, an interface value, a struct carrying either, through a result, an exported
 // var or field, or an embedded type) can still run the module's code once the importer calls it, and
-// that call is outside the search, whether or not the build also has a main package. So when any
-// entry point reaches one of the refuted module's packages that count (countingPackages), or the
-// entry points or their reach are unknown, the result declares library_escape instead. A refutation
-// that stands only because the caller declared a package no entry point carries that declaration
-// as an assumption. A withhold the incomplete load contributes to declares tool_failure beside it.
+// that call is outside the search. So when any entry point reaches one of the refuted module's
+// packages that count (countingPackages), or the entry points or their reach are unknown, the result
+// declares library_escape instead. A refutation that stands only because the caller declared a
+// package no entry point, or because the build was read as an application (entrypoints.mains), carries
+// that as an assumption. A withhold the incomplete load contributes to declares tool_failure beside it.
 func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, entry entrypoints) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
@@ -523,6 +525,18 @@ func reaching(pkgs, set []*packages.Package, incomplete bool, module string, vul
 	return slices.DeleteFunc(slices.Clone(set), func(p *packages.Package) bool { return !reach.reachesModule(p) })
 }
 
+type strictKey struct{}
+
+// withStrict carries the request's strict mode to the entry-point resolution.
+func withStrict(ctx context.Context, strict bool) context.Context {
+	return context.WithValue(ctx, strictKey{}, strict)
+}
+
+func strictFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(strictKey{}).(bool)
+	return v
+}
+
 // entrypoints is the build's library entry points: the packages code outside the build may import
 // and call, resolved from the caller's statement.
 type entrypoints struct {
@@ -537,6 +551,10 @@ type entrypoints struct {
 	tightened []*packages.Package
 	// matched holds each declared path, "!" kept on an exclusion, that matched a package.
 	matched map[string]bool
+	// mains are the build's application mains (applicationMains) when they alone are the entry
+	// points: auto with nothing declared, on a complete load of a build that ships one. Every package
+	// auto would otherwise take is then in auto.
+	mains []*packages.Package
 }
 
 // autoExcludedElements are the path elements below the module path that put a package outside auto's
@@ -544,11 +562,14 @@ type entrypoints struct {
 var autoExcludedElements = []string{"cmd", "example", "examples", "test", "tests", "testdata"}
 
 // resolveEntrypoints resolves the caller's statement against the build's packages. Auto's entry
-// points are the importable packages (importable) outside autoExcludedElements. A declared path is
+// points are the importable packages (importable) outside autoExcludedElements; with nothing declared,
+// a complete load of a build that ships an application main (applicationMains) is read as an
+// application instead, and auto takes no package: the mains are the entry points. A declared path is
 // matched against the package's directory relative to decl.Base, or buildDir when that is empty,
 // and counts as matched only when it covers an importable package. A package whose directory cannot
-// be placed there keeps auto's answer, and is an entry point under a path list.
-func resolveEntrypoints(pkgs []*packages.Package, decl plugin.LibraryEntrypoints, buildDir string) entrypoints {
+// be placed there keeps auto's answer, and is an entry point under a path list. strict withholds the
+// application reading from auto.
+func resolveEntrypoints(pkgs []*packages.Package, decl plugin.LibraryEntrypoints, buildDir string, strict bool) entrypoints {
 	e := entrypoints{decl: decl, matched: map[string]bool{}}
 	base := decl.Base
 	if base == "" {
@@ -585,7 +606,52 @@ func resolveEntrypoints(pkgs []*packages.Package, decl plugin.LibraryEntrypoints
 			e.tightened = append(e.tightened, p)
 		}
 	}
+	// The known packages of a partial run are not excused here: the reading holds for the whole run,
+	// so it must not turn on which advisory's search went partial.
+	// A strict request reads auto as a library: no clearance rests on the application assumption.
+	if !strict && !decl.Declared() && !incompleteLoad(pkgs, nil) {
+		if mains := applicationMains(pkgs); len(mains) > 0 {
+			e.mains = mains
+			e.auto, e.pkgs = append(e.auto, e.pkgs...), nil
+		}
+	}
 	return e
+}
+
+// applicationMains returns the shipped mains (shippedMains) that read a build as an application: a
+// main at its module's root or under its cmd directory, in a build of one main module. A main
+// elsewhere (a benchmark, an interop client, a profiling tool, a generator under internal, hack or
+// tools) ships beside a library as often as beside a program, so it leaves the library reading in
+// place. So does a workspace of several main modules, where a library module may sit beside a tool's.
+// Unlike shippedMains, which the program view can afford to widen, every main counted here makes a
+// refutation easier to keep.
+func applicationMains(pkgs []*packages.Package) []*packages.Package {
+	if !oneMainModule(pkgs) {
+		return nil
+	}
+	var mains []*packages.Package
+	for _, p := range shippedMains(pkgs) {
+		rel := strings.TrimPrefix(strings.TrimPrefix(p.PkgPath, p.Module.Path), "/")
+		if rel == "" || rel == "cmd" || strings.HasPrefix(rel, "cmd/") {
+			mains = append(mains, p)
+		}
+	}
+	return mains
+}
+
+// oneMainModule reports whether every package of pkgs in a main module is in the same one.
+func oneMainModule(pkgs []*packages.Package) bool {
+	main := ""
+	for _, p := range pkgs {
+		switch {
+		case p.Module == nil || !p.Module.Main:
+		case main == "":
+			main = p.Module.Path
+		case p.Module.Path != main:
+			return false
+		}
+	}
+	return true
 }
 
 // isEntrypoint reports whether an importable package in dir is an entry point. auto is auto's answer.
@@ -657,8 +723,11 @@ func (e entrypoints) record() *plugin.ResolvedLibraryEntrypoints {
 		Packages:  pkgPaths(e.pkgs),
 		Unmatched: e.unmatchedIncludes(),
 	}
-	if e.decl.Declared() {
+	switch {
+	case e.decl.Declared():
 		rec.Source = plugin.LibraryEntrypointsSourceDeclared
+	case len(e.mains) > 0:
+		rec.Source = plugin.LibraryEntrypointsSourceMains
 	}
 	for _, x := range e.decl.Exclude {
 		if !e.matched["!"+x] {
@@ -669,7 +738,8 @@ func (e entrypoints) record() *plugin.ResolvedLibraryEntrypoints {
 }
 
 // assumption states the declaration a refutation rests on: that code outside the build imports none of
-// left, the packages outside the entry points that reach module.
+// left, the packages outside the entry points that reach module. Read as an application, it names the
+// reading, how many mains it rests on, and the statement that reads the build as a library instead.
 func (e entrypoints) assumption(left []*packages.Package, incomplete bool, module string) string {
 	names := pkgPaths(left)
 	if len(names) > 5 {
@@ -682,6 +752,14 @@ func (e entrypoints) assumption(left []*packages.Package, incomplete bool, modul
 	verb := "reach"
 	if incomplete {
 		verb = "may reach (the load is incomplete)"
+	}
+	if len(e.mains) > 0 {
+		noun := "main packages"
+		if len(e.mains) == 1 {
+			noun = "main package"
+		}
+		return fmt.Sprintf("library-entrypoints %q: treated as an application: %d %s; no code outside the build imports %s, which %s %s; library mode: go:library=.",
+			e.decl.String(), len(e.mains), noun, strings.Join(names, ", "), verb, target)
 	}
 	return fmt.Sprintf("library-entrypoints %q: no code outside the build imports %s, which %s %s",
 		e.decl.String(), strings.Join(names, ", "), verb, target)
@@ -723,7 +801,8 @@ func isMain(p *packages.Package) bool {
 // for another GOOS or GOARCH, or behind a build tag, that may call into the advisory's vulnerable
 // packages in the refuted module (countingPackages) was never traced, so the refutation holds only
 // for builds that leave it out. The result then declares excluded_files instead, or the
-// localisations of it naming the assembly, //go:linkname or cgo #include the file reaches, and
+// localisations of it naming the assembly, //go:linkname, cgo #include or unresolved name the file
+// reaches, and
 // tool_failure beside it when the check withholds because one of its own steps failed. An advisory
 // that lists no vulnerable package in the module, or lists the module once with none, makes every
 // package of it count. When every such file is one that build constraints alone leave out and the
@@ -807,23 +886,18 @@ func evidenceResult(findings []vulnFinding, cg plugin.CallGraphResult, env []str
 // matched. An advisory spanning several modules refutes the first in path order; resultPerModule
 // refutes the others, and the gate matches each against the packages the advisory names.
 func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
-	var module, version string
-	for _, f := range findings {
-		if len(f.Trace) == 0 {
-			continue
-		}
-		fr := f.Trace[0]
-		if fr.Module == "" {
-			continue
-		}
-		if module == "" || fr.Module < module {
-			module, version = fr.Module, fr.Version
-		}
-	}
-	if module == "" {
+	modules := findingModules(findings)
+	if len(modules) == 0 {
 		return nil
 	}
-	imported := slices.ContainsFunc(findings, func(f vulnFinding) bool {
+	return moduleRefutationOf(findings, findings, modules[0], env)
+}
+
+// moduleRefutationOf states govulncheck's module-level evidence as a refutation of module, one of
+// the modules matched: the version the first of matched states, whether a vulnerable package is
+// imported in the run that found imports, and the platform and build tags the run used.
+func moduleRefutationOf(matched, imports []vulnFinding, module string, env []string) *plugin.Refutation {
+	imported := slices.ContainsFunc(imports, func(f vulnFinding) bool {
 		return len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Package != ""
 	})
 	use := "a vulnerable package is not imported"
@@ -833,9 +907,24 @@ func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 	return &plugin.Refutation{
 		Basis:   plugin.RefutationAnalyzerSymbolNotReached,
 		Package: "pkg:golang/" + module,
-		Detail: fmt.Sprintf("govulncheck matched the advisory to %s %s and found no call path to its vulnerable functions; %s (GOOS=%s GOARCH=%s, %s, tests excluded)",
-			module, version, use, envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH), tagsDetail(goflagsTags(env))),
+		Detail: fmt.Sprintf("govulncheck matched the advisory to %s %s and found no call path to its vulnerable functions; %s %s",
+			module, matchedVersion(matched, module), use, platformDetail(env)),
 	}
+}
+
+// matchedVersion is the first version findings state for module, or "".
+func matchedVersion(findings []vulnFinding, module string) string {
+	for _, f := range findings {
+		if len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Version != "" {
+			return f.Trace[0].Version
+		}
+	}
+	return ""
+}
+
+// platformDetail names the platform and build tags a run used.
+func platformDetail(env []string) string {
+	return fmt.Sprintf("(GOOS=%s GOARCH=%s, %s, tests excluded)", envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH), tagsDetail(goflagsTags(env)))
 }
 
 // tagsDetail names the build tags a run used.
@@ -1014,6 +1103,17 @@ func parseGoRelease(s string) (goRelease, bool) {
 		nums[i] = n
 	}
 	return goRelease{major: nums[0], minor: nums[1], patch: nums[2]}, true
+}
+
+// less reports whether r is an earlier release than o.
+func (r goRelease) less(o goRelease) bool {
+	if r.major != o.major {
+		return r.major < o.major
+	}
+	if r.minor != o.minor {
+		return r.minor < o.minor
+	}
+	return r.patch < o.patch
 }
 
 // loaderMinMinor is the oldest Go 1.x minor whose `go list` the bundled go/packages loader can
@@ -1199,11 +1299,37 @@ func failurePackageErrors(err error) []packages.Error {
 	return nil
 }
 
+// goVulnDBEnv names the vulnerability database govulncheck reads, passed as its -db: a URL such as
+// file:///path/to/db. Unset or empty, govulncheck reads its default, https://vuln.go.dev. It is read
+// from the run's env, which is also the run cache key, so runs against different databases never
+// share a stream.
+const goVulnDBEnv = brand.EnvPrefix + "_GO_VULN_DB"
+
+// govulncheckArgs is govulncheck's command line over patterns in buildDir under env.
+func govulncheckArgs(buildDir string, env, patterns []string) []string {
+	args := []string{"-C", buildDir, "-json", "-mode=source", "-scan=symbol"}
+	if db := envValue(env, goVulnDBEnv); db != "" {
+		args = append(args, "-db", db)
+	}
+	return append(args, patterns...)
+}
+
+// envValue is the value env gives key, the last setting winning as it does for a process; "" when
+// env does not set it.
+func envValue(env []string, key string) string {
+	for i := len(env) - 1; i >= 0; i-- {
+		if k, v, ok := strings.Cut(env[i], "="); ok && k == key {
+			return v
+		}
+	}
+	return ""
+}
+
 // govulncheckStream runs govulncheck over patterns in buildDir under env and returns its -json
 // stream.
 func govulncheckStream(ctx context.Context, buildDir string, env, patterns []string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
-	cmd := scan.Command(ctx, append([]string{"-C", buildDir, "-json", "-mode=source", "-scan=symbol"}, patterns...)...)
+	cmd := scan.Command(ctx, govulncheckArgs(buildDir, env, patterns)...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.Env = govulncheckEnv(ctx, buildDir, env)

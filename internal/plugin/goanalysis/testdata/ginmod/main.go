@@ -163,6 +163,7 @@ func main() {
 	r := gin.New()
 	r.Use(useMiddleware)
 	r.GET("/get/:id", s.getForm)
+	registerBound(r)
 	r.POST("/post", s.postForm)
 	r.PUT("/put", s.putForm)
 	r.PATCH("/patch", s.patchForm)

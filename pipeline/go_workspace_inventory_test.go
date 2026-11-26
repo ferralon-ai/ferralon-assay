@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -96,6 +97,13 @@ func TestCodebaseInventory_GoWorkspace(t *testing.T) {
 // build runs with GOWORK=off beside it, and none inside a Bazel workspace either way.
 func TestCodebaseInventory_GoWorkspaceToolchainFloor(t *testing.T) {
 	const modA = "module example.com/mono/a\n\ngo 1.22\n\ntoolchain go1.23.4\n"
+	assumedAt := func(v, strict string) *ToolchainFact {
+		return &ToolchainFact{
+			Version: v, Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective,
+			Assumption:    "the build runs under GOTOOLCHAIN=auto, so on the toolchain line's " + v + " or newer",
+			StrictVersion: strict,
+		}
+	}
 	cases := []struct {
 		name      string
 		work      string
@@ -103,33 +111,42 @@ func TestCodebaseInventory_GoWorkspaceToolchainFloor(t *testing.T) {
 		marker    string
 		want      ToolchainFact
 		wantFloor string
+		// practical is the fact in practical mode when it differs from want, the strict fact.
+		practical *ToolchainFact
 	}{
-		{"the go.work's go line", "go 1.22.5\n\nuse ./a\n", "", "", ToolchainFact{Version: "go1.22.5", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, "go1.22.5"},
-		{"the go.work's toolchain line is no floor of its own", "go 1.22.5\n\ntoolchain go1.24.1\n\nuse ./a\n", "", "", ToolchainFact{Version: "go1.22.5", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, "go1.22.5"},
-		{"a go.work with a go line that does not bind", "go 1.22\n\nuse ./a\n", "", "", ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}, ""},
-		{"off reads the module's own lines", "go 1.22.5\n\nuse ./a\n", "off", "", ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, "go1.22.0"},
-		{"the go.work's go line in a Bazel workspace", "go 1.22.5\n\nuse ./a\n", "", "MODULE.bazel", ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}, ""},
+		{"the go.work's go line", "go 1.22.5\n\nuse ./a\n", "", "", ToolchainFact{Version: "go1.22.5", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, "go1.22.5", nil},
+		{"the go.work's toolchain line is no syntax floor of its own", "go 1.22.5\n\ntoolchain go1.24.1\n\nuse ./a\n", "", "", ToolchainFact{Version: "go1.22.5", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, "go1.22.5", assumedAt("go1.24.1", "go1.22.5")},
+		{"a go.work with a go line that does not bind", "go 1.22\n\nuse ./a\n", "", "", ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}, "", nil},
+		{"off reads the module's own lines", "go 1.22.5\n\nuse ./a\n", "off", "", ToolchainFact{Version: "go1.22.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective}, "go1.22.0", assumedAt("go1.23.4", "go1.22.0")},
+		{"the go.work's go line in a Bazel workspace", "go 1.22.5\n\nuse ./a\n", "", "MODULE.bazel", ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}, "", nil},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			files := map[string]string{"go.work": tc.work, "a/go.mod": modA}
-			if tc.marker != "" {
-				files[tc.marker] = ""
+		for _, strict := range []bool{true, false} {
+			want := tc.want
+			if !strict && tc.practical != nil {
+				want = *tc.practical
 			}
-			tree, _ := filepath.EvalSymlinks(writeTree(t, files))
-			gitTree(t, tree)
-			stage := codebaseInventory{
-				checkout:      dirCheckout{dir: filepath.Join(tree, "a"), lang: "go"},
-				plugin:        goManifestPlugin{pinBuildToolchain: true},
-				subjectGoWork: tc.declared,
-			}
-			inv := runRealInventory(t, stage)
-			if !toolchainFactEqual(inv.Toolchain, tc.want) {
-				t.Fatalf("toolchain = %+v, want %+v", inv.Toolchain, tc.want)
-			}
-			if inv.GoFloor != tc.wantFloor {
-				t.Fatalf("go_floor = %q, want %q", inv.GoFloor, tc.wantFloor)
-			}
-		})
+			t.Run(fmt.Sprintf("%s/strict=%v", tc.name, strict), func(t *testing.T) {
+				files := map[string]string{"go.work": tc.work, "a/go.mod": modA}
+				if tc.marker != "" {
+					files[tc.marker] = ""
+				}
+				tree, _ := filepath.EvalSymlinks(writeTree(t, files))
+				gitTree(t, tree)
+				stage := codebaseInventory{
+					checkout:      dirCheckout{dir: filepath.Join(tree, "a"), lang: "go"},
+					plugin:        goManifestPlugin{pinBuildToolchain: true},
+					subjectGoWork: tc.declared,
+					strict:        strict,
+				}
+				inv := runRealInventory(t, stage)
+				if !toolchainFactEqual(inv.Toolchain, want) {
+					t.Fatalf("toolchain = %+v, want %+v", inv.Toolchain, want)
+				}
+				if inv.GoFloor != tc.wantFloor {
+					t.Fatalf("go_floor = %q, want %q", inv.GoFloor, tc.wantFloor)
+				}
+			})
+		}
 	}
 }

@@ -676,30 +676,69 @@ func TestReconciledResult_RunnerGoDiffers(t *testing.T) {
 }
 
 // TestLoadResult_BuildRelease: the load's release counts as the build's exactly only when both are
-// known and name the same minor; otherwise the subject's floor, when known, bounds it from below.
+// known and name the same minor; otherwise the subject's floor, when known, bounds it from below, and
+// a running toolchain that runningIsBuild accepts backs only the standard library.
 func TestLoadResult_BuildRelease(t *testing.T) {
+	g1_25_3 := goRelease{1, 25, 3}
+	bound := func(r goRelease, exact bool, std *goRelease) *releaseBound {
+		return &releaseBound{release: r, exact: exact, std: std}
+	}
+	noLines := modDirectives{read: true}
+	lines := func(goLine, toolchain string) modDirectives {
+		d := modDirectives{read: true}
+		if goLine != "" {
+			d.goLines = []string{goLine}
+		}
+		if toolchain != "" {
+			d.toolchains = []string{toolchain}
+		}
+		return d
+	}
 	cases := []struct {
 		loaded, build, floor string
+		dir                  modDirectives
 		want                 *releaseBound
 	}{
-		{"go1.25.3", "go1.25.3", "", &releaseBound{goRelease{1, 25, 3}, true}},
-		{"go1.25.3", "go1.25.0", "", &releaseBound{goRelease{1, 25, 3}, true}},
-		{"go1.25.3", "go1.24.9", "", nil},
-		{"go1.25.3", "go2.25.3", "", nil},
-		{"", "go1.25.3", "", nil},
-		{"go1.25.3", "", "", nil},
-		{"go1.25.3", "devel go1.25-abc123", "", nil},
-		{"go1.25.3", "go1.25.3", "go1.22.0", &releaseBound{goRelease{1, 25, 3}, true}},
-		{"go1.25.3", "", "go1.22.0", &releaseBound{goRelease{1, 22, 0}, false}},
-		{"go1.25.3", "go1.24.9", "go1.22.0", &releaseBound{goRelease{1, 22, 0}, false}},
-		{"", "", "go1.22.0", &releaseBound{goRelease{1, 22, 0}, false}},
-		{"go1.25.3", "", "go1.22rc1", nil},
-		{"go1.25.3", "", "1.22.0", nil},
+		{"go1.25.3", "", "go1.22.0", noLines, bound(goRelease{1, 22, 0}, false, &g1_25_3)},
+		{"go1.25.3", "", "go1.22.0", lines("go1.22.0", ""), bound(goRelease{1, 22, 0}, false, &g1_25_3)},
+		{"go1.25.3", "", "go1.25.3", lines("go1.25.3", "go1.25.3"), bound(goRelease{1, 25, 3}, false, &g1_25_3)},
+		{"go1.25.3", "", "go1.22.0", lines("go1.22.0", "go1.25.4"), bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "go1.22.0", lines("go1.22.0", "go1.25.2"), bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "go1.22.0", lines("go1.22.0", "go1.24.0"), bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "go1.22.0", lines("go1.22.0", "default"), bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "go1.22.0", lines("go1.22.0", "go1.25.3-custom"), bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "go1.22.0", modDirectives{read: true, toolchains: []string{"go1.25.3", "go1.26.0"}}, bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "go1.22.0", lines("go1.26", ""), bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "go1.22.0", lines("go1.25.4", ""), bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "go1.22.0", lines("go1.25rc1", ""), bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "go1.22.0", modDirectives{read: true, goLines: []string{"go1.22.0", "go1.26.0"}}, bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "go1.25.4", noLines, bound(goRelease{1, 25, 4}, false, nil)},
+		{"go1.25.3", "", "go1.26.0", noLines, bound(goRelease{1, 26, 0}, false, nil)},
+		{"go1.25.3", "", "go1.22.0", modDirectives{}, bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "", noLines, nil},
+		{"", "", "go1.22.0", noLines, bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "go1.24.9", "go1.22.0", noLines, bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "devel go1.25-abc123", "go1.22.0", noLines, bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25rc1", "", "go1.22.0", noLines, bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "go1.25.3", "", modDirectives{}, bound(goRelease{1, 25, 3}, true, &g1_25_3)},
+		{"go1.25.3", "go1.25.0", "", modDirectives{}, bound(goRelease{1, 25, 3}, true, &g1_25_3)},
+		{"go1.25.3", "go1.24.9", "", modDirectives{}, nil},
+		{"go1.25.3", "go2.25.3", "", modDirectives{}, nil},
+		{"", "go1.25.3", "", modDirectives{}, nil},
+		{"go1.25.3", "", "", modDirectives{}, nil},
+		{"go1.25.3", "devel go1.25-abc123", "", modDirectives{}, nil},
+		{"go1.25.3", "go1.25.3", "go1.22.0", modDirectives{}, bound(goRelease{1, 25, 3}, true, &g1_25_3)},
+		{"go1.25.3", "", "go1.22.0", modDirectives{}, bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "go1.24.9", "go1.22.0", modDirectives{}, bound(goRelease{1, 22, 0}, false, nil)},
+		{"", "", "go1.22.0", modDirectives{}, bound(goRelease{1, 22, 0}, false, nil)},
+		{"go1.25.3", "", "go1.22rc1", modDirectives{}, nil},
+		{"go1.25.3", "", "1.22.0", modDirectives{}, nil},
 	}
 	for _, tc := range cases {
-		got := (&LoadResult{goVersion: tc.loaded, buildGoVersion: tc.build, buildGoFloor: tc.floor}).buildRelease()
-		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
-			t.Errorf("buildRelease(%q, %q, floor %q) = %v, want %v", tc.loaded, tc.build, tc.floor, got, tc.want)
+		got := (&LoadResult{goVersion: tc.loaded, buildGoVersion: tc.build, buildGoFloor: tc.floor, directives: tc.dir}).buildRelease()
+		if (got == nil) != (tc.want == nil) || (got != nil && (got.release != tc.want.release || got.exact != tc.want.exact ||
+			(got.std == nil) != (tc.want.std == nil) || (got.std != nil && *got.std != *tc.want.std))) {
+			t.Errorf("buildRelease(%q, %q, floor %q, %+v) = %v, want %v", tc.loaded, tc.build, tc.floor, tc.dir, got, tc.want)
 		}
 	}
 }
@@ -811,8 +850,8 @@ func TestReconciledResult_FloorExcludes(t *testing.T) {
 }
 
 // TestLoadProgram_Toolchain: the load records the release the go command resolves for the build
-// directory, and never establishes it as the build's: that go command is the analyzer's, which in a
-// dedicated scan job is the runner image's Go, not the one the build compiles under.
+// directory, and with no subject toolchain or binding floor stated does not establish it as the
+// build's.
 func TestLoadProgram_Toolchain(t *testing.T) {
 	t.Setenv("GOTOOLCHAIN", "auto")
 	dir := writeTree(t, map[string]string{
@@ -977,5 +1016,108 @@ func TestGoflagsTags(t *testing.T) {
 		if got := goflagsTags([]string{"GOFLAGS=" + tc.goflags}); !slices.Equal(got, tc.want) {
 			t.Errorf("goflagsTags(%q) = %q, want %q", tc.goflags, got, tc.want)
 		}
+	}
+}
+
+// TestReadModDirectives: the go and toolchain lines are read from the go.mod and go.work the go
+// command resolves, and nothing is read when it resolves no go.mod or a file does not parse.
+func TestReadModDirectives(t *testing.T) {
+	ctx := context.Background()
+	mod := writeTree(t, map[string]string{"go.mod": "module example.com/m\n\ngo 1.22.0\n\ntoolchain go1.22.5\n"})
+	bare := writeTree(t, map[string]string{"go.mod": "module example.com/m\n\ngo 1.22.0\n"})
+	work := writeTree(t, map[string]string{
+		"go.work":  "go 1.23.0\n\ntoolchain go1.23.4\n\nuse ./m\n",
+		"m/go.mod": "module example.com/m\n\ngo 1.22.0\n",
+	})
+	broken := writeTree(t, map[string]string{"go.mod": "module example.com/m\n\ngo 1.22.0\n\nnotadirective (\n"})
+	brokenWork := writeTree(t, map[string]string{
+		"go.work":  "go 1.23.0\n\nnotadirective (\n",
+		"m/go.mod": "module example.com/m\n\ngo 1.22.0\n",
+	})
+	none := t.TempDir()
+	env := func(gowork string) []string {
+		return append(os.Environ(), "GOTOOLCHAIN=local", "GOFLAGS=", "GOWORK="+gowork)
+	}
+	alt := writeTree(t, map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.22.0\n",
+		"alt.mod": "module example.com/m\n\ngo 1.22.0\n\ntoolchain go1.22.5\n",
+		"goenv":   "GOFLAGS=-modfile=alt.mod\n",
+	})
+	modfileFlag := append(env("off"), "GOFLAGS=-modfile=alt.mod")
+	modfileConfig := append(os.Environ(), "GOTOOLCHAIN=local", "GOWORK=off", "GOENV="+filepath.Join(alt, "goenv"))
+	modfileConfig = slices.DeleteFunc(modfileConfig, func(kv string) bool { return strings.HasPrefix(kv, "GOFLAGS=") })
+	cases := []struct {
+		name string
+		dir  string
+		env  []string
+		want modDirectives
+	}{
+		{"go.mod with toolchain", mod, env("off"), modDirectives{read: true, goLines: []string{"go1.22.0"}, toolchains: []string{"go1.22.5"}}},
+		{"go.mod without toolchain", bare, env("off"), modDirectives{read: true, goLines: []string{"go1.22.0"}}},
+		{"workspace", filepath.Join(work, "m"), env(filepath.Join(work, "go.work")), modDirectives{read: true, goLines: []string{"go1.22.0", "go1.23.0"}, toolchains: []string{"go1.23.4"}}},
+		{"workspace off", filepath.Join(work, "m"), env("off"), modDirectives{read: true, goLines: []string{"go1.22.0"}}},
+		{"no go.mod", none, env("off"), modDirectives{}},
+		{"unparsable go.mod", broken, env("off"), modDirectives{}},
+		{"unparsable go.work", filepath.Join(brokenWork, "m"), env(filepath.Join(brokenWork, "go.work")), modDirectives{}},
+		{"unreadable go.work", filepath.Join(work, "m"), env(filepath.Join(work, "missing.work")), modDirectives{}},
+		{"-modfile in GOFLAGS", alt, modfileFlag, modDirectives{}},
+		{"-modfile in the go env file", alt, modfileConfig, modDirectives{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := readModDirectives(ctx, tc.dir, tc.env)
+			if got.read != tc.want.read || !slices.Equal(got.goLines, tc.want.goLines) || !slices.Equal(got.toolchains, tc.want.toolchains) {
+				t.Errorf("readModDirectives = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadForBuild_RunningToolchain: with no subject toolchain stated, the load's own release backs
+// the build's standard library when it satisfies the binding floor and no toolchain line names another
+// release; the floor still bounds the build's goN.M tags.
+func TestLoadForBuild_RunningToolchain(t *testing.T) {
+	t.Setenv("GOTOOLCHAIN", "local")
+	t.Setenv("GOWORK", "off")
+	plain := writeTree(t, map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.22.0\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	})
+	load, err := loadForBuild(context.Background(), plain, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := parseGoRelease(load.goVersion)
+	if !ok || r.less(goRelease{1, 22, 0}) {
+		t.Skipf("loaded under %q", load.goVersion)
+	}
+	pinned := writeTree(t, map[string]string{
+		"go.mod":  "module example.com/m\n\ngo 1.22.0\n\ntoolchain go1.22.1\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	})
+	for _, tc := range []struct {
+		name  string
+		dir   string
+		floor string
+		std   bool
+	}{
+		{"no toolchain line, floor met", plain, "go1.22.0", true},
+		{"no floor", plain, "", false},
+		{"floor above the loader", plain, goRelease{r.major, r.minor + 1, 0}.toolchain(), false},
+		{"toolchain line names another release", pinned, "go1.22.0", r == goRelease{1, 22, 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			load, err := loadForBuild(context.Background(), tc.dir, "", tc.floor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b := load.buildRelease()
+			if got := b != nil && b.std != nil; got != tc.std {
+				t.Fatalf("std = %v, want %v (loaded %q, bound %+v, directives %+v)", got, tc.std, load.goVersion, b, load.directives)
+			}
+			if tc.std && (*b.std != r || b.exact || b.release != goRelease{1, 22, 0}) {
+				t.Fatalf("bound %+v std %v, want the go1.22.0 floor with the loader's %v as std", b, *b.std, r)
+			}
+		})
 	}
 }

@@ -65,19 +65,25 @@ func TestParse_NoRefSelectsNothing(t *testing.T) {
 // AC3: malformed YAML fails closed with an error that names the file — never a silent skip.
 func TestParse_MalformedFailsClosed(t *testing.T) {
 	for name, body := range map[string]string{
-		"unclosed flow":       "version: 1\nanalyze: {ref: baseline\n",
-		"bad indentation":     "version: 1\nanalyze:\n  ref: a\n ref2: b\n",
-		"tab indentation":     "version: 1\nanalyze:\n\tref: baseline\n",
-		"top-level list":      "- version: 1\n",
-		"top-level scalar":    "baseline\n",
-		"analyze not map":     "version: 1\nanalyze: baseline\n",
-		"ref is a list":       "version: 1\nanalyze:\n  ref: [a, b]\n",
-		"ref is a bool":       "version: 1\nanalyze:\n  ref: true\n",
-		"duplicate key":       "version: 1\nanalyze:\n  ref: a\n  ref: b\n",
-		"two documents":       "version: 1\n---\nversion: 1\n",
-		"alias":               "x: &b baseline\nversion: 1\nanalyze:\n  ref: *b\n",
-		"version is string":   "version: one\n",
-		"unsupported version": "version: 2\nanalyze:\n  ref: baseline\n",
+		"unclosed flow":           "version: 1\nanalyze: {ref: baseline\n",
+		"bad indentation":         "version: 1\nanalyze:\n  ref: a\n ref2: b\n",
+		"tab indentation":         "version: 1\nanalyze:\n\tref: baseline\n",
+		"top-level list":          "- version: 1\n",
+		"top-level scalar":        "baseline\n",
+		"analyze not map":         "version: 1\nanalyze: baseline\n",
+		"ref is a list":           "version: 1\nanalyze:\n  ref: [a, b]\n",
+		"ref is a bool":           "version: 1\nanalyze:\n  ref: true\n",
+		"duplicate key":           "version: 1\nanalyze:\n  ref: a\n  ref: b\n",
+		"two documents":           "version: 1\n---\nversion: 1\n",
+		"alias":                   "x: &b baseline\nversion: 1\nanalyze:\n  ref: *b\n",
+		"version is string":       "version: one\n",
+		"unsupported version":     "version: 2\nanalyze:\n  ref: baseline\n",
+		"strictness unknown":      "version: 1\nstrictness: lenient\n",
+		"strictness cased":        "version: 1\nstrictness: Strict\n",
+		"strictness quoted-empty": "version: 1\nstrictness: \"\"\n",
+		"strictness bool":         "version: 1\nstrictness: true\n",
+		"strictness list":         "version: 1\nstrictness: [strict]\n",
+		"strictness map":          "version: 1\nstrictness: {mode: strict}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg, _, err := Parse([]byte(body))
@@ -206,5 +212,33 @@ func TestLoad_RefusesOversizedFile(t *testing.T) {
 	writeConfig(t, root, "version: 1\n# "+strings.Repeat("x", maxBytes)+"\n")
 	if _, _, err := Load(root); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized config must be refused, got %v", err)
+	}
+}
+
+func TestParse_Strictness(t *testing.T) {
+	for _, tt := range []struct {
+		name, body, want string
+	}{
+		{"absent", "version: 1\n", ""},
+		{"null", "version: 1\nstrictness:\n", ""},
+		{"practical", "version: 1\nstrictness: practical\n", "practical"},
+		{"strict", "version: 1\nstrictness: strict\n", "strict"},
+		{"quoted", "version: 1\nstrictness: \"strict\"\n", "strict"},
+		{"with analyze", "version: 1\nanalyze:\n  ref: main\nstrictness: strict\n", "strict"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, warnings, err := Parse([]byte(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Strictness != tt.want {
+				t.Fatalf("Strictness = %q, want %q", cfg.Strictness, tt.want)
+			}
+			for _, w := range warnings {
+				if strings.Contains(w, "strictness") {
+					t.Fatalf("strictness is a known key, got warning %q", w)
+				}
+			}
+		})
 	}
 }

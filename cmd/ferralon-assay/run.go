@@ -271,6 +271,8 @@ func publishResult(ctx context.Context, outDir string, rep *report.Report, intel
 	rep.Provenance.Timings = clock.timings()
 	rep.BuildGraph = graph.record()
 	deps.stamp(rep)
+	a := report.AssumptionsOf(*rep)
+	rep.RunAssumptions = &a
 	res, err := buildResult(rep)
 	if err != nil {
 		return err
@@ -489,6 +491,8 @@ type runConfig struct {
 	// analyzeRef is the resolved .github/ferralon.yml analyze.ref (empty on the default path),
 	// carried from acquireTarget so publishResult can gate delivery on the canonical ref.
 	analyzeRef string
+	// modeSource is where the run's strictness was stated, for the Report's mode.
+	modeSource string
 	// graph is the JVM scan's build graph; nil for every other language.
 	graph *jvmGraph
 	// deps is the JS scan's dependency code acquisition; nil for every other language.
@@ -526,6 +530,9 @@ type runFlags struct {
 	depNPMRCEnv      *string
 	depTimeout       *string
 	scanTimeoutRaw   *string
+	strictness       *string
+	repoStrictness   string      // the strictness key of .github/ferralon.yml; "" when none — set from the acquired target
+	resolvedMode     report.Mode // the run's strictness and its source — set by strictnessOption
 	depRun           *depCodeRun // set by dependencyCodeOption
 	resolvedFacts    string      // FactSource* — set by advisoryCorpusOption
 	resolvedCorpus   pipeline.CorpusInfo
@@ -550,7 +557,7 @@ type runFlags struct {
 //
 // It is NOT the line between the scanner and every third party. A default scan already contacts
 // https://vuln.go.dev on every run — the Go analyzer's reachability stage runs govulncheck with no
-// -db flag, so it resolves golang.org/x/vuln's default database uncached
+// -db flag by default, so it resolves golang.org/x/vuln's default database uncached
 // (internal/plugin/goanalysis/reach.go) — and proxy.golang.org when it resolves the subject's module graph.
 // README.md ("Network egress") is the authoritative enumeration.
 //
@@ -612,14 +619,15 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		buildGraphTool: fs.String("build-graph-tool", "", "which build tool the build graph comes from: auto, maven or gradle. auto takes the one whose build files are at the repository root, and when both are it resolves both and reads their union, keeping one tool's graph, marked partial, when the other fails; with a graph file, a stated tool must be the one that resolved it; with off it is unused. Overrides "+envBuildGraphTool+" (default: auto)"),
 
 		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\". With -build-graph auto it is passed to Maven as -P, and stating one for a Gradle build fails the run; with a graph file, the file must record the same selection; with off it is unused. Overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
-		entrypoints:    fs.String("entrypoints", "", "which entry points the SCANNED repository's analysis starts from, per lane: auto (inferred), or clauses of the form <lane>:<selector>, <lane>:none, !<lane>:<selector> and <lane>:<kind>=<selector>, separated by commas or whitespace, e.g. \"go:library=none\" or \"go:library=pkg/api,!go:library=pkg/api/internal\". The go lane takes any clause for its library entry points, and the js lane takes only !js: removals of a script binary or script file it inferred, named by npm: or bin:, e.g. \"!js:bin=bin:storybook\"; any other clause that asks for something fails the run, and one that says auto changes nothing. A refutation a declaration lets stand carries it on the report as an assumption. -library-entrypoints is the alias for go:library=. Overrides "+envEntrypoints+" (default: auto)"),
-		libEntrypoints: fs.String("library-entrypoints", "", "which of the SCANNED repository's packages code outside the build may import: auto (inferred; a package under cmd/, examples/ or a test directory is not one), none (the build ships programs only), or paths relative to the repository root, e.g. \"pkg/api,!pkg/api/internal\", where !path takes a path out and naming no path keeps auto for the rest. A refutation a declaration lets stand carries it on the report as an assumption. Overrides "+envLibraryEntrypoints+" (default: auto)"),
+		entrypoints:    fs.String("entrypoints", "", "which entry points the SCANNED repository's analysis starts from, per lane: auto (inferred; for go, a fully loaded build of one module that ships a main package at its module root or under its cmd directory is read as an application, with no library entry points, and go:library=. reads it as a library), or clauses of the form <lane>:<selector>, <lane>:none, !<lane>:<selector> and <lane>:<kind>=<selector>, separated by commas or whitespace, e.g. \"go:library=none\" or \"go:library=pkg/api,!go:library=pkg/api/internal\". The go lane takes any clause for its library entry points, and the js lane takes only !js: removals of a script binary or script file it inferred, named by npm: or bin:, e.g. \"!js:bin=bin:storybook\"; any other clause that asks for something fails the run, and one that says auto changes nothing. A refutation a declaration or the application reading lets stand carries it on the report as an assumption. -library-entrypoints is the alias for go:library=. Overrides "+envEntrypoints+" (default: auto)"),
+		libEntrypoints: fs.String("library-entrypoints", "", "which of the SCANNED repository's packages code outside the build may import: auto (inferred; a package under cmd/, examples/ or a test directory is not one, and a fully loaded build of one module that ships a main package at its module root or under its cmd directory is read as an application, with none; . reads it as a library), none (the build ships programs only), or paths relative to the repository root, e.g. \"pkg/api,!pkg/api/internal\", where !path takes a path out and naming no path keeps auto for the rest. A refutation a declaration or the application reading lets stand carries it on the report as an assumption. Overrides "+envLibraryEntrypoints+" (default: auto)"),
 
 		depCode:        fs.String("dependency-code", "", "whether a JS scan reads its dependencies' code: fetch, which fetches each lock-pinned tarball by name and version from the configured registry (the repository's .npmrc, NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY) and verifies it against the lock's integrity hash; offline, which reads only an operator-seeded -dependency-cache; or off. A package whose fetch fails is not read: when its registry served this build other packages the scan reads those and withholds each one it could not fetch, otherwise it reads no dependency code and says so on the report. A registry that refuses a token the scan sent (an expired or wrong token, or a curation proxy blocking a package) fails the run. On cve-watch, a registry answering a transient error, or one that has served this repository and now serves nothing, holds the advisory cursor, and the run fails once that hold has lasted "+fmt.Sprintf("%d runs and %d hours", stallRuns, int(stallAge.Hours()))+". A cve-watch run that read less than the lock pins reports each disqualified or not_exploitable verdict it reached on an advisory affecting a package it could not fetch, or one it cannot tie to the packages it fetched, as undetermined (dependency_not_fetched), and the next cve-watch run assesses those advisories again, along with any it left undetermined; a run with off stops that. Overrides "+envDependencyCode+" (default: fetch)"),
 		depCache:       fs.String("dependency-cache", "", "the content-addressed directory dependency tarballs are verified into and read from; required for -dependency-code=offline. Overrides "+envDependencyCache+" (default for fetch: the user cache directory)"),
 		depUncredCache: fs.String("dependency-uncredentialed-cache", "", "a directory apart from -dependency-cache that only ever holds tarballs from a registry with no auth entry in the npm configuration, fetched without presenting a credential; each is linked into -dependency-cache, which the scan reads. A tarball from a registry with an auth entry is never written here, and one found here is removed. Set it to persist dependency tarballs where a credentialed one must not go. Overrides "+envDependencyUncredCache+" (default: unset, one directory)"),
 		depNPMRCEnv:    fs.String("dependency-npmrc-env", "", "comma-separated environment variables a .npmrc ${VAR} reference may read, beyond NPM_CONFIG_USERCONFIG, NPM_CONFIG_REGISTRY, NODE_AUTH_TOKEN and NPM_TOKEN; any other reference reads as unset. Overrides "+envDependencyNPMRCEnv),
 		depTimeout:     fs.String("dependency-timeout", "", "how long dependency acquisition may run before the packages still pending are recorded unread. Overrides "+envDependencyTimeout+" (default: 15m)"),
+		strictness:     fs.String("strictness", "", "how the analysis treats an assumption it inferred: practical, which may clear a row under an assumption the row names, or strict, which clears no row that rests on an assumption it inferred. Overrides the strictness key of .github/ferralon.yml and "+envStrictness+" (default: practical)"),
 		scanTimeoutRaw: fs.String("scan-timeout", "", "how long the whole scan may run, counted from start. Analysis stops early enough to publish the report, and every advisory not yet assessed is reported as not assessed. 0 sets no limit. Overrides "+envScanTimeout+" (default: no limit)"),
 	}
 }
@@ -701,6 +709,11 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 		return workSet{}, err
 	}
 	acq.goToolchain = f.subjectGoToolchain()
+	mode, err := f.resolveMode()
+	if err != nil {
+		return workSet{}, err
+	}
+	acq.strict = mode.Strictness == report.StrictnessStrict
 	ws := selectWorkSet(ctx, acq, f.corpusReader, f.resolvedSource, f.resolvedPolicy, enabled, &trigger.HTTPOSVClient{})
 	if ctx.Err() != nil {
 		if len(ws.advisories) == 0 {
@@ -1137,7 +1150,11 @@ func stated(flagValue, envValue string) string {
 // baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
 // corpus, the subject Go toolchain, and the subject-toolchain reachability gate.
 func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption, language string) ([]pipeline.AssessOption, error) {
-	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
+	strictOpt, err := f.strictnessOption()
+	if err != nil {
+		return nil, err
+	}
+	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork()), strictOpt}
 	opt, err := f.advisoryCorpusOption()
 	if err != nil {
 		return nil, err
@@ -1170,7 +1187,11 @@ func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption, langu
 // corpus, the subject Go toolchain, and the subject-toolchain
 // reachability gate.
 func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption, language string) ([]pipeline.AssessOption, error) {
-	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork())}
+	strictOpt, err := f.strictnessOption()
+	if err != nil {
+		return nil, err
+	}
+	opts := []pipeline.AssessOption{withPlugin, pipeline.WithSubjectGoWork(f.declaredGoWork()), strictOpt}
 	opt, err := f.advisoryCorpusOption()
 	if err != nil {
 		return nil, err
@@ -1248,11 +1269,15 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 	if err := f.checkEntrypoints(); err != nil {
 		return nil, err
 	}
+	if err := f.checkStrictness(); err != nil {
+		return nil, err
+	}
 	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	if err != nil {
 		return nil, err
 	}
 	acq.goWork = f.declaredGoWork()
+	f.repoStrictness = acq.cfgStrictness
 
 	store, err := f.sf.resolve()
 	if err != nil {
@@ -1302,6 +1327,7 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		outDir:        *f.outDir,
 		cleanup:       acq.cleanup,
 		analyzeRef:    acq.analyzeRef,
+		modeSource:    f.resolvedMode.Source,
 		graph:         acq.graph,
 		deps:          f.depRun.forLanguage(acq.language),
 	}, nil
@@ -1364,6 +1390,7 @@ func runPRInherit(args []string) error {
 	}
 
 	res, err := trigger.RunPRInherit(ctx, cfg.store, trigger.PRInheritRequest{
+		ModeSource:    cfg.modeSource,
 		Subject:       cfg.subject,
 		Codebase:      cfg.codebase,
 		PRSBOM:        prSBOM,
@@ -1396,7 +1423,11 @@ func runPRInherit(args []string) error {
 		}
 	} else {
 		fmt.Fprintf(os.Stdout, "  path:       re-analyzed affected slice\n")
-		fmt.Fprintf(os.Stdout, "  changed:    %s\n", strings.Join(res.ChangedPackages, ", "))
+		changed := strings.Join(res.ChangedPackages, ", ")
+		if changed == "" {
+			changed = "no package (the entry-point statement or the JS launch surface differs from the baseline's)"
+		}
+		fmt.Fprintf(os.Stdout, "  changed:    %s\n", changed)
 	}
 	rescan := rescanFromEnv()
 	publishStart := time.Now()
@@ -1511,6 +1542,7 @@ func runCVEWatch(args []string) error {
 // re-assessments make, so Hold consults it after them.
 func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchRequest {
 	return trigger.CVEWatchRequest{
+		ModeSource:      cfg.modeSource,
 		Subject:         cfg.subject,
 		Codebase:        cfg.codebase,
 		AssessOptions:   cfg.assessOptions,

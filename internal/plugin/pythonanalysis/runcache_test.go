@@ -233,19 +233,20 @@ func TestRunCacheKeysCoverEveryRequestField(t *testing.T) {
 	tests := []struct {
 		name string
 		req  any
-		// keyed are the fields the op reads, all in the key; unread are the ones it never reads.
-		keyed, unread []string
+		// keyed are the fields the op reads, all in the key; unread are the ones it never reads;
+		// replayed are the ones it reads only on the cached entry, which holds every reading of them.
+		keyed, unread, replayed []string
 	}{
-		{"reachability", plugin.ReachabilityRequest{}, []string{"BuildDir", "Symbols"},
-			[]string{"DependencyCache", "EntryOverride", "GoToolchain", "GoToolchainFloor", "GoWork", "LibraryEntrypoints", "MatchOnly", "MatchOutsideToolchain", "Package", "TargetEnv", "VulnID"}},
+		{"reachability", plugin.ReachabilityRequest{}, []string{"BuildDir", "Strict", "Symbols"},
+			[]string{"DependencyCache", "EntryOverride", "GoToolchain", "GoToolchainFloor", "GoWork", "LibraryEntrypoints", "MatchOnly", "MatchOutsideToolchain", "Package", "TargetEnv", "VulnID"}, nil},
 		{"resolve symbols", plugin.ResolveSymbolsRequest{}, []string{"AdvisorySymbols", "BuildDir", "PURL"},
-			[]string{"DependencyCache", "GoWork", "Package", "PackageVersions", "TargetEnv", "VulnID"}},
-		{"call graph", plugin.CallGraphRequest{}, []string{"BuildDir"}, []string{"Algorithm", "DependencyCache", "GoWork"}},
-		{"find ingresses", plugin.FindIngressesRequest{}, []string{"BuildDir"}, []string{"GoWork"}},
-		{"index symbols", plugin.IndexSymbolsRequest{}, []string{"BuildDir"}, []string{"GoWork"}},
+			[]string{"DependencyCache", "GoWork", "Package", "PackageVersions", "TargetEnv", "VulnID"}, nil},
+		{"call graph", plugin.CallGraphRequest{}, []string{"BuildDir"}, []string{"Algorithm", "DependencyCache", "GoWork"}, []string{"Strict"}},
+		{"find ingresses", plugin.FindIngressesRequest{}, []string{"BuildDir"}, []string{"GoWork"}, nil},
+		{"index symbols", plugin.IndexSymbolsRequest{}, []string{"BuildDir"}, []string{"GoWork"}, nil},
 	}
 	for _, tt := range tests {
-		want := slices.Sorted(slices.Values(append(slices.Clone(tt.keyed), tt.unread...)))
+		want := slices.Sorted(slices.Values(slices.Concat(tt.keyed, tt.unread, tt.replayed)))
 		if got := fields(tt.req); !slices.Equal(got, want) {
 			t.Errorf("%s request fields = %v, classified %v: decide whether the new field is read and keyed", tt.name, got, want)
 		}

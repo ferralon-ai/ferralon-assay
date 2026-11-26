@@ -80,6 +80,36 @@ type MethodRef struct {
 
 func (m MethodRef) String() string { return m.Owner + "." + m.Name + m.Descriptor }
 
+// ParamCount is the number of parameters in the method's descriptor; -1 if malformed.
+func (m MethodRef) ParamCount() int {
+	desc := m.Descriptor
+	if !strings.HasPrefix(desc, "(") {
+		return -1
+	}
+	n := 0
+	for i := 1; i < len(desc); {
+		switch desc[i] {
+		case ')':
+			return n
+		case '[':
+			i++
+			continue
+		case 'L':
+			end := strings.IndexByte(desc[i:], ';')
+			if end < 0 {
+				return -1
+			}
+			i += end + 1
+		case 'B', 'C', 'D', 'F', 'I', 'J', 'S', 'Z':
+			i++
+		default:
+			return -1
+		}
+		n++
+	}
+	return -1
+}
+
 // EdgeKind records how a call site dispatches — the axis that decides whether an
 // edge is statically resolvable (special/static) or needs class-hierarchy analysis
 // (virtual/interface) or is a completeness hazard (dynamic).

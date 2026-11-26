@@ -121,7 +121,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		return out, nil
 	}
 
-	graph, err := callGraphFor(ctx, req.BuildDir, req.DependencyCache)
+	graph, err := callGraphFor(ctx, req.BuildDir, req.DependencyCache, false)
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
 	}

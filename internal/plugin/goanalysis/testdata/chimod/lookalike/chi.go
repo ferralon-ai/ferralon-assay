@@ -21,6 +21,7 @@ func NewRouter() *Mux { return &Mux{} }
 
 func (mx *Mux) Get(pattern string, h http.HandlerFunc)        {}
 func (mx *Mux) Post(pattern string, h http.HandlerFunc)       {}
+func (mx *Mux) NotFound(h http.HandlerFunc)                   {}
 func (mx *Mux) Handle(pattern string, h http.Handler)         {}
 func (mx *Mux) Mount(pattern string, h http.Handler)          {}
 func (mx *Mux) Method(method, pattern string, h http.Handler) {}

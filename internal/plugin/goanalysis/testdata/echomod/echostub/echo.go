@@ -41,11 +41,37 @@ type MiddlewareFunc func(next HandlerFunc) HandlerFunc
 // Route is a registered route.
 type Route struct{ Method, Path, Name string }
 
-// Echo stands in for the echo router.
-type Echo struct{}
+// HTTPErrorHandler is echo's error handler: it runs for every error a handler returns.
+type HTTPErrorHandler func(err error, c Context)
 
-// New returns an echo router.
-func New() *Echo { return &Echo{} }
+// NotFoundHandler and MethodNotAllowedHandler are echo's package-level handlers for a
+// request no route matches, or none matches by method. echo initialises them here, in
+// its own package: those defaults are the router's code, no first-party ingress.
+var (
+	NotFoundHandler         HandlerFunc = func(c Context) error { return nil }
+	MethodNotAllowedHandler HandlerFunc = func(c Context) error { return nil }
+)
+
+// Echo stands in for the echo router.
+type Echo struct {
+	HTTPErrorHandler HTTPErrorHandler
+}
+
+// New returns an echo router, its error handler set to the default, as echo's New does.
+func New() *Echo {
+	e := &Echo{}
+	e.HTTPErrorHandler = defaultHTTPErrorHandler
+	return e
+}
+
+func defaultHTTPErrorHandler(err error, c Context) {}
+
+// DefaultHTTPErrorHandler is echo's default error handler, exported so an application
+// can reinstall it or call it from its own.
+func (e *Echo) DefaultHTTPErrorHandler(err error, c Context) {}
+
+// RouteNotFound registers the handler for a request under path that no route matches.
+func (e *Echo) RouteNotFound(path string, h HandlerFunc, m ...MiddlewareFunc) *Route { return nil }
 
 // Pre attaches middleware run before routing.
 func (e *Echo) Pre(middleware ...MiddlewareFunc) {}
@@ -88,6 +114,9 @@ type Group struct {
 	prefix string
 	echo   *Echo
 }
+
+// RouteNotFound registers the handler for a request under the group's path that no route matches.
+func (g *Group) RouteNotFound(path string, h HandlerFunc, m ...MiddlewareFunc) *Route { return nil }
 
 // Use attaches group middleware.
 func (g *Group) Use(middleware ...MiddlewareFunc) {}

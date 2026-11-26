@@ -32,3 +32,14 @@ func (g *Group) GET(path string, h realecho.HandlerFunc, m ...realecho.Middlewar
 func WrapHandler(h http.Handler) realecho.HandlerFunc {
 	return func(c realecho.Context) error { return nil }
 }
+
+// NotFoundHandler mirrors echo's package-level handler var.
+var NotFoundHandler realecho.HandlerFunc
+
+// HTTPErrorHandler mirrors echo's error-handler field on a look-alike router.
+type Router struct {
+	HTTPErrorHandler func(err error, c realecho.Context)
+}
+
+// RouteNotFound mirrors echo's RouteNotFound.
+func (e *Echo) RouteNotFound(path string, h realecho.HandlerFunc, m ...realecho.MiddlewareFunc) {}

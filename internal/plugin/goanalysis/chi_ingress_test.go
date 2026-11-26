@@ -64,9 +64,21 @@ var chiForms = []struct {
 	{"nested Route in a named func", "server#nestedRouteForm().", "sinkNestedRoute"},
 	{"Route on a method value", "server#methodRouteForm().", "sinkMethodRoute"},
 	{"non-constant Route pattern", "server#dynRouteForm().", "sinkDynRoute"},
+	{"NotFound", "server#notFoundForm().", "sinkNotFound"},
+	{"MethodNotAllowed", "server#methodNotAllowedForm().", "sinkMethodNotAllowed"},
+	{"NotFound on a chi.Router in a Route closure", "server#subNotFoundForm().", "sinkSubNotFound"},
+	{"chi v1 NotFound", "server#v1NotFoundForm().", "sinkV1NotFound"},
 	{"handler in a package var", "init$1().", "sinkVar"},
 	{"handler in a struct field", "fieldForm().", "sinkField"},
 	{"handler from a factory", "makeHandler$1().", "sinkFactory"},
+}
+
+// chiCatchAllForms are the chiForms handlers chi runs for a request no route matches
+// (NotFound) or none matches by method (MethodNotAllowed): each registers under the
+// catch-all selector "*", never a pattern.
+var chiCatchAllForms = []string{
+	"server#notFoundForm().", "server#methodNotAllowedForm().",
+	"server#subNotFoundForm().", "server#v1NotFoundForm().",
 }
 
 func chiIngresses(t *testing.T) []plugin.Ingress {
@@ -89,6 +101,23 @@ func TestChi_RegistrationFormsAreRouteIngresses(t *testing.T) {
 	for _, f := range chiForms {
 		if got := kinds[chiFixtureSCIP+f.handler]; got != "http_route" {
 			t.Errorf("chi %s: handler %s kind = %q, want http_route; ingresses = %v", f.form, f.handler, got, kinds)
+		}
+	}
+}
+
+// TestChi_CatchAllHandlersAreWildcardIngresses proves chi's NotFound and
+// MethodNotAllowed handlers ingress under the catch-all selector "*", on the concrete
+// Mux, on a chi.Router interface and on a chi v1 router alike.
+func TestChi_CatchAllHandlersAreWildcardIngresses(t *testing.T) {
+	selectors := map[string][]string{}
+	for _, in := range chiIngresses(t) {
+		if in.Kind == "http_route" {
+			selectors[in.Symbol.SCIP] = append(selectors[in.Symbol.SCIP], in.Selector)
+		}
+	}
+	for _, h := range chiCatchAllForms {
+		if got := selectors[chiFixtureSCIP+h]; len(got) != 1 || got[0] != "*" {
+			t.Errorf("chi catch-all %s: http_route selectors = %q, want [\"*\"]", h, got)
 		}
 	}
 }
@@ -297,6 +326,7 @@ func TestChi_LookalikeRouterIsNoIngress(t *testing.T) {
 		"server#lookalikeHandle().",
 		"server#lookalikeMethod().",
 		"server#lookalikeRoute().",
+		"server#lookalikeNotFound().",
 		"lookalikeMounted#ServeHTTP().",
 	)
 }

@@ -59,6 +59,12 @@ var echoForms = []struct {
 	{"non-constant Group prefix", "server#dynamicForm().", "/dynamic/:id", "sinkDynamic"},
 	{"WrapHandler", "wrappedHandler#ServeHTTP().", "/wraph", "sinkWrapH"},
 	{"WrapHandler(http.HandlerFunc)", "server#netForm().", "/wrapf", "sinkWrapF"},
+	{"RouteNotFound", "server#routeNotFoundForm().", "*", "sinkRouteNotFound"},
+	{"Group RouteNotFound", "server#groupRouteNotFoundForm().", "*", "sinkGroupRouteNotFound"},
+	{"NotFoundHandler", "server#notFoundHandlerForm().", "*", "sinkNotFoundHandler"},
+	{"MethodNotAllowedHandler", "server#methodNotAllowedForm().", "*", "sinkMethodNotAllowed"},
+	{"HTTPErrorHandler", "server#httpErrorForm().", "*", "sinkHTTPError"},
+	{"HTTPErrorHandler in a literal", "server#httpErrorLiteralForm().", "*", "sinkHTTPErrorLiteral"},
 	{"handler in a package var", "init$1().", "/var/:id", "sinkVar"},
 	{"handler in a struct field", "fieldForm().", "/field", "sinkField"},
 	{"handler from a factory", "makeHandler$1().", "/factory/:id", "sinkFactory"},
@@ -177,10 +183,13 @@ func TestEcho_UnregisteredHandlerAndMiddlewareAreNoIngress(t *testing.T) {
 // the fixture's own package: not echo's Echo.ServeHTTP (an echo router mounted through
 // WrapHandler: the router-path clause), not the HandlerFunc adapter's ServeHTTP (a
 // handler reaching WrapHandler as an http.HandlerFunc in a variable, through
-// fwdRouter: the adapter clause), and not the closures echo's WrapHandler and
-// WrapMiddleware build. The one exception is the closure the look-alike WrapHandler
-// returns: the look-alike is first-party code here, so it is a handler factory whose
-// closure is what echo calls, never unwrapped to the handler it takes.
+// fwdRouter: the adapter clause), not the closures echo's WrapHandler and
+// WrapMiddleware build, and not echo's Echo.DefaultHTTPErrorHandler that first-party
+// code stores into Echo.HTTPErrorHandler (a dependency's func stored there is the
+// dependency's code: catchAllStoreRoutes keeps only the build's own funcs). The one
+// exception is the closure the look-alike WrapHandler returns: the look-alike is
+// first-party code here, so it is a handler factory whose closure is what echo calls,
+// never unwrapped to the handler it takes.
 func TestEcho_OwnHandlersAndAdaptersAreNoIngress(t *testing.T) {
 	const lookalikeClosure = "scip-go gomod tegron.test/echomod/lookalike . tegron.test/echomod/lookalike/WrapHandler$1()."
 	for _, in := range echoIngresses(t) {
@@ -201,6 +210,9 @@ func TestEcho_LookalikeRouterIsNoIngress(t *testing.T) {
 		"server#lookalikeAdd().",
 		"server#lookalikeGroup().",
 		"server#lookalikeNet().",
+		"server#lookalikeNotFound().",
+		"server#lookalikeNotFoundVar().",
+		"server#lookalikeErrorForm().",
 	)
 }
 
